@@ -26,20 +26,45 @@
   </form>
 </div>
 
+<!-- 아이콘(lucide) — 사용은 <svg class="ico"><use href="#i-이름"/></svg>. nightshift와 같은 모양. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+  <symbol id="i-list-checks" viewBox="0 0 24 24"><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/></symbol>
+  <symbol id="i-square-kanban" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 7v7"/><path d="M12 7v4"/><path d="M16 7v9"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
+  <symbol id="i-folder-kanban" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><path d="M8 10v4"/><path d="M12 10v2"/><path d="M16 10v6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
+  <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-external-link" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+</svg>
+
 <div id="shell" hidden>
+  <!-- 헤더 — nightshift와 같은 구성: 초승달 워드마크 | 사용자 칩(누르면 메뉴) · 밤/낮 토글 -->
   <header class="top">
-    <a href="#/" class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 1 0 10.5 10.5Z" fill="currentColor"/></svg><span class="brand-word">Dev</span></a>
-    <nav>
-      <a href="#/" data-nav="issues">Issues</a>
-      <a href="#/board" data-nav="board">Board</a>
-      <a href="#/agents" data-nav="agents">Agents</a>
-      <a href="#/projects" data-nav="projects">Projects</a>
-    </nav>
-    <select id="project-filter" title="프로젝트"></select>
-    <a href="#/new" class="button primary" title="New issue">+<span class="hide-m"> New issue</span></a>
-    <button id="theme" class="ghost" title="테마 바꾸기"></button>
-    <button id="logout" class="ghost" title="Log out"><svg viewBox="0 0 24 24" aria-hidden="true" class="ico"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="hide-m">Log out</span></button>
+    <a href="#/" class="brand" title="Issues로" aria-label="Dev 홈"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 1 0 10.5 10.5Z" fill="currentColor"/></svg><span class="brand-word">Dev</span></a>
+    <div class="header-right">
+      <button class="user-chip" id="user-chip" type="button" title="내 계정" aria-haspopup="menu"><svg class="ico"><use href="#i-user"/></svg><span class="user-chip-name" id="user-chip-name"></span><span class="role-badge">Admin</span></button>
+      <button class="theme-toggle-btn" id="theme" type="button"></button>
+    </div>
+    <div class="user-menu" id="user-menu" role="menu" hidden>
+      <a id="open-nightshift" role="menuitem" target="_blank" rel="noopener"><svg class="ico"><use href="#i-external-link"/></svg>nightshift 열기</a>
+      <button id="logout" role="menuitem" type="button"><svg class="ico"><use href="#i-log-out"/></svg>로그아웃</button>
+    </div>
   </header>
+  <!-- 전역 탭 — 평소 아이콘만, 마우스를 올리면 제목이 펼쳐진다(nightshift와 같음). 오른쪽은 프로젝트 필터·새 이슈. -->
+  <div class="tab-bar"><div class="tab-bar-inner">
+    <a class="tab-btn" href="#/" data-nav="issues" title="Issues — 이슈 목록"><svg class="ico"><use href="#i-list-checks"/></svg><span class="tab-label">Issues</span></a>
+    <a class="tab-btn" href="#/board" data-nav="board" title="Board — 상태별 칸반"><svg class="ico"><use href="#i-square-kanban"/></svg><span class="tab-label">Board</span></a>
+    <span class="tab-bar-sep"></span>
+    <a class="tab-btn" href="#/agents" data-nav="agents" title="Agents — 코딩 에이전트와 API 키"><svg class="ico"><use href="#i-bot"/></svg><span class="tab-label">Agents</span></a>
+    <a class="tab-btn" href="#/projects" data-nav="projects" title="Projects — 프로젝트(저장소)"><svg class="ico"><use href="#i-folder-kanban"/></svg><span class="tab-label">Projects</span></a>
+    <span class="tab-bar-actions">
+      <select id="project-filter" title="프로젝트"></select>
+      <a href="#/new" class="button primary new-issue" title="New issue"><svg class="ico"><use href="#i-plus"/></svg><span class="hide-m">New issue</span></a>
+    </span>
+  </div></div>
   <main id="view"></main>
 </div>
 <div id="toast" class="toast" hidden></div>

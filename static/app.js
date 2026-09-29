@@ -105,28 +105,37 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   boot();
 });
 document.getElementById('logout').addEventListener('click', async () => {
+  setUserMenu(false);
   await fetch('/api/auth/logout', { method: 'POST', headers: { 'X-Requested-With': 'dev' } });
   showLogin();
 });
 
-// ---- 테마 — 자동(운영체제 설정) → 낮 → 밤 순서로 돈다. 처음 적용은 index.html의 인라인 스크립트 ----
-const THEMES = [['auto', '◐', 'Auto', '자동 — 운영체제 설정을 따라요'], ['light', '☀', 'Light', '낮 모드'], ['dark', '☾', 'Dark', '밤 모드']];
+// ---- 밤/낮 — nightshift와 같게 두 상태. 고른 적 없으면 운영체제 설정을 따라가고, 누르면 반대로 고정한다.
+// 처음 적용은 index.html의 인라인 스크립트(깜빡임 방지).
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+function savedTheme(){ const t = localStorage.getItem('dev.theme'); return t === 'light' || t === 'dark' ? t : null; }
+function effectiveTheme(){ return savedTheme() || (darkQuery.matches ? 'dark' : 'light'); }
 function paintTheme(){
-  const cur = localStorage.getItem('dev.theme') || 'auto';
-  const [, icon, label, title] = THEMES.find(t => t[0] === cur) || THEMES[0];
-  const btn = document.getElementById('theme');
-  btn.innerHTML = `${icon}<span class="hide-m">${label}</span>`;   // 좁은 화면에서는 기호만
-  btn.title = `${title} (누르면 바뀌어요)`;
-  if(cur === 'auto') delete document.documentElement.dataset.theme;
-  else document.documentElement.dataset.theme = cur;
+  const cur = effectiveTheme(), btn = document.getElementById('theme');
+  btn.innerHTML = `<svg class="ico"><use href="#i-${cur === 'dark' ? 'sun' : 'moon'}"/></svg>`;
+  btn.title = cur === 'dark' ? '낮 모드(밝은 화면)로 전환' : '밤 모드(어두운 화면)로 전환';
+  btn.dataset.current = cur;
+  if(savedTheme()) document.documentElement.dataset.theme = savedTheme();
+  else delete document.documentElement.dataset.theme;
 }
 document.getElementById('theme').addEventListener('click', () => {
-  const cur = localStorage.getItem('dev.theme') || 'auto';
-  const next = THEMES[(THEMES.findIndex(t => t[0] === cur) + 1) % THEMES.length][0];
-  if(next === 'auto') localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme', next);
+  localStorage.setItem('dev.theme', effectiveTheme() === 'dark' ? 'light' : 'dark');
   paintTheme();
 });
+darkQuery.addEventListener('change', paintTheme);   // 고른 적 없으면 운영체제를 따라 아이콘도 바뀐다
 paintTheme();
+
+// ---- 사용자 칩 → 메뉴(nightshift 열기·로그아웃) ----
+const userChip = document.getElementById('user-chip'), userMenu = document.getElementById('user-menu');
+function setUserMenu(open){ userMenu.hidden = !open; userChip.setAttribute('aria-expanded', String(open)); }
+userChip.addEventListener('click', (e) => { e.stopPropagation(); setUserMenu(userMenu.hidden); });
+document.addEventListener('click', (e) => { if(!userMenu.hidden && !userMenu.contains(e.target)) setUserMenu(false); });
+document.addEventListener('keydown', (e) => { if(e.key === 'Escape') setUserMenu(false); });
 
 // ---- 프로젝트 필터(모든 화면 공통, 브라우저에 기억) ----
 const projectSel = document.getElementById('project-filter');
@@ -430,6 +439,8 @@ async function boot(){
   const data = await res.json();
   if(!data.actor || data.actor.kind !== 'human'){ showLogin(data.reason); return; }
   me = data.actor;
+  document.getElementById('user-chip-name').textContent = me.name;
+  document.getElementById('open-nightshift').href = data.nightshift_url;
   document.getElementById('login').hidden = true;
   document.getElementById('shell').hidden = false;
   await Promise.all([loadProjects(), loadAgents()]);

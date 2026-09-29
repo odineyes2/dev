@@ -57,7 +57,7 @@ a:hover{ text-decoration:underline; text-underline-offset:3px; }
 ::selection{ background:rgba(var(--accent-rgb),0.2); }
 
 /* 틀 글자 — 모노·대문자·넓은 자간 */
-.top nav a, .panel h2, table.issues th, .field > span, .col h3, .form label, .ref, .chip, .prio, .brand-word, .when, .kicker{
+.panel h2, table.issues th, .field > span, .col h3, .form label, .ref, .chip, .prio, .brand-word, .when, .kicker{
   font-family:var(--mono);
 }
 .panel h2, table.issues th, .field > span, .col h3, .form label, .kicker{
@@ -92,20 +92,51 @@ input[type=checkbox]{ width:16px; height:16px; padding:0; accent-color:var(--acc
 .login-box p.dim{ text-align:center; margin:0 0 var(--sp-2); font-size:13px; }
 .login-box .primary{ justify-content:center; padding:10px; border-radius:999px; margin-top:var(--sp-1); }
 
-/* 머리글 */
-.top{ position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:var(--sp-4); padding:14px 28px;
-  background:color-mix(in srgb, var(--panel) 88%, transparent); backdrop-filter:saturate(1.4) blur(8px);
-  border-bottom:1px solid var(--border); flex-wrap:wrap; }
-.brand{ display:flex; align-items:center; gap:10px; color:var(--text); margin-right:var(--sp-3); }
+/* 헤더·전역 탭 — nightshift(01-base.css)와 같은 구성·스타일(DEV-4) */
+.ico{ width:1.2em; height:1.2em; flex:none; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; vertical-align:-0.22em; }
+.top{ position:relative; display:flex; align-items:center; justify-content:space-between; padding:18px 28px;
+  background:var(--panel); border-bottom:1px solid var(--border); }
+.brand{ display:flex; align-items:center; gap:12px; color:var(--text); }
 .brand:hover{ text-decoration:none; }
-.brand svg{ width:18px; height:18px; flex:none; }
-.ico{ width:15px; height:15px; flex:none; }
+.brand svg{ width:20px; height:20px; flex:none; }
 .brand-word{ font-size:13px; font-weight:600; letter-spacing:var(--track-brand); text-transform:uppercase; }
-.top nav{ display:flex; gap:var(--sp-1); flex:1; }
-.top nav a{ padding:6px 12px; border-radius:var(--r-sm); color:var(--dim); font-size:11.5px; font-weight:600;
-  text-transform:uppercase; letter-spacing:var(--track-nav); }
-.top nav a:hover{ color:var(--text); background:var(--panel-2); text-decoration:none; }
-.top nav a.active{ color:var(--text); background:var(--panel-2); }
+.header-right{ display:flex; align-items:center; gap:16px; }
+/* 사용자 칩·밤/낮 토글 — 필 모양, 모노 글자 */
+.user-chip, .theme-toggle-btn{ display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:20px;
+  border:1px solid var(--border); background:var(--panel); color:var(--dim); cursor:pointer;
+  font-family:var(--mono); font-size:11.5px; font-weight:600; transition:border-color .15s, color .15s, background .15s; }
+.user-chip:hover, .theme-toggle-btn:hover, .user-chip[aria-expanded="true"]{ border-color:var(--accent); color:var(--accent); background:var(--panel); }
+.user-chip{ max-width:180px; }
+.user-chip-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:110px; }
+.role-badge{ font-size:9.5px; text-transform:uppercase; letter-spacing:0.1em; padding:1px 5px; border-radius:4px;
+  background:rgba(var(--accent-rgb),0.12); color:var(--accent); }
+.user-menu{ position:absolute; right:28px; top:calc(100% - 6px); z-index:30; min-width:180px; padding:6px; display:flex; flex-direction:column;
+  background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); box-shadow:var(--shadow-pop); }
+.user-menu a, .user-menu button{ display:flex; align-items:center; gap:8px; padding:8px 10px; border:none; border-radius:var(--r-sm);
+  background:none; color:var(--text); font-size:13px; font-weight:400; cursor:pointer; text-align:left; }
+.user-menu a:hover, .user-menu button:hover{ background:var(--panel-2); text-decoration:none; }
+.user-menu .ico{ color:var(--dim); }
+/* 탭 줄 — 평소 아이콘만, 마우스를 올리면 제목이 펼쳐진다. 활성 탭은 파랑 밑줄. */
+.tab-bar{ background:var(--panel); border-bottom:1px solid var(--border); }
+.tab-bar-inner{ max-width:1320px; margin:0 auto; padding:0 28px; display:flex; align-items:center; gap:4px;
+  overflow-x:auto; scrollbar-width:none; }
+.tab-bar-inner::-webkit-scrollbar{ display:none; }
+.tab-btn{ display:inline-flex; align-items:center; padding:12px 10px; margin-bottom:-1px; border-bottom:2px solid transparent;
+  color:var(--dim); font-family:var(--mono); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:var(--track-nav);
+  white-space:nowrap; flex-shrink:0; }
+.tab-btn:hover{ color:var(--text); text-decoration:none; }
+.tab-btn.active{ color:var(--accent); border-bottom-color:var(--accent); }
+.tab-btn .ico{ width:17px; height:17px; vertical-align:0; }
+.tab-label{ display:inline-block; max-width:0; opacity:0; overflow:hidden; margin-left:0;
+  transition:max-width .28s ease, opacity .2s ease, margin-left .28s ease; }
+@media (hover:hover){
+  .tab-btn:hover .tab-label, .tab-btn:focus-visible .tab-label{ max-width:12em; opacity:1; margin-left:7px; }
+}
+@media (prefers-reduced-motion:reduce){ .tab-label{ transition:none; } }
+.tab-bar-sep{ width:1px; height:16px; background:var(--border); margin:0 8px; flex-shrink:0; }
+.tab-bar-actions{ margin-left:auto; display:flex; align-items:center; gap:8px; padding:6px 0 6px 12px; flex-shrink:0; }
+.tab-bar-actions select, .tab-bar-actions .button{ padding:5px 10px; font-size:13px; }
+.new-issue .ico{ width:15px; height:15px; }
 main{ padding:28px; max-width:1320px; margin:0 auto; }
 
 /* 목록 도구줄 */
@@ -163,7 +194,7 @@ table.issues tr.row:hover{ background:var(--panel-2); }
 .panel h2 .meta{ font-family:var(--sans); text-transform:none; letter-spacing:0; font-weight:400; font-size:12.5px; color:var(--dim); }
 .panel h2 .right{ margin-left:auto; display:flex; gap:6px; }
 .panel h2 .right button, .panel h2 .right .button{ font-family:var(--sans); text-transform:none; letter-spacing:0; font-size:12.5px; padding:5px 10px; color:var(--text); }
-.side{ position:sticky; top:84px; padding:var(--sp-2) var(--sp-5); }
+.side{ position:sticky; top:16px; padding:var(--sp-2) var(--sp-5); }
 .side .field{ padding:var(--sp-3) 0; border-bottom:1px solid var(--border); }
 .side .field:last-child{ border-bottom:none; }
 .side .field > span{ display:block; margin-bottom:6px; }
@@ -220,15 +251,17 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 @media (max-width: 800px){
   .detail{ grid-template-columns:1fr; }
   .side{ position:static; }
-  .top{ gap:var(--sp-2); padding:10px 14px; }
-  .top nav{ order:3; flex-basis:100%; overflow-x:auto; margin:0 -6px; }
-  .top nav a{ padding:6px 8px; }
-  .brand{ margin-right:auto; }
-  #project-filter{ max-width:32vw; padding:6px; }
-  .top .button, .top button{ padding:6px 9px; }
+  .top{ padding:14px 16px; }
+  .header-right{ gap:10px; }
+  .user-menu{ right:16px; }
+  .tab-bar-inner{ padding:0 12px; gap:2px; }
+  .tab-btn{ padding:12px 8px; }
+  .tab-bar-sep{ margin:0 4px; }
+  #project-filter{ max-width:30vw; }
   main{ padding:14px; }
-  table.issues .hide-m, .top .hide-m{ display:none; }
+  table.issues .hide-m, .tab-bar .hide-m{ display:none; }
   table.issues td, table.issues th{ padding:0 10px; }
+  .user-chip-name{ max-width:64px; } .user-chip .role-badge{ display:none; }
   .col{ flex-basis:82vw; }
   .panel{ padding:var(--sp-4); }
   .side{ padding:var(--sp-1) var(--sp-4); }

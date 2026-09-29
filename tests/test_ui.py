@@ -146,25 +146,47 @@ try:
         assert page.evaluate("document.documentElement.scrollWidth") <= 391
         page.screenshot(path=str(shots / "issue_mobile.png"), full_page=True)
 
-        # 테마 — 자동 → 낮 → 밤 → 자동, 새로고침해도 유지, 색이 실제로 바뀐다
+        # 밤/낮 — nightshift처럼 두 상태: 고른 적 없으면 운영체제를 따르고, 누르면 반대로 고정, 새로고침해도 유지
         bg = lambda: page.evaluate("getComputedStyle(document.body).backgroundColor")
         theme = lambda: page.evaluate("document.documentElement.dataset.theme || 'auto'")
+        icon = lambda: page.get_attribute("#theme use", "href")
+        page.set_viewport_size({"width": 1300, "height": 850})
+        page.evaluate("localStorage.removeItem('dev.theme')"); page.reload(); page.wait_for_selector("h1#title")
         page.emulate_media(color_scheme="light")
-        assert theme() == "auto" and "◐" in page.inner_text("#theme")
+        assert theme() == "auto" and icon() == "#i-moon"
         light_bg = bg()
-        page.click("#theme"); assert theme() == "light" and bg() == light_bg
-        page.click("#theme"); assert theme() == "dark" and bg() != light_bg and "☾" in page.inner_text("#theme")
-        dark_bg = bg()
+        page.emulate_media(color_scheme="dark")
+        page.wait_for_function("document.querySelector('#theme use').getAttribute('href') === '#i-sun'", timeout=3000)
+        assert theme() == "auto"   # 운영체제를 따라 아이콘도
+        dark_bg = bg(); assert dark_bg != light_bg
+        page.click("#theme"); assert theme() == "light" and bg() == light_bg and icon() == "#i-moon"   # 밤이던 화면을 낮으로 고정
         page.reload(); page.wait_for_selector("h1#title")
-        assert theme() == "dark" and bg() == dark_bg
-        page.click("#theme"); assert theme() == "auto" and bg() == light_bg
-        page.emulate_media(color_scheme="dark"); assert bg() == dark_bg   # 자동이면 운영체제 설정을 따른다
-        page.click("#theme"); assert theme() == "light" and bg() == light_bg   # 운영체제가 밤이어도 낮을 고르면 낮
-        page.screenshot(path=str(shots / "theme_light.png"))
-        page.click("#theme"); page.wait_for_timeout(400); page.screenshot(path=str(shots / "theme_dark.png"))
+        assert theme() == "light" and bg() == light_bg
+        page.click("#theme"); assert theme() == "dark" and bg() == dark_bg and icon() == "#i-sun"
+        page.emulate_media(color_scheme="light"); page.wait_for_timeout(400)
+        page.screenshot(path=str(shots / "theme_dark.png"))
+        page.click("#theme"); page.wait_for_timeout(400)
 
-        # 로그아웃
-        page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
+        # 헤더·탭 — 사용자 칩(이름·ADMIN), 탭 아이콘, 마우스를 올리면 제목이 펼쳐진다, 활성 탭 밑줄
+        assert page.inner_text("#user-chip-name") == "admin"
+        page.goto(BASE + "/#/"); page.wait_for_selector("tr.row")
+        assert page.get_attribute('[data-nav="issues"]', "class") == "tab-btn active"
+        label_w = lambda: page.evaluate("document.querySelector('[data-nav=board] .tab-label').getBoundingClientRect().width")
+        assert label_w() < 1
+        page.hover('[data-nav="board"]'); page.wait_for_timeout(400)
+        assert label_w() > 20
+        page.screenshot(path=str(shots / "header.png"), clip={"x": 0, "y": 0, "width": 1300, "height": 160})
+        # 사용자 칩 → 메뉴 → 바깥 누르면 닫힘
+        page.click("#user-chip"); assert page.is_visible("#user-menu")
+        assert page.get_attribute("#open-nightshift", "href").startswith("http")
+        page.screenshot(path=str(shots / "user_menu.png"), clip={"x": 900, "y": 0, "width": 400, "height": 200})
+        page.mouse.click(600, 500); assert not page.is_visible("#user-menu")
+        page.set_viewport_size({"width": 390, "height": 800}); page.wait_for_timeout(200)
+        page.screenshot(path=str(shots / "header_mobile.png"), clip={"x": 0, "y": 0, "width": 390, "height": 300})
+        assert page.evaluate("document.documentElement.scrollWidth") <= 391
+
+        # 로그아웃(사용자 메뉴 안)
+        page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert not errs, errs
     print("OK")
 finally:
