@@ -67,6 +67,17 @@ try:
         page.goto(BASE + "/#/projects")
         page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button")
         page.wait_for_selector("td.ref:text('NS')")
+        assert page.get_attribute("#p-path", "placeholder").startswith("C:\\Users\\")
+        # 고치기 — 키는 잠기고, 이름·경로가 바뀐다
+        page.click('[data-edit="NS"]')
+        assert page.is_disabled("#p-key") and page.input_value("#p-name") == "nightshift"
+        page.fill("#p-path", r"C:\Users\Simon Lomebrote\Projects\nightshift")
+        page.click("#project-form button[type=submit]")
+        page.wait_for_function("p => [...document.querySelectorAll('td')].some(td => td.textContent === p)",
+                               arg=r"C:\Users\Simon Lomebrote\Projects\nightshift")
+        assert not page.is_disabled("#p-key")   # 저장하면 추가 폼으로 돌아온다
+        page.click('[data-edit="NS"]'); page.click("#p-cancel")
+        assert page.input_value("#p-name") == ""
 
         page.click("text=New issue")
         page.fill("#n-title", "보드 카드 복사")

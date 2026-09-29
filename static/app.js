@@ -391,24 +391,33 @@ async function renderAgents(newKey){
 }
 
 // ---- 프로젝트 ----
-function renderProjects(){
+// 위 폼 하나로 추가와 고치기를 같이 한다 — 줄의 Edit을 누르면 그 프로젝트 값으로 채우고 키는 잠근다(이슈 번호의 앞머리라 못 바꾼다).
+function renderProjects(editKey){
+  const ed = projects.find(p => p.key === editKey);
   view.innerHTML = `
-    <form class="form panel" id="project-form" style="max-width:none"><div class="line">
-      <label style="flex:0 0 90px">Key<input id="p-key" required placeholder="NS" maxlength="10"></label>
-      <label>Name<input id="p-name" required placeholder="nightshift"></label>
-      <label>Repository<input id="p-repo" placeholder="https://github.com/…"></label>
-      <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…"></label>
-      <label style="flex:0;justify-content:flex-end"><button class="primary" type="submit">Add project</button></label></div></form>
-    ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th></tr></thead><tbody>
+    <form class="form panel" id="project-form" style="max-width:none">${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
+      <label style="flex:0 0 90px">Key<input id="p-key" required placeholder="NS" maxlength="10" value="${esc(ed ? ed.key : '')}"${ed ? ' disabled' : ''}></label>
+      <label>Name<input id="p-name" required placeholder="nightshift" value="${esc(ed ? ed.name : '')}"></label>
+      <label>Repository<input id="p-repo" placeholder="https://github.com/…" value="${esc(ed ? ed.repo_url : '')}"></label>
+      <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
+      <label style="flex:0;justify-content:flex-end;flex-direction:row;gap:6px">${ed ? '<button type="button" id="p-cancel">Cancel</button><button class="primary" type="submit">Save</button>'
+        : '<button class="primary" type="submit">Add project</button>'}</label></div></form>
+    ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>
-        <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td></tr>`).join('')}
+        <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
+        <td><button class="ghost" data-edit="${esc(p.key)}">Edit</button></td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">프로젝트가 없어요.</div>'}`;
+  const val = (s) => view.querySelector(s).value;
   view.querySelector('#project-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const $ = (s) => view.querySelector(s).value;
-    await api('POST', '/api/projects', { key: $('#p-key'), name: $('#p-name'), repo_url: $('#p-repo'), local_path: $('#p-path') });
+    const fields = { name: val('#p-name'), repo_url: val('#p-repo'), local_path: val('#p-path') };
+    if(ed) await api('PATCH', `/api/projects/${ed.key}`, fields);
+    else await api('POST', '/api/projects', { key: val('#p-key'), ...fields });
     await loadProjects(); renderProjects();
+    toast(ed ? '고쳤어요' : '만들었어요');
   });
+  if(ed){ view.querySelector('#p-cancel').addEventListener('click', () => renderProjects()); view.querySelector('#p-name').focus(); }
+  view.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { renderProjects(b.dataset.edit); window.scrollTo(0, 0); }));
   view.querySelectorAll('[data-archive]').forEach(cb => cb.addEventListener('change', async () => {
     await api('PATCH', `/api/projects/${cb.dataset.archive}`, { archived: cb.checked }).catch(() => {});
     await loadProjects(); renderProjects();
