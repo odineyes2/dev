@@ -31,3 +31,18 @@ npx pm2 start ecosystem.config.js
 ## 검사
 
 `python tests/test_*.py` — 각 파일이 임시 데이터 폴더로 스스로 돈다.
+
+## 에이전트 연결(MCP)
+
+화면의 **Agents**에서 에이전트를 만들면 API 키(`dev_…`)가 한 번 보인다. 그 키로:
+
+- Claude Code: `claude mcp add --transport http dev https://dev.lomebrote.com/mcp/ --header "Authorization: Bearer dev_…"`
+- Codex(`~/.codex/config.toml`):
+  ```toml
+  [mcp_servers.dev]
+  url = "https://dev.lomebrote.com/mcp/"
+  bearer_token_env_var = "DEV_AGENT_KEY"   # 환경변수에 키를 넣어 둔다
+  ```
+
+도구: `whoami`, `list_projects`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `claim_issue`, `release_issue`,
+`post_plan`, `set_status`, `add_comment`, `link_commit`. 같은 일을 REST(`/api/…`, `Authorization: Bearer`)로도 할 수 있다.

@@ -9,12 +9,14 @@ from fastapi.responses import JSONResponse, Response
 import auth
 import config
 import db
+from mcp_tools import mcp_app
 
 
 @asynccontextmanager
 async def lifespan(app):
     db.init()
-    yield
+    async with mcp_app.lifespan(app):   # MCP(streamable HTTP)의 세션 관리자도 같이 띄운다
+        yield
 
 
 app = FastAPI(title="dev", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -50,9 +52,18 @@ async def _resolve_actor(request: Request) -> tuple[dict | None, str]:
 async def authenticate(request: Request, call_next):
     path = request.url.path
     request.state.actor = None
+    bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
+    if path == "/mcp" or path.startswith("/mcp/"):
+        # MCP는 에이전트 키만 — 쿠키로는 받지 않는다(다른 사이트가 브라우저 쿠키로 도구를 부르지 못하게).
+        actor, _ = await _resolve_actor(request) if bearer else (None, "")
+        if actor is None:
+            return JSONResponse({"detail": "에이전트 키(Authorization: Bearer dev_…)가 필요해요."}, status_code=401)
+        request.state.actor = actor
+        if path == "/mcp":
+            request.scope["path"] = "/mcp/"   # 끝 슬래시 없이 등록한 클라이언트도 그대로 되게
+        return await call_next(request)
     if not path.startswith("/api/"):
         return await call_next(request)
-    bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
     # 쿠키로 들어오는 쓰기 요청은 우리 화면이 보낸 것만(CSRF) — 다른 사이트의 폼은 이 헤더를 못 붙인다.
     if request.method in UNSAFE and not bearer and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
         return JSONResponse({"detail": "요청 헤더가 맞지 않아요."}, status_code=403)
@@ -298,4 +309,5 @@ def api_release(ref: str, request: Request):
 # 화면 — API 라우트 뒤에 붙여야 /api가 가려지지 않는다(마운트는 반드시 마지막).
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
+app.mount("/mcp", mcp_app)
 app.mount("/", StaticFiles(directory=config.REPO_ROOT / "static", html=True), name="static")

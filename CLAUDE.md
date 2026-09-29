@@ -3,7 +3,8 @@
 짧게 유지할 것. 계획서: `~/.claude/plans/dev-board-phase1.md`.
 
 ## 파일 지도
-- `server/config.py` 환경변수 · `server/db.py` 스키마(마이그레이션은 MIGRATIONS 뒤에 덧붙이기만) · `server/app.py` FastAPI
+- `server/config.py` 환경변수 · `server/db.py` 스키마(마이그레이션은 MIGRATIONS 뒤에 덧붙이기만) · `server/app.py` FastAPI(인증 미들웨어·REST 라우트·/mcp·정적 파일 마운트)
+- `server/auth.py` nightshift 세션 확인·에이전트 키 · `server/issues.py` 이슈 저장소와 권한 판단(REST와 MCP가 같이 씀) · `server/mcp_tools.py` MCP 도구
 - `static/` 화면(빌드 없음) · `tests/` 검사(`python tests/test_x.py`, 임시 데이터 폴더)
 - `ecosystem.config.js` pm2 앱 `dev`(127.0.0.1:8300, Cloudflare 터널이 dev.lomebrote.com으로 연결)
 
