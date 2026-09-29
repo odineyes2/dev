@@ -203,3 +203,93 @@ def rotate_agent_key(agent_id: int, request: Request):
     if key is None:
         raise HTTPException(404, "없는 에이전트예요.")
     return {"key": key}
+
+
+# ---- 프로젝트·이슈 (권한 판단은 issues 모듈이 한다) ----
+import issues  # noqa: E402
+
+
+@app.exception_handler(issues.StoreError)
+async def _store_error(request: Request, e: issues.StoreError):
+    return JSONResponse({"detail": str(e)}, status_code=e.status)
+
+
+@app.get("/api/projects")
+def api_projects():
+    return {"projects": issues.list_projects()}
+
+
+@app.post("/api/projects")
+async def api_create_project(request: Request):
+    b = await json_body(request)
+    return issues.create_project(actor(request), b.get("key"), b.get("name"), b.get("repo_url", ""), b.get("local_path", ""))
+
+
+@app.patch("/api/projects/{key}")
+async def api_update_project(key: str, request: Request):
+    return issues.update_project(actor(request), key.upper(), await json_body(request))
+
+
+@app.get("/api/issues")
+def api_issues(project: str = "", status: str = "", assignee: int | None = None, parent: str = "", q: str = "", limit: int = 500):
+    return {"issues": issues.list_issues(project or None, status or None, assignee, parent or None, q or None, limit)}
+
+
+@app.post("/api/issues")
+async def api_create_issue(request: Request):
+    b = await json_body(request)
+    return issues.create_issue(actor(request), b.get("project"), b.get("title"), b.get("body", ""), b.get("priority", "none"),
+                               b.get("labels"), b.get("parent"), b.get("status", "backlog"))
+
+
+@app.get("/api/issues/{ref}")
+def api_issue(ref: str):
+    return issues.get_issue(ref)
+
+
+@app.patch("/api/issues/{ref}")
+async def api_update_issue(ref: str, request: Request):
+    return issues.update_issue(actor(request), ref, await json_body(request))
+
+
+@app.delete("/api/issues/{ref}", status_code=204)
+def api_delete_issue(ref: str, request: Request):
+    issues.delete_issue(actor(request), ref)
+
+
+@app.post("/api/issues/{ref}/status")
+async def api_set_status(ref: str, request: Request):
+    b = await json_body(request)
+    return issues.set_status(actor(request), ref, b.get("status"), b.get("note", ""))
+
+
+@app.get("/api/issues/{ref}/plans")
+def api_plans(ref: str):
+    return {"plans": issues.list_plans(ref)}
+
+
+@app.post("/api/issues/{ref}/plans")
+async def api_post_plan(ref: str, request: Request):
+    return issues.post_plan(actor(request), ref, (await json_body(request)).get("body"))
+
+
+@app.post("/api/issues/{ref}/comments")
+async def api_comment(ref: str, request: Request):
+    return issues.add_comment(actor(request), ref, (await json_body(request)).get("body"))
+
+
+@app.post("/api/issues/{ref}/commits")
+async def api_commit(ref: str, request: Request):
+    b = await json_body(request)
+    return issues.link_commit(actor(request), ref, b.get("sha"), b.get("repo", ""), b.get("message", ""))
+
+
+@app.post("/api/issues/{ref}/claim")
+async def api_claim(ref: str, request: Request):
+    b = await json_body(request) if await request.body() else {}
+    return issues.claim(actor(request), ref, b.get("minutes", 30))
+
+
+@app.post("/api/issues/{ref}/release")
+def api_release(ref: str, request: Request):
+    return issues.release(actor(request), ref)
