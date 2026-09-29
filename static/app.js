@@ -291,7 +291,13 @@ async function renderIssue(ref){
     if(status === 'done' || status === 'closed'){ toast(`${it.ref}을(를) 끝냈어요`); location.hash = '#/'; }
     else reload();
   };
-  $('status').addEventListener('change', (e) => setStatus(e.target.value));
+  $('status').addEventListener('change', (e) => {
+    if(e.target.value !== 'closed'){ setStatus(e.target.value); return; }
+    // Closed는 "안 하기로 함" — 왜 닫는지 남긴다(DEV-6). 취소하거나 비우면 닫지 않는다.
+    const reason = (prompt('닫는 이유를 적어 주세요 (예: NS-3과 중복, 필요 없어짐)') || '').trim();
+    if(!reason){ e.target.value = it.status; toast('사유가 없어서 닫지 않았어요'); return; }
+    setStatus('closed', reason);
+  });
   $('priority').addEventListener('change', async (e) => { await api('PATCH', `/api/issues/${R}`, { priority: e.target.value }).catch(() => {}); reload(); });
   $('assignee').addEventListener('change', async (e) => { await api('PATCH', `/api/issues/${R}`, { assignee_agent_id: e.target.value ? Number(e.target.value) : null }).catch(() => {}); reload(); });
   $('labels').addEventListener('change', async (e) => {

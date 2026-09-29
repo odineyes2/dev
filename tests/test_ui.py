@@ -53,7 +53,11 @@ try:
         page = p.chromium.launch().new_page(viewport={"width": 1300, "height": 850})
         errs = []
         page.on("pageerror", lambda e: errs.append(str(e)))
-        page.on("dialog", lambda d: d.accept("모바일도 확인해 주세요") if d.type == "prompt" else d.accept())
+        answers = []   # 입력창(prompt)에 줄 답 — 비었으면 기본값. None이면 취소.
+        def on_dialog(d):
+            a = answers.pop(0) if answers else "모바일도 확인해 주세요"
+            d.dismiss() if a is None else d.accept(a) if d.type == "prompt" else d.accept()
+        page.on("dialog", on_dialog)
         page.goto(BASE)
         page.wait_for_selector("#login-form")
         page.fill("#login-username", "admin"); page.fill("#login-password", "nope"); page.click("#login-form button")
@@ -195,8 +199,19 @@ try:
         page.wait_for_selector("tr.row")
         assert "NS-2" not in page.inner_text("table.issues")   # 기본 목록은 끝난 것을 숨긴다
         page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("#status")
+        # Closed는 사유를 묻는다(DEV-6) — 취소·빈칸이면 닫지 않고 원래 상태로
+        answers[:] = [None]
+        page.select_option("#status", "closed"); page.wait_for_timeout(300)
+        assert page.input_value("#status") == "changes_requested" and "사유가 없어서" in page.inner_text("#toast")
+        answers[:] = ["   "]
+        page.select_option("#status", "closed"); page.wait_for_timeout(300)
+        assert page.input_value("#status") == "changes_requested"
+        assert page.request.get(f"{BASE}/api/issues/NS-1").json()["status"] == "changes_requested"
+        answers[:] = ["NS-3과 중복"]
         page.select_option("#status", "closed")
         page.wait_for_function("location.hash === '#/'")
+        ev = page.request.get(f"{BASE}/api/issues/NS-1").json()["events"][-1]
+        assert ev["kind"] == "status" and ev["data"]["to"] == "closed" and ev["body"] == "NS-3과 중복", ev
         page.goto(BASE + "/#/issue/NS-2"); page.wait_for_selector("#status")
         page.select_option("#status", "in_progress")   # 끝내는 게 아니면 그 자리에 머문다
         page.wait_for_function("document.getElementById('status') && document.getElementById('status').value === 'in_progress'")
