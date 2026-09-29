@@ -237,6 +237,13 @@ try:
         page.fill("#q", "")
         page.wait_for_function("document.querySelectorAll('tr.row').length === 50")
 
+        # 제목 없이 본문만(DEV-8) — 만들어지고 "(제목 없음…)"으로 보인다
+        page.goto(BASE + "/#/new"); page.wait_for_selector("#n-body")
+        page.fill("#n-body", "제목 없이 쓴 요구")
+        page.click("#new-form button[type=submit]")
+        page.wait_for_function("location.hash.startsWith('#/issue/NS-')")
+        assert "제목 없음" in page.inner_text("h1#title")
+
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert not errs, errs

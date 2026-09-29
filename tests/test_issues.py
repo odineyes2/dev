@@ -123,6 +123,20 @@ with TestClient(A.app) as c:
     assert len(seen) == len(set(seen)) == 121
     assert ok(a("GET", "/api/issues?project=DEV&limit=50&offset=500"))["issues"] == []
 
+    # 제목 없는 이슈(DEV-8) — 본문만 있으면 만들어지고, 에이전트는 제목만 채울 수 있다(본문은 여전히 못 고침)
+    assert human("POST", "/api/issues", json={"project": "DEV", "title": "", "body": ""}).status_code == 400
+    nt = ok(human("POST", "/api/issues", json={"project": "DEV", "title": "", "body": "밤모드 버튼이 안 먹어요"}))
+    dot = ok(human("POST", "/api/issues", json={"project": "DEV", "title": ".", "body": "로그인 화면 문구 고치기"}))
+    assert nt["title_missing"] and dot["title_missing"] and not ok(a("GET", "/api/issues/DEV-1"))["title_missing"]
+    assert a("PATCH", f"/api/issues/{nt['ref']}", json={"body": "바꿔치기"}).status_code == 403
+    assert a("PATCH", f"/api/issues/{nt['ref']}", json={"title": "..."}).status_code == 400   # 글자 없는 제목은 안 됨
+    r = ok(a("PATCH", f"/api/issues/{dot['ref']}", json={"title": "로그인 화면 문구 고치기"}))
+    assert r["title"] == "로그인 화면 문구 고치기" and not r["title_missing"]
+    assert a("PATCH", f"/api/issues/{dot['ref']}", json={"title": "또 바꾸기"}).status_code == 403   # 채운 뒤엔 다시 사람 것
+    ev = ok(a("GET", f"/api/issues/{dot['ref']}"))["events"][-1]
+    assert ev["kind"] == "edit" and ev["data"]["fields"] == ["title"] and ev["actor"].startswith("agent:")
+    ok(human("PATCH", f"/api/issues/{nt['ref']}", json={"body": "사람은 본문을 고칠 수 있다"}))   # 제목 없이 본문만
+
     # 쓰기 요청의 형식 오류
     assert c.post("/api/issues", content=b"not json", headers={**H, "content-type": "application/json"}).status_code == 400
 print("OK")

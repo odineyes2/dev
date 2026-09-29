@@ -128,9 +128,15 @@ def _lease_active(row, now=None) -> bool:
     return bool(row["claimed_by"] and row["lease_until"] and datetime.fromisoformat(row["lease_until"]) > (now or _now()))
 
 
+def title_missing(title) -> bool:
+    """제목이 비었거나 글자·숫자가 하나도 없으면(예: ".") 없는 것으로 본다 — 에이전트가 본문을 보고 채운다(DEV-8)."""
+    return not re.search(r"\w", title or "")
+
+
 def _issue_dict(r) -> dict:
     d = dict(r)
     d["ref"] = f"{d['project_key']}-{d['number']}"
+    d["title_missing"] = title_missing(d["title"])
     d["labels"] = json.loads(d.pop("labels_json") or "[]")
     if not _lease_active(r):
         d["claimed_by"] = None
@@ -216,8 +222,11 @@ def get_issue(ref) -> dict:
 
 
 def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog") -> dict:
-    title = _text(title, "제목", 300, required=True).strip()
+    # 제목은 비워도 된다 — 본문만 쓰면 이슈를 처리하는 에이전트가 제목을 지어 채운다(DEV-8). 둘 다 비면 안 된다.
+    title = _text(title, "제목", 300).strip()
     body = _text(body, "본문")
+    if title_missing(title) and not body.strip():
+        raise StoreError("제목이나 본문 중 하나는 적어 주세요.")
     status = str(status or "backlog")
     if status not in ("backlog", "triage"):
         raise StoreError("새 이슈는 backlog나 triage로만 만들어요.")
@@ -247,10 +256,14 @@ def update_issue(actor, ref, fields: dict) -> dict:
         own = row["reporter"] == actor_label(actor)
         sets, changed = {}, []
         if "title" in fields or "body" in fields:
-            if not _is_human(actor) and not own:
+            # 예외: 제목이 없는 이슈(DEV-8)는 에이전트가 제목만 채울 수 있다 — 본문(지시)은 여전히 못 고친다.
+            filling_title = "body" not in fields and title_missing(row["title"])
+            if not _is_human(actor) and not own and not filling_title:
                 raise _forbidden("사람이 쓴 이슈의 제목·본문은 에이전트가 고칠 수 없어요 — 댓글로 남겨 주세요.")
             if "title" in fields:
                 sets["title"] = _text(fields["title"], "제목", 300, required=True).strip()
+                if title_missing(sets["title"]):
+                    raise StoreError("제목에 글자가 있어야 해요.")
             if "body" in fields:
                 sets["body"] = _text(fields["body"], "본문")
         if "priority" in fields:

@@ -39,6 +39,7 @@ function fmtTime(iso){
   if(diff < 86400 * 7) return `${Math.floor(diff / 86400)}일 전`;
   return d.toLocaleDateString();
 }
+function titleHtml(i){ return i.title_missing ? '<span class="dim">(제목 없음 — 에이전트가 지어요)</span>' : esc(i.title); }
 function statusHtml(s){ return `<span class="status" style="--sc:var(--s-${esc(s)})">${esc(STATUS_LABEL[s] || s)}</span>`; }
 function prioHtml(p){ return p && p !== 'none' ? `<span class="prio ${esc(p)}">${esc(p)}</span>` : ''; }
 function labelsHtml(ls){ return (ls || []).map(l => `<span class="label">${esc(l)}</span>`).join(''); }
@@ -179,7 +180,7 @@ const LIST_PAGE = 50;
 let listLoad = null;   // { seq, qs, offset, done, busy, seen }
 function issueRowHtml(i){
   return `<tr class="row" data-ref="${esc(i.ref)}"><td class="ref">${esc(i.ref)}</td>
-    <td class="title-cell">${esc(i.title)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
+    <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
     <td>${statusHtml(i.status)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
     <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td></tr>`;
 }
@@ -250,7 +251,7 @@ async function renderBoard(){
     const mine = items.filter(i => i.status === s);
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
-        <div class="t">${esc(i.title)}</div><div class="meta">${prioHtml(i.priority)}${labelsHtml(i.labels)}
+        <div class="t">${titleHtml(i)}</div><div class="meta">${prioHtml(i.priority)}${labelsHtml(i.labels)}
         ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div></div>`).join('')}
     </div></div>`;
   }).join('')}</div>`;
@@ -293,7 +294,7 @@ async function renderIssue(ref){
     <div class="detail">
       <div>
         <div class="ref">${esc(it.ref)}${it.parent_ref ? ` · Task of <a href="#/issue/${esc(it.parent_ref)}">${esc(it.parent_ref)}</a>` : ''}</div>
-        <h1 id="title">${esc(it.title)}</h1>
+        <h1 id="title">${titleHtml(it)}</h1>
         <div class="byline">${actorHtml(it.reporter)}<span>·</span><span>${fmtTime(it.created_at)}</span>${labelsHtml(it.labels)}</div>
         <div class="panel"><h2>Description<span class="right"><button id="edit-body">Edit</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
@@ -302,7 +303,7 @@ async function renderIssue(ref){
           <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div></div>
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Add task</a></span></h2>
           ${it.children.length ? `<table class="issues">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
-            <td>${esc(ch.title)}</td><td>${statusHtml(ch.status)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
+            <td>${titleHtml(ch)}</td><td>${statusHtml(ch.status)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">Comment</button></div></div></div>
@@ -362,7 +363,7 @@ async function renderIssue(ref){
     await api('POST', `/api/issues/${R}/comments`, { body }); reload();
   });
   $('edit-body').addEventListener('click', () => editInPlace($('body'), it.body, async (v, title) => {
-    await api('PATCH', `/api/issues/${R}`, { body: v, title }); reload();
+    await api('PATCH', `/api/issues/${R}`, title.trim() ? { body: v, title } : { body: v }); reload();   // 제목을 비워 두면 그대로(에이전트가 지음)
   }, it.title));
   $('edit-plan').addEventListener('click', () => editInPlace($('plan'), it.plan ? it.plan.body : '', async (v) => {
     await api('POST', `/api/issues/${R}/plans`, { body: v }); reload();
@@ -394,7 +395,7 @@ function renderNew(params){
       `<option value="${esc(p.key)}"${p.key === proj ? ' selected' : ''}>${esc(p.key)} · ${esc(p.name)}</option>`).join('')}</select></label>
       <label>Priority<select id="n-priority">${PRIORITIES.map(p => `<option${p === 'none' ? ' selected' : ''}>${p}</option>`).join('')}</select></label>
       <label>Status<select id="n-status"><option>backlog</option><option>triage</option></select></label></div>
-    <label>Title<input id="n-title" required maxlength="300"></label>
+    <label>Title<input id="n-title" maxlength="300" placeholder="비워 두면 이슈를 맡은 에이전트가 본문을 보고 지어요"></label>
     <label>Description (마크다운)<textarea id="n-body" style="min-height:260px"></textarea></label>
     <label>Labels (쉼표로)<input id="n-labels"></label>
     <div class="row-end"><a class="button" href="#/">Cancel</a><button class="primary" type="submit">Create</button></div>
