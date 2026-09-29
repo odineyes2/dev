@@ -168,8 +168,8 @@ def _priority(value) -> str:
     return v
 
 
-def list_issues(project=None, status=None, assignee=None, parent=None, q=None, limit=500) -> list[dict]:
-    """status: 목록 또는 쉼표 문자열. parent: 이슈 ref(그 하위만) 또는 "none"(최상위만)."""
+def list_issues(project=None, status=None, assignee=None, parent=None, q=None, limit=500, offset=0) -> list[dict]:
+    """status: 목록 또는 쉼표 문자열. parent: 이슈 ref(그 하위만) 또는 "none"(최상위만). offset부터 limit개(나눠 읽기)."""
     where, args = [], []
     if project:
         where.append("p.key=?"); args.append(str(project).upper())
@@ -188,8 +188,8 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
             where.append("i.parent_id=?"); args.append(_find(c, parent)["id"])
         if q:
             where.append("(i.title LIKE ? OR i.body LIKE ?)"); args += [f"%{q}%"] * 2
-        sql = _ISSUE_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY i.updated_at DESC, i.id DESC LIMIT ?"
-        rows = c.execute(sql, (*args, max(1, min(int(limit), 2000)))).fetchall()
+        sql = _ISSUE_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?"
+        rows = c.execute(sql, (*args, max(1, min(int(limit), 2001)), max(0, int(offset)))).fetchall()
     out = []
     for r in rows:
         d = _issue_dict(r)

@@ -109,6 +109,20 @@ with TestClient(A.app) as c:
     assert ok(a("GET", "/api/issues/NS-3"))["parent_ref"] is None
     assert ok(human("POST", "/api/issues", json={"project": "NS", "title": "번호는 재사용 안 함"}))["ref"] == "NS-4"
 
+    # 나눠 읽기(DEV-7) — offset·limit, has_more, 겹치거나 빠지는 것 없이
+    for n in range(120):
+        ok(human("POST", "/api/issues", json={"project": "DEV", "title": f"page {n}"}))
+    seen, off, pages = [], 0, []
+    while True:
+        r = ok(a("GET", f"/api/issues?project=DEV&limit=50&offset={off}"))
+        pages.append((len(r["issues"]), r["has_more"]))
+        seen += [i["ref"] for i in r["issues"]]; off += len(r["issues"])
+        if not r["has_more"]:
+            break
+    assert pages == [(50, True), (50, True), (21, False)], pages   # DEV-1 + page 0~119
+    assert len(seen) == len(set(seen)) == 121
+    assert ok(a("GET", "/api/issues?project=DEV&limit=50&offset=500"))["issues"] == []
+
     # 쓰기 요청의 형식 오류
     assert c.post("/api/issues", content=b"not json", headers={**H, "content-type": "application/json"}).status_code == 400
 print("OK")

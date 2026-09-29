@@ -173,33 +173,73 @@ window.addEventListener('hashchange', route);
 
 // ---- 목록 ----
 function listState(){ return JSON.parse(localStorage.getItem('dev.list') || '{"statuses":[],"closed":false,"q":""}'); }
+// 목록은 LIST_PAGE개씩 — 끝(#list-more)이 보이면 다음 묶음을 붙인다(DEV-7). 도구줄은 한 번만 그리고
+// 필터·검색이 바뀌면 결과 칸만 처음부터 다시 받는다(검색 글칸의 포커스가 유지되게).
+const LIST_PAGE = 50;
+let listLoad = null;   // { seq, qs, offset, done, busy, seen }
+function issueRowHtml(i){
+  return `<tr class="row" data-ref="${esc(i.ref)}"><td class="ref">${esc(i.ref)}</td>
+    <td class="title-cell">${esc(i.title)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
+    <td>${statusHtml(i.status)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
+    <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td></tr>`;
+}
 async function renderList(){
   const st = listState();
-  const statuses = st.statuses.length ? st.statuses : (st.closed ? [] : OPEN_STATUSES);
-  const qs = new URLSearchParams({ project: currentProject(), status: statuses.join(','), q: st.q });
-  const items = (await api('GET', '/api/issues?' + qs)).issues;
   view.innerHTML = `
     <div class="toolbar">
       <input class="grow" id="q" placeholder="제목·본문 검색" value="${esc(st.q)}">
       <div class="chips">${STATUSES.map(s => `<span class="chip${st.statuses.includes(s) ? ' on' : ''}" data-st="${s}">${STATUS_LABEL[s]}</span>`).join('')}</div>
       <label class="dim"><input type="checkbox" id="show-closed" ${st.closed ? 'checked' : ''}> 끝난 것도</label>
     </div>
-    ${items.length ? `<table class="issues"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th class="hide-m">Priority</th>
-      <th class="hide-m">Claimed</th><th class="hide-m">Updated</th></tr></thead><tbody>
-      ${items.map(i => `<tr class="row" data-ref="${esc(i.ref)}"><td class="ref">${esc(i.ref)}</td>
-        <td class="title-cell">${esc(i.title)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
-        <td>${statusHtml(i.status)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
-        <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td></tr>`).join('')}
-      </tbody></table>` : '<div class="empty">이슈가 없어요.</div>'}`;
-  const save = (patch) => { localStorage.setItem('dev.list', JSON.stringify({ ...listState(), ...patch })); renderList(); };
+    <div id="list-body"></div><div id="list-more" class="list-more"></div>`;
+  const save = (patch) => { localStorage.setItem('dev.list', JSON.stringify({ ...listState(), ...patch })); loadList(); };
   let t;
   view.querySelector('#q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => save({ q: e.target.value }), 300); });
   view.querySelectorAll('[data-st]').forEach(ch => ch.addEventListener('click', () => {
     const s = ch.dataset.st, cur = listState().statuses;
+    ch.classList.toggle('on', !cur.includes(s));
     save({ statuses: cur.includes(s) ? cur.filter(x => x !== s) : [...cur, s] });
   }));
   view.querySelector('#show-closed').addEventListener('change', (e) => save({ closed: e.target.checked }));
-  view.querySelectorAll('tr.row').forEach(r => r.addEventListener('click', () => { location.hash = `#/issue/${r.dataset.ref}`; }));
+  view.querySelector('#list-body').addEventListener('click', (e) => {
+    const r = e.target.closest('tr.row');
+    if(r) location.hash = `#/issue/${r.dataset.ref}`;
+  });
+  new IntersectionObserver((entries) => { if(entries.some(en => en.isIntersecting)) loadMoreIssues(); }, { rootMargin: '400px' })
+    .observe(view.querySelector('#list-more'));
+  await loadList();
+}
+async function loadList(){
+  const st = listState();
+  const statuses = st.statuses.length ? st.statuses : (st.closed ? [] : OPEN_STATUSES);
+  listLoad = { qs: { project: currentProject(), status: statuses.join(','), q: st.q }, offset: 0, done: false, busy: false, seen: new Set() };
+  view.querySelector('#list-body').innerHTML = '';
+  await loadMoreIssues();
+}
+async function loadMoreIssues(){
+  const L = listLoad, body = view.querySelector('#list-body'), more = view.querySelector('#list-more');
+  if(!L || L.done || L.busy || !body) return;
+  L.busy = true;
+  more.textContent = L.offset ? '더 불러오는 중…' : '';
+  let data;
+  try{ data = await api('GET', '/api/issues?' + new URLSearchParams({ ...L.qs, limit: LIST_PAGE, offset: L.offset })); }
+  catch(e){ L.busy = false; more.textContent = ''; return; }
+  if(L !== listLoad) return;   // 그 사이 필터가 바뀌었다
+  // 고친 순 정렬이라 사이에 바뀐 이슈가 두 번 올 수 있다 — 이미 그린 것은 건너뛴다.
+  const items = data.issues.filter(i => !L.seen.has(i.ref));
+  items.forEach(i => L.seen.add(i.ref));
+  L.offset += data.issues.length;
+  L.done = !data.has_more;   // 예전 서버(has_more 없음)면 한 번으로 끝
+  L.busy = false;
+  if(!body.querySelector('table, .empty')){
+    body.innerHTML = items.length ? `<table class="issues"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th class="hide-m">Priority</th>
+      <th class="hide-m">Claimed</th><th class="hide-m">Updated</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
+  }
+  const tbody = body.querySelector('tbody');
+  if(tbody) tbody.insertAdjacentHTML('beforeend', items.map(issueRowHtml).join(''));
+  more.textContent = '';
+  // 한 화면이 다 안 찼으면 바로 다음 묶음
+  if(!L.done && more.getBoundingClientRect().top < window.innerHeight + 400) loadMoreIssues();
 }
 
 // ---- 칸반 ----

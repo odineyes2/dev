@@ -217,6 +217,26 @@ try:
         page.wait_for_function("document.getElementById('status') && document.getElementById('status').value === 'in_progress'")
         assert page.evaluate("location.hash") == "#/issue/NS-2"
 
+        # 목록 나눠 읽기(DEV-7) — 처음 50개, 끝까지 내리면 더 붙는다
+        for n in range(110):
+            page.request.post(f"{BASE}/api/issues", data={"project": "NS", "title": f"많은 이슈 {n}"}, headers={"X-Requested-With": "dev"})
+        page.goto(BASE + "/#/"); page.wait_for_selector("tr.row")
+        rows = lambda: page.locator("tr.row").count()
+        page.wait_for_timeout(500)
+        assert rows() == 50, rows()
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_function("document.querySelectorAll('tr.row').length === 100")
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_function("document.querySelectorAll('tr.row').length === 111")   # NS-2(in_progress) + 110
+        refs = page.evaluate("[...document.querySelectorAll('tr.row')].map(r => r.dataset.ref)")
+        assert len(refs) == len(set(refs))
+        # 검색하면 처음부터, 검색 글칸 포커스 유지
+        page.fill("#q", "많은 이슈 10")
+        page.wait_for_function("document.querySelectorAll('tr.row').length === 11")   # 10, 100~109
+        assert page.evaluate("document.activeElement.id") == "q"
+        page.fill("#q", "")
+        page.wait_for_function("document.querySelectorAll('tr.row').length === 50")
+
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert not errs, errs

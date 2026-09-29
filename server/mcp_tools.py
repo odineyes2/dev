@@ -58,11 +58,12 @@ def list_projects() -> list[dict]:
 
 @mcp.tool
 def list_issues(project: str | None = None, status: str | None = None, parent: str | None = None,
-                q: str | None = None, limit: int = 100) -> list[dict]:
+                q: str | None = None, limit: int = 100, offset: int = 0) -> list[dict]:
     """이슈 목록(본문 제외, 최근 고친 순). status는 쉼표로 여러 개(backlog,triage,in_progress,in_review,
-    changes_requested,on_hold,done,closed). parent="NS-1"이면 그 하위 Task만, "none"이면 최상위만."""
+    changes_requested,on_hold,done,closed). parent="NS-1"이면 그 하위 Task만, "none"이면 최상위만.
+    많으면 offset을 늘려 가며 나눠 읽는다(limit개보다 적게 오면 끝)."""
     _actor()
-    return _call(issues.list_issues, project, status, None, parent, q, limit)
+    return _call(issues.list_issues, project, status, None, parent, q, limit, offset)
 
 
 @mcp.tool

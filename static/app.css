@@ -168,6 +168,7 @@ table.issues tr.row{ cursor:pointer; transition:background .1s; }
 table.issues tr.row:hover{ background:var(--panel-2); }
 .title-cell{ font-weight:500; }
 .title-cell .sub{ font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:var(--track-label); color:var(--faint); font-weight:500; }
+.list-more{ min-height:1px; padding:14px; text-align:center; color:var(--dim); font-size:13px; }
 .empty{ padding:64px var(--sp-4); text-align:center; color:var(--dim); background:var(--panel); border:1px dashed var(--border); border-radius:var(--r-md); }
 
 /* 칸반 */
