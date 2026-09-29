@@ -293,3 +293,9 @@ async def api_claim(ref: str, request: Request):
 @app.post("/api/issues/{ref}/release")
 def api_release(ref: str, request: Request):
     return issues.release(actor(request), ref)
+
+
+# 화면 — API 라우트 뒤에 붙여야 /api가 가려지지 않는다(마운트는 반드시 마지막).
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+app.mount("/", StaticFiles(directory=config.REPO_ROOT / "static", html=True), name="static")

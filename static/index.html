@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>dev</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-box">
+    <h1>dev</h1>
+    <p class="dim">nightshift 관리자 계정으로 로그인해요.</p>
+    <input id="login-username" autocomplete="username" placeholder="아이디" required>
+    <input id="login-password" type="password" autocomplete="current-password" placeholder="비밀번호" required>
+    <button type="submit" class="primary">로그인</button>
+    <p id="login-error" class="error"></p>
+  </form>
+</div>
+
+<div id="shell" hidden>
+  <header class="top">
+    <a href="#/" class="brand">dev</a>
+    <nav>
+      <a href="#/" data-nav="issues">Issues</a>
+      <a href="#/board" data-nav="board">Board</a>
+      <a href="#/agents" data-nav="agents">Agents</a>
+      <a href="#/projects" data-nav="projects">Projects</a>
+    </nav>
+    <select id="project-filter" title="프로젝트"></select>
+    <a href="#/new" class="button primary">New issue</a>
+    <button id="logout" class="ghost">Log out</button>
+  </header>
+  <main id="view"></main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>
