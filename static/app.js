@@ -49,7 +49,7 @@ function actorName(a){
   return ag ? ag.name : a;
 }
 function actorHtml(a, model){
-  const m = model ? ` <span class="dim">(${esc(model)})</span>` : '';
+  const m = model ? `<span class="model">${esc(model)}</span>` : '';
   return `<span class="who">${esc(actorName(a))}</span>${m}`;
 }
 
@@ -199,7 +199,7 @@ async function renderBoard(){
   const items = (await api('GET', '/api/issues?' + new URLSearchParams({ project: currentProject(), status: cols.join(',') }))).issues;
   view.innerHTML = `<div class="kanban">${cols.map(s => {
     const mine = items.filter(i => i.status === s);
-    return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="dim">${mine.length}</span></h3><div class="cards">
+    return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
         <div class="t">${esc(i.title)}</div><div class="meta">${prioHtml(i.priority)}${labelsHtml(i.labels)}
         ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div></div>`).join('')}
@@ -226,7 +226,7 @@ function eventHtml(e){
   const when = `<span class="when" title="${esc(e.created_at)}">${fmtTime(e.created_at)}</span>`;
   const d = e.data || {};
   let what;
-  if(e.kind === 'comment') return `<li>${who}${when}${md(e.body)}</li>`;
+  if(e.kind === 'comment') return `<li class="comment">${who}${when}${md(e.body)}</li>`;
   if(e.kind === 'status') what = `상태 ${statusHtml(d.from)} → ${statusHtml(d.to)}`;
   else if(e.kind === 'plan') what = `Plan v${esc(d.version)}을(를) 올렸어요`;
   else if(e.kind === 'commit') what = `커밋 <code>${esc(String(d.sha).slice(0, 7))}</code>${d.repo ? ` (${esc(d.repo)})` : ''} ${esc(e.body)}`;
@@ -245,16 +245,16 @@ async function renderIssue(ref){
       <div>
         <div class="ref">${esc(it.ref)}${it.parent_ref ? ` · Task of <a href="#/issue/${esc(it.parent_ref)}">${esc(it.parent_ref)}</a>` : ''}</div>
         <h1 id="title">${esc(it.title)}</h1>
-        <div class="dim" style="margin-bottom:12px">${actorHtml(it.reporter)} · ${fmtTime(it.created_at)} ${labelsHtml(it.labels)}</div>
+        <div class="byline">${actorHtml(it.reporter)}<span>·</span><span>${fmtTime(it.created_at)}</span>${labelsHtml(it.labels)}</div>
         <div class="panel"><h2>Description<span class="right"><button id="edit-body">Edit</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
-        <div class="panel"><h2>Plan${it.plan ? ` <span class="dim">v${it.plan.version} · ${actorHtml(it.plan.author)} · ${fmtTime(it.plan.created_at)}</span>` : ''}
+        <div class="panel"><h2>Plan${it.plan ? ` <span class="meta">v${it.plan.version} · ${esc(actorName(it.plan.author))} · ${fmtTime(it.plan.created_at)}</span>` : ''}
           <span class="right">${it.plan && it.plan.version > 1 ? '<button id="plan-history">History</button>' : ''}<button id="edit-plan">${it.plan ? 'Revise' : 'Write'}</button></span></h2>
           <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div></div>
-        <div class="panel"><h2>Tasks <span class="dim">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Add task</a></span></h2>
+        <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Add task</a></span></h2>
           ${it.children.length ? `<table class="issues">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${esc(ch.title)}</td><td>${statusHtml(ch.status)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
-        <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim">아직 활동이 없어요.</li>'}</ul>
+        <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">Comment</button></div></div></div>
       </div>
@@ -355,11 +355,11 @@ async function renderAgents(newKey){
   view.innerHTML = `
     ${newKey ? `<div class="keybox"><b>${esc(newKey.name)}</b>의 API 키예요. 지금 한 번만 보여 드려요 — 에이전트 설정에 넣어 주세요.<br>
       <code id="key">${esc(newKey.key)}</code> <button id="copy-key">복사</button></div>` : ''}
-    <form class="form panel" id="agent-form" style="max-width:none"><div class="line">
+    <form class="form panel" id="agent-form"><div class="line">
       <label>Name<input id="a-name" required placeholder="claude-main"></label>
       <label>Vendor<input id="a-vendor" placeholder="anthropic / openai"></label>
       <label>Model<input id="a-model" placeholder="claude-opus-5-5"></label>
-      <label style="flex:0;justify-content:flex-end"><button class="primary" type="submit">Add agent</button></label></div></form>
+      <label class="actions"><button class="primary" type="submit">Add agent</button></label></div></form>
     ${list.length ? `<table class="issues"><thead><tr><th>Name</th><th>Model</th><th class="hide-m">Key</th><th class="hide-m">Last seen</th><th>Enabled</th><th></th></tr></thead><tbody>
       ${list.map(a => `<tr><td>${esc(a.name)} <span class="dim">${esc(a.vendor)}</span></td><td>${esc(a.model)}</td>
         <td class="hide-m ref">${esc(a.key_prefix)}…</td><td class="hide-m dim">${a.last_seen_at ? fmtTime(a.last_seen_at) : '—'}</td>
@@ -395,12 +395,12 @@ async function renderAgents(newKey){
 function renderProjects(editKey){
   const ed = projects.find(p => p.key === editKey);
   view.innerHTML = `
-    <form class="form panel" id="project-form" style="max-width:none">${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
+    <form class="form panel" id="project-form">${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
       <label style="flex:0 0 90px">Key<input id="p-key" required placeholder="NS" maxlength="10" value="${esc(ed ? ed.key : '')}"${ed ? ' disabled' : ''}></label>
       <label>Name<input id="p-name" required placeholder="nightshift" value="${esc(ed ? ed.name : '')}"></label>
       <label>Repository<input id="p-repo" placeholder="https://github.com/…" value="${esc(ed ? ed.repo_url : '')}"></label>
       <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
-      <label style="flex:0;justify-content:flex-end;flex-direction:row;gap:6px">${ed ? '<button type="button" id="p-cancel">Cancel</button><button class="primary" type="submit">Save</button>'
+      <label class="actions">${ed ? '<button type="button" id="p-cancel">Cancel</button><button class="primary" type="submit">Save</button>'
         : '<button class="primary" type="submit">Add project</button>'}</label></div></form>
     ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>

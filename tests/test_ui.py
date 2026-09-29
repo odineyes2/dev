@@ -62,7 +62,7 @@ try:
         page.wait_for_selector("#shell:not([hidden])")
 
         # 프로젝트 없이 New issue → 안내
-        page.click("text=New issue")
+        page.click("a[href=\"#/new\"]")
         page.wait_for_selector("text=먼저")
         page.goto(BASE + "/#/projects")
         page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button")
@@ -79,7 +79,7 @@ try:
         page.click('[data-edit="NS"]'); page.click("#p-cancel")
         assert page.input_value("#p-name") == ""
 
-        page.click("text=New issue")
+        page.click("a[href=\"#/new\"]")
         page.fill("#n-title", "보드 카드 복사")
         page.fill("#n-body", "## 요구\n- 우클릭 메뉴\n- `Ctrl+C`\n\n<script>alert(1)</script> NS-1 참고")
         page.select_option("#n-priority", "high")
@@ -161,7 +161,7 @@ try:
         page.emulate_media(color_scheme="dark"); assert bg() == dark_bg   # 자동이면 운영체제 설정을 따른다
         page.click("#theme"); assert theme() == "light" and bg() == light_bg   # 운영체제가 밤이어도 낮을 고르면 낮
         page.screenshot(path=str(shots / "theme_light.png"))
-        page.click("#theme"); page.screenshot(path=str(shots / "theme_dark.png"))
+        page.click("#theme"); page.wait_for_timeout(400); page.screenshot(path=str(shots / "theme_dark.png"))
 
         # 로그아웃
         page.click("#logout"); page.wait_for_selector("#login:not([hidden])")

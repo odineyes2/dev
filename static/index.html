@@ -11,7 +11,7 @@
 <body>
 <div id="login" class="login" hidden>
   <form id="login-form" class="login-box">
-    <h1>dev</h1>
+    <div class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 1 0 10.5 10.5Z" fill="currentColor"/></svg><span class="brand-word">Dev</span></div>
     <p class="dim">nightshift 관리자 계정으로 로그인해요.</p>
     <input id="login-username" autocomplete="username" placeholder="아이디" required>
     <input id="login-password" type="password" autocomplete="current-password" placeholder="비밀번호" required>
@@ -22,7 +22,7 @@
 
 <div id="shell" hidden>
   <header class="top">
-    <a href="#/" class="brand">dev</a>
+    <a href="#/" class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 1 0 10.5 10.5Z" fill="currentColor"/></svg><span class="brand-word">Dev</span></a>
     <nav>
       <a href="#/" data-nav="issues">Issues</a>
       <a href="#/board" data-nav="board">Board</a>
@@ -30,9 +30,9 @@
       <a href="#/projects" data-nav="projects">Projects</a>
     </nav>
     <select id="project-filter" title="프로젝트"></select>
-    <a href="#/new" class="button primary">New issue</a>
+    <a href="#/new" class="button primary" title="New issue">+<span class="hide-m"> New issue</span></a>
     <button id="theme" class="ghost" title="테마 바꾸기"></button>
-    <button id="logout" class="ghost">Log out</button>
+    <button id="logout" class="ghost" title="Log out"><svg viewBox="0 0 24 24" aria-hidden="true" class="ico"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="hide-m">Log out</span></button>
   </header>
   <main id="view"></main>
 </div>
