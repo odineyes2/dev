@@ -84,3 +84,12 @@ with TestClient(A.app) as c:
     r = c.post("/api/auth/logout", headers=H)
     assert r.status_code == 204 and "Max-Age=0" in r.headers["set-cookie"]
 print("OK")
+
+# 화면 파일은 no-cache — Cloudflare가 브라우저 캐시 4시간을 붙이지 않게(DEV-1: 고친 CSS가 안 보이던 문제)
+with TestClient(A.app) as c:
+    for path in ("/", "/app.css", "/app.js"):
+        r = c.get(path)
+        assert r.status_code == 200 and r.headers.get("cache-control") == "no-cache", (path, r.headers)
+    etag = c.get("/app.css").headers["etag"]
+    assert c.get("/app.css", headers={"If-None-Match": etag}).status_code == 304   # 안 바뀌었으면 다시 받지 않는다
+print("OK static")

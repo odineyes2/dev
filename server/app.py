@@ -63,7 +63,11 @@ async def authenticate(request: Request, call_next):
             request.scope["path"] = "/mcp/"   # 끝 슬래시 없이 등록한 클라이언트도 그대로 되게
         return await call_next(request)
     if not path.startswith("/api/"):
-        return await call_next(request)
+        # 화면 파일은 매번 새 판인지 확인하게(ETag로 304) — 캐시 헤더가 없으면 Cloudflare가 브라우저 캐시 4시간을
+        # 붙여서, 고친 CSS/JS가 한참 안 보인다.
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
     # 쿠키로 들어오는 쓰기 요청은 우리 화면이 보낸 것만(CSRF) — 다른 사이트의 폼은 이 헤더를 못 붙인다.
     if request.method in UNSAFE and not bearer and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
         return JSONResponse({"detail": "요청 헤더가 맞지 않아요."}, status_code=403)
