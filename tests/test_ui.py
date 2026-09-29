@@ -135,6 +135,23 @@ try:
         assert page.evaluate("document.documentElement.scrollWidth") <= 391
         page.screenshot(path=str(shots / "issue_mobile.png"), full_page=True)
 
+        # 테마 — 자동 → 낮 → 밤 → 자동, 새로고침해도 유지, 색이 실제로 바뀐다
+        bg = lambda: page.evaluate("getComputedStyle(document.body).backgroundColor")
+        theme = lambda: page.evaluate("document.documentElement.dataset.theme || 'auto'")
+        page.emulate_media(color_scheme="light")
+        assert theme() == "auto" and "◐" in page.inner_text("#theme")
+        light_bg = bg()
+        page.click("#theme"); assert theme() == "light" and bg() == light_bg
+        page.click("#theme"); assert theme() == "dark" and bg() != light_bg and "☾" in page.inner_text("#theme")
+        dark_bg = bg()
+        page.reload(); page.wait_for_selector("h1#title")
+        assert theme() == "dark" and bg() == dark_bg
+        page.click("#theme"); assert theme() == "auto" and bg() == light_bg
+        page.emulate_media(color_scheme="dark"); assert bg() == dark_bg   # 자동이면 운영체제 설정을 따른다
+        page.click("#theme"); assert theme() == "light" and bg() == light_bg   # 운영체제가 밤이어도 낮을 고르면 낮
+        page.screenshot(path=str(shots / "theme_light.png"))
+        page.click("#theme"); page.screenshot(path=str(shots / "theme_dark.png"))
+
         # 로그아웃
         page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert not errs, errs

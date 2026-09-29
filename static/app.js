@@ -109,6 +109,25 @@ document.getElementById('logout').addEventListener('click', async () => {
   showLogin();
 });
 
+// ---- 테마 — 자동(운영체제 설정) → 낮 → 밤 순서로 돈다. 처음 적용은 index.html의 인라인 스크립트 ----
+const THEMES = [['auto', '◐', 'Auto', '자동 — 운영체제 설정을 따라요'], ['light', '☀', 'Light', '낮 모드'], ['dark', '☾', 'Dark', '밤 모드']];
+function paintTheme(){
+  const cur = localStorage.getItem('dev.theme') || 'auto';
+  const [, icon, label, title] = THEMES.find(t => t[0] === cur) || THEMES[0];
+  const btn = document.getElementById('theme');
+  btn.innerHTML = `${icon}<span class="hide-m">${label}</span>`;   // 좁은 화면에서는 기호만
+  btn.title = `${title} (누르면 바뀌어요)`;
+  if(cur === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = cur;
+}
+document.getElementById('theme').addEventListener('click', () => {
+  const cur = localStorage.getItem('dev.theme') || 'auto';
+  const next = THEMES[(THEMES.findIndex(t => t[0] === cur) + 1) % THEMES.length][0];
+  if(next === 'auto') localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme', next);
+  paintTheme();
+});
+paintTheme();
+
 // ---- 프로젝트 필터(모든 화면 공통, 브라우저에 기억) ----
 const projectSel = document.getElementById('project-filter');
 function currentProject(){ return localStorage.getItem('dev.project') || ''; }

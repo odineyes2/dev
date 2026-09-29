@@ -4,8 +4,10 @@
   --s-backlog:#868e96; --s-triage:#ae3ec9; --s-in_progress:#1c7ed6; --s-in_review:#e67700; --s-changes_requested:#e03131;
   --s-on_hold:#495057; --s-done:#2f9e44; --s-closed:#adb5bd;
 }
+/* 밤 — 직접 고르면 data-theme="dark", 자동(data-theme 없음)이면 운영체제 설정을 따른다 */
+:root[data-theme="dark"]{ --bg:#14161b; --panel:#1c1f26; --text:#e6e8ec; --dim:#9aa1ad; --border:#2c313b; --accent:#748ffc; --accent-bg:#23294a; color-scheme:dark; }
 @media (prefers-color-scheme: dark){
-  :root{ --bg:#14161b; --panel:#1c1f26; --text:#e6e8ec; --dim:#9aa1ad; --border:#2c313b; --accent:#748ffc; --accent-bg:#23294a; }
+  :root:not([data-theme]){ --bg:#14161b; --panel:#1c1f26; --text:#e6e8ec; --dim:#9aa1ad; --border:#2c313b; --accent:#748ffc; --accent-bg:#23294a; color-scheme:dark; }
 }
 *{ box-sizing:border-box; }
 body{ margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
@@ -108,6 +110,9 @@ table.issues tr.row:hover{ background:var(--accent-bg); }
   .detail{ grid-template-columns:1fr; }
   .top nav{ order:3; flex-basis:100%; overflow-x:auto; }
   main{ padding:10px; }
-  table.issues .hide-m{ display:none; }
+  table.issues .hide-m, .top .hide-m{ display:none; }
+  .top{ gap:6px; padding:8px 10px; }
+  #project-filter{ max-width:30vw; padding:6px; }
+  .top .button, .top button{ padding:6px 8px; }
   .col{ flex-basis:80vw; }
 }
