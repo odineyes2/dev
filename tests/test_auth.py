@@ -93,3 +93,13 @@ with TestClient(A.app) as c:
     etag = c.get("/app.css").headers["etag"]
     assert c.get("/app.css", headers={"If-None-Match": etag}).status_code == 304   # 안 바뀌었으면 다시 받지 않는다
 print("OK static")
+
+# index.html의 CSS/JS 주소에 내용 해시 — 파일이 바뀌면 주소가 바뀐다
+import hashlib, re
+with TestClient(A.app) as c:
+    html = c.get("/").text
+    for name in ("app.css", "app.js"):
+        v = hashlib.sha1((A.STATIC_DIR / name).read_bytes()).hexdigest()[:10]
+        assert f'"/{name}?v={v}"' in html, (name, re.findall(r'/app\.\w+[^"]*', html))
+    assert c.get("/index.html").text == html and c.get("/").headers["cache-control"] == "no-cache"
+print("OK version")

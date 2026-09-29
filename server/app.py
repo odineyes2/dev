@@ -311,7 +311,25 @@ def api_release(ref: str, request: Request):
 
 
 # 화면 — API 라우트 뒤에 붙여야 /api가 가려지지 않는다(마운트는 반드시 마지막).
+import hashlib  # noqa: E402
+from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+STATIC_DIR = config.REPO_ROOT / "static"
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/index.html", include_in_schema=False)
+def index_page():
+    """index.html의 app.css/app.js 주소에 내용 해시(?v=)를 붙인다. Cloudflare가 CSS/JS에 브라우저 캐시 4시간을
+    덮어씌워서(no-cache를 보내도) 고친 파일이 안 보이던 문제 — 파일이 바뀌면 주소가 바뀌어 새로 받는다.
+    HTML은 Cloudflare가 no-cache를 그대로 둔다."""
+    html = (STATIC_DIR / "index.html").read_text("utf-8")
+    for name in ("app.css", "app.js"):
+        v = hashlib.sha1((STATIC_DIR / name).read_bytes()).hexdigest()[:10]
+        html = html.replace(f'"/{name}"', f'"/{name}?v={v}"')
+    return HTMLResponse(html)
+
 
 app.mount("/mcp", mcp_app)
 app.mount("/", StaticFiles(directory=config.REPO_ROOT / "static", html=True), name="static")
