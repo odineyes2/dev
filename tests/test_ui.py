@@ -185,6 +185,23 @@ try:
         page.screenshot(path=str(shots / "header_mobile.png"), clip={"x": 0, "y": 0, "width": 390, "height": 300})
         assert page.evaluate("document.documentElement.scrollWidth") <= 391
 
+        # Approve → Done이면 목록으로 돌아간다(DEV-5), 상태 칸에서 Closed를 골라도
+        page.set_viewport_size({"width": 1300, "height": 850})
+        page.request.post(f"{BASE}/api/issues/NS-2/status", data={"status": "in_review"}, headers={"X-Requested-With": "dev"})
+        page.goto(BASE + "/#/issue/NS-2"); page.wait_for_selector("#approve")
+        page.click("#approve")
+        page.wait_for_function("location.hash === '#/'")
+        assert "NS-2을(를) 끝냈어요" in page.inner_text("#toast")
+        page.wait_for_selector("tr.row")
+        assert "NS-2" not in page.inner_text("table.issues")   # 기본 목록은 끝난 것을 숨긴다
+        page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("#status")
+        page.select_option("#status", "closed")
+        page.wait_for_function("location.hash === '#/'")
+        page.goto(BASE + "/#/issue/NS-2"); page.wait_for_selector("#status")
+        page.select_option("#status", "in_progress")   # 끝내는 게 아니면 그 자리에 머문다
+        page.wait_for_function("document.getElementById('status') && document.getElementById('status').value === 'in_progress'")
+        assert page.evaluate("location.hash") == "#/issue/NS-2"
+
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert not errs, errs

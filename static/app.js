@@ -284,14 +284,21 @@ async function renderIssue(ref){
   const reload = () => renderIssue(it.ref);
   const $ = (id) => view.querySelector('#' + id);
   view.querySelectorAll('tr.row').forEach(r => r.addEventListener('click', () => { location.hash = `#/issue/${r.dataset.ref}`; }));
-  $('status').addEventListener('change', async (e) => { await api('POST', `/api/issues/${R}/status`, { status: e.target.value }).catch(() => {}); reload(); });
+  // done/closed로 끝내면 목록으로 돌아간다(DEV-5) — 끝난 이슈 화면에 머물 일은 없다.
+  const setStatus = async (status, note) => {
+    try{ await api('POST', `/api/issues/${R}/status`, note === undefined ? { status } : { status, note }); }
+    catch(e){ reload(); return; }
+    if(status === 'done' || status === 'closed'){ toast(`${it.ref}을(를) 끝냈어요`); location.hash = '#/'; }
+    else reload();
+  };
+  $('status').addEventListener('change', (e) => setStatus(e.target.value));
   $('priority').addEventListener('change', async (e) => { await api('PATCH', `/api/issues/${R}`, { priority: e.target.value }).catch(() => {}); reload(); });
   $('assignee').addEventListener('change', async (e) => { await api('PATCH', `/api/issues/${R}`, { assignee_agent_id: e.target.value ? Number(e.target.value) : null }).catch(() => {}); reload(); });
   $('labels').addEventListener('change', async (e) => {
     await api('PATCH', `/api/issues/${R}`, { labels: e.target.value.split(',').map(s => s.trim()).filter(Boolean) }).catch(() => {}); reload();
   });
   if($('approve')){
-    $('approve').addEventListener('click', async () => { await api('POST', `/api/issues/${R}/status`, { status: 'done' }).catch(() => {}); reload(); });
+    $('approve').addEventListener('click', () => setStatus('done'));
     $('request-changes').addEventListener('click', async () => {
       const note = prompt('무엇을 더 해야 하나요?');
       if(note === null) return;
