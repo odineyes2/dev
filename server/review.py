@@ -67,9 +67,9 @@ def command_for(ref: str) -> list[str]:
 
 def running_ref() -> str | None:
     with db.connect() as c:
-        r = c.execute("SELECT i.project_id, i.number, p.key FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id "
+        r = c.execute(f"SELECT {issues.ref_sql('i', 'p')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id "
                       "WHERE r.status='running' ORDER BY r.id DESC LIMIT 1").fetchone()
-    return f"{r['key']}-{r['number']}" if r else None
+    return r["ref"] if r else None
 
 
 def list_runs(ref: str) -> list[dict]:

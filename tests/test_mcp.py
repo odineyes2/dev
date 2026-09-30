@@ -61,8 +61,8 @@ async def main():
         await call("claim_issue", ref="NS-1")
         assert (await call("post_plan", ref="NS-1", body="1. 메뉴")).data["version"] == 1
         task = (await call("create_issue", project="NS", title="Task: 메뉴", parent="NS-1")).data
-        assert task["ref"] == "NS-2"
-        await call("update_issue", ref="NS-2", title="Task: 우클릭 메뉴")
+        assert task["ref"] == "NS-1-1"
+        await call("update_issue", ref="NS-1-1", title="Task: 우클릭 메뉴")
         try:
             await call("update_issue", ref="NS-1", body="바꿔치기"); raise AssertionError("body edit allowed")
         except ToolError as e:

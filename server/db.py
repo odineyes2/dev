@@ -135,6 +135,14 @@ MIGRATIONS = [
     );
     CREATE INDEX runs_issue ON runs(issue_id, id);
     """,
+    # Task 번호를 부모 아래에서 센다(NS-17-1)
+    """
+    -- Task 번호는 만들 때의 부모 번호에 묶인다(NS-17-1): 나중에 부모를 바꾸거나 지워도 ref는 그대로.
+    -- number는 UNIQUE라 이 Task들은 음수(-id)로 채워 두고 화면에는 sub_of-sub_number를 쓴다.
+    ALTER TABLE issues ADD COLUMN sub_of INTEGER;
+    ALTER TABLE issues ADD COLUMN sub_number INTEGER;
+    CREATE UNIQUE INDEX issues_sub ON issues(project_id, sub_of, sub_number) WHERE sub_number IS NOT NULL;
+    """
 ]
 
 

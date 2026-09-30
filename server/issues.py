@@ -40,7 +40,7 @@ def _forbidden(msg):
 
 RELEASE_ON = {"in_review", "done", "closed"}
 HUMAN_ONLY_STATUSES = {"done", "closed"}
-REF_RE = re.compile(r"^([A-Z][A-Z0-9]{0,9})-(\d+)$")
+REF_RE = re.compile(r"^([A-Z][A-Z0-9]{0,9})-(\d+)(?:-(\d+))?$")   # NS-17 또는 Task NS-17-1
 MAX_TEXT = 200_000
 
 
@@ -124,7 +124,16 @@ def update_project(actor, key, fields: dict) -> dict:
 _LAST_DECISION = "(SELECT {} FROM decisions d WHERE d.issue_id=i.id AND d.gate='plan' ORDER BY d.id DESC LIMIT 1)"
 _DEC_VERDICT, _DEC_VERSION = _LAST_DECISION.format("verdict"), _LAST_DECISION.format("plan_version")
 _LATEST_PLAN = "(SELECT MAX(version) FROM plans pl WHERE pl.issue_id=i.id)"
-_ISSUE_SELECT = (f"SELECT i.*, p.key AS project_key, {_DEC_VERDICT} AS dec_verdict, {_DEC_VERSION} AS dec_version, "
+
+
+def ref_sql(i, k):
+    """ref를 SQL로 — 이슈 별칭 i, 프로젝트 별칭 k. Task는 NS-17-1, 나머지는 NS-27."""
+    return f"{k}.key || '-' || CASE WHEN {i}.sub_number IS NOT NULL THEN {i}.sub_of || '-' || {i}.sub_number ELSE {i}.number END"
+
+
+_PARENT_REF = f"(SELECT {ref_sql('q', 'p')} FROM issues q WHERE q.id=i.parent_id)"
+_ISSUE_SELECT = (f"SELECT i.*, p.key AS project_key, {ref_sql('i', 'p')} AS ref, {_PARENT_REF} AS parent_ref, "
+                 f"{_DEC_VERDICT} AS dec_verdict, {_DEC_VERSION} AS dec_version, "
                  f"{_LATEST_PLAN} AS latest_plan FROM issues i JOIN projects p ON p.id = i.project_id")
 
 
@@ -139,7 +148,6 @@ def title_missing(title) -> bool:
 
 def _issue_dict(r) -> dict:
     d = dict(r)
-    d["ref"] = f"{d['project_key']}-{d['number']}"
     d["title_missing"] = title_missing(d["title"])
     d["labels"] = json.loads(d.pop("labels_json") or "[]")
     verdict, version, latest = d.pop("dec_verdict"), d.pop("dec_version"), d.pop("latest_plan")
@@ -155,7 +163,9 @@ def _find(c, ref) -> dict:
     """ref: "NS-12" 또는 내부 id(숫자)."""
     s = str(ref).strip().upper()
     m = REF_RE.match(s)
-    if m:
+    if m and m.group(3):
+        row = c.execute(_ISSUE_SELECT + " WHERE p.key=? AND i.sub_of=? AND i.sub_number=?", (m.group(1), int(m.group(2)), int(m.group(3)))).fetchone()
+    elif m:
         row = c.execute(_ISSUE_SELECT + " WHERE p.key=? AND i.number=?", (m.group(1), int(m.group(2)))).fetchone()
     elif s.isdigit():
         row = c.execute(_ISSUE_SELECT + " WHERE i.id=?", (int(s),)).fetchone()
@@ -228,15 +238,25 @@ def get_issue(ref) -> dict:
         for e in d["events"]:
             e.pop("data_json")
         def blockers(iid):   # 먼저 끝나야 하는 이슈들 — {"ref","status"}
-            return [{"ref": f"{r['key']}-{r['number']}", "status": r["status"]} for r in c.execute(
-                "SELECT p.key, b.number, b.status FROM issue_deps x JOIN issues b ON b.id=x.blocked_by_id "
-                "JOIN projects p ON p.id=b.project_id WHERE x.issue_id=? ORDER BY b.number", (iid,))]
+            return [{"ref": r["ref"], "status": r["status"]} for r in c.execute(
+                f"SELECT {ref_sql('b', 'p')} AS ref, b.status FROM issue_deps x JOIN issues b ON b.id=x.blocked_by_id "
+                "JOIN projects p ON p.id=b.project_id WHERE x.issue_id=? ORDER BY b.id", (iid,))]
         d["blocked_by"] = blockers(row["id"])
         d["children"] = [{**{k: v for k, v in _issue_dict(ch).items() if k != "body"}, "blocked_by": blockers(ch["id"])} for ch in
-                         c.execute(_ISSUE_SELECT + " WHERE i.parent_id=? ORDER BY i.number", (row["id"],))]
+                         c.execute(_ISSUE_SELECT + " WHERE i.parent_id=? ORDER BY i.id", (row["id"],))]
         par = c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["parent_id"],)).fetchone() if row["parent_id"] else None
         d["parent_ref"] = _issue_dict(par)["ref"] if par else None
     return d
+
+
+def _next_number(c, proj, parent=None) -> tuple:
+    """새 이슈의 (number, sub_of, sub_number). 최상위 이슈의 Task는 부모 번호 아래에서 센다(NS-17-1, -2…), 그 밖에는 프로젝트 번호."""
+    if parent is not None and parent["parent_id"] is None and parent["sub_number"] is None:
+        sub = c.execute("SELECT COALESCE(MAX(sub_number), 0) + 1 FROM issues WHERE project_id=? AND sub_of=?", (proj["id"], parent["number"])).fetchone()[0]
+        return -(c.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM issues").fetchone()[0]), parent["number"], sub
+    number = c.execute("SELECT next_number FROM projects WHERE id=?", (proj["id"],)).fetchone()[0]
+    c.execute("UPDATE projects SET next_number=next_number+1 WHERE id=?", (proj["id"],))
+    return number, None, None
 
 
 def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog") -> dict:
@@ -253,17 +273,16 @@ def create_issue(actor, project, title, body="", priority="none", labels=None, p
         proj = c.execute("SELECT * FROM projects WHERE key=?", (str(project or "").upper(),)).fetchone()
         if proj is None:
             raise _not_found("프로젝트")
-        parent_id = None
+        parent_id, par = None, None
         if parent:
             par = _find(c, parent)
             if par["project_id"] != proj["id"]:
                 raise StoreError("하위 이슈는 부모와 같은 프로젝트여야 해요.")
             parent_id = par["id"]
-        number = proj["next_number"]
-        c.execute("UPDATE projects SET next_number=next_number+1 WHERE id=?", (proj["id"],))
-        iid = c.execute("INSERT INTO issues(project_id, number, parent_id, title, body, status, priority, labels_json, reporter, "
-                        "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        (proj["id"], number, parent_id, title, body, status, _priority(priority), _labels(labels),
+        number, sub_of, sub = _next_number(c, proj, par)
+        iid = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
+                        "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (proj["id"], number, sub_of, sub, parent_id, title, body, status, _priority(priority), _labels(labels),
                          actor_label(actor), now, now)).lastrowid
         return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (iid,)).fetchone())
 
@@ -385,7 +404,7 @@ def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
     # 계획서에 Tasks 절이 없으면(작은 일) 이슈 자체를 Task 하나로 — 실행은 Task에만 붙는다
     tasks = parse_tasks(plan_body) or [{"n": 1, "title": parent["title"], "files": "", "check": "", "after": []}]
     proj = c.execute("SELECT * FROM projects WHERE id=?", (parent["project_id"],)).fetchone()
-    now, ids, ref = db.now_iso(), {}, f"{proj['key']}-{parent['number']}"
+    now, ids, ref = db.now_iso(), {}, _issue_dict(parent)["ref"]
     for t in tasks:
         body = f"{ref} 계획서 v{version}의 Task {t['n']}."
         if t["files"]:
@@ -394,11 +413,10 @@ def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
             body += f"\n\n**확인**: {t['check']}"
         if note.strip():
             body += f"\n\n**{ref}의 조건부 승인 메모(계획서보다 우선)**:\n{note.strip()}"
-        number = c.execute("SELECT next_number FROM projects WHERE id=?", (proj["id"],)).fetchone()[0]
-        c.execute("UPDATE projects SET next_number=next_number+1 WHERE id=?", (proj["id"],))
-        ids[t["n"]] = c.execute("INSERT INTO issues(project_id, number, parent_id, title, body, status, priority, labels_json, reporter, "
-                                "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                                (proj["id"], number, parent["id"], t["title"], body, "backlog", "none", "[]", actor_label(actor), now, now)).lastrowid
+        number, sub_of, sub = _next_number(c, proj, parent)
+        ids[t["n"]] = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
+                                "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (proj["id"], number, sub_of, sub, parent["id"], t["title"], body, "backlog", "none", "[]", actor_label(actor), now, now)).lastrowid
     for t in tasks:
         for a in t["after"]:
             if a in ids and a != t["n"]:

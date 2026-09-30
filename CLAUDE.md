@@ -11,6 +11,7 @@
 - `ecosystem.config.js` pm2 앱 `dev`(127.0.0.1:8300, Cloudflare 터널이 dev.lomebrote.com으로 연결)
 
 ## 규칙
+- 이슈 번호: 최상위는 `NS-17`, 그 아래 Task는 `NS-17-1`(만들 때의 부모 번호에 묶여 부모를 바꾸거나 지워도 그대로, DB `sub_of`·`sub_number`). 이전에 만든 Task(DEV-30~35 등)는 옛 번호 그대로.
 - 기능마다 커밋 하나(커밋 메시지가 버전 기록). push·운영 재시작은 사용자에게 먼저 묻는다.
 - 운영 재시작: `npx pm2 restart ecosystem.config.js --only dev --update-env`
 - 남의 변경을 `git reset`/`checkout --`/`stash`/`rebase`/강제 push로 되돌리지 않는다.

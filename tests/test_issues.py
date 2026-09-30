@@ -44,20 +44,20 @@ with TestClient(A.app) as c:
 
     # 에이전트가 하위 Task를 만든다 — 다른 프로젝트 부모는 안 됨
     t1 = ok(a("POST", "/api/issues", json={"project": "NS", "title": "Task: 메뉴", "parent": "NS-1"}))
-    assert t1["ref"] == "NS-3" and t1["reporter"].startswith("agent:")
+    assert t1["ref"] == "NS-1-1" and t1["reporter"].startswith("agent:")
     assert a("POST", "/api/issues", json={"project": "DEV", "title": "x", "parent": "NS-1"}).status_code == 400
 
     # 목록 — 본문 없음, 필터
     lst = ok(a("GET", "/api/issues?project=NS"))["issues"]
-    assert {x["ref"] for x in lst} == {"NS-1", "NS-2", "NS-3"} and all("body" not in x for x in lst)
+    assert {x["ref"] for x in lst} == {"NS-1", "NS-2", "NS-1-1"} and all("body" not in x for x in lst)
     assert [x["ref"] for x in ok(a("GET", "/api/issues?project=ns&parent=none&status=backlog"))["issues"]] == ["NS-2", "NS-1"]
-    assert [x["ref"] for x in ok(a("GET", "/api/issues?parent=NS-1"))["issues"]] == ["NS-3"]
+    assert [x["ref"] for x in ok(a("GET", "/api/issues?parent=NS-1"))["issues"]] == ["NS-1-1"]
     assert [x["ref"] for x in ok(a("GET", "/api/issues?q=복사"))["issues"]] == ["NS-1"]
     assert a("GET", "/api/issues?status=weird").status_code == 400
 
     # 권한 — 에이전트는 사람이 쓴 본문을 못 고치고, 자기 Task는 고친다
     assert a("PATCH", "/api/issues/NS-1", json={"body": "바꿔치기"}).status_code == 403
-    assert ok(a("PATCH", "/api/issues/NS-3", json={"title": "Task: 우클릭 메뉴"}))["title"] == "Task: 우클릭 메뉴"
+    assert ok(a("PATCH", "/api/issues/NS-1-1", json={"title": "Task: 우클릭 메뉴"}))["title"] == "Task: 우클릭 메뉴"
     assert ok(a("PATCH", "/api/issues/NS-1", json={"labels": ["board"]}))["labels"] == ["board"]
     assert a("DELETE", "/api/issues/NS-2").status_code == 403
 
@@ -93,7 +93,7 @@ with TestClient(A.app) as c:
     assert a("POST", "/api/issues/NS-1/claim").status_code == 409   # 끝난 이슈는 못 잡음
 
     full = ok(a("GET", "/api/issues/ns-1"))
-    assert full["plan"]["version"] == 2 and full["body"] == "사람이 쓴 지시" and [ch["ref"] for ch in full["children"]] == ["NS-3"]
+    assert full["plan"]["version"] == 2 and full["body"] == "사람이 쓴 지시" and [ch["ref"] for ch in full["children"]] == ["NS-1-1"]
     kinds = [(e["kind"], e["actor"].split(":")[0]) for e in full["events"]]
     assert kinds == [("edit", "agent"), ("claim", "agent"), ("claim", "agent"), ("claim", "agent"), ("claim", "agent"),
                      ("plan", "agent"), ("plan", "agent"), ("status", "agent"), ("comment", "agent"), ("commit", "agent"),
@@ -101,13 +101,13 @@ with TestClient(A.app) as c:
     ev = full["events"]
     assert ev[0]["data"]["model"] == "claude-opus-5-5" and ev[9]["data"]["sha"] == "1261ce1"
     assert ev[10]["body"] == "확인 부탁해요" and ev[10]["data"]["from"] == "in_progress" and "model" not in ev[11]["data"]
-    assert ok(a("GET", "/api/issues/NS-3"))["parent_ref"] == "NS-1"
+    assert ok(a("GET", "/api/issues/NS-1-1"))["parent_ref"] == "NS-1"
 
     # 사람은 지운다 — 하위 이슈는 최상위로
     assert human("DELETE", "/api/issues/NS-1").status_code == 204
     assert a("GET", "/api/issues/NS-1").status_code == 404
-    assert ok(a("GET", "/api/issues/NS-3"))["parent_ref"] is None
-    assert ok(human("POST", "/api/issues", json={"project": "NS", "title": "번호는 재사용 안 함"}))["ref"] == "NS-4"
+    assert ok(a("GET", "/api/issues/NS-1-1"))["parent_ref"] is None
+    assert ok(human("POST", "/api/issues", json={"project": "NS", "title": "번호는 재사용 안 함"}))["ref"] == "NS-3"
 
     # 나눠 읽기(DEV-7) — offset·limit, has_more, 겹치거나 빠지는 것 없이
     for n in range(120):
@@ -167,6 +167,7 @@ with TestClient(A.app) as c:
     ok(a("POST", f"/api/issues/{p}/plans", json={"body": plan}))
     r = ok(dec(p, "approve_notes", "화면은 다크모드도", 1))
     kids = r["children"]
+    assert [k["ref"] for k in kids] == [f"{p}-1", f"{p}-2", f"{p}-3"]   # Task 번호는 부모 아래에서 센다
     assert [k["title"] for k in kids] == ["서버", "화면", "문서"] and "하위 Task 3개" in r["events"][-1]["body"], kids
     with db.connect() as cx:
         deps = {(x[0], x[1]) for x in cx.execute("SELECT issue_id, blocked_by_id FROM issue_deps")}
