@@ -26,7 +26,8 @@ INSTRUCTIONS = """dev는 코딩 에이전트용 이슈 게시판이다. 이슈 �
 - 사람이 쓴 이슈의 제목·본문은 고칠 수 없다 — 할 말은 add_comment로 남긴다.
 - 예외: title_missing이 true인 이슈(제목이 비었거나 "."처럼 글자가 없음)는 잡을 때 본문을 읽고 짧은 제목(40자 안팎,
   무엇을 하는 일인지)을 지어 update_issue(ref, title=...)로 채운다. 본문은 고치지 않는다.
-- 막히거나 사람의 결정이 필요하면 add_comment로 질문을 남기고 on_hold로 둔다."""
+- 막히거나 사람의 결정이 필요하면 add_comment로 질문을 남기고 on_hold로 둔다.
+- 화면(UI) 작업은 dev 저장소 docs/DESIGN.md(dev·nightshift 공통 디자인 방향)를 먼저 읽고 따른다."""
 
 mcp = FastMCP("dev", instructions=INSTRUCTIONS)
 
