@@ -150,9 +150,13 @@ document.addEventListener('keydown', (e) => { if(e.key === 'Escape') setUserMenu
 // ---- 프로젝트 필터(모든 화면 공통, 브라우저에 기억) ----
 const projectSel = document.getElementById('project-filter');
 function currentProject(){ return localStorage.getItem('dev.project') || ''; }
+function projectOptionsHtml(){
+  const cur = projects.some(p => p.key === currentProject()) ? currentProject() : '';
+  return `<option value="">All projects</option>` + projects.filter(p => !p.archived)
+    .map(p => `<option value="${esc(p.key)}"${p.key === cur ? ' selected' : ''}>${esc(p.key)} · ${esc(p.name)}</option>`).join('');
+}
 function paintProjectFilter(){
-  projectSel.innerHTML = '<option value="">All projects</option>'
-    + projects.filter(p => !p.archived).map(p => `<option value="${esc(p.key)}">${esc(p.key)} · ${esc(p.name)}</option>`).join('');
+  projectSel.innerHTML = projectOptionsHtml();
   projectSel.value = projects.some(p => p.key === currentProject()) ? currentProject() : '';
 }
 projectSel.addEventListener('change', () => { localStorage.setItem('dev.project', projectSel.value); route(); });
@@ -197,6 +201,7 @@ async function renderList(){
   const st = listState();
   view.innerHTML = `
     <div class="toolbar">
+      <select id="list-project" title="프로젝트별로 보기">${projectOptionsHtml()}</select>
       <input class="grow" id="q" placeholder="제목·본문 검색" value="${esc(st.q)}">
       <div class="chips">${STATUSES.map(s => `<span class="chip${st.statuses.includes(s) ? ' on' : ''}" data-st="${s}">${STATUS_LABEL[s]}</span>`).join('')}</div>
       <label class="dim"><input type="checkbox" id="show-closed" ${st.closed ? 'checked' : ''}> 끝난 것도</label>
@@ -211,6 +216,10 @@ async function renderList(){
     save({ statuses: cur.includes(s) ? cur.filter(x => x !== s) : [...cur, s] });
   }));
   view.querySelector('#show-closed').addEventListener('change', (e) => save({ closed: e.target.checked }));
+  // 프로젝트 필터(DEV-11) — 탭 줄의 전역 필터와 같은 값(dev.project)을 쓴다. 여기서 바꾸면 그쪽도 따라간다.
+  view.querySelector('#list-project').addEventListener('change', (e) => {
+    localStorage.setItem('dev.project', e.target.value); projectSel.value = e.target.value; loadList();
+  });
   view.querySelector('#list-body').addEventListener('click', (e) => {
     const r = e.target.closest('tr.row');
     if(r) location.hash = `#/issue/${r.dataset.ref}`;

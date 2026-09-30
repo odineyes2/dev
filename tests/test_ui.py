@@ -253,6 +253,18 @@ try:
         same = [i for i in page.request.get(f"{BASE}/api/issues?q=두 번 누르기 시험").json()["issues"]]
         assert len(same) == 1, same
 
+        # Issues 화면의 프로젝트 필터(DEV-11) — 탭 줄 필터와 같이 움직인다
+        H = {"X-Requested-With": "dev"}
+        page.request.post(f"{BASE}/api/projects", data={"key": "DEV", "name": "dev"}, headers=H)
+        page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "dev 쪽 이슈"}, headers=H)
+        page.evaluate("loadProjects()"); page.goto(BASE + "/#/"); page.wait_for_selector("#list-project")
+        page.wait_for_selector("tr.row")
+        page.select_option("#list-project", "DEV")
+        page.wait_for_function("() => [...document.querySelectorAll('tr.row')].every(r => r.dataset.ref.startsWith('DEV-')) && document.querySelectorAll('tr.row').length === 1")
+        assert page.input_value("#project-filter") == "DEV"
+        page.select_option("#list-project", "")
+        page.wait_for_function("() => [...document.querySelectorAll('tr.row')].some(r => r.dataset.ref.startsWith('NS-'))")
+
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert not errs, errs
