@@ -282,3 +282,6 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .runs li{ padding:6px 0; font-size:13px; line-height:1.5; }
 .runs li + li{ border-top:1px solid var(--border); }
 .runs code{ word-break:break-all; }
+.exec{ margin-top:var(--sp-3); }
+.branch{ margin-top:var(--sp-2); }
+.branch pre{ margin:6px 0 0; font:12px/1.5 var(--mono); white-space:pre-wrap; word-break:break-all; color:var(--dim); }

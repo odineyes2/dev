@@ -154,3 +154,16 @@ def start(actor: dict, ref: str) -> dict:
     threading.Thread(target=review.run_headless, args=(actor, ref, log_path, run_id, cmd, worktree, safe_env(repo), TIMEOUT_SEC, "실행"),
                      daemon=True).start()
     return {"started": True, "ref": ref, "branch": branch_name(ref)}
+
+
+def panel(issue: dict) -> dict | None:
+    """화면용 — Task면 실행을 못 맡기는 이유(있으면)와 브랜치 정보. Task가 아니면 None."""
+    if not issue.get("parent_ref"):
+        return None
+    parent = issues.get_issue(issue["parent_ref"])
+    repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
+    try:
+        branch = branch_info(repo, issue["ref"])
+    except issues.StoreError:
+        branch = None
+    return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD}

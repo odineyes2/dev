@@ -335,6 +335,28 @@ try:
         page.set_viewport_size({"width": 1300, "height": 850})
         page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("text=아직 실행 기록이 없어요")
 
+        # Task 실행 맡기기(DEV-23·32) — 눌러서 실제로 돌리지는 않는다(claude 비용). 버튼 상태·이유·브랜치 요약만 본다.
+        gitrepo = tmp / "gitrepo"; gitrepo.mkdir()
+        g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=gitrepo, check=True, capture_output=True)
+        g("init", "-q", "-b", "main"); (gitrepo / "a.txt").write_text("a\n"); g("add", "."); g("commit", "-qm", "init")
+        g("checkout", "-q", "-b", "relay/DEV-5"); (gitrepo / "new_feature.py").write_text("x = 1\n"); g("add", "."); g("commit", "-qm", "feat (DEV-5)"); g("checkout", "-q", "main")
+        page.request.patch(f"{BASE}/api/projects/DEV", data={"local_path": str(gitrepo)}, headers=H)
+        t5, t6 = f"{BASE}/api/issues/DEV-5", f"{BASE}/api/issues/DEV-6"
+        assert page.request.get(t5).json()["execute"]["blocked"] is None and "DEV-5" in page.request.get(t6).json()["execute"]["blocked"]
+        assert page.request.get(f"{BASE}/api/issues/{pr}").json()["execute"] is None     # Task가 아니면 없음
+        for scheme in ("light", "dark"):
+            for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
+                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
+                page.goto(BASE + "/#/issue/DEV-5"); page.reload(); page.wait_for_selector("#ask-execute")
+                assert page.is_enabled("#ask-execute") and "비용 상한 $2" in page.inner_text(".exec")
+                txt = page.inner_text(".exec .branch"); assert "relay/DEV-5" in txt and "커밋 1개" in txt and "new_feature.py" in txt and "git merge relay/DEV-5" in txt, txt
+                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
+        page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
+        page.goto(BASE + "/#/issue/DEV-6"); page.reload(); page.wait_for_selector("#ask-execute")
+        assert page.is_disabled("#ask-execute") and "선행 Task(DEV-5)가 done이 되어야 해요" in page.inner_text(".exec")
+        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review"); assert page.locator("#ask-execute").count() == 0
+
         # 결과 거절 → 닫히고 사유가 남는다(DEV-16)
         rj = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결과 거절"}, headers=H).json()["ref"]
         page.request.post(f"{BASE}/api/issues/{rj}/status", data={"status": "in_review"}, headers=H)

@@ -266,6 +266,7 @@ def api_issue(ref: str):
     it = issues.get_issue(ref)
     it["review_running"] = review.running_ref() == it["ref"]   # "Claude에게 검토 맡기기"가 도는 중(DEV-13)
     it["review_busy"] = review.running_ref() is not None
+    it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
     return it
 
 

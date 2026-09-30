@@ -342,6 +342,18 @@ function runsHtml(runs){
       ${r.note ? `<div class="dim">${esc(r.note)}</div>` : ''}${r.log_file ? `<div class="dim"><code>${esc(r.log_file)}</code></div>` : ''}</li>`;
   }).join('')}</ul>`;
 }
+// ---- Task 실행(DEV-32): 격리된 worktree에서 구현, 결과는 브랜치로 ----
+function executeHtml(it, liveMode){
+  const x = it.execute, running = it.review_running && liveMode === 'execute';
+  const off = running || it.review_busy || x.blocked;
+  const hint = running ? '구현하는 중이에요 — 끝나면 in_review로 올라와요.' : x.blocked ? esc(x.blocked)
+    : it.review_busy ? '다른 이슈에서 Claude가 일하는 중이에요.' : `격리된 worktree에서 구현해요 — push 없음, 비용 상한 $${x.budget_usd}.`;
+  const b = x.branch;
+  return `<div class="exec"><button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>${running ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
+    <div class="dim hint">${hint}</div>
+    ${b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
+      ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}</div>`;
+}
 function decisionHtml(it){
   const a = it.approval;
   const state = !a ? '<span class="dim">아직 결정하지 않았어요.</span>'
@@ -375,6 +387,7 @@ async function renderIssue(ref){
   const [it, { runs }] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), agentsById.size ? null : loadAgents()]);
   const agentOpts = ['<option value="">(없음)</option>'].concat([...agentsById.values()].map(a =>
     `<option value="${a.id}"${a.id === it.assignee_agent_id ? ' selected' : ''}>${esc(a.name)}</option>`)).join('');
+  const liveMode = (runs.find(r => r.status === 'running') || {}).mode;
   view.innerHTML = `
     <div class="detail">
       <div>
@@ -404,8 +417,9 @@ async function renderIssue(ref){
           <button id="release" class="ghost">놓기</button>` : '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Claude</span>
-          <button id="ask-review"${it.review_busy ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running ? '검토 중…' : 'Claude에게 검토 맡기기'}</button>
-          <div class="dim hint">${it.review_busy && !it.review_running ? '다른 이슈를 검토하는 중이에요.' : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div></div>
+          <button id="ask-review"${it.review_busy ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running && liveMode !== 'execute' ? '검토 중…' : 'Claude에게 검토 맡기기'}</button>
+          <div class="dim hint">${it.review_busy && !it.review_running ? '다른 이슈에서 Claude가 일하는 중이에요.' : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>
+          ${it.execute ? executeHtml(it, liveMode) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
         <div class="field"><button id="delete" class="danger">Delete issue</button></div>
       </aside>
@@ -468,6 +482,12 @@ async function renderIssue(ref){
   }
   if($('release')) $('release').addEventListener('click', async () => { await api('POST', `/api/issues/${R}/release`).catch(() => {}); reload(); });
   // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게
+  if($('ask-execute')) $('ask-execute').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
+    if(!confirm(`${it.ref}을(를) Claude에게 실행 맡길까요?
+홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+비용 상한은 $${it.execute.budget_usd}이고, 사용량은 이 서버에 로그인된 Claude 계정에서 나가요.`)) return;
+    await api('POST', `/api/issues/${R}/execute`); toast('실행을 맡겼어요 — 끝나면 in_review로 올라와요'); reload();
+  }));
   $('ask-review').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
     if(!confirm(`${it.ref}을(를) Claude에게 검토 맡길까요?
 홈서버에서 Claude Code가 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
