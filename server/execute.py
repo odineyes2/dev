@@ -22,7 +22,7 @@ import issues
 BASE_BRANCH = os.environ.get("DEV_EXEC_BASE") or "main"
 BUDGET_USD = float(os.environ.get("DEV_EXEC_BUDGET_USD") or 2)
 TIMEOUT_SEC = float(os.environ.get("DEV_EXEC_TIMEOUT_SEC") or 1800)
-WORKTREE_DIR = config.DATA_DIR / "worktrees"
+WORKTREE_DIR = config.DATA_DIR.resolve() / "worktrees"   # 8.3 짧은 경로면 Claude가 쓰기 권한을 못 알아본다
 ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(python tests/*)", "Bash(git status:*)", "Bash(git diff:*)",
                  "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)"] + [f"mcp__dev__{t}" for t in (
     "whoami", "list_projects", "list_issues", "get_issue", "add_comment", "set_status", "link_commit", "claim_issue", "release_issue")]
