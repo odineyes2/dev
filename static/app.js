@@ -56,6 +56,11 @@ function approvalHtml(a){   // 계획서 결정 배지 — 새 판이 올라와 
   if(a.stale) return `<span class="status dim" style="--sc:var(--s-in_progress)" title="새 계획서가 올라와 결정이 무효예요">결정 무효</span>`;
   return `<span class="status" style="--sc:var(--s-${VERDICT_COLOR[a.verdict]})">${VERDICT_LABEL[a.verdict]}</span>`;
 }
+function blockedHtml(bs){   // 선행 Task — 끝난 것은 흐리게, 아직인 것이 있으면 "대기"
+  if(!bs || !bs.length) return '';
+  const open = bs.some(b => !['done', 'closed'].includes(b.status));
+  return `<div class="sub">${open ? '대기 · ' : ''}선행: ${bs.map(b => `<a href="#/issue/${esc(b.ref)}" class="${['done', 'closed'].includes(b.status) ? 'dim' : ''}">${esc(b.ref)}</a>`).join(', ')}</div>`;
+}
 function labelsHtml(ls){ return (ls || []).map(l => `<span class="label">${esc(l)}</span>`).join(''); }
 function actorName(a){
   if(!a) return '';
@@ -369,7 +374,7 @@ async function renderIssue(ref){
         ${resultHtml(it)}
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Add task</a></span></h2>
           ${it.children.length ? `<table class="issues">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
-            <td>${titleHtml(ch)}</td><td>${statusHtml(ch.status)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
+            <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}</td><td>${statusHtml(ch.status)}${ch.claimed_by ? ` <span class="dim">${esc(actorName(ch.claimed_by))}</span>` : ''}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">Comment</button></div></div></div>
@@ -391,7 +396,7 @@ async function renderIssue(ref){
   const R = encodeURIComponent(it.ref);
   const reload = () => renderIssue(it.ref);
   const $ = (id) => view.querySelector('#' + id);
-  view.querySelectorAll('tr.row').forEach(r => r.addEventListener('click', () => { location.hash = `#/issue/${r.dataset.ref}`; }));
+  view.querySelectorAll('tr.row').forEach(r => r.addEventListener('click', (e) => { if(!e.target.closest('a')) location.hash = `#/issue/${r.dataset.ref}`; }));
   // done/closed로 끝내면 목록으로 돌아간다(DEV-5) — 끝난 이슈 화면에 머물 일은 없다.
   const setStatus = async (status, note) => {
     try{ await api('POST', `/api/issues/${R}/status`, note === undefined ? { status } : { status, note }); }

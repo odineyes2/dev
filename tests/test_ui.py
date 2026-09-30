@@ -302,6 +302,16 @@ try:
         page.screenshot(path=str(shots / "list_approved.png"), full_page=True)
         page.uncheck("#only-approved")
 
+        # 선행 Task 표시(DEV-21)
+        pr = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "선후 시험", "status": "triage"}, headers=H).json()["ref"]
+        page.request.post(f"{BASE}/api/issues/{pr}/plans", data={"body": "## Tasks\n1. 먼저\n2. 나중 | 선행: 1"}, headers=H)
+        page.request.post(f"{BASE}/api/issues/{pr}/decision", data={"verdict": "approve", "plan_version": 1}, headers=H)
+        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
+        row2 = page.locator("tr.row", has_text="나중")
+        assert "대기 · 선행:" in row2.inner_text()
+        page.screenshot(path=str(shots / "tasks_deps.png"), full_page=True)
+        row2.locator("a").click(); page.wait_for_function("() => document.querySelector('h1#title').innerText === '먼저'")
+
         # 결과 거절 → 닫히고 사유가 남는다(DEV-16)
         rj = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결과 거절"}, headers=H).json()["ref"]
         page.request.post(f"{BASE}/api/issues/{rj}/status", data={"status": "in_review"}, headers=H)

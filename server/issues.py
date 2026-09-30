@@ -227,7 +227,12 @@ def get_issue(ref) -> dict:
                        c.execute("SELECT * FROM events WHERE issue_id=? ORDER BY id", (row["id"],))]
         for e in d["events"]:
             e.pop("data_json")
-        d["children"] = [{k: v for k, v in _issue_dict(ch).items() if k != "body"} for ch in
+        def blockers(iid):   # 먼저 끝나야 하는 이슈들 — {"ref","status"}
+            return [{"ref": f"{r['key']}-{r['number']}", "status": r["status"]} for r in c.execute(
+                "SELECT p.key, b.number, b.status FROM issue_deps x JOIN issues b ON b.id=x.blocked_by_id "
+                "JOIN projects p ON p.id=b.project_id WHERE x.issue_id=? ORDER BY b.number", (iid,))]
+        d["blocked_by"] = blockers(row["id"])
+        d["children"] = [{**{k: v for k, v in _issue_dict(ch).items() if k != "body"}, "blocked_by": blockers(ch["id"])} for ch in
                          c.execute(_ISSUE_SELECT + " WHERE i.parent_id=? ORDER BY i.number", (row["id"],))]
         par = c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["parent_id"],)).fetchone() if row["parent_id"] else None
         d["parent_ref"] = _issue_dict(par)["ref"] if par else None
