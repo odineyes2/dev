@@ -276,6 +276,7 @@ try:
         page.fill("#decision-note", note + "끄기로")
         page.click("#decision-send"); page.wait_for_selector(".decision-state .status")
         assert "조건부 승인됨" in page.inner_text(".decision-state") and "끄기로" in page.inner_text(".decision-state")
+        assert page.locator(".decision-state blockquote").count() == 2   # 인용이 그대로 보이지 않고 인용 블록으로(DEV-18)
         page.screenshot(path=str(shots / "decision_done.png"), full_page=True)
         page.request.post(f"{BASE}/api/issues/{ref}/plans", data={"body": "v2"}, headers=H)
         page.reload(); page.wait_for_selector("#decision-actions")   # 같은 주소로 goto하면 다시 그리지 않는다

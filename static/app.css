@@ -277,3 +277,4 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 
 .checks{display:inline-flex;gap:14px;white-space:nowrap}
 .status + .status{margin-left:10px}
+.md blockquote{ margin:8px 0 2px; padding:2px 0 2px 12px; border-left:3px solid var(--border); color:var(--dim, inherit); }

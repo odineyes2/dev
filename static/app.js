@@ -87,6 +87,7 @@ function md(src){
       if((m = raw.match(/^(#{1,3})\s+/))){ flush(); out += `<h${m[1].length}>${inline(esc(raw.slice(m[0].length)))}</h${m[1].length}>`; }
       else if((m = raw.match(/^\s*[-*]\s+/))){ if(list !== 'ul'){ flush(); out += '<ul>'; list = 'ul'; } out += `<li>${inline(esc(raw.slice(m[0].length)))}</li>`; }
       else if((m = raw.match(/^\s*\d+\.\s+/))){ if(list !== 'ol'){ flush(); out += '<ol>'; list = 'ol'; } out += `<li>${inline(esc(raw.slice(m[0].length)))}</li>`; }
+      else if((m = raw.match(/^>\s?/))){ flush(); out += `<blockquote>${inline(esc(raw.slice(m[0].length)))}</blockquote>`; }
       else if(!raw.trim()){ flush(); }
       else { flush(); out += `<p>${line}</p>`; }
     }
