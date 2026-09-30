@@ -354,6 +354,52 @@ def post_plan(actor, ref, body) -> dict:
 VERDICT_LABEL = {"approve": "승인", "approve_notes": "조건부 승인", "reject": "거절"}
 
 
+def parse_tasks(body: str) -> list[dict]:
+    """계획서의 `## Tasks` 절: `N. 제목 | 파일: … | 확인: … | 선행: 1, 2` 한 줄이 Task 하나."""
+    m = re.search(r"^#{1,6}[ \t]*Tasks?[ \t]*$", body or "", re.M)
+    if not m:
+        return []
+    rest = body[m.end():]
+    nxt = re.search(r"^#{1,6}[ \t]", rest, re.M)
+    out = []
+    for line in (rest[:nxt.start()] if nxt else rest).splitlines():
+        mm = re.match(r"\s*(\d+)[.)]\s+(.+)", line)
+        if not mm:
+            continue
+        title, *fields = [x.strip() for x in mm.group(2).split("|")]
+        info = {k.strip(): v.strip() for k, _, v in (f.partition(":") for f in fields)}
+        out.append({"n": int(mm.group(1)), "title": title[:300], "files": info.get("파일", ""), "check": info.get("확인", ""),
+                    "after": [int(x) for x in re.findall(r"\d+", info.get("선행", ""))]})
+    return out
+
+
+def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
+    """승인 시 계획서의 Task를 하위 이슈로 만들고 선후관계를 잇는다. 이미 하위 이슈가 있으면 건너뛴다(재승인·이어 하기)."""
+    tasks = parse_tasks(plan_body)
+    if not tasks or c.execute("SELECT 1 FROM issues WHERE parent_id=?", (parent["id"],)).fetchone():
+        return 0
+    proj = c.execute("SELECT * FROM projects WHERE id=?", (parent["project_id"],)).fetchone()
+    now, ids, ref = db.now_iso(), {}, f"{proj['key']}-{parent['number']}"
+    for t in tasks:
+        body = f"{ref} 계획서 v{version}의 Task {t['n']}."
+        if t["files"]:
+            body += f"\n\n**바꿀 파일**: {t['files']}"
+        if t["check"]:
+            body += f"\n\n**확인**: {t['check']}"
+        if note.strip():
+            body += f"\n\n**{ref}의 조건부 승인 메모(계획서보다 우선)**:\n{note.strip()}"
+        number = c.execute("SELECT next_number FROM projects WHERE id=?", (proj["id"],)).fetchone()[0]
+        c.execute("UPDATE projects SET next_number=next_number+1 WHERE id=?", (proj["id"],))
+        ids[t["n"]] = c.execute("INSERT INTO issues(project_id, number, parent_id, title, body, status, priority, labels_json, reporter, "
+                                "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                (proj["id"], number, parent["id"], t["title"], body, "backlog", "none", "[]", actor_label(actor), now, now)).lastrowid
+    for t in tasks:
+        for a in t["after"]:
+            if a in ids and a != t["n"]:
+                c.execute("INSERT OR IGNORE INTO issue_deps(issue_id, blocked_by_id) VALUES(?,?)", (ids[t["n"]], ids[a]))
+    return len(tasks)
+
+
 def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
     """계획서에 대한 사람의 결정(게이트 1). 보고 있던 판(plan_version)이 최신이 아니면 409 — 안 본 계획서를 승인하지 않게.
     거절은 이슈를 closed로 닫는다(사유 = 메모). 승인은 기록만 한다 — 착수는 에이전트가 approval을 읽고 한다."""
@@ -376,7 +422,10 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
         c.execute("INSERT INTO decisions(issue_id, gate, plan_version, verdict, note, actor, created_at) VALUES(?,?,?,?,?,?,?)",
                   (row["id"], "plan", latest, verdict, note, actor_label(actor), db.now_iso()))
         if verdict != "reject":   # 거절은 아래 상태 변경 이벤트가 사유를 담는다
-            _event(c, row["id"], actor, "comment", f"**{VERDICT_LABEL[verdict]}** (계획서 v{latest})" + (f"\n\n{note}" if note.strip() else ""),
+            plan_body = c.execute("SELECT body FROM plans WHERE issue_id=? AND version=?", (row["id"], latest)).fetchone()[0]
+            made = _spawn_tasks(c, row, plan_body, latest, actor, note)
+            _event(c, row["id"], actor, "comment", f"**{VERDICT_LABEL[verdict]}** (계획서 v{latest})" + (f"\n\n{note}" if note.strip() else "")
+                   + (f"\n\n하위 Task {made}개를 만들었어요." if made else ""),
                    {"decision": verdict, "plan_version": latest})
             c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), row["id"]))
     if verdict == "reject":

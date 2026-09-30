@@ -161,6 +161,21 @@ with TestClient(A.app) as c:
     assert r["status"] == "closed" and r["approval"]["verdict"] == "reject" and "필요 없어짐" in r["events"][-1]["body"]
     assert dec(t, "approve", "", 2).status_code == 409   # 끝난 이슈
 
+    # 승인하면 계획서의 Tasks가 하위 이슈 + 선후관계로(DEV-20) — 한 번만, 메모는 Task에 실린다
+    p = ok(human("POST", "/api/issues", json={"project": "DEV", "title": "쪼갤 일", "status": "triage"}))["ref"]
+    plan = "## 방향\n가\n\n## Tasks\n1. 서버 | 파일: a.py | 확인: 테스트\n2. 화면 | 파일: b.js | 선행: 1\n3) 문서 | 선행: 1, 2\n\n## 정해야 할 것\n1. 이건 Task가 아님"
+    ok(a("POST", f"/api/issues/{p}/plans", json={"body": plan}))
+    r = ok(dec(p, "approve_notes", "화면은 다크모드도", 1))
+    kids = r["children"]
+    assert [k["title"] for k in kids] == ["서버", "화면", "문서"] and "하위 Task 3개" in r["events"][-1]["body"], kids
+    with db.connect() as cx:
+        deps = {(x[0], x[1]) for x in cx.execute("SELECT issue_id, blocked_by_id FROM issue_deps")}
+    ids = {k["title"]: cx_id for k in kids for cx_id in [ok(a("GET", f"/api/issues/{k['ref']}"))["id"]]}
+    assert {(ids["화면"], ids["서버"]), (ids["문서"], ids["서버"]), (ids["문서"], ids["화면"])} <= deps
+    assert "화면은 다크모드도" in ok(a("GET", f"/api/issues/{kids[0]['ref']}"))["body"] and "a.py" in ok(a("GET", f"/api/issues/{kids[0]['ref']}"))["body"]
+    assert len(ok(dec(p, "approve", "", 1))["children"]) == 3   # 다시 승인해도 늘지 않는다
+    assert issues.parse_tasks("## Tasks\n") == [] and issues.parse_tasks("Tasks 없음") == []
+
     # 쓰기 요청의 형식 오류
     assert c.post("/api/issues", content=b"not json", headers={**H, "content-type": "application/json"}).status_code == 400
 print("OK")
