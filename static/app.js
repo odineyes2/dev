@@ -399,13 +399,13 @@ function decisionHtml(it){
     : `<span class="status" style="--sc:var(--s-${VERDICT_COLOR[a.verdict]})">${VERDICT_LABEL[a.verdict]} · v${a.plan_version}</span> <span class="dim">${esc(actorName(a.actor))} · ${fmtTime(a.created_at)}</span>${a.note ? md(a.note) : ''}`;
   const busy = it.review_running;
   return `<div class="decision" id="decision"><div class="decision-state">${state}</div>
-    ${busy ? '<div class="dim hint">검토가 도는 중이라 끝나면 결정할 수 있어요.</div>' : `
+    ${busy ? '<div class="dim hint">검토가 도는 중이라 끝나면 결정할 수 있어요.</div>' : (a && !a.stale) ? '' : `
     <div id="decision-form" hidden><textarea id="decision-note"></textarea>
-      <div class="row-end"><button id="decision-cancel">Cancel</button><button id="decision-send" class="primary"></button></div></div>
+      <div class="row-end"><button id="decision-cancel">취소</button><button id="decision-send" class="primary"></button></div></div>
     <div class="review-actions" id="decision-actions">
-      <button data-verdict="approve"${it.status === 'in_review' ? '' : ' class="primary"'}>승인</button>
+      <button data-verdict="approve"${it.status === 'in_review' ? '' : ' class="primary"'}>계획 승인</button>
       <button data-verdict="approve_notes">메모 붙여 승인</button>
-      <button data-verdict="reject" class="danger">거절</button></div>`}</div>`;
+      <button data-verdict="reject" class="danger">계획 거절</button></div>`}</div>`;
 }
 // ---- 결과 결정(DEV-16): in_review에서 승인 → Done · 수정 요청 → Changes Requested · 거절 → Closed ----
 const RESULT_FORM = {
@@ -416,10 +416,24 @@ function resultHtml(it){
   if(it.status !== 'in_review') return '';
   return `<div class="panel"><h2>Result <span class="meta">결과를 확인해 주세요</span></h2>
     <div class="decision" id="result"><div id="result-form" hidden><textarea id="result-note"></textarea>
-      <div class="row-end"><button id="result-cancel">Cancel</button><button id="result-send"></button></div></div>
-    <div class="review-actions" id="result-actions"><button id="approve" class="primary">승인 → Done</button>
+      <div class="row-end"><button id="result-cancel">취소</button><button id="result-send"></button></div></div>
+    <div class="review-actions" id="result-actions"><button id="approve" class="primary">결과 승인 → 완료</button>
       <button data-to="changes_requested" id="request-changes">수정 요청</button>
-      <button data-to="closed" class="danger">거절</button></div></div></div>`;
+      <button data-to="closed" class="danger">결과 거절</button></div></div></div>`;
+}
+// ---- 단계 안내: 지금 어디이고 다음에 뭘 하면 되는지 한 줄 ----
+function stageHtml(it, liveMode){
+  const a = it.approval, x = it.execute, ok = a && !a.stale && a.verdict !== 'reject';
+  let msg = '';
+  if(['done', 'closed'].includes(it.status)) return '';
+  if(it.review_running) msg = liveMode === 'execute' ? 'Claude가 구현하는 중이에요 — 끝나면 결과 확인 단계로 올라와요.' : 'Claude가 검토하는 중이에요 — 끝나면 계획서가 올라와요.';
+  else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
+  else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → 오른쪽 “Claude에게 실행 맡기기”를 눌러 주세요.';
+  else if(!it.plan) msg = '계획서가 없어요 → 오른쪽 “Claude에게 검토 맡기기”로 계획서를 받아 보세요.';
+  else if(!ok) msg = '계획서 승인 대기 → 계획서 아래에서 승인·메모 붙여 승인·거절을 골라 주세요.';
+  else { const next = it.children.find(c => !['done', 'closed', 'in_review'].includes(c.status));
+    msg = next ? `계획 승인됨 → <a href="#/issue/${esc(next.ref)}">${esc(next.ref)}</a>에서 실행 맡기기` : it.children.length ? '모든 Task가 실행됐어요 — 결과를 확인해 주세요.' : '계획 승인됨.'; }
+  return `<div class="stage" id="stage">${msg}</div>`;
 }
 async function renderIssue(ref){
   const [it, { runs }] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), agentsById.size ? null : loadAgents()]);
@@ -432,19 +446,20 @@ async function renderIssue(ref){
         <div class="ref">${esc(it.ref)}${it.parent_ref ? ` · Task of <a href="#/issue/${esc(it.parent_ref)}">${esc(it.parent_ref)}</a>` : ''}</div>
         <h1 id="title">${titleHtml(it)}</h1>
         <div class="byline">${actorHtml(it.reporter)}<span>·</span><span>${fmtTime(it.created_at)}</span>${labelsHtml(it.labels)}</div>
-        <div class="panel"><h2>Description<span class="right"><button id="edit-body">Edit</button></span></h2>
+        ${stageHtml(it, liveMode)}
+        <div class="panel"><h2>Description<span class="right"><button id="edit-body">고치기</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
         <div class="panel"><h2>Plan${it.plan ? ` <span class="meta">v${it.plan.version} · ${esc(actorName(it.plan.author))} · ${fmtTime(it.plan.created_at)}</span>` : ''}
-          <span class="right">${it.plan && it.plan.version > 1 ? '<button id="plan-history">History</button>' : ''}<button id="edit-plan">${it.plan ? 'Revise' : 'Write'}</button></span></h2>
+          <span class="right">${it.plan && it.plan.version > 1 ? '<button id="plan-history">이전 판</button>' : ''}<button id="edit-plan">${it.plan ? '고쳐 쓰기' : '쓰기'}</button></span></h2>
           <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div>
           ${it.plan && !['done', 'closed'].includes(it.status) ? decisionHtml(it) : ''}</div>
         ${resultHtml(it)}
-        <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Add task</a></span></h2>
+        <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}</td><td>${statusHtml(ch.status)}${ch.claimed_by ? ` <span class="dim">${esc(actorName(ch.claimed_by))}</span>` : ''}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
-            <div class="row-end"><button id="send-comment" class="primary">Comment</button></div></div></div>
+            <div class="row-end"><button id="send-comment" class="primary">댓글 달기</button></div></div></div>
       </div>
       <aside class="side panel">
         <div class="field"><span>Status</span><select id="status">${STATUSES.map(s => `<option value="${s}"${s === it.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}</select></div>
@@ -455,11 +470,11 @@ async function renderIssue(ref){
           <button id="release" class="ghost">놓기</button>` : '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Claude</span>
-          <button id="ask-review"${it.review_busy ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running && liveMode !== 'execute' ? '검토 중…' : 'Claude에게 검토 맡기기'}</button>
-          <div class="dim hint">${it.review_busy && !it.review_running ? '다른 이슈에서 Claude가 일하는 중이에요.' : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>
+          <button id="ask-review"${it.review_busy ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running && liveMode !== 'execute' ? '검토 중…' : 'Claude에게 검토 맡기기'}</button>
+          <div class="dim hint"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>${it.review_busy && !it.review_running ? '다른 이슈에서 Claude가 일하는 중이에요.' : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>
           ${it.execute ? executeHtml(it, liveMode) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
-        <div class="field"><button id="delete" class="danger">Delete issue</button></div>
+        <div class="field"><button id="delete" class="danger">이슈 지우기</button></div>
       </aside>
     </div>`;
   const R = encodeURIComponent(it.ref);
@@ -526,7 +541,7 @@ async function renderIssue(ref){
 비용 상한은 $${it.execute.budget_usd}이고, 사용량은 이 서버에 로그인된 Claude 계정에서 나가요.`)) return;
     await api('POST', `/api/issues/${R}/execute`); toast('실행을 맡겼어요 — 끝나면 in_review로 올라와요'); reload();
   }));
-  $('ask-review').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
+  if($('ask-review')) $('ask-review').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
     if(!confirm(`${it.ref}을(를) Claude에게 검토 맡길까요?
 홈서버에서 Claude Code가 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
 사용량은 이 서버에 로그인된 Claude 계정에서 나가요.`)) return;
@@ -555,7 +570,7 @@ async function renderIssue(ref){
 }
 function editInPlace(box, value, save, title){
   box.innerHTML = `${title !== undefined ? `<input class="edit-title" style="width:100%;margin-bottom:6px" value="${esc(title)}">` : ''}
-    <textarea style="min-height:240px">${esc(value)}</textarea><div class="row-end" style="margin-top:6px"><button class="cancel">Cancel</button><button class="primary save">Save</button></div>`;
+    <textarea style="min-height:240px">${esc(value)}</textarea><div class="row-end" style="margin-top:6px"><button class="cancel">취소</button><button class="primary save">저장</button></div>`;
   box.querySelector('.cancel').addEventListener('click', route);
   box.querySelector('.save').addEventListener('click', () => {
     const t = box.querySelector('.edit-title');
@@ -578,7 +593,7 @@ function renderNew(params){
     <label>Title<input id="n-title" maxlength="300" placeholder="비워 두면 이슈를 맡은 에이전트가 본문을 보고 지어요"></label>
     <label>Description (마크다운)<textarea id="n-body" style="min-height:260px"></textarea></label>
     <label>Labels (쉼표로)<input id="n-labels"></label>
-    <div class="row-end"><a class="button" href="#/">Cancel</a><button class="primary" type="submit">Create</button></div>
+    <div class="row-end"><a class="button" href="#/">취소</a><button class="primary" type="submit">만들기</button></div>
   </form>`;
   view.querySelector('#n-title').focus();
   view.querySelector('#new-form').addEventListener('submit', (e) => { e.preventDefault(); whileBusy(submitBtn(e), async () => {
@@ -601,7 +616,7 @@ async function renderAgents(newKey){
       <label>Name<input id="a-name" required placeholder="claude-main"></label>
       <label>Vendor<input id="a-vendor" placeholder="anthropic / openai"></label>
       <label>Model<input id="a-model" placeholder="claude-opus-5-5"></label>
-      <label class="actions"><button class="primary" type="submit">Add agent</button></label></div></form>
+      <label class="actions"><button class="primary" type="submit">에이전트 추가</button></label></div></form>
     ${list.length ? `<table class="issues"><thead><tr><th>Name</th><th>Model</th><th class="hide-m">Key</th><th class="hide-m">Last seen</th><th>Enabled</th><th></th></tr></thead><tbody>
       ${list.map(a => `<tr><td>${esc(a.name)} <span class="dim">${esc(a.vendor)}</span></td><td>${esc(a.model)}</td>
         <td class="hide-m ref">${esc(a.key_prefix)}…</td><td class="hide-m dim">${a.last_seen_at ? fmtTime(a.last_seen_at) : '—'}</td>
@@ -641,12 +656,12 @@ function renderProjects(editKey){
       <label>Name<input id="p-name" required placeholder="nightshift" value="${esc(ed ? ed.name : '')}"></label>
       <label>Repository<input id="p-repo" placeholder="https://github.com/…" value="${esc(ed ? ed.repo_url : '')}"></label>
       <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
-      <label class="actions">${ed ? '<button type="button" id="p-cancel">Cancel</button><button class="primary" type="submit">Save</button>'
-        : '<button class="primary" type="submit">Add project</button>'}</label></div></form>
+      <label class="actions">${ed ? '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">저장</button>'
+        : '<button class="primary" type="submit">프로젝트 추가</button>'}</label></div></form>
     ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
-        <td><button class="ghost" data-edit="${esc(p.key)}">Edit</button></td></tr>`).join('')}
+        <td><button class="ghost" data-edit="${esc(p.key)}">고치기</button></td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">프로젝트가 없어요.</div>'}`;
   const val = (s) => view.querySelector(s).value;
   view.querySelector('#project-form').addEventListener('submit', (e) => { e.preventDefault(); whileBusy(submitBtn(e), async () => {

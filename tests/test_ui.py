@@ -110,7 +110,7 @@ try:
         page.screenshot(path=str(shots / "issue.png"), full_page=True)
 
         # 하위 Task
-        page.click("text=Add task")
+        page.click("text=Task 추가")
         page.fill("#n-title", "Task: 메뉴 UI"); page.click("#new-form button[type=submit]")
         page.wait_for_selector("text=Task of")
         assert page.url.endswith("#/issue/NS-1-1")
@@ -375,7 +375,7 @@ try:
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
         assert page.is_disabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec")
-        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review"); assert page.locator("#ask-execute").count() == 0
+        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review", state="attached"); assert page.locator("#ask-execute").count() == 0
 
         # 결과 거절 → 닫히고 사유가 남는다(DEV-16)
         rj = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결과 거절"}, headers=H).json()["ref"]

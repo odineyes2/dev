@@ -293,3 +293,5 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .exec{ margin-top:var(--sp-3); }
 .branch{ margin-top:var(--sp-2); }
 .branch pre{ margin:6px 0 0; font:12px/1.5 var(--mono); white-space:pre-wrap; word-break:break-all; color:var(--dim); }
+
+.stage{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel)}
