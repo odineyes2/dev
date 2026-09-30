@@ -263,7 +263,10 @@ async def api_create_issue(request: Request):
 
 @app.get("/api/issues/{ref}")
 def api_issue(ref: str):
-    return issues.get_issue(ref)
+    it = issues.get_issue(ref)
+    it["review_running"] = review.running_ref() == it["ref"]   # "Claude에게 검토 맡기기"가 도는 중(DEV-13)
+    it["review_busy"] = review.running_ref() is not None
+    return it
 
 
 @app.patch("/api/issues/{ref}")
@@ -312,6 +315,15 @@ async def api_claim(ref: str, request: Request):
 @app.post("/api/issues/{ref}/release")
 def api_release(ref: str, request: Request):
     return issues.release(actor(request), ref)
+
+
+# ---- Claude에게 검토 맡기기(DEV-13) — 홈서버에서 claude -p로 검토만 ----
+import review  # noqa: E402
+
+
+@app.post("/api/issues/{ref}/review")
+def api_review(ref: str, request: Request):
+    return review.start(actor(request), ref)
 
 
 # 화면 — API 라우트 뒤에 붙여야 /api가 가려지지 않는다(마운트는 반드시 마지막).

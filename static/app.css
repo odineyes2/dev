@@ -201,6 +201,7 @@ table.issues tr.row:hover{ background:var(--panel-2); }
 .side .field > span{ display:block; margin-bottom:6px; }
 .side select, .side input:not([type=checkbox]){ width:100%; }
 .side code{ font-family:var(--mono); font-size:12px; }
+.side .hint{ font-size:12px; margin-top:6px; line-height:1.5; }
 .review-actions{ display:flex; gap:6px; flex-wrap:wrap; }
 .md{ overflow-wrap:anywhere; line-height:1.7; }
 .md > :first-child{ margin-top:0; } .md > :last-child{ margin-bottom:0; }

@@ -336,6 +336,9 @@ async function renderIssue(ref){
         <div class="field"><span>Claimed</span>${it.claimed_by ? `${esc(actorName(it.claimed_by))} <span class="dim">~${new Date(it.lease_until).toLocaleTimeString()}</span>
           <button id="release" class="ghost">놓기</button>` : '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
+        <div class="field"><span>Claude</span>
+          <button id="ask-review"${it.review_busy ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running ? '검토 중…' : 'Claude에게 검토 맡기기'}</button>
+          <div class="dim hint">${it.review_busy && !it.review_running ? '다른 이슈를 검토하는 중이에요.' : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div></div>
         <div class="field"><button id="delete" class="danger">Delete issue</button></div>
       </aside>
     </div>`;
@@ -371,6 +374,14 @@ async function renderIssue(ref){
     });
   }
   if($('release')) $('release').addEventListener('click', async () => { await api('POST', `/api/issues/${R}/release`).catch(() => {}); reload(); });
+  // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게
+  $('ask-review').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
+    if(!confirm(`${it.ref}을(를) Claude에게 검토 맡길까요?
+홈서버에서 Claude Code가 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
+사용량은 이 서버에 로그인된 Claude 계정에서 나가요.`)) return;
+    await api('POST', `/api/issues/${R}/review`); toast('검토를 맡겼어요 — 몇 분 뒤 계획서가 올라와요'); reload();
+  }));
+  if(it.review_running) setTimeout(() => { if(location.hash === `#/issue/${it.ref}`) reload(); }, 15000);
   $('delete').addEventListener('click', async () => {
     if(!confirm(`${it.ref}을(를) 지울까요? 계획서·활동 기록도 같이 지워져요.`)) return;
     await api('DELETE', `/api/issues/${R}`); location.hash = '#/';
