@@ -269,6 +269,11 @@ def api_issue(ref: str):
     return it
 
 
+@app.get("/api/issues/{ref}/runs")
+def api_runs(ref: str):
+    return {"runs": review.list_runs(ref)}
+
+
 @app.patch("/api/issues/{ref}")
 async def api_update_issue(ref: str, request: Request):
     return issues.update_issue(actor(request), ref, await json_body(request))

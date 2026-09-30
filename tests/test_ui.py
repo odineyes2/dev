@@ -312,6 +312,29 @@ try:
         page.screenshot(path=str(shots / "tasks_deps.png"), full_page=True)
         row2.locator("a").click(); page.wait_for_function("() => document.querySelector('h1#title').innerText === '먼저'")
 
+        # 실행 기록(DEV-29) — 이슈 화면 옆줄에 상태·시간·토큰·로그 파일
+        import sqlite3
+        db = sqlite3.connect(tmp / "data" / "dev.db")
+        iid = db.execute("SELECT id FROM issues WHERE title='선후 시험'").fetchone()[0]
+        db.executemany("INSERT INTO runs(issue_id, mode, status, actor, started_at, ended_at, exit_code, log_file, input_tokens, output_tokens, cost_usd, note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [
+            (iid, "review", "ok", "human:admin", "2026-09-30T12:00:00+00:00", "2026-09-30T12:03:20+00:00", 0, f"{pr}-20260930-120000.log", 18500, 2300, 0.42, ""),
+            (iid, "review", "failed", "human:admin", "2026-09-30T12:10:00+00:00", "2026-09-30T12:10:05+00:00", 3, f"{pr}-20260930-121000.log", None, None, None, ""),
+            (iid, "review", "orphaned", "human:admin", "2026-09-30T12:20:00+00:00", "2026-09-30T12:25:00+00:00", None, "", None, None, None, "서버가 다시 떠서 끊겼어요")])
+        db.commit(); db.close()
+        assert len(page.request.get(f"{BASE}/api/issues/{pr}/runs").json()["runs"]) == 3
+        assert "runs" not in page.request.get(f"{BASE}/api/issues/{pr}").json()
+        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector(".runs li")
+        txt = page.inner_text(".runs")
+        assert "끊김" in txt and "실패" in txt and "3분 20초" in txt and "토큰 18.5k → 2.3k · $0.42" in txt and "서버가 다시 떠서" in txt, txt
+        assert page.locator(".runs li").first.inner_text().startswith("끊김")   # 최근 것이 먼저
+        for scheme in ("light", "dark"):
+            for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
+                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h}); page.wait_for_timeout(300)
+                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                page.screenshot(path=str(shots / f"runs_{scheme}_{tag}.png"), full_page=True)
+        page.set_viewport_size({"width": 1300, "height": 850})
+        page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("text=아직 실행 기록이 없어요")
+
         # 결과 거절 → 닫히고 사유가 남는다(DEV-16)
         rj = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결과 거절"}, headers=H).json()["ref"]
         page.request.post(f"{BASE}/api/issues/{rj}/status", data={"status": "in_review"}, headers=H)

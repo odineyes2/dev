@@ -326,6 +326,22 @@ function decisionQuestions(body){   // 계획서의 "정해야 할 것" 절의 �
   const rest = body.slice(m.index + m[0].length), next = rest.search(/^#{1,6}[ \t]/m);
   return (next < 0 ? rest : rest.slice(0, next)).split('\n').filter(l => /^\s*(\d+[.)]|[-*])\s/.test(l)).map(l => `> ${l.trim()}\n→ `).join('\n\n');
 }
+// ---- 실행 기록(DEV-29) ----
+const RUN_STATUS = { running: ['in_progress', '도는 중'], ok: ['done', '완료'], failed: ['changes_requested', '실패'], timeout: ['in_progress', '시간 초과'], orphaned: ['on_hold', '끊김'] };
+const RUN_MODE = { review: '검토', execute: '실행' };
+function fmtTokens(n){ return n == null ? '' : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
+function runsHtml(runs){
+  if(!runs.length) return '<div class="dim hint">아직 실행 기록이 없어요.</div>';
+  return `<ul class="runs">${runs.map(r => {
+    const [color, label] = RUN_STATUS[r.status] || ['closed', r.status];
+    const sec = r.ended_at ? Math.round((new Date(r.ended_at) - new Date(r.started_at)) / 1000) : null;
+    const dur = sec == null ? '' : sec >= 60 ? `${Math.floor(sec / 60)}분 ${sec % 60}초` : `${sec}초`;
+    const tok = r.input_tokens == null && r.output_tokens == null ? '' : `토큰 ${fmtTokens(r.input_tokens)} → ${fmtTokens(r.output_tokens)}${r.cost_usd != null ? ` · $${r.cost_usd.toFixed(2)}` : ''}`;
+    return `<li><div><span class="status" style="--sc:var(--s-${color})">${label}</span> ${RUN_MODE[r.mode] || r.mode} <span class="dim">${fmtTime(r.started_at)}</span></div>
+      <div class="dim">${[dur, tok].filter(Boolean).join(' · ')}</div>
+      ${r.note ? `<div class="dim">${esc(r.note)}</div>` : ''}${r.log_file ? `<div class="dim"><code>${esc(r.log_file)}</code></div>` : ''}</li>`;
+  }).join('')}</ul>`;
+}
 function decisionHtml(it){
   const a = it.approval;
   const state = !a ? '<span class="dim">아직 결정하지 않았어요.</span>'
@@ -356,7 +372,7 @@ function resultHtml(it){
       <button data-to="closed" class="danger">거절</button></div></div></div>`;
 }
 async function renderIssue(ref){
-  const [it] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), agentsById.size ? null : loadAgents()]);
+  const [it, { runs }] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), agentsById.size ? null : loadAgents()]);
   const agentOpts = ['<option value="">(없음)</option>'].concat([...agentsById.values()].map(a =>
     `<option value="${a.id}"${a.id === it.assignee_agent_id ? ' selected' : ''}>${esc(a.name)}</option>`)).join('');
   view.innerHTML = `
@@ -390,6 +406,7 @@ async function renderIssue(ref){
         <div class="field"><span>Claude</span>
           <button id="ask-review"${it.review_busy ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running ? '검토 중…' : 'Claude에게 검토 맡기기'}</button>
           <div class="dim hint">${it.review_busy && !it.review_running ? '다른 이슈를 검토하는 중이에요.' : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div></div>
+        <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
         <div class="field"><button id="delete" class="danger">Delete issue</button></div>
       </aside>
     </div>`;

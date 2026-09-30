@@ -278,3 +278,7 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .checks{display:inline-flex;gap:14px;white-space:nowrap}
 .status + .status{margin-left:10px}
 .md blockquote{ margin:8px 0 2px; padding:2px 0 2px 12px; border-left:3px solid var(--border); color:var(--dim, inherit); }
+.runs{ list-style:none; margin:0; padding:0; }
+.runs li{ padding:6px 0; font-size:13px; line-height:1.5; }
+.runs li + li{ border-top:1px solid var(--border); }
+.runs code{ word-break:break-all; }
