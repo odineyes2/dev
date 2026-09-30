@@ -376,6 +376,9 @@ try:
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
         assert page.is_disabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec")
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review", state="attached"); assert page.locator("#ask-execute").count() == 0
+        # 부모 화면에서 바로 실행(선행이 안 끝난 DEV-4-2는 버튼 없음, 삭제는 아이콘 하나)
+        page.wait_for_selector("tr.row"); n = page.locator(".run-task").count(); assert n <= 1, n
+        assert page.locator("#delete svg").count() == 1 and not page.text_content("#delete").strip()
 
         # 결과 거절 → 닫히고 사유가 남는다(DEV-16)
         rj = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결과 거절"}, headers=H).json()["ref"]

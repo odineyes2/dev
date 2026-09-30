@@ -435,6 +435,12 @@ function stageHtml(it, liveMode){
     msg = next ? `계획 승인됨 → <a href="#/issue/${esc(next.ref)}">${esc(next.ref)}</a>에서 실행 맡기기` : it.children.length ? '모든 Task가 실행됐어요 — 결과를 확인해 주세요.' : '계획 승인됨.'; }
   return `<div class="stage" id="stage">${msg}</div>`;
 }
+// 부모 화면에서 바로 실행: 계획 승인됨 · 선행 Task 끝 · 아직 안 한 Task · 다른 Claude 작업 없음(서버가 다시 확인한다)
+function canRun(it, ch){
+  const a = it.approval;
+  return a && !a.stale && a.verdict !== 'reject' && !it.review_busy && ['backlog', 'changes_requested'].includes(ch.status)
+    && (ch.blocked_by || []).every(b => ['done', 'closed'].includes(b.status));
+}
 async function renderIssue(ref){
   const [it, { runs }] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), agentsById.size ? null : loadAgents()]);
   const agentOpts = ['<option value="">(없음)</option>'].concat([...agentsById.values()].map(a =>
@@ -456,7 +462,8 @@ async function renderIssue(ref){
         ${resultHtml(it)}
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
-            <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}</td><td>${statusHtml(ch.status)}${ch.claimed_by ? ` <span class="dim">${esc(actorName(ch.claimed_by))}</span>` : ''}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
+            <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}</td><td>${statusHtml(ch.status)}${ch.claimed_by ? ` <span class="dim">${esc(actorName(ch.claimed_by))}</span>` : ''}</td>
+            <td>${canRun(it, ch) ? `<button class="run-task" data-ref="${esc(ch.ref)}"><svg class="ico"><use href="#i-bot"/></svg>실행 맡기기</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">댓글 달기</button></div></div></div>
@@ -474,7 +481,7 @@ async function renderIssue(ref){
           <div class="dim hint"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>${it.review_busy && !it.review_running ? '다른 이슈에서 Claude가 일하는 중이에요.' : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>
           ${it.execute ? executeHtml(it, liveMode) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
-        <div class="field"><button id="delete" class="danger">이슈 지우기</button></div>
+        <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
       </aside>
     </div>`;
   const R = encodeURIComponent(it.ref);
@@ -533,6 +540,12 @@ async function renderIssue(ref){
     $('decision-cancel').addEventListener('click', () => { $('decision-form').hidden = true; $('decision-actions').hidden = false; });
     $('decision-send').addEventListener('click', (e) => whileBusy(e.currentTarget, () => send(verdict, $('decision-note').value)));
   }
+  view.querySelectorAll('.run-task').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); whileBusy(b, async () => {
+    if(!confirm(`${b.dataset.ref}을(를) Claude에게 실행 맡길까요?
+홈서버에서 relay/${b.dataset.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+사용량은 이 서버에 로그인된 Claude 계정에서 나가요.`)) return;
+    await api('POST', `/api/issues/${encodeURIComponent(b.dataset.ref)}/execute`); toast('실행을 맡겼어요 — 끝나면 in_review로 올라와요'); reload();
+  }); }));
   if($('release')) $('release').addEventListener('click', async () => { await api('POST', `/api/issues/${R}/release`).catch(() => {}); reload(); });
   // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게
   if($('ask-execute')) $('ask-execute').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
