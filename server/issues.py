@@ -380,9 +380,10 @@ def parse_tasks(body: str) -> list[dict]:
 
 def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
     """승인 시 계획서의 Task를 하위 이슈로 만들고 선후관계를 잇는다. 이미 하위 이슈가 있으면 건너뛴다(재승인·이어 하기)."""
-    tasks = parse_tasks(plan_body)
-    if not tasks or c.execute("SELECT 1 FROM issues WHERE parent_id=?", (parent["id"],)).fetchone():
+    if parent["parent_id"] or c.execute("SELECT 1 FROM issues WHERE parent_id=?", (parent["id"],)).fetchone():
         return 0
+    # 계획서에 Tasks 절이 없으면(작은 일) 이슈 자체를 Task 하나로 — 실행은 Task에만 붙는다
+    tasks = parse_tasks(plan_body) or [{"n": 1, "title": parent["title"], "files": "", "check": "", "after": []}]
     proj = c.execute("SELECT * FROM projects WHERE id=?", (parent["project_id"],)).fetchone()
     now, ids, ref = db.now_iso(), {}, f"{proj['key']}-{parent['number']}"
     for t in tasks:

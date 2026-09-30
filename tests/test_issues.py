@@ -176,6 +176,16 @@ with TestClient(A.app) as c:
     assert len(ok(dec(p, "approve", "", 1))["children"]) == 3   # 다시 승인해도 늘지 않는다
     assert issues.parse_tasks("## Tasks\n") == [] and issues.parse_tasks("Tasks 없음") == []
 
+    # Tasks 절이 없는 계획서도 승인하면 이슈 자체가 Task 하나로 — 그 Task를 다시 승인해도 손자는 없다
+    q = ok(human("POST", "/api/issues", json={"project": "DEV", "title": "작은 일", "status": "triage"}))["ref"]
+    ok(a("POST", f"/api/issues/{q}/plans", json={"body": "## 방향\n작다"}))
+    r = ok(dec(q, "approve", "", 1))
+    assert [k["title"] for k in r["children"]] == ["작은 일"] and "하위 Task 1개" in r["events"][-1]["body"], r["children"]
+    assert len(ok(dec(q, "approve", "", 1))["children"]) == 1
+    kid = r["children"][0]["ref"]
+    ok(a("POST", f"/api/issues/{kid}/plans", json={"body": "세부"}))
+    assert ok(dec(kid, "approve", "", 1))["children"] == []
+
     # 쓰기 요청의 형식 오류
     assert c.post("/api/issues", content=b"not json", headers={**H, "content-type": "application/json"}).status_code == 400
 print("OK")
