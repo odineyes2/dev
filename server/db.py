@@ -116,6 +116,25 @@ MIGRATIONS = [
     );
     CREATE INDEX decisions_issue ON decisions(issue_id, id);
     """,
+    # 헤드리스 실행 기록(DEV-22) — 'running'인 행이 곧 "지금 도는 것". 서버가 뜰 때 남아 있는 running은 orphaned로 바꾼다.
+    """
+    CREATE TABLE runs (
+        id INTEGER PRIMARY KEY,
+        issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL CHECK (mode IN ('review','execute')),
+        status TEXT NOT NULL CHECK (status IN ('running','ok','failed','timeout','orphaned')),
+        actor TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        exit_code INTEGER,
+        log_file TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cost_usd REAL,
+        note TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX runs_issue ON runs(issue_id, id);
+    """,
 ]
 
 
@@ -144,6 +163,8 @@ def init() -> int:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         for i, sql in enumerate(MIGRATIONS[version:], start=version + 1):
             conn.executescript("BEGIN;" + sql + f"PRAGMA user_version={i};COMMIT;")
+        conn.execute("UPDATE runs SET status='orphaned', ended_at=?, note='서버가 다시 떠서 끊겼어요' WHERE status='running'", (now_iso(),))
+        conn.commit()
         return conn.execute("PRAGMA user_version").fetchone()[0]
     finally:
         conn.close()

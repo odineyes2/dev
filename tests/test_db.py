@@ -40,4 +40,18 @@ with db.connect() as c:
     c.execute("INSERT INTO events(issue_id, actor, kind, created_at) VALUES(?, 'h', 'comment', ?)", (iid, now))
     c.execute("DELETE FROM issues WHERE id=?", (iid,))
     assert c.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0   # 이슈를 지우면 타임라인도
+# runs(DEV-22) — mode·status 제약, 서버가 다시 뜰 때 running은 orphaned로
+with db.connect() as c:
+    iid = c.execute("INSERT INTO issues(project_id, number, title, reporter, created_at, updated_at) VALUES(?, 2, 't', 'human:admin', ?, ?)",
+                    (pid, now, now)).lastrowid
+assert rejected("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'x', 'running', 'h', ?)", (iid, now))
+assert rejected("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'nope', 'h', ?)", (iid, now))
+with db.connect() as c:
+    c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'running', 'h', ?)", (iid, now))
+    c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'ok', 'h', ?)", (iid, now))
+db.init()
+with db.connect() as c:
+    assert [r[0] for r in c.execute("SELECT status FROM runs ORDER BY id")] == ["orphaned", "ok"]
+    c.execute("DELETE FROM issues WHERE id=?", (iid,))
+    assert c.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0   # 이슈를 지우면 기록도
 print("OK")
