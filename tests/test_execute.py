@@ -76,4 +76,74 @@ assert "Bash" not in allowed and "Bash(git push:*)" not in allowed and "Bash(pyt
 assert {"Bash(git push:*)", "Bash(git checkout:*)", "Bash(rm:*)", "WebFetch"} <= set(blocked_tools)
 assert not set(allowed) & set(blocked_tools) and "mcp__dev__post_plan" not in allowed
 assert "T-1" in cmd[2] and "T-0" in cmd[2] and "relay/T-1" in cmd[2]
+
+# ---- 시작 API — 조건 검사·runs 기록·worktree에서 실행 ----
+import time  # noqa: E402
+import httpx  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+import app as A, auth, db, review  # noqa: E402
+
+auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
+    lambda req: httpx.Response(200, json={"user": {"id": 1, "username": "admin", "role": "admin"}})))
+H = {"X-Requested-With": "dev"}
+fake = tmp / "fake_claude.py"
+fake.write_text("import json, os, sys, time\ntime.sleep(float(sys.argv[1]))\n"
+                "print(json.dumps({'result': 'cwd=' + os.getcwd() + ' cfg=' + os.environ.get('GIT_CONFIG_COUNT', '-'), 'usage': {'output_tokens': 5}, 'total_cost_usd': 0.1}))\n"
+                "sys.exit(int(sys.argv[2]))\n", "utf-8")
+behave = {"sleep": "2", "code": "0"}
+execute.command_for = lambda ref, parent, mcp: [sys.executable, str(fake), behave["sleep"], behave["code"]]
+
+
+def wait_idle():
+    for _ in range(80):
+        if not review.running_ref():
+            break
+        time.sleep(0.2)
+    time.sleep(0.3)
+
+
+db.init()
+me = {"kind": "human", "name": "admin"}
+issues.create_project(me, "EX", "ex", "", str(repo))
+issues.create_issue(me, "EX", "부모", status="triage")
+issues.post_plan(me, "EX-1", "## Tasks\n1. 먼저\n2. 나중 | 선행: 1")
+issues.decide(me, "EX-1", "approve", "", plan_version=1)   # EX-2(먼저), EX-3(나중, 선행 EX-2)
+issues.create_issue(me, "EX", "미승인 부모", status="triage"); issues.post_plan(me, "EX-4", "계획")
+issues.create_issue(me, "EX", "미승인 Task", parent="EX-4")
+
+with TestClient(A.app) as c:
+    c.cookies.set("ns_session", "adm")
+    key = c.post("/api/agents", json={"name": "a"}, headers=H).json()["key"]
+    post = lambda ref: c.post(f"/api/issues/{ref}/execute", headers=H)
+    assert c.post("/api/issues/EX-2/execute", headers={"Authorization": f"Bearer {key}"}).status_code == 403
+    assert post("EX-9").status_code == 404
+    assert "Task" in post("EX-1").json()["detail"]                    # 부모(Task 아님)
+    assert "승인되지 않았어요" in post("EX-5").json()["detail"]          # 계획서 미승인
+    r = post("EX-3"); assert r.status_code == 409 and "EX-2" in r.json()["detail"], r.text   # 선행 미완료
+    assert not execute.worktree_path("EX-3").exists() and review.list_runs("EX-3") == []
+
+    r = post("EX-2"); assert r.status_code == 200 and r.json()["branch"] == "relay/EX-2", r.text
+    assert execute.worktree_path("EX-2").is_dir() and review.running_ref() == "EX-2"
+    assert post("EX-3").status_code == 409                            # 한 번에 하나(선행이 아직이라 이유는 다르지만 거절)
+    issues.set_status(me, "EX-2", "done")
+    assert "돌고 있어요" in post("EX-3").json()["detail"]              # 선행 done → 이제는 실행 중이라서 거절
+    wait_idle()
+    run = review.list_runs("EX-2")[0]
+    assert run["mode"] == "execute" and run["status"] == "ok" and run["output_tokens"] == 5 and run["cost_usd"] == 0.1, run
+    log = (Path(os.environ["DEV_DATA_DIR"]) / "reviews" / run["log_file"]).read_text("utf-8")
+    cwd = log.split("cwd=")[1].split(" cfg=")[0]
+    assert os.path.samefile(cwd, execute.worktree_path("EX-2")), cwd    # worktree에서 실행
+    assert "cfg=2" in log, log                                          # remote 1개 pushurl + credential.helper — 안전한 환경으로 실행됨
+    assert any("실행을 맡겼어요" in e["body"] for e in issues.get_issue("EX-2")["events"])
+
+    r = post("EX-3"); assert r.status_code == 200, r.text            # 선행 done, 아무것도 안 돌 때
+    wait_idle()
+    behave.update(sleep="0", code="3")
+    issues.set_status(me, "EX-3", "changes_requested", "고쳐 주세요")
+    post("EX-3"); wait_idle()
+    last = review.list_runs("EX-3")[0]
+    assert last["status"] == "failed" and last["exit_code"] == 3
+    assert "실행 작업이 끝나지 못했어요" in issues.get_issue("EX-3")["events"][-1]["body"]
+    assert len(review.list_runs("EX-3")) == 2 and execute.worktree_path("EX-3").is_dir()   # 같은 worktree에서 이어서
+    assert post("EX-2").status_code == 409                            # done인 Task는 다시 못 맡김
 print("OK")

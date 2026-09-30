@@ -85,18 +85,25 @@ def start(actor: dict, ref: str) -> dict:
         raise issues.StoreError("검토는 사람만 맡길 수 있어요.", 403)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
+    log_path, run_id = begin(actor, issue, "review")
+    issues.add_comment(actor, ref, "🔎 Claude에게 검토를 맡겼어요 — 홈서버에서 검토만 해요(코드 수정 없음). 몇 분 뒤 계획서가 올라와요.")
+    threading.Thread(target=run_headless, args=(actor, ref, log_path, run_id, command_for(ref), PROJECTS_DIR, None, TIMEOUT_SEC, "검토"),
+                     daemon=True).start()
+    return {"started": True, "ref": ref}
+
+
+def begin(actor: dict, issue: dict, mode: str) -> tuple[Path, int]:
+    """한 번에 하나만 — 도는 것이 있으면 409, 없으면 runs에 running 행을 만들고 (로그 경로, run id)를 돌려준다."""
     with _lock:
         busy = running_ref()
         if busy:
-            raise issues.StoreError(f"{busy} 검토가 아직 돌고 있어요 — 끝나면 다시 눌러 주세요.", 409)
+            raise issues.StoreError(f"{busy} 실행이 아직 돌고 있어요 — 끝나면 다시 눌러 주세요.", 409)
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log_path = LOG_DIR / f"{ref}-{time.strftime('%Y%m%d-%H%M%S')}.log"
+        log_path = LOG_DIR / f"{issue['ref']}-{time.strftime('%Y%m%d-%H%M%S')}.log"
         with db.connect() as c:
-            run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file) VALUES(?, 'review', 'running', ?, ?, ?)",
-                               (issue["id"], issues.actor_label(actor), db.now_iso(), log_path.name)).lastrowid
-    issues.add_comment(actor, ref, "🔎 Claude에게 검토를 맡겼어요 — 홈서버에서 검토만 해요(코드 수정 없음). 몇 분 뒤 계획서가 올라와요.")
-    threading.Thread(target=_run, args=(actor, ref, log_path, run_id), daemon=True).start()
-    return {"started": True, "ref": ref}
+            run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file) VALUES(?, ?, 'running', ?, ?, ?)",
+                               (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name)).lastrowid
+    return log_path, run_id
 
 
 def _parse(out: str) -> tuple[str, dict]:
@@ -111,18 +118,27 @@ def _parse(out: str) -> tuple[str, dict]:
         return out, {}
 
 
-def _run(actor: dict, ref: str, log_path: Path, run_id: int) -> None:
+def _kill_tree(proc) -> None:
+    """시간 초과 — claude가 띄운 자식(bash·python)까지 같이 끝낸다."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        proc.kill()
+
+
+def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[str], cwd, env, timeout: float, label: str) -> None:
+    """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     code, note, status, out, err = None, "", "ok", "", ""
     try:
-        proc = subprocess.Popen(command_for(ref), cwd=PROJECTS_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+        proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                stdin=subprocess.DEVNULL, env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"})
         try:
-            out, err = proc.communicate(timeout=TIMEOUT_SEC)
+            out, err = proc.communicate(timeout=timeout)
             code = proc.returncode
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_tree(proc)
             out, err = proc.communicate()
-            status, note = "timeout", f"{int(TIMEOUT_SEC // 60)}분 안에 끝나지 않아 멈췄어요"
+            status, note = "timeout", f"{int(timeout // 60)}분 안에 끝나지 않아 멈췄어요"
     except OSError as e:
         status, note = "failed", f"Claude Code를 실행하지 못했어요({e})"
     if code:
@@ -133,4 +149,4 @@ def _run(actor: dict, ref: str, log_path: Path, run_id: int) -> None:
         c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=?",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
     if note or code:
-        issues.add_comment(actor, ref, f"⚠️ Claude 검토가 끝나지 못했어요 — {note or f'종료 코드 {code}'}. 로그: `{log_path.name}`")
+        issues.add_comment(actor, ref, f"⚠️ Claude {label} 작업이 끝나지 못했어요 — {note or f'종료 코드 {code}'}. 로그: `{log_path.name}`")

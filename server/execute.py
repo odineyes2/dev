@@ -13,6 +13,7 @@
 """
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 import config
@@ -113,3 +114,43 @@ def branch_info(repo: str, ref: str) -> dict | None:
         return None
     return {"branch": branch, "base": BASE_BRANCH, "commits": int(_git(repo, "rev-list", "--count", f"{BASE_BRANCH}..{branch}")),
             "diff_stat": _git(repo, "diff", "--stat", f"{BASE_BRANCH}...{branch}")}
+
+
+def blocked_reason(issue: dict, parent: dict | None) -> str | None:
+    """이 Task를 지금 실행 맡길 수 없는 이유(있으면). 서버가 시작할 때와 화면 버튼이 같이 쓴다."""
+    if not issue.get("parent_ref") or parent is None:
+        return "Task(하위 이슈)만 실행을 맡길 수 있어요."
+    if issue["status"] not in ("backlog", "changes_requested"):
+        return f"{issue['status']} 상태에서는 실행을 맡길 수 없어요 — Backlog나 Changes Requested일 때만이에요."
+    a = parent.get("approval")
+    if not a or a["stale"] or a["verdict"] == "reject":
+        return f"부모 {parent['ref']}의 계획서가 승인되지 않았어요."
+    waiting = [b["ref"] for b in issue["blocked_by"] if b["status"] != "done"]
+    if waiting:
+        return f"선행 Task({', '.join(waiting)})가 done이 되어야 해요."
+    return None
+
+
+def start(actor: dict, ref: str) -> dict:
+    """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409."""
+    import review
+    if actor["kind"] != "human":
+        raise issues.StoreError("실행은 사람만 맡길 수 있어요.", 403)
+    issue = issues.get_issue(ref)   # 없으면 404
+    ref = issue["ref"]
+    parent = issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None
+    why = blocked_reason(issue, parent)
+    if why:
+        raise issues.StoreError(why, 409)
+    busy = review.running_ref()
+    if busy:
+        raise issues.StoreError(f"{busy} 실행이 아직 돌고 있어요 — 끝나면 다시 눌러 주세요.", 409)
+    repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
+    worktree = prepare_worktree(repo, ref)
+    log_path, run_id = review.begin(actor, issue, "execute")
+    issues.add_comment(actor, ref, f"🛠 Claude에게 실행을 맡겼어요 — `{branch_name(ref)}` 브랜치의 worktree에서 구현해요"
+                                   f"(push 없음, 비용 상한 ${BUDGET_USD:g}). 끝나면 in_review로 올라와요.")
+    cmd = command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
+    threading.Thread(target=review.run_headless, args=(actor, ref, log_path, run_id, cmd, worktree, safe_env(repo), TIMEOUT_SEC, "실행"),
+                     daemon=True).start()
+    return {"started": True, "ref": ref, "branch": branch_name(ref)}

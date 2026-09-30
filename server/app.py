@@ -324,6 +324,12 @@ def api_release(ref: str, request: Request):
 
 # ---- Claude에게 검토 맡기기(DEV-13) — 홈서버에서 claude -p로 검토만 ----
 import review  # noqa: E402
+import execute  # noqa: E402
+
+
+@app.post("/api/issues/{ref}/execute")
+def api_execute(ref: str, request: Request):
+    return execute.start(actor(request), ref)
 
 
 @app.post("/api/issues/{ref}/review")
