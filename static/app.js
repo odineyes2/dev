@@ -336,6 +336,20 @@ function decisionHtml(it){
       <button data-verdict="approve_notes">메모 붙여 승인</button>
       <button data-verdict="reject" class="danger">거절</button></div>`}</div>`;
 }
+// ---- 결과 결정(DEV-16): in_review에서 승인 → Done · 수정 요청 → Changes Requested · 거절 → Closed ----
+const RESULT_FORM = {
+  changes_requested: { placeholder: '무엇을 더 해야 하나요? (에이전트가 읽는 사람의 지시예요)', send: '수정 요청', cls: 'primary' },
+  closed: { placeholder: '거절 이유 (예: 방향이 달라서 접기로 함)', send: '거절하고 닫기', cls: 'danger' },
+};
+function resultHtml(it){
+  if(it.status !== 'in_review') return '';
+  return `<div class="panel"><h2>Result <span class="meta">결과를 확인해 주세요</span></h2>
+    <div class="decision" id="result"><div id="result-form" hidden><textarea id="result-note"></textarea>
+      <div class="row-end"><button id="result-cancel">Cancel</button><button id="result-send"></button></div></div>
+    <div class="review-actions" id="result-actions"><button id="approve" class="primary">승인 → Done</button>
+      <button data-to="changes_requested" id="request-changes">수정 요청</button>
+      <button data-to="closed" class="danger">거절</button></div></div></div>`;
+}
 async function renderIssue(ref){
   const [it] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), agentsById.size ? null : loadAgents()]);
   const agentOpts = ['<option value="">(없음)</option>'].concat([...agentsById.values()].map(a =>
@@ -352,6 +366,7 @@ async function renderIssue(ref){
           <span class="right">${it.plan && it.plan.version > 1 ? '<button id="plan-history">History</button>' : ''}<button id="edit-plan">${it.plan ? 'Revise' : 'Write'}</button></span></h2>
           <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div>
           ${it.plan && !['done', 'closed'].includes(it.status) ? decisionHtml(it) : ''}</div>
+        ${resultHtml(it)}
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Add task</a></span></h2>
           ${it.children.length ? `<table class="issues">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}</td><td>${statusHtml(ch.status)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
@@ -361,8 +376,6 @@ async function renderIssue(ref){
       </div>
       <aside class="side panel">
         <div class="field"><span>Status</span><select id="status">${STATUSES.map(s => `<option value="${s}"${s === it.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}</select></div>
-        ${it.status === 'in_review' ? `<div class="field"><span>Review</span><div class="review-actions">
-          <button id="approve" class="primary">Approve → Done</button><button id="request-changes">Request changes</button></div></div>` : ''}
         <div class="field"><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
         <div class="field"><span>Assignee</span><select id="assignee">${agentOpts}</select></div>
         <div class="field"><span>Labels (쉼표로)</span><input id="labels" value="${esc(it.labels.join(', '))}"></div>
@@ -400,10 +413,18 @@ async function renderIssue(ref){
   });
   if($('approve')){
     $('approve').addEventListener('click', () => setStatus('done'));
-    $('request-changes').addEventListener('click', async () => {
-      const note = prompt('무엇을 더 해야 하나요?');
-      if(note === null) return;
-      await api('POST', `/api/issues/${R}/status`, { status: 'changes_requested', note }).catch(() => {}); reload();
+    let to = null;
+    $('result-actions').querySelectorAll('[data-to]').forEach(b => b.addEventListener('click', () => {
+      to = b.dataset.to; const f = RESULT_FORM[to];
+      $('result-form').hidden = false; $('result-actions').hidden = true;
+      $('result-note').value = ''; $('result-note').placeholder = f.placeholder;
+      $('result-send').textContent = f.send; $('result-send').className = f.cls; $('result-note').focus();
+    }));
+    $('result-cancel').addEventListener('click', () => { $('result-form').hidden = true; $('result-actions').hidden = false; });
+    $('result-send').addEventListener('click', (e) => {
+      const note = $('result-note').value.trim();
+      if(!note){ toast('메모를 적어 주세요'); return; }
+      whileBusy(e.currentTarget, () => setStatus(to, note));
     });
   }
   if($('decision-actions')){

@@ -102,6 +102,9 @@ try:
         page.select_option("#status", "in_review")
         page.wait_for_selector("#approve")
         page.click("#request-changes")
+        page.click("#result-send"); page.wait_for_timeout(200)   # 메모 없이는 안 보낸다
+        assert page.evaluate("document.getElementById('status').value") == "in_review"
+        page.fill("#result-note", "모바일도 확인해 주세요"); page.click("#result-send")
         page.wait_for_function("document.getElementById('status').value === 'changes_requested'")
         assert "모바일도 확인해 주세요" in page.inner_text(".timeline")
         page.screenshot(path=str(shots / "issue.png"), full_page=True)
@@ -298,6 +301,16 @@ try:
         assert page.get_attribute("tr.row", "data-ref") == ok
         page.screenshot(path=str(shots / "list_approved.png"), full_page=True)
         page.uncheck("#only-approved")
+
+        # 결과 거절 → 닫히고 사유가 남는다(DEV-16)
+        rj = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결과 거절"}, headers=H).json()["ref"]
+        page.request.post(f"{BASE}/api/issues/{rj}/status", data={"status": "in_review"}, headers=H)
+        page.goto(BASE + f"/#/issue/{rj}"); page.wait_for_selector("#result-actions")
+        page.click("#result-actions [data-to=closed]"); page.screenshot(path=str(shots / "result_form.png"), full_page=True)
+        page.fill("#result-note", "방향이 달라서"); page.click("#result-send")
+        page.wait_for_function("location.hash === '#/'")
+        got = page.request.get(f"{BASE}/api/issues/{rj}").json()
+        assert got["status"] == "closed" and "방향이 달라서" in str(got["events"]), got
 
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
