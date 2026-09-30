@@ -51,6 +51,11 @@ function fmtTime(iso){
 function titleHtml(i){ return i.title_missing ? '<span class="dim">(제목 없음 — 에이전트가 지어요)</span>' : esc(i.title); }
 function statusHtml(s){ return `<span class="status" style="--sc:var(--s-${esc(s)})">${esc(STATUS_LABEL[s] || s)}</span>`; }
 function prioHtml(p){ return p && p !== 'none' ? `<span class="prio ${esc(p)}">${esc(p)}</span>` : ''; }
+function approvalHtml(a){   // 계획서 결정 배지 — 새 판이 올라와 무효가 된 것은 흐리게
+  if(!a) return '';
+  if(a.stale) return `<span class="status dim" style="--sc:var(--s-in_progress)" title="새 계획서가 올라와 결정이 무효예요">결정 무효</span>`;
+  return `<span class="status" style="--sc:var(--s-${VERDICT_COLOR[a.verdict]})">${VERDICT_LABEL[a.verdict]}</span>`;
+}
 function labelsHtml(ls){ return (ls || []).map(l => `<span class="label">${esc(l)}</span>`).join(''); }
 function actorName(a){
   if(!a) return '';
@@ -194,7 +199,7 @@ let listLoad = null;   // { seq, qs, offset, done, busy, seen }
 function issueRowHtml(i){
   return `<tr class="row" data-ref="${esc(i.ref)}"><td class="ref">${esc(i.ref)}</td>
     <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
-    <td>${statusHtml(i.status)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
+    <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
     <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td></tr>`;
 }
 async function renderList(){
@@ -204,7 +209,8 @@ async function renderList(){
       <select id="list-project" title="프로젝트별로 보기">${projectOptionsHtml()}</select>
       <input class="grow" id="q" placeholder="제목·본문 검색" value="${esc(st.q)}">
       <div class="chips">${STATUSES.map(s => `<span class="chip${st.statuses.includes(s) ? ' on' : ''}" data-st="${s}">${STATUS_LABEL[s]}</span>`).join('')}</div>
-      <label class="dim"><input type="checkbox" id="show-closed" ${st.closed ? 'checked' : ''}> 끝난 것도</label>
+      <span class="checks"><label class="dim"><input type="checkbox" id="show-closed" ${st.closed ? 'checked' : ''}> 끝난 것도</label>
+      <label class="dim"><input type="checkbox" id="only-approved" ${st.approved ? 'checked' : ''}> 승인된 것만</label></span>
     </div>
     <div id="list-body"></div><div id="list-more" class="list-more"></div>`;
   const save = (patch) => { localStorage.setItem('dev.list', JSON.stringify({ ...listState(), ...patch })); loadList(); };
@@ -216,6 +222,7 @@ async function renderList(){
     save({ statuses: cur.includes(s) ? cur.filter(x => x !== s) : [...cur, s] });
   }));
   view.querySelector('#show-closed').addEventListener('change', (e) => save({ closed: e.target.checked }));
+  view.querySelector('#only-approved').addEventListener('change', (e) => save({ approved: e.target.checked }));
   // 프로젝트 필터(DEV-11) — 탭 줄의 전역 필터와 같은 값(dev.project)을 쓴다. 여기서 바꾸면 그쪽도 따라간다.
   view.querySelector('#list-project').addEventListener('change', (e) => {
     localStorage.setItem('dev.project', e.target.value); projectSel.value = e.target.value; loadList();
@@ -231,7 +238,7 @@ async function renderList(){
 async function loadList(){
   const st = listState();
   const statuses = st.statuses.length ? st.statuses : (st.closed ? [] : OPEN_STATUSES);
-  listLoad = { qs: { project: currentProject(), status: statuses.join(','), q: st.q }, offset: 0, done: false, busy: false, seen: new Set() };
+  listLoad = { qs: { project: currentProject(), status: statuses.join(','), q: st.q, ...(st.approved ? { approved: 'true' } : {}) }, offset: 0, done: false, busy: false, seen: new Set() };
   view.querySelector('#list-body').innerHTML = '';
   await loadMoreIssues();
 }
@@ -269,7 +276,7 @@ async function renderBoard(){
     const mine = items.filter(i => i.status === s);
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
-        <div class="t">${titleHtml(i)}</div><div class="meta">${prioHtml(i.priority)}${labelsHtml(i.labels)}
+        <div class="t">${titleHtml(i)}</div><div class="meta">${prioHtml(i.priority)}${approvalHtml(i.approval)}${labelsHtml(i.labels)}
         ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div></div>`).join('')}
     </div></div>`;
   }).join('')}</div>`;

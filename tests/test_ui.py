@@ -286,6 +286,18 @@ try:
         page.wait_for_function("location.hash === '#/'")
         assert page.request.get(f"{BASE}/api/issues/{ref}").json()["status"] == "closed"
 
+        # 목록의 승인 배지와 "승인된 것만" 필터(DEV-17)
+        ok = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "승인된 이슈"}, headers=H).json()["ref"]
+        page.request.post(f"{BASE}/api/issues/{ok}/plans", data={"body": "p"}, headers=H)
+        page.request.post(f"{BASE}/api/issues/{ok}/decision", data={"verdict": "approve", "plan_version": 1}, headers=H)
+        page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector("tr.row")
+        assert "승인됨" in page.inner_text(f'tr.row[data-ref="{ok}"]')
+        page.check("#only-approved")
+        page.wait_for_function("() => document.querySelectorAll('tr.row').length === 1")
+        assert page.get_attribute("tr.row", "data-ref") == ok
+        page.screenshot(path=str(shots / "list_approved.png"), full_page=True)
+        page.uncheck("#only-approved")
+
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert not errs, errs

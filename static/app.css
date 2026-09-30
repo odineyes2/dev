@@ -274,3 +274,6 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
   .side{ padding:var(--sp-1) var(--sp-4); }
   .detail h1{ font-size:21px; }
 }
+
+.checks{display:inline-flex;gap:14px;white-space:nowrap}
+.status + .status{margin-left:10px}
