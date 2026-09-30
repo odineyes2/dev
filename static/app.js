@@ -30,6 +30,15 @@ async function api(method, url, body){
   if(!res.ok){ const msg = (data && data.detail) || `요청이 실패했어요(${res.status}).`; toast(msg); throw new Error(msg); }
   return data;
 }
+// 저장 버튼은 요청이 끝날 때까지 막는다 — 두 번 눌러(모바일 두 번 탭) 같은 이슈가 두 번 저장되던 문제(DEV-12).
+async function whileBusy(btn, fn){
+  if(!btn || btn.disabled) return;
+  btn.disabled = true;
+  try{ return await fn(); }
+  catch(e){ /* api()가 이미 알림을 띄웠다 */ }
+  finally{ if(btn.isConnected) btn.disabled = false; }
+}
+function submitBtn(e){ return e.submitter || e.target.querySelector('[type=submit]'); }
 function fmtTime(iso){
   if(!iso) return '';
   const d = new Date(iso), diff = (Date.now() - d) / 1000;
@@ -357,11 +366,11 @@ async function renderIssue(ref){
     if(!confirm(`${it.ref}을(를) 지울까요? 계획서·활동 기록도 같이 지워져요.`)) return;
     await api('DELETE', `/api/issues/${R}`); location.hash = '#/';
   });
-  $('send-comment').addEventListener('click', async () => {
+  $('send-comment').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
     const body = $('comment').value;
     if(!body.trim()) return;
     await api('POST', `/api/issues/${R}/comments`, { body }); reload();
-  });
+  }));
   $('edit-body').addEventListener('click', () => editInPlace($('body'), it.body, async (v, title) => {
     await api('PATCH', `/api/issues/${R}`, title.trim() ? { body: v, title } : { body: v }); reload();   // 제목을 비워 두면 그대로(에이전트가 지음)
   }, it.title));
@@ -401,15 +410,14 @@ function renderNew(params){
     <div class="row-end"><a class="button" href="#/">Cancel</a><button class="primary" type="submit">Create</button></div>
   </form>`;
   view.querySelector('#n-title').focus();
-  view.querySelector('#new-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
+  view.querySelector('#new-form').addEventListener('submit', (e) => { e.preventDefault(); whileBusy(submitBtn(e), async () => {
     const it = await api('POST', '/api/issues', {
       project: view.querySelector('#n-project').value, title: view.querySelector('#n-title').value, body: view.querySelector('#n-body').value,
       priority: view.querySelector('#n-priority').value, status: view.querySelector('#n-status').value,
       labels: view.querySelector('#n-labels').value.split(',').map(s => s.trim()).filter(Boolean), parent: parent || undefined,
     });
     location.hash = `#/issue/${it.ref}`;
-  });
+  }); });
 }
 
 // ---- 에이전트 ----
@@ -431,11 +439,10 @@ async function renderAgents(newKey){
       </tbody></table>` : '<div class="empty">등록된 에이전트가 없어요.</div>'}`;
   const $ = (s) => view.querySelector(s);
   if(newKey) $('#copy-key').addEventListener('click', () => navigator.clipboard.writeText(newKey.key).then(() => toast('복사했어요')));
-  $('#agent-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
+  $('#agent-form').addEventListener('submit', (e) => { e.preventDefault(); whileBusy(submitBtn(e), async () => {
     const r = await api('POST', '/api/agents', { name: $('#a-name').value, vendor: $('#a-vendor').value, model: $('#a-model').value });
     renderAgents({ name: r.agent.name, key: r.key });
-  });
+  }); });
   view.querySelectorAll('[data-toggle]').forEach(cb => cb.addEventListener('change', async () => {
     await api('PATCH', `/api/agents/${cb.dataset.toggle}`, { enabled: cb.checked }).catch(() => {}); renderAgents();
   }));
@@ -471,14 +478,13 @@ function renderProjects(editKey){
         <td><button class="ghost" data-edit="${esc(p.key)}">Edit</button></td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">프로젝트가 없어요.</div>'}`;
   const val = (s) => view.querySelector(s).value;
-  view.querySelector('#project-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
+  view.querySelector('#project-form').addEventListener('submit', (e) => { e.preventDefault(); whileBusy(submitBtn(e), async () => {
     const fields = { name: val('#p-name'), repo_url: val('#p-repo'), local_path: val('#p-path') };
     if(ed) await api('PATCH', `/api/projects/${ed.key}`, fields);
     else await api('POST', '/api/projects', { key: val('#p-key'), ...fields });
     await loadProjects(); renderProjects();
     toast(ed ? '고쳤어요' : '만들었어요');
-  });
+  }); });
   if(ed){ view.querySelector('#p-cancel').addEventListener('click', () => renderProjects()); view.querySelector('#p-name').focus(); }
   view.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { renderProjects(b.dataset.edit); window.scrollTo(0, 0); }));
   view.querySelectorAll('[data-archive]').forEach(cb => cb.addEventListener('change', async () => {

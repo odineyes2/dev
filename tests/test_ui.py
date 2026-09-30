@@ -244,6 +244,15 @@ try:
         page.wait_for_function("location.hash.startsWith('#/issue/NS-')")
         assert "제목 없음" in page.inner_text("h1#title")
 
+        # Create를 연달아 두 번 눌러도 한 번만 저장(DEV-12)
+        page.goto(BASE + "/#/new"); page.wait_for_selector("#n-body")
+        page.fill("#n-title", "두 번 누르기 시험"); page.fill("#n-body", "본문")
+        page.evaluate("() => { const b = document.querySelector('#new-form button[type=submit]'); b.click(); b.click(); b.click(); }")
+        page.wait_for_function("location.hash.startsWith('#/issue/NS-')")
+        page.wait_for_timeout(500)
+        same = [i for i in page.request.get(f"{BASE}/api/issues?q=두 번 누르기 시험").json()["issues"]]
+        assert len(same) == 1, same
+
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert not errs, errs
