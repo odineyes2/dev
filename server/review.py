@@ -7,12 +7,14 @@
   → 코드 수정·push·재시작을 할 수 없다. 파일은 Read/Grep/Glob으로 읽기만.
 - `--strict-mcp-config --mcp-config <.mcp.json>`: dev MCP만 붙인다(에이전트 키 = claude-main). 그 도구도 이슈 읽기·계획서·
   댓글·상태·제목 채우기로 한정한다(dev 서버의 권한 규칙상 done/closed·지우기·사람 본문 고치기는 원래 못 한다).
-- 한 번에 하나만(비용), 시간 제한(DEV_REVIEW_TIMEOUT_SEC).
+- 한 번에 하나만(비용, runs에서 status='running'인 행이 있으면 거절), 시간 제한(DEV_REVIEW_TIMEOUT_SEC).
+- 실행마다 runs에 한 줄(시작·끝·결과·토큰·비용). 출력은 JSON(`usage`·`total_cost_usd`)이고, 읽지 못하면 토큰은 비워 두고 실행 결과는 그대로 둔다.
 - 사용량은 이 서버에 로그인된 Claude 계정에서 나간다.
 
 환경변수: DEV_CLAUDE_BIN(기본: PATH의 claude 또는 ~/.local/bin/claude.exe), DEV_REVIEW_CWD(기본: 저장소들이 있는
 Projects 폴더), DEV_REVIEW_MCP_CONFIG(기본: <Projects>/.mcp.json), DEV_REVIEW_TIMEOUT_SEC(기본 1200).
 """
+import json
 import os
 import shutil
 import subprocess
@@ -21,6 +23,7 @@ import time
 from pathlib import Path
 
 import config
+import db
 import issues
 
 PROJECTS_DIR = Path(os.environ.get("DEV_REVIEW_CWD") or config.REPO_ROOT.parent)
@@ -33,7 +36,6 @@ ALLOWED_TOOLS = ["Read", "Grep", "Glob"] + [f"mcp__dev__{t}" for t in (
 BLOCKED_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]
 
 _lock = threading.Lock()
-_running: dict | None = None   # {"ref", "started", "proc"} — 한 번에 하나
 
 
 def claude_bin() -> str:
@@ -60,12 +62,21 @@ def prompt_for(ref: str) -> str:
 def command_for(ref: str) -> list[str]:
     return [claude_bin(), "-p", prompt_for(ref), "--restricted", "--strict-mcp-config", "--mcp-config", str(MCP_CONFIG),
             "--allowedTools", *ALLOWED_TOOLS, "--disallowedTools", *BLOCKED_TOOLS,
-            "--no-session-persistence", "--output-format", "text"]
+            "--no-session-persistence", "--output-format", "json"]
 
 
 def running_ref() -> str | None:
-    with _lock:
-        return _running["ref"] if _running else None
+    with db.connect() as c:
+        r = c.execute("SELECT i.project_id, i.number, p.key FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id "
+                      "WHERE r.status='running' ORDER BY r.id DESC LIMIT 1").fetchone()
+    return f"{r['key']}-{r['number']}" if r else None
+
+
+def list_runs(ref: str) -> list[dict]:
+    """이슈의 실행 기록, 최근 것이 먼저."""
+    iid = issues.get_issue(ref)["id"]
+    with db.connect() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM runs WHERE issue_id=? ORDER BY id DESC", (iid,))]
 
 
 def start(actor: dict, ref: str) -> dict:
@@ -74,37 +85,52 @@ def start(actor: dict, ref: str) -> dict:
         raise issues.StoreError("검토는 사람만 맡길 수 있어요.", 403)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
-    global _running
     with _lock:
-        if _running:
-            raise issues.StoreError(f"{_running['ref']} 검토가 아직 돌고 있어요 — 끝나면 다시 눌러 주세요.", 409)
+        busy = running_ref()
+        if busy:
+            raise issues.StoreError(f"{busy} 검토가 아직 돌고 있어요 — 끝나면 다시 눌러 주세요.", 409)
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"{ref}-{time.strftime('%Y%m%d-%H%M%S')}.log"
-        _running = {"ref": ref, "started": time.time(), "log": log_path}
+        with db.connect() as c:
+            run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file) VALUES(?, 'review', 'running', ?, ?, ?)",
+                               (issue["id"], issues.actor_label(actor), db.now_iso(), log_path.name)).lastrowid
     issues.add_comment(actor, ref, "🔎 Claude에게 검토를 맡겼어요 — 홈서버에서 검토만 해요(코드 수정 없음). 몇 분 뒤 계획서가 올라와요.")
-    threading.Thread(target=_run, args=(actor, ref, log_path), daemon=True).start()
+    threading.Thread(target=_run, args=(actor, ref, log_path, run_id), daemon=True).start()
     return {"started": True, "ref": ref}
 
 
-def _run(actor: dict, ref: str, log_path: Path) -> None:
-    global _running
-    code, note = None, ""
+def _parse(out: str) -> tuple[str, dict]:
+    """JSON 출력에서 (결과 글, 토큰·비용)을 뽑는다. 읽지 못하면 원문과 빈 dict."""
     try:
-        with open(log_path, "w", encoding="utf-8") as log:
-            proc = subprocess.Popen(command_for(ref), cwd=PROJECTS_DIR, stdout=log, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-            with _lock:
-                if _running:
-                    _running["proc"] = proc
-            try:
-                code = proc.wait(timeout=TIMEOUT_SEC)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                note = f"{int(TIMEOUT_SEC // 60)}분 안에 끝나지 않아 멈췄어요"
+        d = json.loads(out)
+        u = d.get("usage") or {}
+        stats = {"input_tokens": (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0),
+                 "output_tokens": u.get("output_tokens"), "cost_usd": d.get("total_cost_usd")}
+        return str(d.get("result") or ""), stats if u else {}
+    except (ValueError, AttributeError, TypeError):
+        return out, {}
+
+
+def _run(actor: dict, ref: str, log_path: Path, run_id: int) -> None:
+    code, note, status, out, err = None, "", "ok", "", ""
+    try:
+        proc = subprocess.Popen(command_for(ref), cwd=PROJECTS_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+        try:
+            out, err = proc.communicate(timeout=TIMEOUT_SEC)
+            code = proc.returncode
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            status, note = "timeout", f"{int(TIMEOUT_SEC // 60)}분 안에 끝나지 않아 멈췄어요"
     except OSError as e:
-        note = f"Claude Code를 실행하지 못했어요({e})"
-    finally:
-        with _lock:
-            _running = None
+        status, note = "failed", f"Claude Code를 실행하지 못했어요({e})"
+    if code:
+        status = "failed"
+    text, stats = _parse(out)
+    log_path.write_text(text + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
+    with db.connect() as c:
+        c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=?",
+                  (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
     if note or code:
         issues.add_comment(actor, ref, f"⚠️ Claude 검토가 끝나지 못했어요 — {note or f'종료 코드 {code}'}. 로그: `{log_path.name}`")
