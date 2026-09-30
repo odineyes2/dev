@@ -105,7 +105,7 @@ function inline(s){
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
-    .replace(/\b([A-Z][A-Z0-9]{0,9}-\d+)\b/g, '<a href="#/issue/$1">$1</a>');
+    .replace(/\b([A-Z][A-Z0-9]{0,9}-\d+(?:-\d+)?)\b/g, '<a href="#/issue/$1">$1</a>');
 }
 
 // ---- 로그인 ----
@@ -203,10 +203,40 @@ function listState(){ return JSON.parse(localStorage.getItem('dev.list') || '{"s
 const LIST_PAGE = 50;
 let listLoad = null;   // { seq, qs, offset, done, busy, seen }
 function issueRowHtml(i){
-  return `<tr class="row" data-ref="${esc(i.ref)}"><td class="ref">${esc(i.ref)}</td>
+  return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
     <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
     <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td></tr>`;
+}
+// Task는 부모 바로 아래에 들여써서 붙이고(부모가 아직 안 왔으면 오는 순간 끌어온다) 접고 펼 수 있다. 접힘은 부모 ref별로 기억한다.
+function collapsedSet(){ return new Set(JSON.parse(localStorage.getItem('dev.collapsed') || '[]')); }
+function kidRows(tbody, ref){ return [...tbody.querySelectorAll('tr.row[data-parent]')].filter(r => r.dataset.parent === ref); }
+function refreshKids(tbody, parentTr){
+  const kids = kidRows(tbody, parentTr.dataset.ref), open = !collapsedSet().has(parentTr.dataset.ref);
+  if(!kids.length) return;
+  if(!parentTr.querySelector('.tog')){
+    parentTr.querySelector('td.ref').insertAdjacentHTML('afterbegin', '<button class="tog" type="button"><i></i></button>');
+    parentTr.querySelector('.title-cell').insertAdjacentHTML('beforeend', '<div class="sub kids"></div>');
+  }
+  const b = parentTr.querySelector('.tog');
+  b.setAttribute('aria-expanded', String(open)); b.setAttribute('aria-label', open ? 'Task 접기' : 'Task 펼치기');
+  parentTr.querySelector('.kids').textContent = `Tasks ${kids.length}`;
+  kids.forEach(k => { k.hidden = !open; });
+}
+function placeRow(tbody, i){
+  const tr = document.createElement('tbody'); tr.innerHTML = issueRowHtml(i);
+  const row = tr.firstElementChild;
+  const parentTr = i.parent_ref && [...tbody.children].find(r => r.dataset.ref === i.parent_ref);
+  if(parentTr){
+    const sibs = kidRows(tbody, i.parent_ref);
+    (sibs.length ? sibs[sibs.length - 1] : parentTr).after(row);
+    refreshKids(tbody, parentTr);
+    return;
+  }
+  tbody.append(row);
+  const kids = kidRows(tbody, i.ref);
+  kids.reverse().forEach(k => row.after(k));
+  refreshKids(tbody, row);
 }
 async function renderList(){
   const st = listState();
@@ -234,6 +264,14 @@ async function renderList(){
     localStorage.setItem('dev.project', e.target.value); projectSel.value = e.target.value; loadList();
   });
   view.querySelector('#list-body').addEventListener('click', (e) => {
+    const tog = e.target.closest('.tog');
+    if(tog){
+      const tr = tog.closest('tr.row'), set = collapsedSet();
+      set.has(tr.dataset.ref) ? set.delete(tr.dataset.ref) : set.add(tr.dataset.ref);
+      localStorage.setItem('dev.collapsed', JSON.stringify([...set]));
+      refreshKids(tr.parentElement, tr);
+      return;
+    }
     const r = e.target.closest('tr.row');
     if(r) location.hash = `#/issue/${r.dataset.ref}`;
   });
@@ -268,7 +306,7 @@ async function loadMoreIssues(){
       <th class="hide-m">Claimed</th><th class="hide-m">Updated</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
   }
   const tbody = body.querySelector('tbody');
-  if(tbody) tbody.insertAdjacentHTML('beforeend', items.map(issueRowHtml).join(''));
+  if(tbody) items.forEach(i => placeRow(tbody, i));
   more.textContent = '';
   // 한 화면이 다 안 찼으면 바로 다음 묶음
   if(!L.done && more.getBoundingClientRect().top < window.innerHeight + 400) loadMoreIssues();

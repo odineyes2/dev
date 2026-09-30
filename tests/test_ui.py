@@ -113,7 +113,7 @@ try:
         page.click("text=Add task")
         page.fill("#n-title", "Task: 메뉴 UI"); page.click("#new-form button[type=submit]")
         page.wait_for_selector("text=Task of")
-        assert page.url.endswith("#/issue/NS-2")
+        assert page.url.endswith("#/issue/NS-1-1")
 
         # 목록 — 기본은 열린 것만, 검색
         page.goto(BASE + "/#/")
@@ -123,11 +123,31 @@ try:
         page.fill("#q", ""); page.wait_for_function("document.querySelectorAll('tr.row').length === 2")
         page.screenshot(path=str(shots / "list.png"))
 
+        # Task는 부모 바로 아래에 들여써서 붙고, 접으면 숨고, 새로고침해도 기억한다
+        kids = lambda: page.evaluate("[...document.querySelectorAll('tr.row')].map(r => r.dataset.ref + (r.hidden ? ':hidden' : ''))")
+        assert kids() == ["NS-1", "NS-1-1"], kids()   # 부모 다음에 자식
+        assert page.locator('tr.row[data-ref="NS-1-1"]').get_attribute("class").split() == ["row", "child"]
+        assert page.text_content('tr.row[data-ref="NS-1"] .kids') == "Tasks 1"
+        page.click('tr.row[data-ref="NS-1"] .tog')
+        assert "NS-1-1:hidden" in kids() and page.get_attribute('tr.row[data-ref="NS-1"] .tog', "aria-expanded") == "false"
+        assert page.url.endswith("#/") or page.url.endswith("/")   # 토글은 상세로 이동하지 않는다
+        page.reload(); page.wait_for_selector("tr.row"); page.wait_for_selector(".tog")
+        assert "NS-1-1:hidden" in kids()
+        page.screenshot(path=str(shots / "list_collapsed.png"))
+        page.click('tr.row[data-ref="NS-1"] .tog')
+        assert "NS-1-1" in kids() and page.get_attribute('tr.row[data-ref="NS-1"] .tog', "aria-expanded") == "true"
+        for scheme in ("light", "dark"):
+            for w, h, tag in ((1300, 700, "desktop"), (390, 700, "mobile")):
+                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h}); page.wait_for_timeout(300)
+                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                page.screenshot(path=str(shots / f"list_tree_{scheme}_{tag}.png"))
+        page.emulate_media(color_scheme="light"); page.set_viewport_size({"width": 1300, "height": 850})
+
         # 칸반 — 끌어서 상태 바꾸기
         page.click("[data-nav=board]")
-        page.wait_for_selector('.card[data-ref="NS-2"]')
-        page.drag_and_drop('.card[data-ref="NS-2"]', '.col[data-col="in_progress"] .cards')
-        page.wait_for_selector('.col[data-col="in_progress"] .card[data-ref="NS-2"]')
+        page.wait_for_selector('.card[data-ref="NS-1-1"]')
+        page.drag_and_drop('.card[data-ref="NS-1-1"]', '.col[data-col="in_progress"] .cards')
+        page.wait_for_selector('.col[data-col="in_progress"] .card[data-ref="NS-1-1"]')
         page.screenshot(path=str(shots / "board.png"))
 
         # 에이전트 — 키는 한 번만
@@ -194,13 +214,13 @@ try:
 
         # Approve → Done이면 목록으로 돌아간다(DEV-5), 상태 칸에서 Closed를 골라도
         page.set_viewport_size({"width": 1300, "height": 850})
-        page.request.post(f"{BASE}/api/issues/NS-2/status", data={"status": "in_review"}, headers={"X-Requested-With": "dev"})
-        page.goto(BASE + "/#/issue/NS-2"); page.wait_for_selector("#approve")
+        page.request.post(f"{BASE}/api/issues/NS-1-1/status", data={"status": "in_review"}, headers={"X-Requested-With": "dev"})
+        page.goto(BASE + "/#/issue/NS-1-1"); page.wait_for_selector("#approve")
         page.click("#approve")
         page.wait_for_function("location.hash === '#/'")
-        assert "NS-2을(를) 끝냈어요" in page.inner_text("#toast")
+        assert "NS-1-1을(를) 끝냈어요" in page.inner_text("#toast")
         page.wait_for_selector("tr.row")
-        assert "NS-2" not in page.inner_text("table.issues")   # 기본 목록은 끝난 것을 숨긴다
+        assert "NS-1-1" not in page.inner_text("table.issues")   # 기본 목록은 끝난 것을 숨긴다
         page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("#status")
         # Closed는 사유를 묻는다(DEV-6) — 취소·빈칸이면 닫지 않고 원래 상태로
         answers[:] = [None]
@@ -215,10 +235,10 @@ try:
         page.wait_for_function("location.hash === '#/'")
         ev = page.request.get(f"{BASE}/api/issues/NS-1").json()["events"][-1]
         assert ev["kind"] == "status" and ev["data"]["to"] == "closed" and ev["body"] == "NS-3과 중복", ev
-        page.goto(BASE + "/#/issue/NS-2"); page.wait_for_selector("#status")
+        page.goto(BASE + "/#/issue/NS-1-1"); page.wait_for_selector("#status")
         page.select_option("#status", "in_progress")   # 끝내는 게 아니면 그 자리에 머문다
         page.wait_for_function("document.getElementById('status') && document.getElementById('status').value === 'in_progress'")
-        assert page.evaluate("location.hash") == "#/issue/NS-2"
+        assert page.evaluate("location.hash") == "#/issue/NS-1-1"
 
         # 목록 나눠 읽기(DEV-7) — 처음 50개, 끝까지 내리면 더 붙는다
         for n in range(110):
@@ -230,7 +250,7 @@ try:
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_function("document.querySelectorAll('tr.row').length === 100")
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_function("document.querySelectorAll('tr.row').length === 111")   # NS-2(in_progress) + 110
+        page.wait_for_function("document.querySelectorAll('tr.row').length === 111")   # NS-1-1(in_progress) + 110
         refs = page.evaluate("[...document.querySelectorAll('tr.row')].map(r => r.dataset.ref)")
         assert len(refs) == len(set(refs))
         # 검색하면 처음부터, 검색 글칸 포커스 유지
@@ -339,22 +359,22 @@ try:
         gitrepo = tmp / "gitrepo"; gitrepo.mkdir()
         g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=gitrepo, check=True, capture_output=True)
         g("init", "-q", "-b", "main"); (gitrepo / "a.txt").write_text("a\n"); g("add", "."); g("commit", "-qm", "init")
-        g("checkout", "-q", "-b", "relay/DEV-5"); (gitrepo / "new_feature.py").write_text("x = 1\n"); g("add", "."); g("commit", "-qm", "feat (DEV-5)"); g("checkout", "-q", "main")
+        g("checkout", "-q", "-b", "relay/DEV-4-1"); (gitrepo / "new_feature.py").write_text("x = 1\n"); g("add", "."); g("commit", "-qm", "feat (DEV-4-1)"); g("checkout", "-q", "main")
         page.request.patch(f"{BASE}/api/projects/DEV", data={"local_path": str(gitrepo)}, headers=H)
-        t5, t6 = f"{BASE}/api/issues/DEV-5", f"{BASE}/api/issues/DEV-6"
-        assert page.request.get(t5).json()["execute"]["blocked"] is None and "DEV-5" in page.request.get(t6).json()["execute"]["blocked"]
+        t5, t6 = f"{BASE}/api/issues/DEV-4-1", f"{BASE}/api/issues/DEV-4-2"
+        assert page.request.get(t5).json()["execute"]["blocked"] is None and "DEV-4-1" in page.request.get(t6).json()["execute"]["blocked"]
         assert page.request.get(f"{BASE}/api/issues/{pr}").json()["execute"] is None     # Task가 아니면 없음
         for scheme in ("light", "dark"):
             for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
                 page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
-                page.goto(BASE + "/#/issue/DEV-5"); page.reload(); page.wait_for_selector("#ask-execute")
+                page.goto(BASE + "/#/issue/DEV-4-1"); page.reload(); page.wait_for_selector("#ask-execute")
                 assert page.is_enabled("#ask-execute") and "비용 상한 $2" in page.inner_text(".exec")
-                txt = page.inner_text(".exec .branch"); assert "relay/DEV-5" in txt and "커밋 1개" in txt and "new_feature.py" in txt and "git merge relay/DEV-5" in txt, txt
+                txt = page.inner_text(".exec .branch"); assert "relay/DEV-4-1" in txt and "커밋 1개" in txt and "new_feature.py" in txt and "git merge relay/DEV-4-1" in txt, txt
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
-        page.goto(BASE + "/#/issue/DEV-6"); page.reload(); page.wait_for_selector("#ask-execute")
-        assert page.is_disabled("#ask-execute") and "선행 Task(DEV-5)가 done이 되어야 해요" in page.inner_text(".exec")
+        page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
+        assert page.is_disabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec")
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review"); assert page.locator("#ask-execute").count() == 0
 
         # 결과 거절 → 닫히고 사유가 남는다(DEV-16)

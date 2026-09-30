@@ -166,6 +166,14 @@ table.issues th{ height:38px; background:var(--panel-2); }
 table.issues tr:last-child td{ border-bottom:none; }
 table.issues tr.row{ cursor:pointer; transition:background .1s; }
 table.issues tr.row:hover{ background:var(--panel-2); }
+table.issues tr[hidden]{ display:none; }
+table.issues tr.child td.ref{ padding-left:calc(var(--sp-4) + 24px); }
+table.issues tr.child td:first-child{ box-shadow:inset 2px 0 0 var(--border); }
+.tog{ all:unset; cursor:pointer; box-sizing:border-box; width:20px; height:20px; margin:0 4px 0 -6px; display:inline-flex; align-items:center; justify-content:center; color:var(--dim); vertical-align:middle; }
+.tog:hover{ color:var(--text); }
+.tog:focus-visible{ outline:2px solid currentColor; outline-offset:-2px; }
+.tog i{ width:6px; height:6px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:translateY(-2px) rotate(45deg); transition:transform .1s; }
+.tog[aria-expanded="false"] i{ transform:translateX(-2px) rotate(-45deg); }
 .title-cell{ font-weight:500; }
 .title-cell .sub{ font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:var(--track-label); color:var(--faint); font-weight:500; }
 .list-more{ min-height:1px; padding:14px; text-align:center; color:var(--dim); font-size:13px; }
