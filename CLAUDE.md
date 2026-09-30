@@ -15,6 +15,7 @@
 - `.env` 내용을 출력하지 않는다. 비밀번호·키를 명령 인자나 채팅으로 다루지 않는다.
 - 사람 로그인은 nightshift가 맡는다(`ns_session` 쿠키 → nightshift `/api/auth/me`, admin만). dev는 nightshift DB를 열지 않는다.
 - 에이전트는 이슈를 `done`/`closed`로 바꾸거나 지울 수 없다 — 종결은 사람 몫.
+- 계획서 결정(승인·조건부 승인·거절)은 사람만 한다(`decisions` 테이블, gate='plan'). 결정은 계획서 판에 붙고 새 판이 올라오면 stale. 조건부 승인의 메모는 계획서보다 우선하는 사람의 지시다. 착수 전 `get_issue`의 `approval`을 읽는다.
 
 ## 스타일
 - **화면을 만들거나 고치기 전에 `docs/DESIGN.md`(dev·nightshift 공통 디자인 방향)를 읽고 따른다.** 끝나면 낮·밤 × 데스크톱·모바일을 캡처로 확인.

@@ -121,7 +121,11 @@ def update_project(actor, key, fields: dict) -> dict:
 
 
 # ---- 이슈 ----
-_ISSUE_SELECT = "SELECT i.*, p.key AS project_key FROM issues i JOIN projects p ON p.id = i.project_id"
+_LAST_DECISION = "(SELECT {} FROM decisions d WHERE d.issue_id=i.id AND d.gate='plan' ORDER BY d.id DESC LIMIT 1)"
+_DEC_VERDICT, _DEC_VERSION = _LAST_DECISION.format("verdict"), _LAST_DECISION.format("plan_version")
+_LATEST_PLAN = "(SELECT MAX(version) FROM plans pl WHERE pl.issue_id=i.id)"
+_ISSUE_SELECT = (f"SELECT i.*, p.key AS project_key, {_DEC_VERDICT} AS dec_verdict, {_DEC_VERSION} AS dec_version, "
+                 f"{_LATEST_PLAN} AS latest_plan FROM issues i JOIN projects p ON p.id = i.project_id")
 
 
 def _lease_active(row, now=None) -> bool:
@@ -138,6 +142,9 @@ def _issue_dict(r) -> dict:
     d["ref"] = f"{d['project_key']}-{d['number']}"
     d["title_missing"] = title_missing(d["title"])
     d["labels"] = json.loads(d.pop("labels_json") or "[]")
+    verdict, version, latest = d.pop("dec_verdict"), d.pop("dec_version"), d.pop("latest_plan")
+    # 결정은 그 계획서 판에 붙는다 — 새 판이 올라오면 stale(승인이 무효, 다시 결정해야 한다)
+    d["approval"] = {"verdict": verdict, "plan_version": version, "stale": version != latest} if verdict else None
     if not _lease_active(r):
         d["claimed_by"] = None
         d["lease_until"] = None
@@ -174,9 +181,12 @@ def _priority(value) -> str:
     return v
 
 
-def list_issues(project=None, status=None, assignee=None, parent=None, q=None, limit=500, offset=0) -> list[dict]:
-    """status: 목록 또는 쉼표 문자열. parent: 이슈 ref(그 하위만) 또는 "none"(최상위만). offset부터 limit개(나눠 읽기)."""
+def list_issues(project=None, status=None, assignee=None, parent=None, q=None, limit=500, offset=0, approved=False) -> list[dict]:
+    """status: 목록 또는 쉼표 문자열. parent: 이슈 ref(그 하위만) 또는 "none"(최상위만). offset부터 limit개(나눠 읽기).
+    approved: 최신 계획서가 승인(조건부 포함)된 이슈만."""
     where, args = [], []
+    if approved:
+        where.append(f"{_DEC_VERDICT} IN ('approve','approve_notes') AND {_DEC_VERSION} = {_LATEST_PLAN}")
     if project:
         where.append("p.key=?"); args.append(str(project).upper())
     if status:
@@ -210,6 +220,9 @@ def get_issue(ref) -> dict:
         d = _issue_dict(row)
         plan = c.execute("SELECT * FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1", (row["id"],)).fetchone()
         d["plan"] = dict(plan) if plan else None
+        dec = c.execute("SELECT * FROM decisions WHERE issue_id=? AND gate='plan' ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
+        if dec:   # 요약(list와 같은 모양)에 메모·누가·언제를 더한다
+            d["approval"] = {**d["approval"], "note": dec["note"], "actor": dec["actor"], "created_at": dec["created_at"]}
         d["events"] = [{**dict(e), "data": json.loads(e["data_json"])} for e in
                        c.execute("SELECT * FROM events WHERE issue_id=? ORDER BY id", (row["id"],))]
         for e in d["events"]:
@@ -336,6 +349,39 @@ def post_plan(actor, ref, body) -> dict:
         c.execute("UPDATE issues SET updated_at=? WHERE id=?", (now, row["id"]))
         _event(c, row["id"], actor, "plan", data={"version": version})
         return dict(c.execute("SELECT * FROM plans WHERE id=?", (pid,)).fetchone())
+
+
+VERDICT_LABEL = {"approve": "승인", "approve_notes": "조건부 승인", "reject": "거절"}
+
+
+def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
+    """계획서에 대한 사람의 결정(게이트 1). 보고 있던 판(plan_version)이 최신이 아니면 409 — 안 본 계획서를 승인하지 않게.
+    거절은 이슈를 closed로 닫는다(사유 = 메모). 승인은 기록만 한다 — 착수는 에이전트가 approval을 읽고 한다."""
+    if not _is_human(actor):
+        raise _forbidden("계획서 승인·거절은 사람만 할 수 있어요.")
+    if verdict not in VERDICT_LABEL:
+        raise StoreError(f"verdict는 {'/'.join(VERDICT_LABEL)} 중 하나예요.")
+    note = _text(note, "메모", 20_000)
+    if verdict != "approve" and not note.strip():
+        raise StoreError(f"{VERDICT_LABEL[verdict]}은(는) 메모가 필요해요 — " + ("답하거나 고칠 내용을 적어 주세요." if verdict == "approve_notes" else "거절 이유를 적어 주세요."))
+    with db.connect() as c:
+        row = _find(c, ref)
+        latest = c.execute("SELECT MAX(version) FROM plans WHERE issue_id=?", (row["id"],)).fetchone()[0]
+        if latest is None:
+            raise StoreError("계획서가 없어서 결정할 수 없어요.", 409)
+        if plan_version != latest:
+            raise StoreError(f"보던 계획서(v{plan_version})가 최신(v{latest})이 아니에요 — 새로 고쳐서 다시 결정해 주세요.", 409)
+        if row["status"] in HUMAN_ONLY_STATUSES:
+            raise StoreError("끝난 이슈예요.", 409)
+        c.execute("INSERT INTO decisions(issue_id, gate, plan_version, verdict, note, actor, created_at) VALUES(?,?,?,?,?,?,?)",
+                  (row["id"], "plan", latest, verdict, note, actor_label(actor), db.now_iso()))
+        if verdict != "reject":   # 거절은 아래 상태 변경 이벤트가 사유를 담는다
+            _event(c, row["id"], actor, "comment", f"**{VERDICT_LABEL[verdict]}** (계획서 v{latest})" + (f"\n\n{note}" if note.strip() else ""),
+                   {"decision": verdict, "plan_version": latest})
+            c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), row["id"]))
+    if verdict == "reject":
+        set_status(actor, ref, "closed", f"거절 (계획서 v{latest}): {note.strip()}")
+    return get_issue(ref)
 
 
 def list_plans(ref) -> list[dict]:

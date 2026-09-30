@@ -137,6 +137,30 @@ with TestClient(A.app) as c:
     assert ev["kind"] == "edit" and ev["data"]["fields"] == ["title"] and ev["actor"].startswith("agent:")
     ok(human("PATCH", f"/api/issues/{nt['ref']}", json={"body": "사람은 본문을 고칠 수 있다"}))   # 제목 없이 본문만
 
+    # 계획서 결정(DEV-14) — 사람만, 메모 규칙, 보던 판이 최신일 때만, stale, 거절은 닫음
+    dec = lambda ref, verdict, note="", v=None: human("POST", f"/api/issues/{ref}/decision", json={"verdict": verdict, "note": note, "plan_version": v})
+    t = ok(human("POST", "/api/issues", json={"project": "DEV", "title": "결정 시험", "status": "triage"}))["ref"]
+    assert dec(t, "approve", "", 1).status_code == 409   # 계획서 없음
+    ok(a("POST", f"/api/issues/{t}/plans", json={"body": "## 정해야 할 것\n1. 끌까 지울까"}))
+    assert a("POST", f"/api/issues/{t}/decision", json={"verdict": "approve", "plan_version": 1}).status_code == 403
+    assert dec(t, "approve", "", 9).status_code == 409   # 안 본 판
+    assert dec(t, "approve_notes", "  ", 1).status_code == 400 and dec(t, "reject", "", 1).status_code == 400
+    assert dec(t, "maybe", "x", 1).status_code == 400
+    assert ok(a("GET", f"/api/issues/{t}"))["approval"] is None
+    r = ok(dec(t, "approve_notes", "1번은 끄기로", 1))
+    assert r["approval"] == {**r["approval"], "verdict": "approve_notes", "plan_version": 1, "stale": False, "note": "1번은 끄기로"} and r["status"] == "triage"
+    assert r["events"][-1]["kind"] == "comment" and "1번은 끄기로" in r["events"][-1]["body"]
+    _i = issues   # approved 필터·요약은 MCP가 쓰는 저장소 함수로 본다
+    assert [x["ref"] for x in _i.list_issues(approved=True)] == [t]
+    assert _i.list_issues(project="DEV", status="triage")[0]["approval"]["verdict"] == "approve_notes"
+    ok(a("POST", f"/api/issues/{t}/plans", json={"body": "v2 — 방향 바뀜"}))   # 새 판 → 이전 결정 무효
+    assert ok(a("GET", f"/api/issues/{t}"))["approval"]["stale"] is True and _i.list_issues(approved=True) == []
+    assert dec(t, "approve", "", 1).status_code == 409
+    assert ok(dec(t, "approve", "", 2))["approval"]["stale"] is False and [x["ref"] for x in _i.list_issues(approved=True)] == [t]
+    r = ok(dec(t, "reject", "필요 없어짐", 2))
+    assert r["status"] == "closed" and r["approval"]["verdict"] == "reject" and "필요 없어짐" in r["events"][-1]["body"]
+    assert dec(t, "approve", "", 2).status_code == 409   # 끝난 이슈
+
     # 쓰기 요청의 형식 오류
     assert c.post("/api/issues", content=b"not json", headers={**H, "content-type": "application/json"}).status_code == 400
 print("OK")

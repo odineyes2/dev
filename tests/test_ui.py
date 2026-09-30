@@ -265,6 +265,27 @@ try:
         page.select_option("#list-project", "")
         page.wait_for_function("() => [...document.querySelectorAll('tr.row')].some(r => r.dataset.ref.startsWith('NS-'))")
 
+        # 계획서 결정(DEV-14) — 답 칸에 "정해야 할 것"이 인용되고, 조건부 승인 → 새 판이면 무효 표시 → 거절하면 닫혀 목록으로
+        ref = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결정 화면", "status": "triage"}, headers=H).json()["ref"]
+        page.request.post(f"{BASE}/api/issues/{ref}/plans", data={"body": "## 방향\n하나\n\n## 정해야 할 것\n1. 끌까 지울까(추천: 끄기)\n2. 제한 시간 15분?"}, headers=H)
+        page.goto(BASE + f"/#/issue/{ref}"); page.wait_for_selector("#decision-actions")
+        page.click("#decision-actions [data-verdict=approve_notes]")
+        note = page.input_value("#decision-note")
+        assert "> 1. 끌까 지울까(추천: 끄기)\n→ " in note and "2. 제한 시간 15분?" in note, note
+        page.screenshot(path=str(shots / "decision_form.png"), full_page=True)
+        page.fill("#decision-note", note + "끄기로")
+        page.click("#decision-send"); page.wait_for_selector(".decision-state .status")
+        assert "조건부 승인됨" in page.inner_text(".decision-state") and "끄기로" in page.inner_text(".decision-state")
+        page.screenshot(path=str(shots / "decision_done.png"), full_page=True)
+        page.request.post(f"{BASE}/api/issues/{ref}/plans", data={"body": "v2"}, headers=H)
+        page.reload(); page.wait_for_selector("#decision-actions")   # 같은 주소로 goto하면 다시 그리지 않는다
+        assert "무효" in page.inner_text(".decision-state")
+        page.click("#decision-actions [data-verdict=reject]"); page.click("#decision-send")   # 메모 없이는 안 닫힌다
+        page.wait_for_timeout(300); assert page.evaluate("location.hash") == f"#/issue/{ref}"
+        page.fill("#decision-note", "필요 없어짐"); page.click("#decision-send")
+        page.wait_for_function("location.hash === '#/'")
+        assert page.request.get(f"{BASE}/api/issues/{ref}").json()["status"] == "closed"
+
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert not errs, errs

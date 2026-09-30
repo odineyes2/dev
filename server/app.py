@@ -253,7 +253,6 @@ def api_issues(project: str = "", status: str = "", assignee: int | None = None,
     items = issues.list_issues(project or None, status or None, assignee, parent or None, q or None, limit + 1, offset)
     return {"issues": items[:limit], "has_more": len(items) > limit}
 
-
 @app.post("/api/issues")
 async def api_create_issue(request: Request):
     b = await json_body(request)
@@ -324,6 +323,15 @@ import review  # noqa: E402
 @app.post("/api/issues/{ref}/review")
 def api_review(ref: str, request: Request):
     return review.start(actor(request), ref)
+
+
+@app.post("/api/issues/{ref}/decision")
+async def api_decision(ref: str, request: Request):
+    b = await json_body(request)
+    running = review.running_ref()
+    if running and issues.get_issue(ref)["ref"] == running:
+        raise issues.StoreError("검토가 돌고 있어요 — 끝나면 결정해 주세요.", 409)
+    return issues.decide(actor(request), ref, b.get("verdict"), b.get("note", ""), b.get("plan_version"))
 
 
 # 화면 — API 라우트 뒤에 붙여야 /api가 가려지지 않는다(마운트는 반드시 마지막).

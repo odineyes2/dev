@@ -304,6 +304,30 @@ function eventHtml(e){
   else what = esc(e.kind);
   return `<li class="sys">${who}${when} · ${what}${e.kind === 'status' && e.body ? md(e.body) : ''}</li>`;
 }
+// ---- 계획서 결정(DEV-14): 승인 · 메모 붙여 승인 · 거절 ----
+const VERDICT_LABEL = { approve: '승인됨', approve_notes: '조건부 승인됨', reject: '거절됨' };
+const VERDICT_COLOR = { approve: 'done', approve_notes: 'in_review', reject: 'changes_requested' };
+function decisionQuestions(body){   // 계획서의 "정해야 할 것" 절의 목록 항목만
+  const m = /^#{1,6}[ \t]*(?:사람이 )?정해야 할 것.*$/m.exec(body);
+  if(!m) return '';
+  const rest = body.slice(m.index + m[0].length), next = rest.search(/^#{1,6}[ \t]/m);
+  return (next < 0 ? rest : rest.slice(0, next)).split('\n').filter(l => /^\s*(\d+[.)]|[-*])\s/.test(l)).map(l => `> ${l.trim()}\n→ `).join('\n\n');
+}
+function decisionHtml(it){
+  const a = it.approval;
+  const state = !a ? '<span class="dim">아직 결정하지 않았어요.</span>'
+    : a.stale ? `<span class="status" style="--sc:var(--s-in_progress)">v${a.plan_version} 결정은 무효</span> <span class="dim">— 새 계획서(v${it.plan.version})가 올라왔어요. 다시 결정해 주세요.</span>`
+    : `<span class="status" style="--sc:var(--s-${VERDICT_COLOR[a.verdict]})">${VERDICT_LABEL[a.verdict]} · v${a.plan_version}</span> <span class="dim">${esc(actorName(a.actor))} · ${fmtTime(a.created_at)}</span>${a.note ? md(a.note) : ''}`;
+  const busy = it.review_running;
+  return `<div class="decision" id="decision"><div class="decision-state">${state}</div>
+    ${busy ? '<div class="dim hint">검토가 도는 중이라 끝나면 결정할 수 있어요.</div>' : `
+    <div id="decision-form" hidden><textarea id="decision-note"></textarea>
+      <div class="row-end"><button id="decision-cancel">Cancel</button><button id="decision-send" class="primary"></button></div></div>
+    <div class="review-actions" id="decision-actions">
+      <button data-verdict="approve"${it.status === 'in_review' ? '' : ' class="primary"'}>승인</button>
+      <button data-verdict="approve_notes">메모 붙여 승인</button>
+      <button data-verdict="reject" class="danger">거절</button></div>`}</div>`;
+}
 async function renderIssue(ref){
   const [it] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), agentsById.size ? null : loadAgents()]);
   const agentOpts = ['<option value="">(없음)</option>'].concat([...agentsById.values()].map(a =>
@@ -318,7 +342,8 @@ async function renderIssue(ref){
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
         <div class="panel"><h2>Plan${it.plan ? ` <span class="meta">v${it.plan.version} · ${esc(actorName(it.plan.author))} · ${fmtTime(it.plan.created_at)}</span>` : ''}
           <span class="right">${it.plan && it.plan.version > 1 ? '<button id="plan-history">History</button>' : ''}<button id="edit-plan">${it.plan ? 'Revise' : 'Write'}</button></span></h2>
-          <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div></div>
+          <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div>
+          ${it.plan && !['done', 'closed'].includes(it.status) ? decisionHtml(it) : ''}</div>
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Add task</a></span></h2>
           ${it.children.length ? `<table class="issues">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}</td><td>${statusHtml(ch.status)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
@@ -372,6 +397,23 @@ async function renderIssue(ref){
       if(note === null) return;
       await api('POST', `/api/issues/${R}/status`, { status: 'changes_requested', note }).catch(() => {}); reload();
     });
+  }
+  if($('decision-actions')){
+    let verdict = null;
+    const send = async (v, note) => { await api('POST', `/api/issues/${R}/decision`, { verdict: v, note, plan_version: it.plan.version });
+      toast(v === 'reject' ? `${it.ref}을(를) 거절해서 닫았어요` : '결정을 남겼어요'); if(v === 'reject') location.hash = '#/'; else reload(); };
+    $('decision-actions').querySelectorAll('button').forEach(b => b.addEventListener('click', (e) => {
+      verdict = b.dataset.verdict;
+      if(verdict === 'approve'){ whileBusy(e.currentTarget, () => send('approve', '')); return; }
+      $('decision-form').hidden = false; $('decision-actions').hidden = true;
+      $('decision-note').value = verdict === 'approve_notes' ? decisionQuestions(it.plan.body) : '';
+      $('decision-note').placeholder = verdict === 'approve_notes' ? '계획서가 물은 것에 대한 답, 고칠 내용 (예: 1번은 끄기로)' : '거절 이유 (예: NS-3과 중복, 필요 없어짐)';
+      $('decision-send').textContent = verdict === 'approve_notes' ? '메모 붙여 승인' : '거절하고 닫기';
+      $('decision-send').classList.toggle('danger', verdict === 'reject'); $('decision-send').classList.toggle('primary', verdict !== 'reject');
+      $('decision-note').focus();
+    }));
+    $('decision-cancel').addEventListener('click', () => { $('decision-form').hidden = true; $('decision-actions').hidden = false; });
+    $('decision-send').addEventListener('click', (e) => whileBusy(e.currentTarget, () => send(verdict, $('decision-note').value)));
   }
   if($('release')) $('release').addEventListener('click', async () => { await api('POST', `/api/issues/${R}/release`).catch(() => {}); reload(); });
   // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게

@@ -102,6 +102,20 @@ MIGRATIONS = [
     );
     CREATE INDEX events_issue ON events(issue_id, id);
     """,
+    # 사람의 결정(DEV-14) — gate 'plan' = 계획서 승인, 'result' = 결과 승인(나중에). 마지막 결정이 유효.
+    """
+    CREATE TABLE decisions (
+        id INTEGER PRIMARY KEY,
+        issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        gate TEXT NOT NULL CHECK (gate IN ('plan','result')),
+        plan_version INTEGER NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('approve','approve_notes','reject')),
+        note TEXT NOT NULL DEFAULT '',
+        actor TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX decisions_issue ON decisions(issue_id, id);
+    """,
 ]
 
 
