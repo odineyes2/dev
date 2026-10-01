@@ -29,7 +29,7 @@ ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(python tests/*)"
 BLOCKED_TOOLS = ["WebFetch", "WebSearch", "NotebookEdit"] + [f"Bash({c}:*)" for c in (
     "git push", "git checkout", "git switch", "git reset", "git rebase", "git merge", "git worktree", "git branch", "git remote",
     "git config", "git clean", "git stash", "rm", "curl", "wget", "ssh", "npx", "pm2")]
-SECRET_ENV = ("GH_TOKEN", "GITHUB_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS")
+SECRET_ENV = ("GH_TOKEN", "GITHUB_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS", "NTFY_TOPIC", "NTFY_TOKEN")   # ntfy: 실행 에이전트가 테스트를 돌리면 가짜 이슈로 진짜 알림이 나간다
 
 
 def branch_name(ref: str) -> str:
