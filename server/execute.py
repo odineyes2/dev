@@ -61,6 +61,9 @@ def prepare_worktree(repo: str, ref: str) -> Path:
         raise issues.StoreError("프로젝트의 local_path가 없어서 실행할 수 없어요.", 409)
     path = worktree_path(ref)
     if path.exists():
+        # 커밋도 변경도 없는 worktree는 base가 앞서 나갔을 수 있다(선행 Task 병합 뒤 재실행) — 잃을 게 없으니 따라잡는다
+        if not _git(str(path), "status", "--porcelain") and not _git(str(path), "log", "--oneline", f"{BASE_BRANCH}..HEAD"):
+            _git(str(path), "merge", "--ff-only", BASE_BRANCH)
         return path
     head = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     if head != BASE_BRANCH:
