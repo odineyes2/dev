@@ -5,13 +5,26 @@
 순서: 작업 폴더 확인(base 체크아웃·깨끗) → 선행 Task 병합 확인 → `merge-tree`로 충돌 재확인 → `git merge --no-ff`
 → 병합한 결과로 `python tests/test_*.py` → 실패하면 `git revert -m 1`(이력 보존, reset은 쓰지 않음).
 결과는 Task 상태로: 작업 폴더·선행 문제는 on_hold, 충돌·테스트 실패는 changes_requested, 성공은 그대로(in_review)에 댓글.
-재시작·health 확인은 DEV-40-2, 상위 이슈 정리는 DEV-40-3.
+
+병합 뒤 재시작(DEV-40-2): 바뀐 파일이 `restart_when` 패턴에 걸릴 때만 `restart_cmd`를 돌린다(화면 파일만이면 생략).
+`busy_url`이 있으면 그 응답 `{"busy": true}`가 풀릴 때까지 최대 `wait_minutes` 기다리고, 넘으면 재시작 없이 on_hold.
+재시작 뒤 `health_url`이 `health_seconds` 안에 200이 아니면 병합을 revert하고 한 번 더 재시작해 복구, changes_requested.
+상위 이슈 정리는 DEV-40-3.
+
+`data/orchestrate.json` 예시(프로젝트 키별, 빠진 값은 DEFAULTS):
+    {"DEV": {"auto_merge": true, "pm2_app": "dev", "health_url": "http://127.0.0.1:8300/api/health",
+             "restart_when": ["server/*", "ecosystem.config.js"]},
+     "NS":  {"auto_merge": false, "pm2_app": "nightshift", "health_url": "http://127.0.0.1:8000/api/health",
+             "restart_when": ["server/*", "ecosystem.config.js"], "busy_url": "http://127.0.0.1:8000/api/jobs/busy"}}
 """
+import fnmatch
 import json
 import os
 import subprocess
 import sys
 import threading
+import time
+import urllib.request
 from pathlib import Path
 
 import config
@@ -21,6 +34,8 @@ from execute import BASE_BRANCH, _run_git, branch_name
 SETTINGS = config.DATA_DIR / "orchestrate.json"
 GIT_ID = ["-c", "user.name=dev orchestrator", "-c", "user.email=orchestrator@dev.local"]
 _lock = threading.Lock()   # ponytail: 프로세스 전체에 병합 하나씩 — 프로젝트별 잠금은 동시 병합이 필요해지면
+DEFAULTS = {"restart_when": ["server/*", "ecosystem.config.js"], "restart_cmd": "npx pm2 restart ecosystem.config.js --only {app} --update-env",
+            "health_seconds": 60, "wait_minutes": 60, "poll_seconds": 30}
 
 
 def settings(project_key: str) -> dict:
@@ -28,6 +43,72 @@ def settings(project_key: str) -> dict:
         return json.loads(SETTINGS.read_text(encoding="utf-8")).get(project_key) or {}
     except (OSError, ValueError):
         return {}
+
+
+def _get(url, timeout=5):
+    """(상태 코드, 본문) — 연결 실패는 (0, "")."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, ""
+    except (OSError, ValueError):
+        return 0, ""
+
+
+def _busy(cfg) -> bool:
+    if not cfg.get("busy_url"):
+        return False
+    code, body = _get(cfg["busy_url"])
+    try:
+        return code != 200 or bool(json.loads(body).get("busy"))
+    except (ValueError, AttributeError):
+        return True   # 모르면 바쁜 것으로 본다 — 작업 서브프로세스를 고아로 만들지 않게
+
+
+def _healthy(cfg) -> bool:
+    if not cfg.get("health_url"):
+        return True
+    deadline = time.monotonic() + cfg["health_seconds"]
+    while True:
+        if _get(cfg["health_url"])[0] == 200:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1)
+
+
+def _restart(repo, cfg) -> str | None:
+    """재시작 명령을 돌린다. 실패하면 출력 끝부분."""
+    r = subprocess.run(cfg["restart_cmd"].format(app=cfg.get("pm2_app", "")), shell=True, cwd=repo, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=300)
+    return ((r.stdout + r.stderr).strip()[-800:] or f"종료 코드 {r.returncode}") if r.returncode else None
+
+
+def deploy(repo: str, cfg: dict, sha: str, say=lambda msg: None) -> tuple[str, str]:
+    """병합 커밋 sha 뒤 필요하면 재시작하고 health를 본다. (Task가 갈 상태, 메모) — 문제없으면 ("merged", 메모).
+    ponytail: dev가 자기 자신(pm2_app=dev)을 재시작하면 이 스레드도 죽어 health 확인·복구를 못 한다 — 상태를 DB에 적고 뜬 뒤 이어 하기는 필요해지면."""
+    cfg = {**DEFAULTS, **cfg}
+    files = _git(repo, "diff", "--name-only", f"{sha}^1", sha).stdout.split()
+    hits = [f for f in files if any(fnmatch.fnmatch(f, p) for p in cfg["restart_when"])]
+    if not hits or not cfg.get("pm2_app"):
+        return "merged", "재시작이 필요 없는 변경이라 재시작하지 않았어요."
+    if _busy(cfg):
+        say(f"⏳ 실행 중인 작업이 있어 끝나면 `{cfg['pm2_app']}`를 재시작할 예정이에요(최대 {cfg['wait_minutes']}분).")
+        deadline = time.monotonic() + cfg["wait_minutes"] * 60
+        while _busy(cfg):
+            if time.monotonic() >= deadline:
+                return "on_hold", f"실행 중인 작업이 {cfg['wait_minutes']}분 안에 안 끝나 `{cfg['pm2_app']}`를 재시작하지 않았어요 — 병합은 됐으니 작업이 끝난 뒤 직접 재시작해 주세요."
+            time.sleep(cfg["poll_seconds"])
+    err = _restart(repo, cfg)
+    if not err and _healthy(cfg):
+        return "merged", f"`{cfg['pm2_app']}`를 재시작했고 health 확인을 통과했어요({', '.join(hits[:5])} 변경)."
+    why = f"재시작 명령이 실패했어요: {err}" if err else f"재시작 뒤 {cfg['health_seconds']}초 안에 health가 200이 아니었어요"
+    r = _git(repo, "revert", "-m", "1", "--no-edit", sha)
+    if r.returncode:
+        return "changes_requested", f"{why}. revert도 실패했어요 — 직접 확인해 주세요({r.stderr.strip()})."
+    back = "복구됐어요" if not _restart(repo, cfg) and _healthy(cfg) else "그래도 health가 안 돌아왔어요 — 바로 확인해 주세요"
+    return "changes_requested", f"{why}. 병합을 revert 커밋으로 되돌리고 다시 재시작했어요 — {back}."
 
 
 def _git(repo, *args):
@@ -79,13 +160,17 @@ def merge(repo: str, ref: str, after: list[str] = ()) -> tuple[str, str]:
 def handle(actor: dict, ref: str) -> str | None:
     """실행이 끝난 Task를 병합한다. auto_merge가 꺼졌거나 Task가 in_review가 아니면 아무것도 안 한다(None)."""
     issue = issues.get_issue(ref)
-    if issue["status"] != "in_review" or not settings(issue["project_key"]).get("auto_merge"):
+    cfg = settings(issue["project_key"])
+    if issue["status"] != "in_review" or not cfg.get("auto_merge"):
         return None
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
     with _lock:
         status, note = merge(repo, ref, [b["ref"] for b in issue["blocked_by"]])
+        if status == "merged":
+            issues.add_comment(actor, ref, f"🔀 `{branch_name(ref)}`를 {BASE_BRANCH}에 병합했어요(`{note[:7]}`) — 병합 뒤 테스트 통과.")
+            status, note = deploy(repo, cfg, note, lambda msg: issues.add_comment(actor, ref, msg))
     if status == "merged":
-        issues.add_comment(actor, ref, f"🔀 `{branch_name(ref)}`를 {BASE_BRANCH}에 병합했어요(`{note[:7]}`) — 병합 뒤 테스트 통과.")
+        issues.add_comment(actor, ref, f"🔁 {note}")
     else:
         issues.set_status(actor, ref, status, f"🔀 자동 병합: {note}")
     return status
