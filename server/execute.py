@@ -9,7 +9,7 @@
   `--dangerously-skip-permissions`는 쓰지 않는다. 작업 폴더는 worktree 하나.
 - 원격: 자식 프로세스 환경변수로 모든 remote의 pushurl을 죽은 주소로 덮고, 자격증명 도우미·토큰을 뺀다(저장소 설정은 안 고친다).
 - 상한: `--max-budget-usd`(DEV_EXEC_BUDGET_USD, 기본 2)와 시간(DEV_EXEC_TIMEOUT_SEC, 기본 1800).
-- 합치기·push·재시작은 사람(또는 나중의 오케스트레이터) 몫 — 여기서는 브랜치까지만 만든다.
+- 합치기·push·재시작은 사람 몫 — 여기서는 브랜치까지만 만든다. 단 auto_merge가 켜진 프로젝트는 끝난 뒤 orchestrate가 병합한다.
 """
 import os
 import subprocess
@@ -131,6 +131,16 @@ def blocked_reason(issue: dict, parent: dict | None) -> str | None:
     return None
 
 
+def _run_then_merge(actor, ref, *args):
+    """실행 스레드 — 끝나고 Task가 in_review면 오케스트레이터가 병합한다(auto_merge가 켜진 프로젝트만)."""
+    import orchestrate, review
+    review.run_headless(actor, ref, *args)
+    try:
+        orchestrate.handle(actor, ref)
+    except Exception as e:   # 병합 오류가 스레드를 조용히 죽이지 않게 이슈에 남긴다
+        issues.add_comment(actor, ref, f"⚠️ 자동 병합 중 오류: {e}")
+
+
 def start(actor: dict, ref: str) -> dict:
     """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409."""
     import review
@@ -151,7 +161,7 @@ def start(actor: dict, ref: str) -> dict:
     issues.add_comment(actor, ref, f"🛠 Claude에게 실행을 맡겼어요 — `{branch_name(ref)}` 브랜치의 worktree에서 구현해요"
                                    f"(push 없음, 비용 상한 ${BUDGET_USD:g}). 끝나면 in_review로 올라와요.")
     cmd = command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
-    threading.Thread(target=review.run_headless, args=(actor, ref, log_path, run_id, cmd, worktree, safe_env(repo), TIMEOUT_SEC, "실행"),
+    threading.Thread(target=_run_then_merge, args=(actor, ref, log_path, run_id, cmd, worktree, safe_env(repo), TIMEOUT_SEC, "실행"),
                      daemon=True).start()
     return {"started": True, "ref": ref, "branch": branch_name(ref)}
 
