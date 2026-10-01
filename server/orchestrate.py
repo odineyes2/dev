@@ -174,3 +174,48 @@ def handle(actor: dict, ref: str) -> str | None:
     else:
         issues.set_status(actor, ref, status, f"🔀 자동 병합: {note}")
     return status
+
+
+def promote_parent(actor: dict, ref: str) -> bool:
+    """Task가 병합된 뒤(DEV-40-3) — 형제 Task가 전부 base에 들어갔으면(사람이 done/closed로 끝낸 것도) 상위 이슈를 in_review로
+    올리고 무엇이 반영됐고 어디서 확인하는지 한 번에 요약한다. 올렸으면 True."""
+    parent_ref = issues.get_issue(ref)["parent_ref"]
+    if not parent_ref:
+        return False
+    parent = issues.get_issue(parent_ref)
+    if parent["status"] in ("in_review", "done", "closed"):
+        return False
+    repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == parent["project_key"]), "")
+    lines, checks = [], []
+    for ch in parent["children"]:
+        finished = ch["status"] in ("done", "closed")
+        if not finished and not (ch["status"] == "in_review" and _merged(repo, ch["ref"])):
+            return False
+        full = issues.get_issue(ch["ref"])
+        sha = _git(repo, "log", "-1", "--merges", "--fixed-strings", f"--grep=({ch['ref']})", "--format=%h", BASE_BRANCH).stdout.strip()
+        restart = next((e["body"][2:].strip() for e in reversed(full["events"]) if e["kind"] == "comment" and e["body"].startswith("🔁")), "")
+        lines.append(f"- **{ch['ref']}** {ch['title']} — " + (f"병합 `{sha}`" if sha else ch["status"]) + (f" · {restart}" if restart else ""))
+        how = next((e["body"] for e in reversed(full["events"]) if e["kind"] == "status" and e["data"].get("to") == "in_review" and e["body"]), "")
+        if how:
+            checks.append(f"- **{ch['ref']}**: {how[:600]}")
+    note = (f"🔀 하위 Task {len(lines)}개가 모두 {BASE_BRANCH}에 반영됐어요.\n\n" + "\n".join(lines)
+            + ("\n\n**확인할 곳**\n" + "\n".join(checks) if checks else "") + "\n\n확인했으면 Done으로 바꿔 주세요.")
+    issues.set_status(actor, parent_ref, "in_review", note)
+    return True
+
+
+def merge_state(issue: dict) -> str | None:
+    """Task 줄의 상태 문구(DEV-40-3) — 오케스트레이터가 타임라인에 남긴 마지막 흔적으로 판단한다. 해당 없으면 None."""
+    for e in reversed(issue.get("events", [])):
+        b = e["body"] or ""
+        if e["kind"] == "comment" and b.startswith("🛠"):   # 다시 실행을 맡겼으면 이전 병합 흔적은 지난 일
+            break
+        if e["kind"] == "comment" and b.startswith("⏳"):
+            return "재시작 대기"
+        if e["kind"] == "comment" and b.startswith(("🔀", "🔁")):
+            return "병합됨"
+        if e["kind"] == "status" and b.startswith("🔀 자동 병합"):
+            return "되돌림" if "revert" in b else "병합 대기" if e["data"].get("to") == "on_hold" else None
+    if issue.get("status") == "in_review" and issue.get("parent_ref") and settings(issue["project_key"]).get("auto_merge"):
+        return "병합 대기"
+    return None
