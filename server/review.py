@@ -25,6 +25,7 @@ from pathlib import Path
 import config
 import db
 import issues
+import notify
 
 PROJECTS_DIR = Path(os.environ.get("DEV_REVIEW_CWD") or config.REPO_ROOT.parent)
 MCP_CONFIG = Path(os.environ.get("DEV_REVIEW_MCP_CONFIG") or PROJECTS_DIR / ".mcp.json")
@@ -149,4 +150,10 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=?",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
     if note or code:
-        issues.add_comment(actor, ref, f"⚠️ Claude {label} 작업이 끝나지 못했어요 — {note or f'종료 코드 {code}'}. 로그: `{log_path.name}`")
+        why = note or f"종료 코드 {code}"
+        issues.add_comment(actor, ref, f"⚠️ Claude {label} 작업이 끝나지 못했어요 — {why}. 로그: `{log_path.name}`")
+        notify.send(ref, f"⚠️ {label} 작업이 끝나지 못했어요", why, "high")
+    elif label == "검토":
+        notify.send(ref, "📋 계획서가 나왔어요 — 승인해 주세요")
+    else:
+        notify.send(ref, f"✅ {label} 완료 — 확인해 주세요")

@@ -19,6 +19,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import db
+import notify
 
 
 class StoreError(Exception):
@@ -359,6 +360,12 @@ def set_status(actor, ref, status, note="") -> dict:
                   + (", claimed_by=NULL, lease_until=NULL" if release else "") + " WHERE id=?",
                   (status, closed_at, now, row["id"]))
         _event(c, row["id"], actor, "status", note, {"from": row["status"], "to": status})
+        # 에이전트가 사람을 부를 때 폰 알림 — 헤드리스 실행 중의 in_review는 실행이 끝날 때 한 번만 보낸다
+        if not _is_human(actor) and status == "on_hold":
+            notify.send(row["ref"], "❓ 사람의 답이 필요해요", note)
+        elif not _is_human(actor) and status == "in_review" and not c.execute(
+                "SELECT 1 FROM runs WHERE issue_id=? AND status='running'", (row["id"],)).fetchone():
+            notify.send(row["ref"], "✅ 확인해 주세요(in_review)", note)
         return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
 
 
