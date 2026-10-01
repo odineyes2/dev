@@ -1,4 +1,5 @@
-"""오케스트레이터 병합(DEV-40-1) — 임시 저장소로: 통과·충돌·더러운 작업 폴더·병합 뒤 테스트 실패(revert)·선행 미병합·기본 꺼짐."""
+"""오케스트레이터 병합(DEV-40-1) — 임시 저장소로: 통과·충돌·더러운 작업 폴더·병합 뒤 테스트 실패(revert)·선행 미병합·기본 꺼짐.
+재시작(DEV-40-2) — 가짜 pm2·health로: 서버 변경만 재시작·화면만은 생략·실행 중 작업 대기·대기 초과 on_hold·health 실패 복구."""
 import os, subprocess, sys, tempfile
 from pathlib import Path
 
@@ -74,5 +75,77 @@ status, note = orchestrate.merge(str(repo), "T-6")
 assert status == "changes_requested" and "test_bad.py" in note and "boom" in note, note
 assert git("log", "-1", "--format=%s").startswith("Revert")
 assert not (repo / "f.txt").exists() and not git("diff", before, "HEAD", "--stat")
+
+# ---- 재시작·health(DEV-40-2) — 가짜 pm2(로그 파일에 한 줄)와 가짜 health·busy 서버 ----
+import json, threading  # noqa: E401,E402
+from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
+
+state = {"health": 200, "busy": 0}   # busy: 앞으로 몇 번 더 "바쁨"이라고 답할지
+
+
+class Fake(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/busy":
+            body = json.dumps({"busy": state["busy"] > 0}).encode()
+            state["busy"] = max(0, state["busy"] - 1)
+            code = 200
+        else:
+            body, code = b"{}", state["health"]
+        self.send_response(code); self.end_headers(); self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+srv = HTTPServer(("127.0.0.1", 0), Fake)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+url = f"http://127.0.0.1:{srv.server_port}"
+log = Path(tempfile.mkdtemp()) / "pm2.log"
+fake_pm2 = log.with_name("fake_pm2.py")
+fake_pm2.write_text("import sys\nopen(sys.argv[1], 'a').write(sys.argv[2] + '\\n')\n")
+cfg = {"pm2_app": "app", "restart_cmd": f'"{sys.executable}" "{fake_pm2}" "{log}" {{app}}',
+       "health_url": url + "/health", "health_seconds": 1, "poll_seconds": 0.05}
+
+
+def restarts():
+    return log.read_text().count("app") if log.exists() else 0
+
+
+def merged(ref, files):
+    branch(ref, files)
+    status, sha = orchestrate.merge(str(repo), ref)
+    assert status == "merged", sha
+    return sha
+
+
+# 화면 파일만 → 재시작 안 함
+status, note = orchestrate.deploy(str(repo), cfg, merged("T-7", {"static/x.js": "1\n"}))
+assert status == "merged" and restarts() == 0, note
+
+# 서버 파일 → 재시작 한 번, health 통과
+status, note = orchestrate.deploy(str(repo), cfg, merged("T-8", {"server/x.py": "1\n"}))
+assert status == "merged" and restarts() == 1 and "health" in note, note
+
+# 실행 중 작업 → 기다렸다가 재시작, 대기 안내
+said = []
+state["busy"] = 3
+status, note = orchestrate.deploy(str(repo), {**cfg, "busy_url": url + "/busy"}, merged("T-9", {"server/y.py": "1\n"}), said.append)
+assert status == "merged" and restarts() == 2 and said and "재시작할 예정" in said[0], (note, said)
+
+# 끝까지 안 끝남 → 재시작 없이 on_hold
+state["busy"] = 10 ** 6
+status, note = orchestrate.deploy(str(repo), {**cfg, "busy_url": url + "/busy", "wait_minutes": 0.002}, merged("T-10", {"server/z.py": "1\n"}))
+assert status == "on_hold" and restarts() == 2, note
+state["busy"] = 0
+
+# health 실패 → revert 커밋, 다시 재시작해 복구 시도
+state["health"] = 500
+before = git("rev-parse", "HEAD")
+sha = merged("T-11", {"server/w.py": "1\n"})
+status, note = orchestrate.deploy(str(repo), cfg, sha)
+assert status == "changes_requested" and "revert" in note and restarts() == 4, note
+assert git("log", "-1", "--format=%s").startswith("Revert") and not git("diff", before, "HEAD", "--stat")
+state["health"] = 200
+srv.shutdown()
 
 print("ok")
