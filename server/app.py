@@ -267,6 +267,9 @@ def api_issue(ref: str):
     it["review_running"] = review.running_ref() == it["ref"]   # "Claude에게 검토 맡기기"가 도는 중(DEV-13)
     it["review_busy"] = review.running_ref() is not None
     it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
+    it["merge_state"] = orchestrate.merge_state(it)   # 병합 대기·병합됨·재시작 대기·되돌림(DEV-40-3)
+    for ch in it["children"]:
+        ch["merge_state"] = orchestrate.merge_state(issues.get_issue(ch["ref"]))
     return it
 
 
@@ -326,6 +329,7 @@ def api_release(ref: str, request: Request):
 # ---- Claude에게 검토 맡기기(DEV-13) — 홈서버에서 claude -p로 검토만 ----
 import review  # noqa: E402
 import execute  # noqa: E402
+import orchestrate  # noqa: E402
 
 
 @app.post("/api/issues/{ref}/execute")

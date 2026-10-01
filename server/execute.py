@@ -135,11 +135,13 @@ def blocked_reason(issue: dict, parent: dict | None) -> str | None:
 
 
 def _run_then_merge(actor, ref, *args):
-    """실행 스레드 — 끝나고 Task가 in_review면 오케스트레이터가 병합한다(auto_merge가 켜진 프로젝트만)."""
+    """실행 스레드 — 끝나고 Task가 in_review면 오케스트레이터가 병합한다(auto_merge가 켜진 프로젝트만).
+    병합되면 형제 Task가 다 들어갔는지 보고 상위 이슈를 in_review로 올린다."""
     import orchestrate, review
     review.run_headless(actor, ref, *args)
     try:
-        orchestrate.handle(actor, ref)
+        if orchestrate.handle(actor, ref) == "merged":
+            orchestrate.promote_parent(actor, ref)
     except Exception as e:   # 병합 오류가 스레드를 조용히 죽이지 않게 이슈에 남긴다
         issues.add_comment(actor, ref, f"⚠️ 자동 병합 중 오류: {e}")
 
