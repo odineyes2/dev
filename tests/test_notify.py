@@ -1,7 +1,7 @@
 """폰 알림(DEV-38) — notify._post를 가짜로 바꿔서.
 - 토픽이 없으면 보내지 않는다. 검토 끝(계획서)·실행 끝·실패는 run_headless에서, on_hold·in_review는 에이전트가 바꿀 때만.
 - 헤드리스 실행 중의 in_review는 건너뛴다(실행 끝 알림과 겹침). ntfy가 예외를 던져도 본 작업은 정상 끝난다."""
-import os, sys, tempfile, time
+import os, sys, tempfile, threading, time
 from pathlib import Path
 
 os.environ["DEV_DATA_DIR"] = tempfile.mkdtemp()
@@ -70,6 +70,9 @@ run("NS-1", "검토", 0)
 assert review.list_runs("NS-1")[0]["status"] == "ok"
 
 # 토픽이 없으면 보내지 않음
+for t in threading.enumerate():   # 앞 단계의 알림 스레드가 끝난 뒤에 바꾼다
+    if t is not threading.current_thread() and t.daemon:
+        t.join(2)
 notify._post = sent.append
 config.NTFY_TOPIC = ""
 issues.set_status(agent, "NS-1", "in_review")
