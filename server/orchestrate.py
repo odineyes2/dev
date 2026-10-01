@@ -183,7 +183,7 @@ def promote_parent(actor: dict, ref: str) -> bool:
     if not parent_ref:
         return False
     parent = issues.get_issue(parent_ref)
-    if parent["status"] in ("in_review", "done", "closed"):
+    if parent["status"] in ("in_review", "done", "closed") or "goal" in parent["labels"]:   # goal은 사용자만 닫는다
         return False
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == parent["project_key"]), "")
     lines, checks = [], []

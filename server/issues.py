@@ -292,6 +292,7 @@ def update_issue(actor, ref, fields: dict) -> dict:
     with db.connect() as c:
         row = _find(c, ref)
         own = row["reporter"] == actor_label(actor)
+        _guard_goal(row, actor, "제목·본문·라벨·우선순위")
         sets, changed = {}, []
         if "title" in fields or "body" in fields:
             # 예외: 제목이 없는 이슈(DEV-8)는 에이전트가 제목만 채울 수 있다 — 본문(지시)은 여전히 못 고친다.
@@ -342,6 +343,12 @@ def delete_issue(actor, ref) -> None:
         c.execute("DELETE FROM issues WHERE id=?", (_find(c, ref)["id"],))
 
 
+def _guard_goal(row, actor, what):
+    """`goal` 라벨 이슈(사용자가 정한 최종 목표)는 사람만 바꾼다 — 에이전트가 달성했다고 올리거나 내용을 다시 쓰지 못하게."""
+    if not _is_human(actor) and "goal" in json.loads(row["labels_json"] or "[]"):
+        raise _forbidden(f"최종 목표(goal) 이슈의 {what}은(는) 사람만 바꿔요 — 진행 상황은 댓글로 남기고, 달성 여부는 사용자가 판단해요.")
+
+
 def set_status(actor, ref, status, note="") -> dict:
     status = str(status or "")
     if status not in db.STATUSES:
@@ -351,6 +358,7 @@ def set_status(actor, ref, status, note="") -> dict:
     note = _text(note, "메모", 20_000)
     with db.connect() as c:
         row = _find(c, ref)
+        _guard_goal(row, actor, "상태")
         if row["status"] == status:
             return _issue_dict(row)
         now = db.now_iso()

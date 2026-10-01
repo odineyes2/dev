@@ -187,6 +187,15 @@ with TestClient(A.app) as c:
     ok(a("POST", f"/api/issues/{kid}/plans", json={"body": "세부"}))
     assert ok(dec(kid, "approve", "", 1))["children"] == []
 
+    # 최종 목표(goal 라벨) — 에이전트는 자기가 만든 것이라도 상태·제목·본문·라벨을 못 바꾸고, 댓글만 남긴다. 완료는 사람만.
+    g = ok(a("POST", "/api/issues", json={"project": "DEV", "title": "최종 목표", "body": "원문", "labels": ["goal"]}))
+    for body in ({"status": "in_review"}, {"status": "on_hold"}, {"status": "done"}):
+        assert a("POST", f"/api/issues/{g['ref']}/status", json=body).status_code == 403, body
+    for body in ({"body": "다시 씀"}, {"title": "다른 제목"}, {"labels": []}):
+        assert a("PATCH", f"/api/issues/{g['ref']}", json=body).status_code == 403, body
+    ok(a("POST", f"/api/issues/{g['ref']}/comments", json={"body": "진행 상황"}))
+    assert ok(human("POST", f"/api/issues/{g['ref']}/status", json={"status": "in_progress"}))["status"] == "in_progress"
+
     # 쓰기 요청의 형식 오류
     assert c.post("/api/issues", content=b"not json", headers={**H, "content-type": "application/json"}).status_code == 400
 print("OK")
