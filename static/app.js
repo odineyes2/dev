@@ -24,7 +24,10 @@ function toast(msg){
 async function api(method, url, body){
   const opt = { method, headers: { 'X-Requested-With': 'dev' } };
   if(body !== undefined){ opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  const t0 = performance.now();
   const res = await fetch(url, opt);
+  perf.fetchMs += performance.now() - t0;
+  perf.server = res.headers.get('Server-Timing') || perf.server;
   if(res.status === 401){ showLogin(); throw new Error('로그인이 필요해요.'); }
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if(!res.ok){ const msg = (data && data.detail) || `요청이 실패했어요(${res.status}).`; toast(msg); throw new Error(msg); }
@@ -179,10 +182,30 @@ async function loadAgents(){
   return list;
 }
 
+// ---- 속도 측정(DEV-42) — 화면 전환마다 받기·그리기 시간을 performance.measure로 남기고, 주소에 ?perf가 있으면 구석에 보인다 ----
+const perf = { fetchMs: 0, server: '' };
+function perfReport(name, t0){
+  const total = performance.now() - t0, fetchMs = Math.min(perf.fetchMs, total);
+  performance.measure(`route:${name}`, { start: t0, duration: total });
+  if(!new URLSearchParams(location.search).has('perf')) return;
+  let box = document.getElementById('perf-box');
+  if(!box){
+    box = document.createElement('div'); box.id = 'perf-box';
+    box.style.cssText = 'position:fixed;right:8px;bottom:8px;z-index:99;max-width:min(92vw,520px);padding:6px 10px;'
+      + 'font:11px/1.4 var(--mono);font-variant-numeric:tabular-nums;color:var(--dim);background:var(--panel);'
+      + 'border:1px solid var(--border);border-radius:var(--r-sm);pointer-events:none';
+    document.body.append(box);
+  }
+  box.textContent = `${name} ${total.toFixed(0)}ms · 받기 ${fetchMs.toFixed(0)} · 그리기 ${(total - fetchMs).toFixed(0)}`
+    + (perf.server ? ` · 서버 ${perf.server}` : '');
+}
+
 // ---- 라우팅 ----
 async function route(){
   const h = location.hash.replace(/^#\/?/, '').split('?')[0];
   const [name, arg] = h.split('/');
+  const t0 = performance.now();
+  perf.fetchMs = 0; perf.server = '';
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === (name || 'issues')));
   try{
     if(!name) await renderList();
@@ -193,6 +216,7 @@ async function route(){
     else if(name === 'projects') renderProjects();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
   }catch(e){ if(!view.innerHTML) view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  perfReport(name || 'issues', t0);
 }
 window.addEventListener('hashchange', route);
 

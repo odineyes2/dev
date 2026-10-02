@@ -1,5 +1,6 @@
 """dev — 코딩 에이전트용 이슈 게시판(dev.lomebrote.com). 사람은 화면, 에이전트는 REST/MCP로 쓴다."""
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -9,6 +10,7 @@ from fastapi.responses import JSONResponse, Response
 import auth
 import config
 import db
+import timing
 from mcp_tools import mcp_app
 
 
@@ -72,7 +74,8 @@ async def authenticate(request: Request, call_next):
     # 쿠키로 들어오는 쓰기 요청은 우리 화면이 보낸 것만(CSRF) — 다른 사이트의 폼은 이 헤더를 못 붙인다.
     if request.method in UNSAFE and not bearer and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
         return JSONResponse({"detail": "요청 헤더가 맞지 않아요."}, status_code=403)
-    actor, reason = await _resolve_actor(request)
+    with timing.span("auth"):
+        actor, reason = await _resolve_actor(request)
     request.state.actor = actor
     request.state.reason = reason
     if actor is None and path not in PUBLIC_API:
@@ -80,6 +83,19 @@ async def authenticate(request: Request, call_next):
             return JSONResponse({"detail": "nightshift 관리자 계정만 쓸 수 있어요."}, status_code=403)
         return JSONResponse({"detail": "로그인이 필요해요." if reason == "anon" else "API 키가 맞지 않아요."}, status_code=401)
     return await call_next(request)
+
+
+@app.middleware("http")   # 나중에 붙인 미들웨어가 바깥 — 인증까지 포함해 잰다
+async def server_timing(request: Request, call_next):
+    """요청마다 Server-Timing 헤더(구간별 ms + total)를 붙이고 느린 요청은 timing.log에(DEV-42)."""
+    spans = timing.begin()
+    t = time.perf_counter()
+    response = await call_next(request)
+    total = (time.perf_counter() - t) * 1000
+    value = timing.header(spans, total)
+    response.headers["Server-Timing"] = value
+    timing.log_slow(request.method, request.url.path, response.status_code, value, total)
+    return response
 
 
 def actor(request: Request) -> dict:
@@ -269,14 +285,20 @@ async def api_create_issue(request: Request):
 
 @app.get("/api/issues/{ref}")
 def api_issue(ref: str):
-    it = issues.get_issue(ref)
-    it["review_running"] = review.running_ref() == it["ref"]   # "Claude에게 검토 맡기기"가 도는 중(DEV-13)
-    it["review_busy"] = review.running_ref() is not None
-    it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
-    it["job"] = jobs.job_for(it["id"])   # 대기열 자리(DEV-43)
-    it["merge_state"] = orchestrate.merge_state(it)   # 병합 대기·병합됨·재시작 대기·되돌림(DEV-40-3)
-    for ch in it["children"]:
-        ch["merge_state"] = orchestrate.merge_state(issues.get_issue(ch["ref"]))
+    with timing.span("issue"):
+        it = issues.get_issue(ref)
+    with timing.span("review"):
+        it["review_running"] = review.running_ref() == it["ref"]   # "Claude에게 검토 맡기기"가 도는 중(DEV-13)
+        it["review_busy"] = review.running_ref() is not None
+    with timing.span("execute"):
+        it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
+    with timing.span("job"):
+        it["job"] = jobs.job_for(it["id"])   # 대기열 자리(DEV-43)
+    with timing.span("merge"):
+        it["merge_state"] = orchestrate.merge_state(it)   # 병합 대기·병합됨·재시작 대기·되돌림(DEV-40-3)
+    with timing.span("children"):
+        for ch in it["children"]:
+            ch["merge_state"] = orchestrate.merge_state(issues.get_issue(ch["ref"]))
     return it
 
 
