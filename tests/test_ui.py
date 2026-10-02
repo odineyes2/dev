@@ -42,7 +42,7 @@ def wait_port(port):
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 ns_port, dev_port = free_port(), free_port()
-env = {**os.environ, "DEV_DATA_DIR": str(tmp / "data"), "DEV_NIGHTSHIFT_URL": f"http://127.0.0.1:{ns_port}"}
+env = {**os.environ, "DEV_DATA_DIR": str(tmp / "data"), "DEV_AUTO_REVIEW": "0", "DEV_NIGHTSHIFT_URL": f"http://127.0.0.1:{ns_port}"}
 procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "fake_ns:app", "--port", str(ns_port)], cwd=tmp, stderr=subprocess.DEVNULL),
          subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app", "--port", str(dev_port)], cwd=ROOT / "server", env=env, stderr=subprocess.DEVNULL)]
 BASE = f"http://127.0.0.1:{dev_port}"

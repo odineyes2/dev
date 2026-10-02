@@ -258,8 +258,13 @@ def api_issues(project: str = "", status: str = "", assignee: int | None = None,
 @app.post("/api/issues")
 async def api_create_issue(request: Request):
     b = await json_body(request)
-    return issues.create_issue(actor(request), b.get("project"), b.get("title"), b.get("body", ""), b.get("priority", "none"),
-                               b.get("labels"), b.get("parent"), b.get("status", "backlog"))
+    a = actor(request)
+    it = issues.create_issue(a, b.get("project"), b.get("title"), b.get("body", ""), b.get("priority", "none"),
+                             b.get("labels"), b.get("parent"), b.get("status", "backlog"))
+    # 사람이 발행한 최상위 이슈는 바로 검토 대기열에 넣는다(DEV-43). Task는 부모 계획서가 곧 계획이라 넣지 않는다.
+    if config.AUTO_REVIEW and a["kind"] == "human" and not it.get("parent_id"):
+        it["job"] = jobs.enqueue(a, it["ref"], "review")
+    return it
 
 
 @app.get("/api/issues/{ref}")
