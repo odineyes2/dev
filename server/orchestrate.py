@@ -29,7 +29,7 @@ from pathlib import Path
 
 import config
 import issues
-from execute import BASE_BRANCH, _run_git, branch_name
+from execute import BASE_BRANCH, SECRET_ENV, _run_git, branch_name
 
 SETTINGS = config.DATA_DIR / "orchestrate.json"
 GIT_ID = ["-c", "user.name=dev orchestrator", "-c", "user.email=orchestrator@dev.local"]
@@ -123,7 +123,7 @@ def run_tests(repo) -> str | None:
     """repo의 tests/test_*.py를 하나씩 돌린다. 실패한 첫 파일과 출력 끝부분(없으면 None)."""
     for t in sorted(Path(repo, "tests").glob("test_*.py")):
         r = subprocess.run([sys.executable, str(t)], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           env={**os.environ, "PYTHONIOENCODING": "utf-8"}, timeout=600)
+                           env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
         if r.returncode:
             return f"{t.name}: {(r.stdout + r.stderr).strip()[-1500:]}"
     return None

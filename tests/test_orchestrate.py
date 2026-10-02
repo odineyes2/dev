@@ -149,3 +149,9 @@ state["health"] = 200
 srv.shutdown()
 
 print("ok")
+
+# 병합 뒤 테스트는 NTFY 비밀값 없이 돌아간다(진짜 알림이 나가지 않게)
+os.environ["NTFY_TOPIC"] = "should-not-leak"
+(repo / "tests" / "test_env.py").write_text("import os,sys; sys.exit(1 if os.environ.get('NTFY_TOPIC') else 0)\n")
+assert orchestrate.run_tests(str(repo)) is None
+print("ok env")
