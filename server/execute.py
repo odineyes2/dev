@@ -119,8 +119,9 @@ def branch_info(repo: str, ref: str) -> dict | None:
             "diff_stat": _git(repo, "diff", "--stat", f"{BASE_BRANCH}...{branch}")}
 
 
-def blocked_reason(issue: dict, parent: dict | None) -> str | None:
-    """이 Task를 지금 실행 맡길 수 없는 이유(있으면). 서버가 시작할 때와 화면 버튼이 같이 쓴다."""
+def blocked_reason(issue: dict, parent: dict | None, wait: bool = True) -> str | None:
+    """이 Task를 지금 실행 맡길 수 없는 이유(있으면). 서버가 시작할 때와 화면 버튼이 같이 쓴다.
+    wait=False면 기다려도 풀리지 않는 이유만 본다(선행 Task 미완료는 대기열에서 기다린다)."""
     if not issue.get("parent_ref") or parent is None:
         return "Task(하위 이슈)만 실행을 맡길 수 있어요."
     if issue["status"] not in ("backlog", "changes_requested"):
@@ -129,7 +130,7 @@ def blocked_reason(issue: dict, parent: dict | None) -> str | None:
     if not a or a["stale"] or a["verdict"] == "reject":
         return f"부모 {parent['ref']}의 계획서가 승인되지 않았어요."
     waiting = [b["ref"] for b in issue["blocked_by"] if b["status"] != "done"]
-    if waiting:
+    if waiting and wait:
         return f"선행 Task({', '.join(waiting)})가 done이 되어야 해요."
     return None
 
@@ -147,8 +148,8 @@ def _run_then_merge(actor, ref, *args):
 
 
 def start(actor: dict, ref: str) -> dict:
-    """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409."""
-    import review
+    """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
+    import jobs, review
     if actor["kind"] != "human":
         raise issues.StoreError("실행은 사람만 맡길 수 있어요.", 403)
     issue = issues.get_issue(ref)   # 없으면 404
@@ -166,7 +167,7 @@ def start(actor: dict, ref: str) -> dict:
     issues.add_comment(actor, ref, f"🛠 Claude에게 실행을 맡겼어요 — `{branch_name(ref)}` 브랜치의 worktree에서 구현해요"
                                    f"(push 없음, 비용 상한 ${BUDGET_USD:g}). 끝나면 in_review로 올라와요.")
     cmd = command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
-    threading.Thread(target=_run_then_merge, args=(actor, ref, log_path, run_id, cmd, worktree, safe_env(repo), TIMEOUT_SEC, "실행"),
+    threading.Thread(target=jobs.run_then_pump, args=(_run_then_merge, actor, ref, log_path, run_id, cmd, worktree, safe_env(repo), TIMEOUT_SEC, "실행"),
                      daemon=True).start()
     return {"started": True, "ref": ref, "branch": branch_name(ref)}
 

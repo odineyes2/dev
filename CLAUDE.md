@@ -7,6 +7,7 @@
 - `server/auth.py` nightshift 세션 확인·에이전트 키 · `server/issues.py` 이슈 저장소와 권한 판단(REST와 MCP가 같이 씀) · `server/mcp_tools.py` MCP 도구
 - `server/review.py` "Claude에게 검토 맡기기"(헤드리스 `claude -p`) — 실행마다 `runs` 테이블에 한 줄(상태·토큰·비용·로그 파일). 서버가 뜰 때 남은 running은 orphaned로
 - `server/execute.py` "Claude에게 실행 맡기기"(Task 전용) — `<데이터폴더>/worktrees/<ref>` worktree + `relay/<ref>` 브랜치에서 헤드리스로 구현. 허용 목록만 통과(Bash는 `python tests/*`·읽기성 git·add·commit뿐), push 불가(pushurl 덮기·토큰 제거), 비용·시간 상한. 시작 조건: 부모 계획서 승인·선행 Task done·저장소가 base 브랜치에서 깨끗. **합치기(merge)·push·재시작은 사람이 터미널에서** — 실행은 브랜치까지만. 환경변수 `DEV_EXEC_BASE`(main)·`DEV_EXEC_BUDGET_USD`(2)·`DEV_EXEC_TIMEOUT_SEC`(1800)
+- `server/jobs.py` 검토·실행 대기열(`jobs` 테이블) — 바쁠 때 누른 것은 줄에 서고 하나씩 차례로(넣을 때·작업 스레드가 끝난 뒤(실행은 병합까지)·서버 시작·60초 주기에 펌프). 선행 대기 실행은 건너뛰고 뒤 항목부터. REST `POST /api/issues/{ref}/review|execute`는 enqueue, `GET /api/jobs`, `DELETE /api/jobs/{id}`
 - `static/` 화면(빌드 없음) · `tests/` 검사(`python tests/test_x.py`, 임시 데이터 폴더)
 - `ecosystem.config.js` pm2 앱 `dev`(127.0.0.1:8300, Cloudflare 터널이 dev.lomebrote.com으로 연결)
 

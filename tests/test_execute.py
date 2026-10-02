@@ -81,7 +81,7 @@ assert "T-1" in cmd[2] and "T-0" in cmd[2] and "relay/T-1" in cmd[2]
 import time  # noqa: E402
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-import app as A, auth, db, review  # noqa: E402
+import app as A, auth, db, jobs, review  # noqa: E402
 
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
     lambda req: httpx.Response(200, json={"user": {"id": 1, "username": "admin", "role": "admin"}})))
@@ -95,11 +95,13 @@ execute.command_for = lambda ref, parent, mcp: [sys.executable, str(fake), behav
 
 
 def wait_idle():
-    for _ in range(80):
-        if not review.running_ref():
-            break
+    """도는 것도 시작할 대기 항목도 없을 때까지(두 번 연속 확인 — 끝남과 다음 시작 사이 틈)."""
+    idle = 0
+    for _ in range(120):
         time.sleep(0.2)
-    time.sleep(0.3)
+        idle = idle + 1 if not jobs.busy() else 0
+        if idle >= 2:
+            break
 
 
 db.init()
@@ -119,15 +121,15 @@ with TestClient(A.app) as c:
     assert post("EX-9").status_code == 404
     assert "Task" in post("EX-1").json()["detail"]                    # 부모(Task 아님)
     assert "승인되지 않았어요" in post("EX-2-1").json()["detail"]          # 계획서 미승인
-    r = post("EX-1-2"); assert r.status_code == 409 and "EX-1-1" in r.json()["detail"], r.text   # 선행 미완료
+    r = post("EX-1-2"); assert r.status_code == 200 and r.json()["queued"] and "EX-1-1" in r.json()["note"], r.text   # 선행 미완료 → 줄에서 대기
     assert not execute.worktree_path("EX-1-2").exists() and review.list_runs("EX-1-2") == []
 
-    r = post("EX-1-1"); assert r.status_code == 200 and r.json()["branch"] == "relay/EX-1-1", r.text
+    r = post("EX-1-1"); assert r.status_code == 200 and r.json()["started"], r.text   # 앞의 대기 항목이 막혀도 뒤 항목은 돈다
     assert execute.worktree_path("EX-1-1").is_dir() and review.running_ref() == "EX-1-1"
-    assert post("EX-1-2").status_code == 409                            # 한 번에 하나(선행이 아직이라 이유는 다르지만 거절)
+    assert post("EX-1-2").json()["job_id"] == jobs.list_jobs()[0]["id"] and len(jobs.list_jobs()) == 1   # 중복으로 안 넣음
     issues.set_status(me, "EX-1-1", "done")
-    assert "돌고 있어요" in post("EX-1-2").json()["detail"]              # 선행 done → 이제는 실행 중이라서 거절
-    wait_idle()
+    wait_idle()                                                         # 선행 done → EX-1-1이 끝나면 EX-1-2가 이어서 돈다
+    assert review.list_runs("EX-1-2")[0]["status"] == "ok" and jobs.list_jobs() == []
     run = review.list_runs("EX-1-1")[0]
     assert run["mode"] == "execute" and run["status"] == "ok" and run["output_tokens"] == 5 and run["cost_usd"] == 0.1, run
     log = (Path(os.environ["DEV_DATA_DIR"]) / "reviews" / run["log_file"]).read_text("utf-8")
@@ -136,8 +138,6 @@ with TestClient(A.app) as c:
     assert "cfg=2" in log, log                                          # remote 1개 pushurl + credential.helper — 안전한 환경으로 실행됨
     assert any("실행을 맡겼어요" in e["body"] for e in issues.get_issue("EX-1-1")["events"])
 
-    r = post("EX-1-2"); assert r.status_code == 200, r.text            # 선행 done, 아무것도 안 돌 때
-    wait_idle()
     behave.update(sleep="0", code="3")
     issues.set_status(me, "EX-1-2", "changes_requested", "고쳐 주세요")
     post("EX-1-2"); wait_idle()

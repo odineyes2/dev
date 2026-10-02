@@ -7,7 +7,7 @@
   → 코드 수정·push·재시작을 할 수 없다. 파일은 Read/Grep/Glob으로 읽기만.
 - `--strict-mcp-config --mcp-config <.mcp.json>`: dev MCP만 붙인다(에이전트 키 = claude-main). 그 도구도 이슈 읽기·계획서·
   댓글·상태·제목 채우기로 한정한다(dev 서버의 권한 규칙상 done/closed·지우기·사람 본문 고치기는 원래 못 한다).
-- 한 번에 하나만(비용, runs에서 status='running'인 행이 있으면 거절), 시간 제한(DEV_REVIEW_TIMEOUT_SEC).
+- 한 번에 하나만(비용, runs에서 status='running'인 행이 있으면 거절 — 바쁠 때 누른 것은 jobs.py 대기열이 차례로 돌린다), 시간 제한(DEV_REVIEW_TIMEOUT_SEC).
 - 실행마다 runs에 한 줄(시작·끝·결과·토큰·비용). 출력은 JSON(`usage`·`total_cost_usd`)이고, 읽지 못하면 토큰은 비워 두고 실행 결과는 그대로 둔다.
 - 사용량은 이 서버에 로그인된 Claude 계정에서 나간다.
 
@@ -83,14 +83,15 @@ def list_runs(ref: str) -> list[dict]:
 
 
 def start(actor: dict, ref: str) -> dict:
-    """검토를 시작한다(사람만). 이미 하나 돌고 있으면 409. 이슈가 없으면 404."""
+    """검토를 시작한다(사람만). 이미 하나 돌고 있으면 409. 이슈가 없으면 404. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
     if actor["kind"] != "human":
         raise issues.StoreError("검토는 사람만 맡길 수 있어요.", 403)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
     log_path, run_id = begin(actor, issue, "review")
     issues.add_comment(actor, ref, "🔎 Claude에게 검토를 맡겼어요 — 홈서버에서 검토만 해요(코드 수정 없음). 몇 분 뒤 계획서가 올라와요.")
-    threading.Thread(target=run_headless, args=(actor, ref, log_path, run_id, command_for(ref), PROJECTS_DIR, None, TIMEOUT_SEC, "검토"),
+    import jobs
+    threading.Thread(target=jobs.run_then_pump, args=(run_headless, actor, ref, log_path, run_id, command_for(ref), PROJECTS_DIR, None, TIMEOUT_SEC, "검토"),
                      daemon=True).start()
     return {"started": True, "ref": ref}
 
