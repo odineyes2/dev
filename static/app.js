@@ -418,6 +418,7 @@ function resultHtml(it){
     <div class="decision" id="result"><div id="result-form" hidden><textarea id="result-note"></textarea>
       <div class="row-end"><button id="result-cancel">취소</button><button id="result-send"></button></div></div>
     <div class="review-actions" id="result-actions"><button id="approve" class="primary">결과 승인 → 완료</button>
+      ${it.children.length || it.parent_ref ? '<button class="complete-tree">전체 완료</button>' : ''}
       <button data-to="changes_requested" id="request-changes">수정 요청</button>
       <button data-to="closed" class="danger">결과 거절</button></div></div></div>`;
 }
@@ -469,7 +470,8 @@ async function renderIssue(ref){
             <div class="row-end"><button id="send-comment" class="primary">댓글 달기</button></div></div></div>
       </div>
       <aside class="side panel">
-        <div class="field"><span>Status</span><select id="status">${STATUSES.map(s => `<option value="${s}"${s === it.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}</select></div>
+        <div class="field"><span>Status</span><select id="status">${STATUSES.map(s => `<option value="${s}"${s === it.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}</select>
+          ${it.children.length || it.parent_ref ? '<button class="complete-tree" title="최상위 이슈와 모든 Task를 한 번에 Done으로">전체 완료</button>' : ''}</div>
         <div class="field"><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
         <div class="field"><span>Assignee</span><select id="assignee">${agentOpts}</select></div>
         <div class="field"><span>Labels (쉼표로)</span><input id="labels" value="${esc(it.labels.join(', '))}"></div>
@@ -507,6 +509,26 @@ async function renderIssue(ref){
   $('labels').addEventListener('change', async (e) => {
     await api('PATCH', `/api/issues/${R}`, { labels: e.target.value.split(',').map(s => s.trim()).filter(Boolean) }).catch(() => {}); reload();
   });
+  // 전체 완료(DEV-44): 최상위 이슈와 모든 Task를 한 번에 done. 닫힐 목록과 주의할 Task를 보여 주고 확인받는다.
+  view.querySelectorAll('.complete-tree').forEach(b => b.addEventListener('click', async () => {
+    let root = it;
+    while(root.parent_ref) root = await api('GET', `/api/issues/${encodeURIComponent(root.parent_ref)}`).catch(() => null) || {};
+    if(!root.ref) return;
+    // ponytail: 최상위의 바로 아래 Task까지만 보여 준다(서버는 더 깊은 자손도 닫는다)
+    const open = [root, ...root.children].filter(x => !['done', 'closed'].includes(x.status));
+    if(!open.length){ toast('이미 모두 끝났어요'); return; }
+    const warn = root.children.filter(c => !['done', 'closed'].includes(c.status)
+      && (c.status !== 'in_review' || ['병합 대기', '재시작 대기', '되돌림'].includes(c.merge_state)));
+    if(!confirm(`${root.ref} 묶음 전체를 Done으로 바꿀까요? 되돌리기 기능은 없어요.
+
+닫힐 이슈:
+${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
+      + (warn.length ? `\n\n주의:\n${warn.map(c => `· ${c.ref} — ${c.status !== 'in_review' ? STATUS_LABEL[c.status] : ''}${c.status !== 'in_review' && c.merge_state ? ' · ' : ''}${c.merge_state || ''}`).join('\n')}` : ''))) return;
+    b.disabled = true; b.textContent = '완료하는 중…';
+    try{ await api('POST', `/api/issues/${R}/complete-tree`, {}); }
+    catch(e){ reload(); return; }
+    toast(`${root.ref} 묶음을 끝냈어요`); location.hash = '#/';
+  }));
   if($('approve')){
     $('approve').addEventListener('click', () => setStatus('done'));
     let to = null;
