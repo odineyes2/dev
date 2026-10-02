@@ -377,6 +377,34 @@ def set_status(actor, ref, status, note="") -> dict:
         return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
 
 
+def complete_tree(actor, ref, note="") -> list[dict]:
+    """묶음 전체 완료(DEV-44) — ref의 최상위 이슈와 그 아래 모든 이슈를 한 트랜잭션으로 done.
+    이미 done/closed인 것은 그대로 둔다(거절해서 닫은 Task를 덮지 않게). Claude 실행 중인 이슈가 있으면 아무것도 바꾸지 않는다.
+    사람만 — goal 라벨도 사람이 누른 것이니 닫는다. 바뀐 이슈 목록을 돌려준다."""
+    if not _is_human(actor):
+        raise _forbidden("done/closed는 사람이 확인하고 바꿔요 — 끝냈으면 in_review로 올려 주세요.")
+    note = _text(note, "메모", 20_000)
+    with db.connect() as c:
+        row = _find(c, ref)
+        root = row["id"]
+        while (p := c.execute("SELECT parent_id FROM issues WHERE id=?", (root,)).fetchone()[0]) is not None:
+            root = p
+        ids = [r[0] for r in c.execute("WITH RECURSIVE t(id) AS (SELECT ? UNION SELECT i.id FROM issues i JOIN t ON i.parent_id=t.id) "
+                                       "SELECT id FROM t", (root,))]
+        marks = ",".join("?" * len(ids))
+        busy = [r["ref"] for r in c.execute(f"SELECT DISTINCT {ref_sql('i', 'p')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id "
+                                            f"JOIN projects p ON p.id=i.project_id WHERE r.status='running' AND i.id IN ({marks})", ids)]
+        if busy:
+            raise StoreError(f"Claude가 실행 중인 이슈가 있어요: {', '.join(busy)} — 끝난 뒤 다시 해 주세요.", 409)
+        rows = c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({marks}) AND i.status NOT IN ('done','closed') ORDER BY i.id", ids).fetchall()
+        now = db.now_iso()
+        body = note.strip() or f"전체 완료 ({row['ref']}에서 한 번에)"
+        for r in rows:
+            c.execute("UPDATE issues SET status='done', closed_at=?, updated_at=?, claimed_by=NULL, lease_until=NULL WHERE id=?", (now, now, r["id"]))
+            _event(c, r["id"], actor, "status", body, {"from": r["status"], "to": "done", "tree_from": row["ref"]})
+        return [_issue_dict(r) for r in c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({','.join('?' * len(rows))}) ORDER BY i.id", [r["id"] for r in rows])]
+
+
 def post_plan(actor, ref, body) -> dict:
     body = _text(body, "계획서", required=True)
     with db.connect() as c:
