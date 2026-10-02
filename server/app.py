@@ -299,8 +299,10 @@ def api_issue(ref: str):
     with timing.span("children"):
         evs = issues.events_for(ch["id"] for ch in it["children"])   # Task마다 다시 읽지 않고 한 번에(DEV-42-2)
         cfg = orchestrate.settings(it["project_key"]) if it["children"] else None
+        queued = {j["issue_id"]: j for j in jobs.list_jobs() if j["mode"] == "execute"} if it["children"] else {}
         for ch in it["children"]:
             ch["merge_state"] = orchestrate.merge_state({**ch, "events": evs[ch["id"]]}, cfg)
+            ch["job"] = queued.get(ch["id"])   # 줄에 선 Task는 표에서 "실행 대기 중"(DEV-45)
     return it
 
 

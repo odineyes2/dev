@@ -515,7 +515,8 @@ async function renderIssue(ref){
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}</td><td>${statusHtml(ch.status)}${ch.merge_state ? ` <span class="dim">${esc(ch.merge_state)}</span>` : ''}${ch.claimed_by ? ` <span class="dim">${esc(actorName(ch.claimed_by))}</span>` : ''}</td>
-            <td>${canRun(it, ch) ? `<button class="run-task" data-ref="${esc(ch.ref)}"><svg class="ico"><use href="#i-bot"/></svg>실행 맡기기</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
+            <td>${ch.job ? `<button class="run-task" data-ref="${esc(ch.ref)}" disabled title="${esc(`대기 ${ch.job.position}번째${ch.job.note ? ' — ' + ch.job.note : ''}`)}"><svg class="ico"><use href="#i-bot"/></svg>실행 대기 중</button>`
+              : canRun(it, ch) ? `<button class="run-task" data-ref="${esc(ch.ref)}"><svg class="ico"><use href="#i-bot"/></svg>실행 맡기기</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">댓글 달기</button></div></div></div>

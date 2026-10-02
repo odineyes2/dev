@@ -398,18 +398,31 @@ try:
                 assert "대기 2번째" in page.inner_text("#stage")
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_issue_{scheme}_{tag}.png"), full_page=True)
+                # 부모 Tasks 표(DEV-45) — 줄에 선 Task는 비활성 "실행 대기 중"
+                page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
+                for r in ("DEV-4-1", "DEV-4-2"):
+                    b = page.locator(f'.run-task[data-ref="{r}"]')
+                    assert b.is_disabled() and "실행 대기 중" in b.inner_text(), r
+                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                page.screenshot(path=str(shots / f"queue_tasks_{scheme}_{tag}.png"), full_page=True)
                 page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector(".jobs summary")
                 assert "Claude 대기 2건" in page.inner_text(".jobs summary")
                 page.click(".jobs summary"); assert page.locator(".jobs li").count() == 2
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
+        assert page.request.get(f"{BASE}/api/issues/{pr}").json()["children"][0]["job"]["mode"] == "execute"
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
         page.click(".jobs li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")
         page.wait_for_function("() => document.querySelector('.jobs summary') && document.querySelector('.jobs summary').innerText.includes('1건')")
+        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
+        b1, b2 = (page.locator(f'.run-task[data-ref="{r}"]') for r in ("DEV-4-1", "DEV-4-2"))
+        assert b1.is_enabled() and "실행 맡기기" in b1.inner_text() and b2.is_disabled() and "실행 대기 중" in b2.inner_text()
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
         assert "대기 1번째" in page.inner_text(".exec")
         page.click(".exec .cancel-job"); page.wait_for_selector("#ask-execute")
         assert page.request.get(f"{BASE}/api/jobs").json()["jobs"] == []
+        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
+        assert page.locator(".run-task:not([disabled])").count() == 2 and "실행 대기 중" not in str(page.locator("tr.row").all_inner_texts())
         # 바쁠 때도 검토 버튼은 눌러 둘 수 있다
         fresh = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "바쁠 때 검토"}, headers=H).json()["ref"]
         page.goto(BASE + f"/#/issue/{fresh}"); page.reload(); page.wait_for_selector("#ask-review")
