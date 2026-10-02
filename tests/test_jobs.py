@@ -65,4 +65,28 @@ assert review.list_runs("JQ-3")[0]["status"] == "ok"
 jobs.enqueue(me, "JQ-4", "review"); jobs.enqueue(me, "JQ-2", "review")
 issues.delete_issue(me, "JQ-2")
 wait_idle()
+
+# 이슈 발행 시 자동 검토 — 사람이 발행한 최상위 이슈만 review job, Task·에이전트 발행은 안 넣는다
+import httpx  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+import app as A, auth  # noqa: E402
+auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
+    lambda req: httpx.Response(200, json={"user": {"id": 1, "username": "admin", "role": "admin"}})))
+H = {"X-Requested-With": "dev"}
+fake.write_text("import time\ntime.sleep(2)\nprint('ok')\n", "utf-8")   # 첫 검토가 도는 동안 뒤 것이 줄에 남게
+with TestClient(A.app) as c:
+    c.cookies.set("ns_session", "adm")
+    top = c.post("/api/issues", json={"project": "JQ", "title": "발행"}, headers=H).json()
+    assert top["job"]["started"] and top["ref"] == "JQ-5", top
+    top2 = c.post("/api/issues", json={"project": "JQ", "title": "발행 둘"}, headers=H).json()
+    assert top2["job"]["queued"] and top2["job"]["position"] == 1, top2
+    task = c.post("/api/issues", json={"project": "JQ", "title": "Task", "parent": "JQ-5"}, headers=H).json()
+    assert "job" not in task and task["parent_ref"] == "JQ-5"
+    key = c.post("/api/agents", json={"name": "a"}, headers=H).json()["key"]
+    c.cookies.clear()
+    r = c.post("/api/issues", json={"project": "JQ", "title": "에이전트 발행"}, headers={"Authorization": f"Bearer {key}"})
+    assert r.status_code == 200 and "job" not in r.json(), r.text
+    assert [j["ref"] for j in jobs.list_jobs()] == ["JQ-6"]
+    wait_idle()
+    assert [len(review.list_runs(ref)) for ref in ("JQ-5", "JQ-6", task["ref"], r.json()["ref"])] == [1, 1, 0, 0]
 print("OK")
