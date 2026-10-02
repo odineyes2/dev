@@ -169,6 +169,7 @@ table.issues tr.row:hover{ background:var(--panel-2); }
 table.issues tr[hidden]{ display:none; }
 table.issues tr.child td.ref{ padding-left:calc(var(--sp-4) + 24px); }
 table.issues tr.child td:first-child{ box-shadow:inset 2px 0 0 var(--border); }
+table.issues.tasks td:nth-child(2){ overflow-wrap:anywhere; }
 .tog{ all:unset; cursor:pointer; box-sizing:border-box; width:20px; height:20px; margin:0 4px 0 -6px; display:inline-flex; align-items:center; justify-content:center; color:var(--dim); vertical-align:middle; }
 .tog:hover{ color:var(--text); }
 .tog:focus-visible{ outline:2px solid currentColor; outline-offset:-2px; }
@@ -265,7 +266,7 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
   border-radius:var(--r-md); z-index:20; max-width:90vw; box-shadow:var(--shadow-pop); font-size:13.5px; }
 
 @media (max-width: 800px){
-  .detail{ grid-template-columns:1fr; }
+  .detail{ grid-template-columns:minmax(0, 1fr); }
   .side{ position:static; }
   .top{ padding:14px 16px; }
   .header-right{ gap:10px; }
