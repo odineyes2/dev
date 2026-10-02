@@ -30,8 +30,8 @@ git("init", "-q", "-b", "main")
 (repo / "a.txt").write_text("a\n")
 git("add", "."); git("commit", "-qm", "init")
 
-# 기본 꺼짐
-assert orchestrate.settings("DEV") == {}
+# 기본 켜짐
+assert orchestrate.settings("DEV") == {"auto_merge": True}
 
 # 통과 — --no-ff 병합 커밋
 branch("T-1", {"b.txt": "b\n"})

@@ -1,6 +1,6 @@
 """
 오케스트레이터(DEV-40) — 실행이 통과한 Task 브랜치를 base 브랜치에 자동으로 합친다.
-`<데이터폴더>/orchestrate.json`에서 프로젝트의 `auto_merge`가 켜진 곳만 동작한다(기본 꺼짐).
+`<데이터폴더>/orchestrate.json`에서 프로젝트별로 조정한다. `auto_merge`는 기본 켜짐(끄려면 false) — 재시작은 `pm2_app`을 적은 프로젝트만 한다.
 
 순서: 작업 폴더 확인(base 체크아웃·깨끗) → 선행 Task 병합 확인 → `merge-tree`로 충돌 재확인 → `git merge --no-ff`
 → 병합한 결과로 `python tests/test_*.py` → 실패하면 `git revert -m 1`(이력 보존, reset은 쓰지 않음).
@@ -40,9 +40,9 @@ DEFAULTS = {"restart_when": ["server/*", "ecosystem.config.js"], "restart_cmd": 
 
 def settings(project_key: str) -> dict:
     try:
-        return json.loads(SETTINGS.read_text(encoding="utf-8")).get(project_key) or {}
+        return {"auto_merge": True, **(json.loads(SETTINGS.read_text(encoding="utf-8")).get(project_key) or {})}
     except (OSError, ValueError):
-        return {}
+        return {"auto_merge": True}
 
 
 def _get(url, timeout=5):
