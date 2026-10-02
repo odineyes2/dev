@@ -1,5 +1,5 @@
 """Claude에게 검토 맡기기(DEV-13) — 가짜 claude(파이썬 스크립트)로.
-- 사람만, 한 번에 하나(409), 요청은 타임라인 댓글, 도는 동안 review_running, 실패(종료 코드·시간 초과)는 댓글로.
+- 사람만, 한 번에 하나(바쁘면 대기열), 요청은 타임라인 댓글, 도는 동안 review_running, 실패(종료 코드·시간 초과)는 댓글로.
 - 실제 명령에 안전장치(--restricted, 쓰기·명령 도구 차단, dev MCP만)가 들어 있다."""
 import os, sys, tempfile, time
 from pathlib import Path
@@ -45,7 +45,9 @@ with TestClient(A.app) as c:
     assert it["review_running"] and it["review_busy"] and "검토를 맡겼어요" in it["events"][-1]["body"]
     other = c.get("/api/issues/NS-2").json()
     assert other["review_busy"] and not other["review_running"]
-    assert c.post("/api/issues/NS-2/review", headers=H).status_code == 409   # 한 번에 하나
+    q = c.post("/api/issues/NS-2/review", headers=H).json()   # 한 번에 하나 — 바쁘면 줄에 선다(DEV-43)
+    assert q["queued"] and q["position"] == 1 and c.get("/api/issues/NS-2").json()["job"]["id"] == q["job_id"], q
+    assert c.delete(f"/api/jobs/{q['job_id']}", headers=H).status_code == 200 and c.get("/api/jobs").json()["jobs"] == []
     for _ in range(60):
         if not review.running_ref():
             break

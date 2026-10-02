@@ -15,6 +15,7 @@ from mcp_tools import mcp_app
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    jobs.start_timer()   # 남은 대기열을 이어서 돌리고 60초마다 펌프(DEV-43)
     async with mcp_app.lifespan(app):   # MCP(streamable HTTP)의 세션 관리자도 같이 띄운다
         yield
 
@@ -267,6 +268,7 @@ def api_issue(ref: str):
     it["review_running"] = review.running_ref() == it["ref"]   # "Claude에게 검토 맡기기"가 도는 중(DEV-13)
     it["review_busy"] = review.running_ref() is not None
     it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
+    it["job"] = jobs.job_for(it["id"])   # 대기열 자리(DEV-43)
     it["merge_state"] = orchestrate.merge_state(it)   # 병합 대기·병합됨·재시작 대기·되돌림(DEV-40-3)
     for ch in it["children"]:
         ch["merge_state"] = orchestrate.merge_state(issues.get_issue(ch["ref"]))
@@ -338,14 +340,27 @@ import execute  # noqa: E402
 import orchestrate  # noqa: E402
 
 
+import jobs  # noqa: E402
+
+
 @app.post("/api/issues/{ref}/execute")
 def api_execute(ref: str, request: Request):
-    return execute.start(actor(request), ref)
+    return jobs.enqueue(actor(request), ref, "execute")   # 바쁘면 줄에 선다(DEV-43)
 
 
 @app.post("/api/issues/{ref}/review")
 def api_review(ref: str, request: Request):
-    return review.start(actor(request), ref)
+    return jobs.enqueue(actor(request), ref, "review")
+
+
+@app.get("/api/jobs")
+def api_jobs():
+    return {"jobs": jobs.list_jobs()}
+
+
+@app.delete("/api/jobs/{job_id}")
+def api_cancel_job(job_id: int, request: Request):
+    return jobs.cancel(actor(request), job_id)
 
 
 @app.post("/api/issues/{ref}/decision")

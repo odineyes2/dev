@@ -142,6 +142,21 @@ MIGRATIONS = [
     ALTER TABLE issues ADD COLUMN sub_of INTEGER;
     ALTER TABLE issues ADD COLUMN sub_number INTEGER;
     CREATE UNIQUE INDEX issues_sub ON issues(project_id, sub_of, sub_number) WHERE sub_number IS NOT NULL;
+    """,
+    # Claude 맡기기 대기열(DEV-43) — 바쁠 때 거절하지 않고 줄에 세운다. runs의 CHECK를 바꾸지 않으려고 따로 둔다.
+    """
+    CREATE TABLE jobs (
+        id INTEGER PRIMARY KEY,
+        issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL CHECK (mode IN ('review','execute')),
+        actor TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('queued','started','cancelled','skipped')),
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        run_id INTEGER
+    );
+    CREATE INDEX jobs_status ON jobs(status, id);
     """
 ]
 
