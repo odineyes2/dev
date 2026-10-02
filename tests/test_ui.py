@@ -54,7 +54,9 @@ try:
         errs = []
         page.on("pageerror", lambda e: errs.append(str(e)))
         answers = []   # 입력창(prompt)에 줄 답 — 비었으면 기본값. None이면 취소.
+        asked = []     # 띄운 확인 창 문구
         def on_dialog(d):
+            asked.append(d.message)
             a = answers.pop(0) if answers else "모바일도 확인해 주세요"
             d.dismiss() if a is None else d.accept(a) if d.type == "prompt" else d.accept()
         page.on("dialog", on_dialog)
@@ -389,6 +391,24 @@ try:
         page.wait_for_function("location.hash === '#/'")
         got = page.request.get(f"{BASE}/api/issues/{rj}").json()
         assert got["status"] == "closed" and "방향이 달라서" in str(got["events"]), got
+
+        # 전체 완료(DEV-44) — Task 화면에서 눌러 상위·형제 Task까지 Done. 확인 창에 닫힐 목록과 주의할 Task가 나온다.
+        top = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "묶음 상위"}, headers=H).json()["ref"]
+        ta, tb = (page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": t, "parent": top}, headers=H).json()["ref"] for t in ("묶음 하나", "묶음 둘"))
+        page.request.post(f"{BASE}/api/issues/{ta}/status", data={"status": "in_review"}, headers=H)
+        for scheme in ("light", "dark"):
+            for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
+                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
+                page.goto(BASE + f"/#/issue/{ta}"); page.reload(); page.wait_for_selector(".complete-tree")
+                assert page.locator(".complete-tree").count() == 2   # Result 패널 + Status 옆
+                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                page.screenshot(path=str(shots / f"complete_tree_{scheme}_{tag}.png"), full_page=True)
+        page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
+        answers.append(None); page.click(".side .complete-tree"); page.wait_for_timeout(500)   # 취소하면 그대로
+        assert page.request.get(f"{BASE}/api/issues/{top}").json()["status"] != "done"
+        asked.clear(); page.click(".side .complete-tree"); page.wait_for_function("location.hash === '#/'")
+        assert top in asked[0] and ta in asked[0] and tb in asked[0] and "주의" in asked[0] and f"{tb} — Backlog" in asked[0], asked
+        assert all(page.request.get(f"{BASE}/api/issues/{r}").json()["status"] == "done" for r in (top, ta, tb))
 
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")

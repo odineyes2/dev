@@ -207,6 +207,7 @@ table.issues tr.child td:first-child{ box-shadow:inset 2px 0 0 var(--border); }
 .side .field{ padding:var(--sp-3) 0; border-bottom:1px solid var(--border); }
 .side .field:last-child{ border-bottom:none; }
 .side .field > span{ display:block; margin-bottom:6px; }
+.side .complete-tree{ margin-top:var(--sp-2); }
 .side select, .side input:not([type=checkbox]){ width:100%; }
 .side code{ font-family:var(--mono); font-size:12px; }
 .side .hint{ font-size:12px; margin-top:6px; line-height:1.5; }
