@@ -402,7 +402,9 @@ try:
                 page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
                 for r in ("DEV-4-1", "DEV-4-2"):
                     b = page.locator(f'.run-task[data-ref="{r}"]')
-                    assert b.is_disabled() and "실행 대기 중" in b.inner_text(), r
+                    assert b.is_disabled() and b.get_attribute("aria-label") == "실행 대기 중", r
+                    # 모바일은 아이콘만(DEV-46) — 글자가 표를 넓혀 가로 스크롤을 만들었다
+                    assert ("실행 대기 중" in b.inner_text()) == (tag == "desktop"), r
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_tasks_{scheme}_{tag}.png"), full_page=True)
                 page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector(".jobs summary")
