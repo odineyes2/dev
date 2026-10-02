@@ -21,8 +21,9 @@ SESSION_COOKIE = "ns_session"
 KEY_PREFIX = "dev_"
 _client = httpx.AsyncClient(timeout=10.0)   # 테스트가 가짜 transport로 바꿔 끼운다
 
-# 같은 쿠키로 곧 다시 오면 nightshift에 또 묻지 않는다.
-_AUTH_CACHE_TTL = 15.0
+# 같은 쿠키로 곧 다시 오면 nightshift에 또 묻지 않는다(DEV-42: 15초마다 nightshift 왕복을 기다리던 것을 5분으로).
+# nightshift에서 권한을 뺏거나 거기서 로그아웃한 것은 최대 5분 늦게 반영된다 — dev 로그아웃은 forget_cookie로 바로 비운다.
+_AUTH_CACHE_TTL = 300.0
 _auth_cache: dict[str, tuple[dict | None, float]] = {}
 
 
