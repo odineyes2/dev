@@ -297,8 +297,10 @@ def api_issue(ref: str):
     with timing.span("merge"):
         it["merge_state"] = orchestrate.merge_state(it)   # 병합 대기·병합됨·재시작 대기·되돌림(DEV-40-3)
     with timing.span("children"):
+        evs = issues.events_for(ch["id"] for ch in it["children"])   # Task마다 다시 읽지 않고 한 번에(DEV-42-2)
+        cfg = orchestrate.settings(it["project_key"]) if it["children"] else None
         for ch in it["children"]:
-            ch["merge_state"] = orchestrate.merge_state(issues.get_issue(ch["ref"]))
+            ch["merge_state"] = orchestrate.merge_state({**ch, "events": evs[ch["id"]]}, cfg)
     return it
 
 
