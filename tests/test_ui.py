@@ -376,11 +376,45 @@ try:
                 page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
-        assert page.is_disabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec")
+        # 선행 대기는 눌러 둘 수 있다(DEV-43) — 줄에서 기다린다
+        assert page.is_enabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec") and "차례로" in page.inner_text(".exec")
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review", state="attached"); assert page.locator("#ask-execute").count() == 0
-        # 부모 화면에서 바로 실행(선행이 안 끝난 DEV-4-2는 버튼 없음, 삭제는 아이콘 하나)
-        page.wait_for_selector("tr.row"); n = page.locator(".run-task").count(); assert n <= 1, n
+        # 부모 화면에서 바로 실행(선행이 안 끝난 DEV-4-2도 눌러 두면 줄에 선다, 삭제는 아이콘 하나)
+        page.wait_for_selector("tr.row"); n = page.locator(".run-task").count(); assert n == 2, n
         assert page.locator("#delete svg").count() == 1 and not page.text_content("#delete").strip()
+
+        # 대기열(DEV-43) — 진짜 claude를 돌리지 않게 도는 run 하나를 심어 두고 줄을 DB에 직접 넣는다
+        db = sqlite3.connect(tmp / "data" / "dev.db")
+        i41, i42 = (page.request.get(u).json()["id"] for u in (t5, t6))
+        db.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'running', 'human:admin', '2026-10-02T00:00:00+00:00')", (iid,))
+        db.executemany("INSERT INTO jobs(issue_id, mode, actor, status, note, created_at) VALUES(?, 'execute', 'human:admin', 'queued', ?, '2026-10-02T00:00:00+00:00')",
+                       [(i41, ""), (i42, "선행 Task(DEV-4-1)가 done이 되어야 해요.")])
+        db.commit()
+        for scheme in ("light", "dark"):
+            for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
+                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
+                page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
+                assert "대기 2번째" in page.inner_text(".exec") and "선행 Task" in page.inner_text(".exec") and page.locator("#ask-execute").count() == 0
+                assert "대기 2번째" in page.inner_text("#stage")
+                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                page.screenshot(path=str(shots / f"queue_issue_{scheme}_{tag}.png"), full_page=True)
+                page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector(".jobs summary")
+                assert "Claude 대기 2건" in page.inner_text(".jobs summary")
+                page.click(".jobs summary"); assert page.locator(".jobs li").count() == 2
+                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
+        page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
+        page.click(".jobs li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")
+        page.wait_for_function("() => document.querySelector('.jobs summary') && document.querySelector('.jobs summary').innerText.includes('1건')")
+        page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
+        assert "대기 1번째" in page.inner_text(".exec")
+        page.click(".exec .cancel-job"); page.wait_for_selector("#ask-execute")
+        assert page.request.get(f"{BASE}/api/jobs").json()["jobs"] == []
+        # 바쁠 때도 검토 버튼은 눌러 둘 수 있다
+        fresh = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "바쁠 때 검토"}, headers=H).json()["ref"]
+        page.goto(BASE + f"/#/issue/{fresh}"); page.reload(); page.wait_for_selector("#ask-review")
+        assert page.is_enabled("#ask-review") and "차례로" in page.inner_text(".side")
+        db.execute("UPDATE runs SET status='ok' WHERE status='running'"); db.commit(); db.close()
 
         # 결과 거절 → 닫히고 사유가 남는다(DEV-16)
         rj = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결과 거절"}, headers=H).json()["ref"]

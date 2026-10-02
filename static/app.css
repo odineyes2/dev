@@ -295,4 +295,12 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .branch{ margin-top:var(--sp-2); }
 .branch pre{ margin:6px 0 0; font:12px/1.5 var(--mono); white-space:pre-wrap; word-break:break-all; color:var(--dim); }
 
+/* 대기열(DEV-43) — 대기는 회청 점(DESIGN §3 대기·예정) */
+.queued{ display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; }
+.jobs{ margin:0 0 var(--sp-3); padding:var(--sp-2) var(--sp-3); border:1px solid var(--border); border-radius:8px; background:var(--panel); }
+.jobs summary{ cursor:pointer; }
+.jobs ul{ list-style:none; margin:var(--sp-2) 0 0; padding:0; }
+.jobs li{ display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; padding:6px 0; font-size:13px; border-top:1px solid var(--border); }
+.jobs li .ghost{ margin-left:auto; }
+
 .stage{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel)}
