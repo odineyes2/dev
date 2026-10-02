@@ -56,6 +56,12 @@ assert not execute.worktree_path("T-2").exists()
 info = execute.branch_info(str(repo), "T-1")
 assert info["commits"] == 1 and "b.txt" in info["diff_stat"], info
 assert not (repo / "b.txt").exists()
+# 끝 커밋이 그대로면 git은 끝 해시 읽기 한 번뿐(DEV-42-3) — 위에서 커밋이 늘어난 것은 캐시가 새 해시에 비워졌다는 뜻
+calls = []
+orig_git = execute._git
+execute._git = lambda cwd, *a: calls.append(a[0]) or orig_git(cwd, *a)
+assert execute.branch_info(str(repo), "T-1") == info and calls == ["for-each-ref"], calls
+execute._git = orig_git
 
 # push 차단 — 안전한 환경에서는 원격으로 못 나간다(보통 환경에서는 나간다)
 env = execute.safe_env(str(repo))

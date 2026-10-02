@@ -17,6 +17,7 @@ import threading
 from pathlib import Path
 
 import config
+import db
 import issues
 
 BASE_BRANCH = os.environ.get("DEV_EXEC_BASE") or "main"
@@ -110,13 +111,27 @@ def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
             "--max-budget-usd", str(BUDGET_USD), "--no-session-persistence", "--output-format", "json"]
 
 
+_branch_cache = {}   # (repo, branch) → ((브랜치 끝, base 끝), 정보) — 끝 커밋이 같으면 커밋 수·변경 요약도 같다(DEV-42-3)
+
+
 def branch_info(repo: str, ref: str) -> dict | None:
-    """결과 확인용 — 브랜치가 있으면 base 대비 커밋 수와 변경 요약."""
+    """결과 확인용 — 브랜치가 있으면 base 대비 커밋 수와 변경 요약.
+    브랜치·base 끝 해시를 git 한 번으로 읽고, 둘 다 그대로면 지난 결과를 쓴다(rev-list·diff를 다시 띄우지 않는다)."""
     branch = branch_name(ref)
-    if not repo or not Path(repo).is_dir() or not _branch_exists(repo, branch):
+    if not repo or not Path(repo).is_dir():
         return None
-    return {"branch": branch, "base": BASE_BRANCH, "commits": int(_git(repo, "rev-list", "--count", f"{BASE_BRANCH}..{branch}")),
+    tips = dict(line.split(" ", 1) for line in _git(repo, "for-each-ref", "--format=%(refname) %(objectname)",
+                                                     f"refs/heads/{branch}", f"refs/heads/{BASE_BRANCH}").splitlines())
+    key = (tips.get(f"refs/heads/{branch}"), tips.get(f"refs/heads/{BASE_BRANCH}"))
+    if key[0] is None:
+        return None
+    hit = _branch_cache.get((repo, branch))
+    if hit and hit[0] == key:
+        return dict(hit[1])
+    info = {"branch": branch, "base": BASE_BRANCH, "commits": int(_git(repo, "rev-list", "--count", f"{BASE_BRANCH}..{branch}")),
             "diff_stat": _git(repo, "diff", "--stat", f"{BASE_BRANCH}...{branch}")}
+    _branch_cache[(repo, branch)] = (key, info)
+    return dict(info)
 
 
 def blocked_reason(issue: dict, parent: dict | None, wait: bool = True) -> str | None:
@@ -176,8 +191,11 @@ def panel(issue: dict) -> dict | None:
     """화면용 — Task면 실행을 못 맡기는 이유(있으면)와 브랜치 정보. Task가 아니면 None."""
     if not issue.get("parent_ref"):
         return None
-    parent = issues.get_issue(issue["parent_ref"])
-    repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
+    # 부모는 승인 요약만, 프로젝트는 local_path만 — 타임라인 통째·프로젝트 목록을 다시 읽지 않는다(DEV-42-3)
+    with db.connect() as c:
+        parent = issues._issue_dict(issues._find(c, issue["parent_ref"]))
+        row = c.execute("SELECT local_path FROM projects WHERE key=?", (issue["project_key"],)).fetchone()
+    repo = row["local_path"] if row else ""
     try:
         branch = branch_info(repo, issue["ref"])
     except issues.StoreError:
