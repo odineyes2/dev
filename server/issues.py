@@ -250,6 +250,18 @@ def get_issue(ref) -> dict:
     return d
 
 
+def events_for(ids) -> dict:
+    """이슈 id들의 타임라인을 한 번에 — {id: [event…]}(id 순). 부모 상세가 Task마다 get_issue를 다시 부르지 않게(DEV-42-2)."""
+    ids = list(ids)
+    out = {i: [] for i in ids}
+    if not ids:
+        return out
+    with db.connect() as c:
+        for e in c.execute(f"SELECT * FROM events WHERE issue_id IN ({','.join('?' * len(ids))}) ORDER BY id", ids):
+            out[e["issue_id"]].append({**{k: e[k] for k in e.keys() if k != "data_json"}, "data": json.loads(e["data_json"])})
+    return out
+
+
 def _next_number(c, proj, parent=None) -> tuple:
     """새 이슈의 (number, sub_of, sub_number). 최상위 이슈의 Task는 부모 번호 아래에서 센다(NS-17-1, -2…), 그 밖에는 프로젝트 번호."""
     if parent is not None and parent["parent_id"] is None and parent["sub_number"] is None:

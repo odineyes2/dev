@@ -204,8 +204,9 @@ def promote_parent(actor: dict, ref: str) -> bool:
     return True
 
 
-def merge_state(issue: dict) -> str | None:
-    """Task 줄의 상태 문구(DEV-40-3) — 오케스트레이터가 타임라인에 남긴 마지막 흔적으로 판단한다. 해당 없으면 None."""
+def merge_state(issue: dict, cfg: dict | None = None) -> str | None:
+    """Task 줄의 상태 문구(DEV-40-3) — 오케스트레이터가 타임라인에 남긴 마지막 흔적으로 판단한다. 해당 없으면 None.
+    cfg를 주면 settings()를 다시 읽지 않는다(Task 여러 개를 한 번에 볼 때)."""
     for e in reversed(issue.get("events", [])):
         b = e["body"] or ""
         if e["kind"] == "comment" and b.startswith("🛠"):   # 다시 실행을 맡겼으면 이전 병합 흔적은 지난 일
@@ -216,6 +217,6 @@ def merge_state(issue: dict) -> str | None:
             return "병합됨"
         if e["kind"] == "status" and b.startswith("🔀 자동 병합"):
             return "되돌림" if "revert" in b else "병합 대기" if e["data"].get("to") == "on_hold" else None
-    if issue.get("status") == "in_review" and issue.get("parent_ref") and settings(issue["project_key"]).get("auto_merge"):
+    if issue.get("status") == "in_review" and issue.get("parent_ref") and (cfg or settings(issue["project_key"])).get("auto_merge"):
         return "병합 대기"
     return None
