@@ -83,6 +83,21 @@ with TestClient(A.app) as c:
     assert c.post("/api/auth/login", json={"username": "admin", "password": "pw"}).status_code == 403   # CSRF
     r = c.post("/api/auth/logout", headers=H)
     assert r.status_code == 204 and "Max-Age=0" in r.headers["set-cookie"]
+
+    # 인증 기억(DEV-42-4): TTL 안에서는 nightshift에 다시 묻지 않고, dev 로그아웃 뒤에는 바로 다시 묻는다
+    assert auth._AUTH_CACHE_TTL >= 300
+    me_calls = lambda: sum(1 for s in seen if s[1] == "/api/auth/me" and "ns_session=adm2" in s[2].get("cookie", ""))
+    USERS["adm2"] = {"id": 3, "username": "admin2", "role": "admin"}
+    c.cookies.clear()
+    c.cookies.set("ns_session", "adm2")
+    for _ in range(5):
+        assert c.get("/api/auth/me").json()["actor"]["name"] == "admin2"
+    assert me_calls() == 1, me_calls()
+    del USERS["adm2"]                       # nightshift에서 로그아웃된 셈
+    assert c.get("/api/auth/me").json()["actor"]["name"] == "admin2"   # TTL 안이라 아직 기억
+    assert c.post("/api/auth/logout", headers=H).status_code == 204
+    c.cookies.set("ns_session", "adm2")     # 브라우저가 옛 쿠키를 다시 보내도
+    assert c.get("/api/auth/me").json()["actor"] is None and me_calls() == 2, me_calls()
 print("OK")
 
 # 화면 파일은 no-cache — Cloudflare가 브라우저 캐시 4시간을 붙이지 않게(DEV-1: 고친 CSS가 안 보이던 문제)
