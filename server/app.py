@@ -294,6 +294,12 @@ async def api_set_status(ref: str, request: Request):
     return issues.set_status(actor(request), ref, b.get("status"), b.get("note", ""))
 
 
+@app.post("/api/issues/{ref}/complete-tree")
+async def api_complete_tree(ref: str, request: Request):
+    b = await json_body(request)
+    return {"issues": issues.complete_tree(actor(request), ref, b.get("note", ""))}
+
+
 @app.get("/api/issues/{ref}/plans")
 def api_plans(ref: str):
     return {"plans": issues.list_plans(ref)}

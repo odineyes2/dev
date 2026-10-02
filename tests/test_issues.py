@@ -196,6 +196,29 @@ with TestClient(A.app) as c:
     ok(a("POST", f"/api/issues/{g['ref']}/comments", json={"body": "진행 상황"}))
     assert ok(human("POST", f"/api/issues/{g['ref']}/status", json={"status": "in_progress"}))["status"] == "in_progress"
 
+    # 묶음 전체 완료(DEV-44) — Task에서 눌러도 상위에서 눌러도 최상위+모든 하위가 done, closed는 그대로, 사람만, 실행 중이면 통째로 거부
+    def tree():
+        top = ok(human("POST", "/api/issues", json={"project": "DEV", "title": "묶음", "labels": ["goal"]}))["ref"]
+        ks = [ok(human("POST", "/api/issues", json={"project": "DEV", "title": f"T{n}", "parent": top}))["ref"] for n in range(3)]
+        ok(human("POST", f"/api/issues/{ks[2]}/status", json={"status": "closed", "note": "거절"}))
+        return top, ks
+    st = lambda ref: ok(a("GET", f"/api/issues/{ref}"))["status"]
+    for pick in (lambda top, ks: ks[0], lambda top, ks: top):
+        top, ks = tree()
+        assert a("POST", f"/api/issues/{top}/complete-tree", json={}).status_code == 403
+        r = ok(human("POST", f"/api/issues/{pick(top, ks)}/complete-tree", json={}))["issues"]
+        assert sorted(x["ref"] for x in r) == sorted([top, ks[0], ks[1]]) and all(x["status"] == "done" and x["closed_at"] for x in r), r
+        assert [st(x) for x in (top, *ks)] == ["done", "done", "done", "closed"]
+        ev = ok(a("GET", f"/api/issues/{ks[1]}"))["events"][-1]
+        assert ev["kind"] == "status" and ev["data"]["to"] == "done" and f"{pick(top, ks)}에서 한 번에" in ev["body"], ev
+    top, ks = tree()
+    with db.connect() as cx:
+        cx.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?,?,?,?,?)",
+                   (ok(a("GET", f"/api/issues/{ks[1]}"))["id"], "execute", "running", "human:admin", db.now_iso()))
+    r = human("POST", f"/api/issues/{ks[0]}/complete-tree", json={})
+    assert r.status_code == 409 and ks[1] in r.json()["detail"], r.text
+    assert [st(x) for x in (top, *ks)] == ["backlog", "backlog", "backlog", "closed"]   # 아무것도 안 바뀜
+
     # 쓰기 요청의 형식 오류
     assert c.post("/api/issues", content=b"not json", headers={**H, "content-type": "application/json"}).status_code == 400
 print("OK")
