@@ -361,6 +361,21 @@ def _guard_goal(row, actor, what):
         raise _forbidden(f"최종 목표(goal) 이슈의 {what}은(는) 사람만 바꿔요 — 진행 상황은 댓글로 남기고, 달성 여부는 사용자가 판단해요.")
 
 
+def _set_status(c, actor, row, status, note="", data=None):
+    """기존 연결에서 상태와 이벤트를 함께 기록한다(실행 시작 트랜잭션에서도 사용한다)."""
+    if status not in db.STATUSES:
+        raise StoreError(f"status는 {'/'.join(db.STATUSES)} 중 하나예요.")
+    if status in HUMAN_ONLY_STATUSES and not _is_human(actor):
+        raise _forbidden("done/closed는 사람이 확인하고 바꿔요 — 끝냈으면 in_review로 올려 주세요.")
+    _guard_goal(row, actor, "상태")
+    note = _text(note, "메모", 20_000)
+    now = db.now_iso()
+    c.execute("UPDATE issues SET status=?, closed_at=?, updated_at=?"
+              + (", claimed_by=NULL, lease_until=NULL" if status in RELEASE_ON else "") + " WHERE id=?",
+              (status, now if status in HUMAN_ONLY_STATUSES else None, now, row["id"]))
+    _event(c, row["id"], actor, "status", note, {"from": row["status"], "to": status, **(data or {})})
+
+
 def set_status(actor, ref, status, note="") -> dict:
     status = str(status or "")
     if status not in db.STATUSES:
@@ -373,13 +388,7 @@ def set_status(actor, ref, status, note="") -> dict:
         _guard_goal(row, actor, "상태")
         if row["status"] == status:
             return _issue_dict(row)
-        now = db.now_iso()
-        closed_at = now if status in HUMAN_ONLY_STATUSES else None
-        release = status in RELEASE_ON
-        c.execute("UPDATE issues SET status=?, closed_at=?, updated_at=?"
-                  + (", claimed_by=NULL, lease_until=NULL" if release else "") + " WHERE id=?",
-                  (status, closed_at, now, row["id"]))
-        _event(c, row["id"], actor, "status", note, {"from": row["status"], "to": status})
+        _set_status(c, actor, row, status, note)
         # 에이전트가 사람을 부를 때 폰 알림 — 헤드리스 실행 중의 in_review는 실행이 끝날 때 한 번만 보낸다
         if not _is_human(actor) and status == "on_hold":
             notify.send(row["ref"], "❓ 사람의 답이 필요해요", note)

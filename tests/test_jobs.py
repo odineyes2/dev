@@ -35,6 +35,7 @@ except issues.StoreError as e:
     assert e.status == 403
 
 assert jobs.enqueue(me, "JQ-1", "review")["started"]          # 아무것도 안 돌면 바로 시작
+assert issues.get_issue('JQ-1')['status'] == 'backlog'   # Claude 경로의 기존 상태는 유지한다.
 r2 = jobs.enqueue(me, "JQ-2", "review"); r3 = jobs.enqueue(me, "JQ-3", "review"); r4 = jobs.enqueue(me, "JQ-4", "review")
 assert (r2["position"], r3["position"], r4["position"]) == (1, 2, 3), (r2, r3, r4)
 assert jobs.enqueue(me, "JQ-2", "review")["job_id"] == r2["job_id"] and len(jobs.list_jobs()) == 3   # 중복 클릭은 하나만

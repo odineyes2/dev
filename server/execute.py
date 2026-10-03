@@ -16,7 +16,6 @@ import os
 import json
 import re
 import subprocess
-import threading
 from pathlib import Path
 
 import config
@@ -132,7 +131,7 @@ def codex_command_for(ref: str, parent_ref: str | None) -> list[str]:
                        "-c", "sandbox_workspace_write.network_access=false", cmd[-1]]
 
 
-def finalize_codex(actor: dict, ref: str, cwd, out: str) -> None:
+def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> None:
     """마지막 구조화 응답을 확인한 뒤 서버가 worktree 변경만 커밋하고 결과를 등록한다."""
     messages = []
     for line in out.splitlines():
@@ -151,7 +150,7 @@ def finalize_codex(actor: dict, ref: str, cwd, out: str) -> None:
     if Path(cwd).resolve() != worktree_path(ref).resolve() or _git(cwd, "rev-parse", "--abbrev-ref", "HEAD") != branch_name(ref):
         raise issues.StoreError("Task worktree 또는 브랜치가 달라졌어요.", 409)
     issue = issues.get_issue(ref)
-    why = blocked_reason(issue, issues.get_issue(issue["parent_ref"]))
+    why = completion_blocked_reason(issue, run_id)
     if why:
         raise issues.StoreError(why, 409)
     if not _git(cwd, "status", "--porcelain"):
@@ -189,6 +188,19 @@ def branch_info(repo: str, ref: str) -> dict | None:
     return dict(info)
 
 
+def completion_blocked_reason(issue: dict, run_id: int) -> str | None:
+    """착수 자격과 달리 현재 Codex 실행의 소유 상태를 확인한 뒤 승인·범위를 재검증한다."""
+    import review
+    with db.connect() as c:
+        run = c.execute("SELECT * FROM runs WHERE id=? AND issue_id=? AND mode='execute' AND provider='codex' AND status='running'",
+                        (run_id, issue["id"])).fetchone()
+        latest = c.execute("SELECT id FROM runs WHERE issue_id=? ORDER BY id DESC LIMIT 1", (issue["id"],)).fetchone()
+        if not run or not latest or latest["id"] != run_id or issue["status"] != "in_progress" or not review.owned_start(c, issue["id"], run_id):
+            return "현재 Codex 실행의 착수 상태가 아니에요 — 완료 등록을 중단해요."
+    parent = issues.get_issue(issue["parent_ref"]) if issue.get("parent_ref") else None
+    return _eligibility_reason(issue, parent)
+
+
 def blocked_reason(issue: dict, parent: dict | None, wait: bool = True) -> str | None:
     """이 Task를 지금 실행 맡길 수 없는 이유(있으면). 서버가 시작할 때와 화면 버튼이 같이 쓴다.
     wait=False면 기다려도 풀리지 않는 이유만 본다(선행 Task 미완료는 대기열에서 기다린다)."""
@@ -196,6 +208,12 @@ def blocked_reason(issue: dict, parent: dict | None, wait: bool = True) -> str |
         return "Task(하위 이슈)만 실행을 맡길 수 있어요."
     if issue["status"] not in ("backlog", "changes_requested"):
         return f"{issue['status']} 상태에서는 실행을 맡길 수 없어요 — Backlog나 Changes Requested일 때만이에요."
+    return _eligibility_reason(issue, parent, wait)
+
+
+def _eligibility_reason(issue: dict, parent: dict | None, wait: bool = True) -> str | None:
+    if not issue.get("parent_ref") or parent is None:
+        return "Task(하위 이슈)만 실행을 맡길 수 있어요."
     a = parent.get("approval")
     if not a or a["stale"] or a["verdict"] == "reject":
         return f"부모 {parent['ref']}의 계획서가 승인되지 않았어요."
@@ -244,7 +262,7 @@ def _run_then_merge(actor, ref, *args):
 
 def start(actor: dict, ref: str, provider: str = "claude") -> dict:
     """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
-    import jobs, review
+    import review
     if actor["kind"] != "human":
         raise issues.StoreError("실행은 사람만 맡길 수 있어요.", 403)
     if provider not in ("claude", "codex"):
@@ -263,13 +281,14 @@ def start(actor: dict, ref: str, provider: str = "claude") -> dict:
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
     worktree = prepare_worktree(repo, ref)
     cmd = codex_command_for(ref, issue["parent_ref"]) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
+    env = safe_env(repo)
     log_path, run_id = review.begin(actor, issue, "execute", provider)
     name = "Codex" if provider == "codex" else "Claude"
     limit = f"시간 제한 {int(TIMEOUT_SEC // 60)}분, 비용 상한 없음" if provider == "codex" else f"비용 상한 ${BUDGET_USD:g}"
-    issues.add_comment(actor, ref, f"🛠 {name}에게 실행을 맡겼어요 — `{branch_name(ref)}` 브랜치의 worktree에서 구현해요"
-                                   f"(push 없음, {limit}). 끝나면 in_review로 올라와요.")
-    threading.Thread(target=jobs.run_then_pump, args=(_run_then_merge, actor, ref, log_path, run_id, cmd, worktree, safe_env(repo), TIMEOUT_SEC, "실행", provider),
-                     daemon=True).start()
+    review.launch(actor, ref, run_id, provider,
+                  f"🛠 {name}에게 실행을 맡겼어요 — `{branch_name(ref)}` 브랜치의 worktree에서 구현해요"
+                  f"(push 없음, {limit}). 끝나면 in_review로 올라와요.",
+                  (_run_then_merge, actor, ref, log_path, run_id, cmd, worktree, env, TIMEOUT_SEC, "실행", provider))
     return {"started": True, "ref": ref, "branch": branch_name(ref)}
 
 
