@@ -376,25 +376,6 @@ def _set_status(c, actor, row, status, note="", data=None):
     _event(c, row["id"], actor, "status", note, {"from": row["status"], "to": status, **(data or {})})
 
 
-def _sync_terminal_status(c, actor, row, status, note):
-    """선택한 이슈와 같은 프로젝트의 후손만 종결하며 실행 중이면 전체를 거부한다."""
-    ids = [r[0] for r in c.execute(
-        "WITH RECURSIVE t(id) AS (SELECT ? UNION SELECT i.id FROM issues i JOIN t ON i.parent_id=t.id "
-        "WHERE i.project_id=?) SELECT id FROM t", (row["id"], row["project_id"]))]
-    marks = ",".join("?" * len(ids))
-    busy = [r["ref"] for r in c.execute(
-        f"SELECT DISTINCT {ref_sql('i', 'p')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id "
-        f"JOIN projects p ON p.id=i.project_id WHERE r.status='running' AND i.id IN ({marks})", ids)]
-    if busy:
-        raise StoreError(f"실행 중인 이슈가 있어요: {', '.join(busy)} — 끝난 뒤 다시 해 주세요.", 409)
-    rows = c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({marks}) ORDER BY i.id", ids).fetchall()
-    for child in rows:
-        if child["status"] == status:
-            continue
-        source = {} if child["id"] == row["id"] else {"tree_from": row["ref"]}
-        _set_status(c, actor, child, status, note, source)
-
-
 def set_status(actor, ref, status, note="") -> dict:
     status = str(status or "")
     if status not in db.STATUSES:
@@ -403,16 +384,11 @@ def set_status(actor, ref, status, note="") -> dict:
         raise _forbidden("done/closed는 사람이 확인하고 바꿔요 — 끝냈으면 in_review로 올려 주세요.")
     note = _text(note, "메모", 20_000)
     with db.connect() as c:
-        # 실행 시작의 쓰기와 경합하지 않도록 조회 전에 쓰기 잠금을 잡는다.
-        c.execute("BEGIN IMMEDIATE")
         row = _find(c, ref)
         _guard_goal(row, actor, "상태")
-        if status in HUMAN_ONLY_STATUSES:
-            _sync_terminal_status(c, actor, row, status, note)
-        elif row["status"] == status:
+        if row["status"] == status:
             return _issue_dict(row)
-        else:
-            _set_status(c, actor, row, status, note)
+        _set_status(c, actor, row, status, note)
         # 에이전트가 사람을 부를 때 폰 알림 — 헤드리스 실행 중의 in_review는 실행이 끝날 때 한 번만 보낸다
         if not _is_human(actor) and status == "on_hold":
             notify.send(row["ref"], "❓ 사람의 답이 필요해요", note)
@@ -523,7 +499,6 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
     if verdict != "approve" and not note.strip():
         raise StoreError(f"{VERDICT_LABEL[verdict]}은(는) 메모가 필요해요 — " + ("답하거나 고칠 내용을 적어 주세요." if verdict == "approve_notes" else "거절 이유를 적어 주세요."))
     with db.connect() as c:
-        c.execute("BEGIN IMMEDIATE")
         row = _find(c, ref)
         latest = c.execute("SELECT MAX(version) FROM plans WHERE issue_id=?", (row["id"],)).fetchone()[0]
         if latest is None:
@@ -534,8 +509,6 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
             raise StoreError("끝난 이슈예요.", 409)
         c.execute("INSERT INTO decisions(issue_id, gate, plan_version, verdict, note, actor, created_at) VALUES(?,?,?,?,?,?,?)",
                   (row["id"], "plan", latest, verdict, note, actor_label(actor), db.now_iso()))
-        if verdict == "reject":
-            _sync_terminal_status(c, actor, row, "closed", f"거절 (계획서 v{latest}): {note.strip()}")
         if verdict != "reject":   # 거절은 아래 상태 변경 이벤트가 사유를 담는다
             plan_body = c.execute("SELECT body FROM plans WHERE issue_id=? AND version=?", (row["id"], latest)).fetchone()[0]
             made = _spawn_tasks(c, row, plan_body, latest, actor, note)
@@ -543,6 +516,8 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
                    + (f"\n\n하위 Task {made}개를 만들었어요." if made else ""),
                    {"decision": verdict, "plan_version": latest})
             c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), row["id"]))
+    if verdict == "reject":
+        set_status(actor, ref, "closed", f"거절 (계획서 v{latest}): {note.strip()}")
     return get_issue(ref)
 
 

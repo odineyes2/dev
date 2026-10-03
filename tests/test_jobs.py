@@ -150,14 +150,13 @@ assert [j['id'] for j in jobs.list_jobs()] == [b]
 jobs.cancel(me, b)
 assert issues.get_issue(ref)['status'] == 'changes_requested'
 
-# 부모 계획서 거절은 자식도 종결하고 대기 실행은 skipped 처리한다.
+# 영구 실행 불가(승인이 뒤에 거절됨)는 skipped와 원래 상태로 돌아간다.
 jid = queued('execute')
 issues.decide(me, parent['ref'], 'reject', 'test rejection', plan_version=1)
 jobs.pump()
-assert issues.get_issue(ref)['status'] == 'closed' and not jobs.list_jobs()
+assert issues.get_issue(ref)['status'] == 'changes_requested' and not jobs.list_jobs()
 issues.set_status(me, parent['ref'], 'triage')
 issues.decide(me, parent['ref'], 'approve', plan_version=1)
-issues.set_status(me, ref, 'changes_requested')
 
 # 일시적 시작 실패는 Waiting에 남고, 실제 시작 실패도 재시도 가능한 대기로 돌아간다.
 jid = queued('execute')
