@@ -162,8 +162,42 @@ MIGRATIONS = [
     """
     ALTER TABLE jobs ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';
     ALTER TABLE runs ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';
-    """
+    """,
+    # Waiting CHECK를 확장하고 기존 행·참조·번호를 보존한다.
+    f"""
+    CREATE TABLE issues_new (
+        id INTEGER PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        number INTEGER NOT NULL,
+        parent_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'backlog' CHECK (status IN {_in(STATUSES + ('waiting',))}),
+        priority TEXT NOT NULL DEFAULT 'none' CHECK (priority IN {_in(PRIORITIES)}),
+        labels_json TEXT NOT NULL DEFAULT '[]',
+        reporter TEXT NOT NULL,
+        assignee_agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+        claimed_by TEXT,
+        lease_until TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        closed_at TEXT,
+        sub_of INTEGER,
+        sub_number INTEGER,
+        UNIQUE (project_id, number)
+    );
+    INSERT INTO issues_new SELECT * FROM issues;
+    DROP TABLE issues;
+    ALTER TABLE issues_new RENAME TO issues;
+    CREATE INDEX issues_status ON issues(project_id, status);
+    CREATE INDEX issues_parent ON issues(parent_id);
+    CREATE UNIQUE INDEX issues_sub ON issues(project_id, sub_of, sub_number) WHERE sub_number IS NOT NULL;
+    ALTER TABLE jobs ADD COLUMN previous_status TEXT;
+    """,
 ]
+
+# 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.
+STATUSES += ("waiting",)
 
 
 def now_iso() -> str:

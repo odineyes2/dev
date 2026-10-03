@@ -120,6 +120,8 @@ def codex_command_for(ref: str, parent_ref: str | None) -> list[str]:
 1. dev MCP get_issue로 Task와 부모 {parent_ref}의 본문·계획서·승인 메모를 읽는다. 사람의 조건부 승인 메모를 우선한다.
 2. AGENTS.md와 CLAUDE.md를 읽고 따른다. UI 작업이면 docs/DESIGN.md를 읽는다.
 3. 현재 worktree에서만 파일을 수정하고 적절한 테스트를 실행한다. Git 커밋·브랜치 변경·push·서버 재시작은 하지 않는다.
+   기존 회귀 검사가 직접 만든 임시 Git 저장소의 로컬 전송·커밋·브랜치 검사는 테스트 실행에 포함된다.
+   운영 저장소의 원격 차단은 유지하며 원격 push나 실제 Task worktree의 커밋·브랜치 변경은 하지 않는다.
    다른 저장소나 실기기 검사가 언급되면 승인 계획의 필수 선행 조건과 사람의 후속 검사를 구분한다.
    후속 수동 검사만 남은 경우 가능한 구현·자동 검사를 수행하고 미실시 검사를 summary에 정확히 적는다.
    필수 선행 조건이 미해결이면 조건을 임의로 생략하거나 검사했다고 꾸미지 말고 blocked로 구체적인 해결 절차를 적는다.
@@ -206,8 +208,8 @@ def blocked_reason(issue: dict, parent: dict | None, wait: bool = True) -> str |
     wait=False면 기다려도 풀리지 않는 이유만 본다(선행 Task 미완료는 대기열에서 기다린다)."""
     if not issue.get("parent_ref") or parent is None:
         return "Task(하위 이슈)만 실행을 맡길 수 있어요."
-    if issue["status"] not in ("backlog", "changes_requested"):
-        return f"{issue['status']} 상태에서는 실행을 맡길 수 없어요 — Backlog나 Changes Requested일 때만이에요."
+    if issue["status"] not in ("backlog", "changes_requested", "waiting"):
+        return f"{issue['status']} 상태에서는 실행을 맡길 수 없어요 — Backlog, Changes Requested, Waiting일 때만이에요."
     return _eligibility_reason(issue, parent, wait)
 
 

@@ -11,10 +11,10 @@ for i, sql in enumerate(db.MIGRATIONS[:5], 1):
     conn.executescript('BEGIN;' + sql + f'PRAGMA user_version={i};COMMIT;')
 assert 'provider' not in [r[1] for r in conn.execute('pragma table_info(jobs)')]
 conn.close()
-assert db.init() == 6
+assert db.init() == len(db.MIGRATIONS)
 with db.connect() as conn:
     for table in ('jobs', 'runs'):
         col = next(r for r in conn.execute('pragma table_info(' + table + ')') if r['name'] == 'provider')
         assert col['notnull'] and col['dflt_value'] == "'claude'"
-assert db.init() == 6
+assert db.init() == len(db.MIGRATIONS)
 print('OK')

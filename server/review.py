@@ -140,7 +140,7 @@ def start(actor: dict, ref: str, provider: str = "claude") -> dict:
 
 
 def begin(actor: dict, issue: dict, mode: str, provider: str = "claude") -> tuple[Path, int]:
-    """running 기록과 Codex 착수 상태를 함께 만들고 (로그 경로, run id)를 돌려준다."""
+    """running 기록과 대기열/Codex 착수 상태를 함께 만들고 (로그 경로, run id)를 돌려준다."""
     with _lock:
         busy = running_ref()
         if busy:
@@ -154,8 +154,16 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude") -> tupl
                 raise issues.StoreError("시작 전에 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
             run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file, provider) VALUES(?, ?, 'running', ?, ?, ?, ?)",
                                (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name, provider)).lastrowid
-            if provider == "codex":
-                issues._set_status(c, actor, row, "in_progress", "Codex 작업 착수", {"run_id": run_id})
+            import jobs
+            queued = c.execute("SELECT * FROM jobs WHERE issue_id=? AND mode=? AND status='queued' ORDER BY id LIMIT 1", (row["id"], mode)).fetchone()
+            owner = jobs._latest(c, row["id"]).get("job_id")
+            waiting_owner = c.execute("SELECT 1 FROM jobs WHERE id=? AND issue_id=? AND status='queued'", (owner, row["id"])).fetchone()
+            if queued and (row["status"] != "waiting" or not waiting_owner):
+                raise issues.StoreError("대기 중 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
+            if provider == "codex" or (row["status"] == "waiting" and queued and waiting_owner):
+                restore = queued["previous_status"] if queued and row["status"] == "waiting" and waiting_owner else row["status"]
+                issues._set_status(c, actor, row, "in_progress", f"{provider.title()} 작업 착수", {"run_id": run_id, "restore_status": restore, "job_id": queued["id"] if queued else None})
+            c.execute("UPDATE jobs SET status='started', started_at=?, run_id=? WHERE issue_id=? AND mode=? AND status='queued'", (db.now_iso(), run_id, row["id"], mode))
     return log_path, run_id
 
 
@@ -172,9 +180,13 @@ def finish_codex_status(c, actor, ref: str, run_id: int, status: str, label: str
     start = owned_start(c, row["id"], run_id)
     if row["status"] == "in_progress" and start:
         if status != "ok":
-            issues._set_status(c, actor, row, start["from"], "Codex 작업 실패 — 착수 전 상태로 복구")
+            issues._set_status(c, actor, row, start.get("restore_status", start["from"]), "Agent 작업 실패 — 착수 전 상태로 복구", {"job_id": start.get("job_id")})
         elif label == "검토":
-            issues._set_status(c, actor, row, "triage", "Codex 검토 완료 — 계획서를 보고 승인하면 착수해요")
+            issues._set_status(c, actor, row, "triage", "Agent 검토 완료 — 계획서를 보고 승인하면 착수해요")
+        import jobs
+        for queued in c.execute("SELECT * FROM jobs WHERE issue_id=? AND status='queued' ORDER BY id", (row["id"],)).fetchall():
+            c.execute("UPDATE jobs SET previous_status=NULL WHERE id=?", (queued["id"],))
+            jobs._waiting(c, c.execute("SELECT * FROM jobs WHERE id=?", (queued["id"],)).fetchone())
 
 
 def launch(actor, ref: str, run_id: int, provider: str, comment: str, args: tuple) -> None:
@@ -186,8 +198,7 @@ def launch(actor, ref: str, run_id: int, provider: str, comment: str, args: tupl
     except Exception as e:
         with db.connect() as c:
             c.execute("BEGIN IMMEDIATE")
-            if provider == "codex":
-                finish_codex_status(c, actor, ref, run_id, "failed", "")
+            finish_codex_status(c, actor, ref, run_id, "failed", "")
             c.execute("UPDATE runs SET status='failed', ended_at=?, note=? WHERE id=?",
                       (db.now_iso(), f"작업 스레드를 시작하지 못했어요: {e}", run_id))
         raise issues.StoreError(f"작업을 시작하지 못했어요 — {e}", 409) from e
@@ -273,8 +284,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     log_path.write_text(text + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        if provider == "codex":
-            finish_codex_status(c, actor, ref, run_id, status, label)
+        finish_codex_status(c, actor, ref, run_id, status, label)
         c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=?",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
     if note or code:

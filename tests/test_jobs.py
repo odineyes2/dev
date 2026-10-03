@@ -35,12 +35,14 @@ except issues.StoreError as e:
     assert e.status == 403
 
 assert jobs.enqueue(me, "JQ-1", "review")["started"]          # 아무것도 안 돌면 바로 시작
-assert issues.get_issue('JQ-1')['status'] == 'backlog'   # Claude 경로의 기존 상태는 유지한다.
+assert issues.get_issue('JQ-1')['status'] == 'in_progress'   # 대기열에서 실제 착수하면 진행 중이다.
 r2 = jobs.enqueue(me, "JQ-2", "review"); r3 = jobs.enqueue(me, "JQ-3", "review"); r4 = jobs.enqueue(me, "JQ-4", "review")
+assert issues.get_issue("JQ-2")["status"] == "waiting"
 assert (r2["position"], r3["position"], r4["position"]) == (1, 2, 3), (r2, r3, r4)
 assert jobs.enqueue(me, "JQ-2", "review")["job_id"] == r2["job_id"] and len(jobs.list_jobs()) == 3   # 중복 클릭은 하나만
 assert jobs.enqueue(me, "JQ-1", "review")["started"] and len(jobs.list_jobs()) == 3                # 도는 중인 것도 다시 안 넣음
 jobs.cancel(me, r3["job_id"])                                                                      # 취소한 것은 안 돎
+assert issues.get_issue("JQ-3")["status"] == "backlog"
 try:
     jobs.cancel(me, r3["job_id"]); raise AssertionError("두 번은 못 취소")
 except issues.StoreError as e:
@@ -95,4 +97,127 @@ with TestClient(A.app) as c:
     assert c.post("/api/issues/JQ-5/review", headers=H).json()["started"]
     wait_idle()
     assert review.list_runs("JQ-5")[0]["provider"] == "claude"
+# Waiting 소유권과 가짜 실행기로 전체 전환을 검사한다(실제 Git·유료 호출 없음).
+from unittest.mock import patch
+import execute
+issues.create_project(me, 'WT', 'waiting', '', '/unused')
+parent = issues.create_issue(me, 'WT', 'parent')
+issues.post_plan(me, parent['ref'], 'approved plan')
+issues.decide(me, parent['ref'], 'approve', plan_version=1)
+task = issues.create_issue(me, 'WT', 'task', parent=parent['ref'])
+ref = task['ref']
+
+def queued(mode='review', provider='claude'):
+    with patch.object(jobs, 'busy', return_value=True):
+        result = jobs.enqueue(me, ref, mode, provider)
+    assert issues.get_issue(ref)['status'] == 'waiting'
+    return result['job_id']
+
+# 중복 등록은 이벤트도 늘리지 않는다.
+jid = queued()
+events = len(issues.get_issue(ref)['events'])
+assert queued() == jid and len(issues.get_issue(ref)['events']) == events
+issues.set_status(me, ref, 'on_hold')
+issues.set_status(me, ref, 'waiting')
+jobs.cancel(me, jid)
+assert issues.get_issue(ref)['status'] == 'waiting'  # 같은 상태로 돌아온 수동 변경도 보존한다.
+issues.set_status(me, ref, 'changes_requested')
+
+# 다른 대기 항목이 남아 있으면 마지막 취소까지 Waiting을 유지한다.
+a, b = queued('execute'), queued('review')
+jobs.cancel(me, a)
+assert issues.get_issue(ref)['status'] == 'waiting'
+jobs.cancel(me, b)
+assert issues.get_issue(ref)['status'] == 'changes_requested'
+
+# 다른 모드가 대기 중이어도 착수·실패 후 마지막 대기의 소유권을 보존한다.
+a, b = queued('execute'), queued('review')
+_, run_id = review.begin(me, issues.get_issue(ref), 'execute', 'claude')
+assert issues.get_issue(ref)['status'] == 'in_progress'
+with db.connect() as c:
+    review.finish_codex_status(c, me, ref, run_id, 'failed', '실행')
+    c.execute("UPDATE runs SET status='failed' WHERE id=?", (run_id,))
+assert issues.get_issue(ref)['status'] == 'waiting'
+jobs.cancel(me, b)
+assert issues.get_issue(ref)['status'] == 'changes_requested'
+
+# 재시작으로 착수가 끊겨도 같은 이슈의 다른 대기 항목은 유지한다.
+a, b = queued('execute'), queued('review')
+_, run_id = review.begin(me, issues.get_issue(ref), 'execute', 'claude')
+db.init(); jobs.reconcile()
+assert issues.get_issue(ref)['status'] == 'waiting'
+assert [j['id'] for j in jobs.list_jobs()] == [b]
+jobs.cancel(me, b)
+assert issues.get_issue(ref)['status'] == 'changes_requested'
+
+# 영구 실행 불가(승인이 뒤에 거절됨)는 skipped와 원래 상태로 돌아간다.
+jid = queued('execute')
+issues.decide(me, parent['ref'], 'reject', 'test rejection', plan_version=1)
+jobs.pump()
+assert issues.get_issue(ref)['status'] == 'changes_requested' and not jobs.list_jobs()
+issues.set_status(me, parent['ref'], 'triage')
+issues.decide(me, parent['ref'], 'approve', plan_version=1)
+
+# 일시적 시작 실패는 Waiting에 남고, 실제 시작 실패도 재시도 가능한 대기로 돌아간다.
+jid = queued('execute')
+with patch.object(execute, 'start', side_effect=issues.StoreError('temporary', 409)):
+    jobs.pump()
+assert issues.get_issue(ref)['status'] == 'waiting'
+jobs.cancel(me, jid)
+jid = queued()
+with patch.object(review.threading.Thread, 'start', side_effect=RuntimeError('thread failed')):
+    jobs.pump()
+assert issues.get_issue(ref)['status'] == 'waiting' and jobs.list_jobs()[0]['id'] == jid
+jobs.cancel(me, jid)
+assert issues.get_issue(ref)['status'] == 'changes_requested'
+
+# Claude/Codex 모두 실제 착수와 실패·수동 상태 변경·재시작 복구를 검증한다.
+for provider in ('claude', 'codex'):
+    for ending in ('failed', 'manual', 'restart'):
+        jid = queued('execute', provider)
+        log, run_id = review.begin(me, issues.get_issue(ref), 'execute', provider)
+        assert issues.get_issue(ref)['status'] == 'in_progress'
+        if ending == 'manual':
+            issues.set_status(me, ref, 'on_hold')
+            issues.set_status(me, ref, 'in_progress')
+        if ending == 'restart':
+            db.init(); jobs.reconcile()
+        else:
+            with db.connect() as c:
+                review.finish_codex_status(c, me, ref, run_id, 'failed', '실행')
+                c.execute("UPDATE runs SET status='failed' WHERE id=?", (run_id,))
+        assert issues.get_issue(ref)['status'] == ('in_progress' if ending == 'manual' else 'changes_requested')
+        issues.set_status(me, ref, 'changes_requested')
+
+# 선행 미완료 동안 Waiting을 유지하고 완료 후 시작할 수 있다.
+dependency = issues.create_issue(me, 'WT', 'dependency', parent=parent['ref'])
+with db.connect() as c:
+    c.execute('INSERT INTO issue_deps VALUES(?,?)', (task['id'], dependency['id']))
+jid = queued('execute')
+jobs.pump()
+assert jobs.list_jobs()[0]['id'] == jid and issues.get_issue(ref)['status'] == 'waiting'
+issues.set_status(me, dependency['ref'], 'done')
+def fake_start(actor, task_ref, provider):
+    review.begin(actor, issues.get_issue(task_ref), 'execute', provider)
+with patch.object(execute, 'start', side_effect=fake_start):
+    jobs.pump()
+assert issues.get_issue(ref)['status'] == 'in_progress' and not jobs.list_jobs()
+with db.connect() as c:
+    c.execute("UPDATE runs SET status='ok' WHERE status='running'")
+issues.set_status(me, ref, 'in_review')
+
+# 사람이 상태를 바꾸거나 종결·goal인 이슈는 펌프가 시작하지 않는다.
+issues.set_status(me, ref, 'backlog')
+jid = queued()
+issues.set_status(me, ref, 'done')
+with patch.object(review, 'start') as start:
+    jobs.pump(); start.assert_not_called()
+assert issues.get_issue(ref)['status'] == 'done'
+goal = issues.create_issue(me, 'WT', 'goal', labels=['goal'])
+try:
+    jobs.enqueue(me, goal['ref'], 'review')
+    raise AssertionError('goal must not enter waiting')
+except issues.StoreError as e:
+    assert e.status == 409
+assert issues.get_issue(goal['ref'])['status'] == 'backlog' and not jobs.list_jobs()
 print("OK")

@@ -1,8 +1,8 @@
 // dev 화면 — 해시 라우팅 한 파일. #/ 목록 · #/board 칸반 · #/issue/NS-1 상세 · #/new 새 이슈 · #/agents · #/projects
 'use strict';
 
-const STATUSES = ['backlog', 'triage', 'in_progress', 'in_review', 'changes_requested', 'on_hold', 'done', 'closed'];
-const STATUS_LABEL = { backlog: 'Backlog', triage: 'Triage', in_progress: 'In Progress', in_review: 'In Review',
+const STATUSES = ['backlog', 'waiting', 'triage', 'in_progress', 'in_review', 'changes_requested', 'on_hold', 'done', 'closed'];
+const STATUS_LABEL = { backlog: 'Backlog', waiting: 'Waiting', triage: 'Triage', in_progress: 'In Progress', in_review: 'In Review',
   changes_requested: 'Changes Requested', on_hold: 'On Hold', done: 'Done', closed: 'Closed' };
 const PRIORITIES = ['urgent', 'high', 'medium', 'low', 'none'];
 const OPEN_STATUSES = STATUSES.filter(s => s !== 'done' && s !== 'closed');
@@ -490,7 +490,7 @@ function runsHtml(runs){
 // ---- 대기열(DEV-43): 바쁠 때 누른 것은 줄에 서고 하나씩 차례로 ----
 const QUEUE_LINE = '다른 일이 돌고 있으면 끝난 뒤 차례로 시작해요.';
 function jobHtml(j){   // 이 이슈가 줄에 있으면 버튼 자리에 "대기 n번째 · 취소"
-  return `<div class="queued"><span class="status" style="--sc:var(--s-backlog)">${PROVIDER_NAME[j.provider] || 'Claude'} 대기 ${j.position}번째</span>
+  return `<div class="queued"><span class="status" style="--sc:var(--s-waiting)">Waiting · ${PROVIDER_NAME[j.provider] || 'Claude'} 대기 ${j.position}번째</span>
     <button class="ghost cancel-job" data-job="${j.id}">취소</button></div>${j.note ? `<div class="dim hint">${esc(j.note)}</div>` : ''}`;
 }
 function queuedMsg(r, started){ return r && r.queued ? `대기열에 넣었어요 — ${r.position}번째` : started; }
@@ -498,7 +498,7 @@ async function loadJobs(){   // 목록 화면 위의 "Claude 대기 n건" — �
   const box = view.querySelector('#jobs-box');
   if(!box) return;
   const { jobs } = await api('GET', '/api/jobs').catch(() => ({ jobs: [] }));
-  box.innerHTML = jobs.length ? `<details class="jobs"><summary><span class="status" style="--sc:var(--s-backlog)">Agent 대기 ${jobs.length}건</span></summary>
+  box.innerHTML = jobs.length ? `<details class="jobs"><summary><span class="status" style="--sc:var(--s-waiting)">Agent 대기 ${jobs.length}건</span></summary>
     <ul>${jobs.map(j => `<li><span class="ref">${j.position}</span> <a href="#/issue/${esc(j.ref)}">${esc(j.ref)}</a> ${PROVIDER_NAME[j.provider] || 'Claude'} ${RUN_MODE[j.mode] || esc(j.mode)}
       ${j.note ? `<span class="dim">${esc(j.note)}</span>` : ''}<button class="ghost cancel-job" data-job="${j.id}">취소</button></li>`).join('')}</ul></details>` : '';
 }
@@ -561,7 +561,7 @@ function stageHtml(it, liveMode, liveProvider){
   let msg = '';
   if(['done', 'closed'].includes(it.status)) return '';
   if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 끝나면 결과 확인 단계로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
-  else if(it.job) msg = `${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — 앞의 일이 끝나면 차례로 시작해요.`;
+  else if(it.job) msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — 앞의 일이 끝나면 차례로 시작해요.`;
   else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
   else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
   else if(!it.plan) msg = '계획서가 없어요 → Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
