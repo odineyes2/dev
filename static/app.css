@@ -210,6 +210,7 @@ table.issues tr.child td:first-child{ box-shadow:inset 2px 0 0 var(--border); }
 .side select, .side input:not([type=checkbox]){ width:100%; }
 .side code{ font-family:var(--mono); font-size:12px; }
 .side .hint{ font-size:12px; margin-top:6px; line-height:1.5; }
+.review-alt{ margin-top:var(--sp-3); padding-top:var(--sp-3); border-top:1px solid var(--border); }
 .review-actions{ display:flex; gap:6px; flex-wrap:wrap; }
 .decision{ margin-top:var(--sp-4); padding-top:var(--sp-4); border-top:1px solid var(--border); }
 .decision-state{ margin-bottom:var(--sp-3); }

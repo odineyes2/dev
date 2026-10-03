@@ -92,7 +92,7 @@ def start(actor: dict, ref: str) -> dict:
     return {"started": True, "ref": ref}
 
 
-def begin(actor: dict, issue: dict, mode: str) -> tuple[Path, int]:
+def begin(actor: dict, issue: dict, mode: str, runner: str = "claude") -> tuple[Path, int]:
     """한 번에 하나만 — 도는 것이 있으면 409, 없으면 runs에 running 행을 만들고 (로그 경로, run id)를 돌려준다."""
     with _lock:
         busy = running_ref()
@@ -101,8 +101,8 @@ def begin(actor: dict, issue: dict, mode: str) -> tuple[Path, int]:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"{issue['ref']}-{time.strftime('%Y%m%d-%H%M%S')}.log"
         with db.connect() as c:
-            run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file) VALUES(?, ?, 'running', ?, ?, ?)",
-                               (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name)).lastrowid
+            run_id = c.execute("INSERT INTO runs(issue_id, mode, runner, status, actor, started_at, log_file) VALUES(?, ?, ?, 'running', ?, ?, ?)",
+                               (issue["id"], mode, runner, issues.actor_label(actor), db.now_iso(), log_path.name)).lastrowid
     return log_path, run_id
 
 

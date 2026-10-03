@@ -367,6 +367,7 @@ function decisionQuestions(body){   // 계획서의 "정해야 할 것" 절의 �
 // ---- 실행 기록(DEV-29) ----
 const RUN_STATUS = { running: ['in_progress', '도는 중'], ok: ['done', '완료'], failed: ['changes_requested', '실패'], timeout: ['in_progress', '시간 초과'], orphaned: ['on_hold', '끊김'] };
 const RUN_MODE = { review: '검토', execute: '실행' };
+const RUNNER_LABEL = { claude: 'Claude', codex: 'Codex' };
 function fmtTokens(n){ return n == null ? '' : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
 function runsHtml(runs){
   if(!runs.length) return '<div class="dim hint">아직 실행 기록이 없어요.</div>';
@@ -376,7 +377,7 @@ function runsHtml(runs){
     const dur = sec == null ? '' : sec >= 60 ? `${Math.floor(sec / 60)}분 ${sec % 60}초` : `${sec}초`;
     const tok = r.input_tokens == null && r.output_tokens == null ? '' : `토큰 ${fmtTokens(r.input_tokens)} → ${fmtTokens(r.output_tokens)}${r.cost_usd != null ? ` · $${r.cost_usd.toFixed(2)}` : ''}`;
     return `<li><div><span class="status" style="--sc:var(--s-${color})">${label}</span> ${RUN_MODE[r.mode] || r.mode} <span class="dim">${fmtTime(r.started_at)}</span></div>
-      <div class="dim">${[dur, tok].filter(Boolean).join(' · ')}</div>
+      <div class="dim">${[RUNNER_LABEL[r.runner], dur, tok].filter(Boolean).join(' · ')}</div>
       ${r.note ? `<div class="dim">${esc(r.note)}</div>` : ''}${r.log_file ? `<div class="dim"><code>${esc(r.log_file)}</code></div>` : ''}</li>`;
   }).join('')}</ul>`;
 }
@@ -426,7 +427,8 @@ function stageHtml(it, liveMode){
   const a = it.approval, x = it.execute, ok = a && !a.stale && a.verdict !== 'reject';
   let msg = '';
   if(['done', 'closed'].includes(it.status)) return '';
-  if(it.review_running) msg = liveMode === 'execute' ? 'Claude가 구현하는 중이에요 — 끝나면 결과 확인 단계로 올라와요.' : 'Claude가 검토하는 중이에요 — 끝나면 계획서가 올라와요.';
+  if(it.review_running){ const runner = RUNNER_LABEL[it.review_runner] || '에이전트';
+    msg = liveMode === 'execute' ? 'Claude가 구현하는 중이에요 — 끝나면 결과 확인 단계로 올라와요.' : `${runner}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`; }
   else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
   else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → 오른쪽 “Claude에게 실행 맡기기”를 눌러 주세요.';
   else if(!it.plan) msg = '계획서가 없어요 → 오른쪽 “Claude에게 검토 맡기기”로 계획서를 받아 보세요.';
@@ -476,9 +478,12 @@ async function renderIssue(ref){
         <div class="field"><span>Claimed</span>${it.claimed_by ? `${esc(actorName(it.claimed_by))} <span class="dim">~${new Date(it.lease_until).toLocaleTimeString()}</span>
           <button id="release" class="ghost">놓기</button>` : '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
-        <div class="field"><span>Claude</span>
-          <button id="ask-review"${it.review_busy ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running && liveMode !== 'execute' ? '검토 중…' : 'Claude에게 검토 맡기기'}</button>
-          <div class="dim hint"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>${it.review_busy && !it.review_running ? '다른 이슈에서 Claude가 일하는 중이에요.' : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>
+        <div class="field"><span>코딩 에이전트</span>
+          <button id="ask-review"${it.review_busy ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running && liveMode !== 'execute' && it.review_runner !== 'codex' ? '검토 중…' : 'Claude에게 검토 맡기기'}</button>
+          <div class="dim hint"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>${it.review_busy && !it.review_running ? '다른 이슈에서 에이전트가 일하는 중이에요.' : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>
+          <div class="review-alt"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>
+            <button id="ask-codex-review"${it.review_busy ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running && it.review_runner === 'codex' ? '검토 중…' : 'Codex에게 검토 맡기기'}</button>
+            <div class="dim hint">읽기 전용으로 코드를 보고 dev MCP로 계획서·질문을 남겨요.</div></div>
           ${it.execute ? executeHtml(it, liveMode) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
@@ -559,6 +564,12 @@ async function renderIssue(ref){
 홈서버에서 Claude Code가 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
 사용량은 이 서버에 로그인된 Claude 계정에서 나가요.`)) return;
     await api('POST', `/api/issues/${R}/review`); toast('검토를 맡겼어요 — 몇 분 뒤 계획서가 올라와요'); reload();
+  }));
+  if($('ask-codex-review')) $('ask-codex-review').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
+    if(!confirm(`${it.ref}을(를) Codex에게 검토 맡길까요?
+홈서버에서 Codex가 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
+사용량은 홈서버에 로그인된 Codex 계정에서 나가요.`)) return;
+    await api('POST', `/api/issues/${R}/review/codex`); toast('Codex에게 검토를 맡겼어요 — 몇 분 뒤 계획서가 올라와요'); reload();
   }));
   if(it.review_running) setTimeout(() => { if(location.hash === `#/issue/${it.ref}`) reload(); }, 15000);
   $('delete').addEventListener('click', async () => {

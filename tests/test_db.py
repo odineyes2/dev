@@ -46,6 +46,7 @@ with db.connect() as c:
                     (pid, now, now)).lastrowid
 assert rejected("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'x', 'running', 'h', ?)", (iid, now))
 assert rejected("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'nope', 'h', ?)", (iid, now))
+assert rejected("INSERT INTO runs(issue_id, mode, runner, status, actor, started_at) VALUES(?, 'review', 'other', 'ok', 'h', ?)", (iid, now))
 with db.connect() as c:
     c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'running', 'h', ?)", (iid, now))
     c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'ok', 'h', ?)", (iid, now))

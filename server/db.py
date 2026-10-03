@@ -142,6 +142,11 @@ MIGRATIONS = [
     ALTER TABLE issues ADD COLUMN sub_of INTEGER;
     ALTER TABLE issues ADD COLUMN sub_number INTEGER;
     CREATE UNIQUE INDEX issues_sub ON issues(project_id, sub_of, sub_number) WHERE sub_number IS NOT NULL;
+    """,
+    # 실행 주체 — 같은 review/execute 기록에서도 Claude와 Codex를 구분한다.
+    """
+    ALTER TABLE runs ADD COLUMN runner TEXT NOT NULL DEFAULT 'claude'
+        CHECK (runner IN ('claude','codex'));
     """
 ]
 

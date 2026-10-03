@@ -55,7 +55,7 @@ with TestClient(A.app) as c:
     log = sorted((Path(os.environ["DEV_DATA_DIR"]) / "reviews").glob("NS-1-*.log"))[-1].read_text("utf-8")
     assert "args" in log and "{" not in log    # 토큰을 못 읽는 출력도 ok, 로그는 원문
     r1 = review.list_runs("NS-1")[0]
-    assert r1["status"] == "ok" and r1["mode"] == "review" and r1["input_tokens"] is None and r1["ended_at"] and r1["log_file"].startswith("NS-1-")
+    assert r1["status"] == "ok" and r1["mode"] == "review" and r1["runner"] == "claude" and r1["input_tokens"] is None and r1["ended_at"] and r1["log_file"].startswith("NS-1-")
 
     # JSON 출력 — 토큰·비용을 기록하고, 로그에는 result 글만
     behave.update(sleep="0", code="0", json=True)

@@ -264,8 +264,10 @@ async def api_create_issue(request: Request):
 @app.get("/api/issues/{ref}")
 def api_issue(ref: str):
     it = issues.get_issue(ref)
-    it["review_running"] = review.running_ref() == it["ref"]   # "Claude에게 검토 맡기기"가 도는 중(DEV-13)
+    it["review_running"] = review.running_ref() == it["ref"]   # Claude/Codex 검토 또는 Claude 실행이 도는 중
     it["review_busy"] = review.running_ref() is not None
+    running = next((r for r in review.list_runs(ref) if r["status"] == "running"), None)
+    it["review_runner"] = (running or {}).get("runner")
     it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
     return it
 
@@ -323,9 +325,10 @@ def api_release(ref: str, request: Request):
     return issues.release(actor(request), ref)
 
 
-# ---- Claude에게 검토 맡기기(DEV-13) — 홈서버에서 claude -p로 검토만 ----
+# ---- 코딩 에이전트에게 검토·실행 맡기기 ----
 import review  # noqa: E402
 import execute  # noqa: E402
+import codex_review  # noqa: E402
 
 
 @app.post("/api/issues/{ref}/execute")
@@ -336,6 +339,11 @@ def api_execute(ref: str, request: Request):
 @app.post("/api/issues/{ref}/review")
 def api_review(ref: str, request: Request):
     return review.start(actor(request), ref)
+
+
+@app.post("/api/issues/{ref}/review/codex")
+def api_codex_review(ref: str, request: Request):
+    return codex_review.start(actor(request), ref)
 
 
 @app.post("/api/issues/{ref}/decision")
