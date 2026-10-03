@@ -6,7 +6,7 @@ os.environ['DEV_DATA_DIR'] = tempfile.mkdtemp()
 os.environ['DEV_CODEX_AGENT_KEY'] = 'test-secret'
 os.environ['NTFY_TOPIC'] = ''
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'server'))
-import review, jobs, db, auth, app as A
+import review, jobs, db, auth, issues, app as A
 import httpx
 from fastapi.testclient import TestClient
 
@@ -73,8 +73,14 @@ with TestClient(A.app) as c:
     c.post('/api/issues', json={'project': 'CX', 'title': '', 'body': 'Fill title and post a plan'}, headers=H)
     assert c.post('/api/issues/CX-1/review', json={'provider': 'other'}, headers=H).status_code == 400
     assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()['started']
+    assert issues.get_issue('CX-1')['status'] == 'in_progress'
+    start = [e for e in issues.get_issue('CX-1')['events'] if e['kind'] == 'status'][-1]
+    assert start['data']['from'] == 'backlog' and start['data']['run_id'] == review.list_runs('CX-1')[0]['id']
+    assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()['started']
+    assert len(review.list_runs('CX-1')) == 1
     queued = c.post('/api/issues/CX-2/review', json={'provider': 'codex'}, headers=H).json()
     assert queued['queued'] and jobs.list_jobs()[0]['provider'] == 'codex'
+    assert issues.get_issue('CX-2')['status'] == 'backlog'
     assert c.post('/api/issues/CX-2/review', json={'provider': 'claude'}, headers=H).status_code == 409
     assert c.post('/api/issues/CX-2/review', json={'provider': 'codex'}, headers=H).json()['job_id'] == queued['job_id']
     wait_idle()
@@ -82,6 +88,9 @@ with TestClient(A.app) as c:
         run = review.list_runs(ref)[0]
         assert run['provider'] == 'codex' and run['status'] == 'ok'
         assert run['input_tokens'] == 100 and run['output_tokens'] == 12 and run['cost_usd'] is None
+        issue = issues.get_issue(ref)
+        assert issue['status'] == 'triage'
+        assert any(e['kind'] == 'status' and e['data']['to'] == 'in_progress' for e in issue['events'])
     c.post('/api/issues/CX-4/review', json={'provider': 'codex'}, headers=H)
     wait_idle()
     filled = c.get('/api/issues/CX-4').json()
@@ -97,12 +106,14 @@ with TestClient(A.app) as c:
     c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
     wait_idle()
     assert review.list_runs('CX-3')[0]['status'] == 'failed'
+    assert issues.get_issue('CX-3')['status'] == 'backlog'
     assert 'Codex' in c.get('/api/issues/CX-3').json()['events'][-1]['body']
     fake.write_text('print(' + repr(events) + ')\n', 'utf-8')
     c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H)
     wait_idle()
     assert review.list_runs('CX-1')[0]['status'] == 'failed'
     assert '새 계획서' in review.list_runs('CX-1')[0]['note']
+    assert issues.get_issue('CX-1')['status'] == 'triage'
     fake.write_text('print(\'{"type":"turn.failed","error":{"message":"failed"}}\')\n', 'utf-8')
     c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
     wait_idle()
@@ -112,9 +123,46 @@ with TestClient(A.app) as c:
     c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
     wait_idle()
     assert review.list_runs('CX-3')[0]['status'] == 'timeout'
+    assert issues.get_issue('CX-3')['status'] == 'backlog'
+    # 실패 중 사람이 바꾼 상태(잠시 다른 상태로 옮겼다 되돌린 경우 포함)는 복구하지 않는다.
+    review.TIMEOUT_SEC = 10
+    fake.write_text('import time,sys\ntime.sleep(.3)\nsys.exit(3)\n', 'utf-8')
+    human = {'kind': 'human', 'name': 'admin'}
+    for manual in ('on_hold', 'in_progress'):
+        c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
+        issues.set_status(human, 'CX-3', 'on_hold')
+        issues.set_status(human, 'CX-3', manual)
+        wait_idle()
+        assert issues.get_issue('CX-3')['status'] == manual
+    issues.set_status(human, 'CX-3', 'backlog')
+    # 상태 이벤트 기록이 실패하면 runs와 상태를 모두 롤백한다.
+    from unittest.mock import patch
+    before = len(review.list_runs('CX-3'))
+    with patch.object(issues, '_event', side_effect=issues.StoreError('event failed', 409)):
+        try:
+            review.start(human, 'CX-3', 'codex')
+            raise AssertionError('start must roll back')
+        except issues.StoreError:
+            pass
+    assert len(review.list_runs('CX-3')) == before and issues.get_issue('CX-3')['status'] == 'backlog'
+    with patch.object(review.threading.Thread, 'start', side_effect=RuntimeError('thread failed')):
+        try:
+            review.start(human, 'CX-3', 'codex')
+            raise AssertionError('thread failure must fail start')
+        except issues.StoreError:
+            pass
+    assert review.list_runs('CX-3')[0]['status'] == 'failed'
+    assert issues.get_issue('CX-3')['status'] == 'backlog' and review.running_ref() is None
+    fake.write_text(success_script + 'print(' + repr(events) + ')\n', 'utf-8')
+    c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
+    issues.set_status(human, 'CX-3', 'on_hold')
+    wait_idle()
+    assert review.list_runs('CX-3')[0]['status'] == 'ok'
+    assert issues.get_issue('CX-3')['status'] == 'on_hold'
     del os.environ['DEV_CODEX_AGENT_KEY']
     result = c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()
     assert result['queued'] and 'DEV_CODEX_AGENT_KEY' in result['note']
+    assert issues.get_issue('CX-1')['status'] == 'triage'
     assert len(review.list_runs('CX-1')) == 2
     db.init()
     assert jobs.list_jobs()[0]['provider'] == 'codex'

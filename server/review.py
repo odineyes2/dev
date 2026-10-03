@@ -133,15 +133,14 @@ def start(actor: dict, ref: str, provider: str = "claude") -> dict:
     baseline_plan_id = (issue.get("plan") or {}).get("id", 0)
     log_path, run_id = begin(actor, issue, "review", provider)
     name = "Codex" if provider == "codex" else "Claude"
-    issues.add_comment(actor, ref, f"🔎 {name}에게 검토를 맡겼어요 — 홈서버에서 검토만 해요(코드 수정 없음). 몇 분 뒤 계획서가 올라와요.")
-    import jobs
-    threading.Thread(target=jobs.run_then_pump, args=(run_headless, actor, ref, log_path, run_id, cmd, PROJECTS_DIR, None, TIMEOUT_SEC, "검토", provider, baseline_plan_id),
-                     daemon=True).start()
+    launch(actor, ref, run_id, provider,
+           f"🔎 {name}에게 검토를 맡겼어요 — 홈서버에서 검토만 해요(코드 수정 없음). 몇 분 뒤 계획서가 올라와요.",
+           (run_headless, actor, ref, log_path, run_id, cmd, PROJECTS_DIR, None, TIMEOUT_SEC, "검토", provider, baseline_plan_id))
     return {"started": True, "ref": ref}
 
 
 def begin(actor: dict, issue: dict, mode: str, provider: str = "claude") -> tuple[Path, int]:
-    """한 번에 하나만 — 도는 것이 있으면 409, 없으면 runs에 running 행을 만들고 (로그 경로, run id)를 돌려준다."""
+    """running 기록과 Codex 착수 상태를 함께 만들고 (로그 경로, run id)를 돌려준다."""
     with _lock:
         busy = running_ref()
         if busy:
@@ -149,9 +148,49 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude") -> tupl
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"{issue['ref']}-{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}.log"
         with db.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = issues._find(c, issue["ref"])
+            if row["status"] != issue["status"]:
+                raise issues.StoreError("시작 전에 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
             run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file, provider) VALUES(?, ?, 'running', ?, ?, ?, ?)",
                                (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name, provider)).lastrowid
+            if provider == "codex":
+                issues._set_status(c, actor, row, "in_progress", "Codex 작업 착수", {"run_id": run_id})
     return log_path, run_id
+
+
+def owned_start(c, issue_id: int, run_id: int) -> dict | None:
+    """최신 상태 이벤트가 이 실행의 착수이면 반환한다. 수동 변경 뒤 되돌린 상태도 보존한다."""
+    event = c.execute("SELECT data_json FROM events WHERE issue_id=? AND kind='status' ORDER BY id DESC LIMIT 1",
+                      (issue_id,)).fetchone()
+    data = json.loads(event["data_json"]) if event else {}
+    return data if data.get("run_id") == run_id and data.get("to") == "in_progress" else None
+
+
+def finish_codex_status(c, actor, ref: str, run_id: int, status: str, label: str) -> None:
+    row = issues._find(c, ref)
+    start = owned_start(c, row["id"], run_id)
+    if row["status"] == "in_progress" and start:
+        if status != "ok":
+            issues._set_status(c, actor, row, start["from"], "Codex 작업 실패 — 착수 전 상태로 복구")
+        elif label == "검토":
+            issues._set_status(c, actor, row, "triage", "Codex 검토 완료 — 계획서를 보고 승인하면 착수해요")
+
+
+def launch(actor, ref: str, run_id: int, provider: str, comment: str, args: tuple) -> None:
+    """댓글 또는 스레드 시작 실패도 실행 종료로 기록하여 재시도할 수 있게 한다."""
+    import jobs
+    try:
+        issues.add_comment(actor, ref, comment)
+        threading.Thread(target=jobs.run_then_pump, args=args, daemon=True).start()
+    except Exception as e:
+        with db.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            if provider == "codex":
+                finish_codex_status(c, actor, ref, run_id, "failed", "")
+            c.execute("UPDATE runs SET status='failed', ended_at=?, note=? WHERE id=?",
+                      (db.now_iso(), f"작업 스레드를 시작하지 못했어요: {e}", run_id))
+        raise issues.StoreError(f"작업을 시작하지 못했어요 — {e}", 409) from e
 
 
 def _parse(out: str, provider: str = "claude") -> tuple[str, dict]:
@@ -228,11 +267,14 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     if provider == "codex" and label == "실행" and status == "ok":
         import execute
         try:
-            execute.finalize_codex(actor, ref, cwd, out)
+            execute.finalize_codex(actor, ref, cwd, out, run_id)
         except (issues.StoreError, ValueError, OSError) as e:
             status, note = "failed", f"Codex 실행을 완료하지 못했어요 — {e}"
     log_path.write_text(text + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
     with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        if provider == "codex":
+            finish_codex_status(c, actor, ref, run_id, status, label)
         c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=?",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
     if note or code:

@@ -54,10 +54,6 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str = "claude") -> dict:
         raise issues.StoreError("지원하지 않는 검토 도구예요.", 400)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
-    if mode == "execute":
-        why = execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None, wait=False)
-        if why:
-            raise issues.StoreError(why, 409)
     with db.connect() as c:
         existing = c.execute("SELECT provider FROM runs WHERE issue_id=? AND mode=? AND status='running' UNION ALL SELECT provider FROM jobs WHERE issue_id=? AND mode=? AND status='queued' LIMIT 1",
                              (issue["id"], mode, issue["id"], mode)).fetchone()
@@ -66,6 +62,10 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str = "claude") -> dict:
         if c.execute("SELECT 1 FROM runs WHERE issue_id=? AND mode=? AND status='running'", (issue["id"], mode)).fetchone():
             return {"started": True, "ref": ref}   # 이미 도는 중 — 중복 클릭
         if not c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND mode=? AND status='queued'", (issue["id"], mode)).fetchone():
+            if mode == "execute":
+                why = execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None, wait=False)
+                if why:
+                    raise issues.StoreError(why, 409)
             c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, provider) VALUES(?, ?, ?, 'queued', ?, ?)",
                       (issue["id"], mode, issues.actor_label(actor), db.now_iso(), provider))
     pump()
