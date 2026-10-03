@@ -76,6 +76,7 @@ input, select, textarea, button, .button{
 input:focus, select:focus, textarea:focus{ outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(var(--accent-rgb),0.15); }
 textarea{ width:100%; min-height:120px; resize:vertical; font-family:var(--mono); font-size:13px; line-height:1.6; }
 button, .button{ cursor:pointer; display:inline-flex; align-items:center; gap:6px; white-space:nowrap; font-weight:500; }
+button.save[aria-busy="true"]{ justify-content:center; }
 button:hover, .button:hover{ border-color:var(--border-strong); background:var(--panel-2); text-decoration:none; }
 .primary{ background:var(--grad-primary); border-color:transparent; color:#fff; font-weight:600; }
 .primary:hover{ background:var(--grad-primary-hover); border-color:transparent; box-shadow:0 4px 14px rgba(37,99,235,0.3); }

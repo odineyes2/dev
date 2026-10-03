@@ -234,6 +234,80 @@ def check_review_buttons(page, ref, shots):
     page.reload(); page.wait_for_selector('#ask-review')
 
 
+def check_edit_saving(page, shots):
+    """본문과 Plan의 지연·실패·재시도 및 저장 값 스냅샷을 검사한다."""
+    ref = page.request.post(f'{BASE}/api/issues', data={
+        'project': 'NS', 'title': '저장 시험', 'body': '원래 본문'}, headers=H).json()['ref']
+    page.goto(BASE + f'/#/issue/{ref}')
+    page.wait_for_selector('#edit-body')
+    for box, method, suffix in (('body', 'PATCH', ''), ('plan', 'POST', '/plans')):
+        pending = []
+        url = f'**/api/issues/{ref}{suffix}'
+        def hold(route):
+            if route.request.method == method:
+                pending.append(route)
+            else:
+                route.continue_()
+        page.route(url, hold)
+        page.click(f'#edit-{box}')
+        text = f'수정한 {box}\n재시도에도 보존해요'
+        page.fill(f'#{box} textarea', text)
+        if box == 'body':
+            page.fill('#body .edit-title', '수정한 제목')
+        width = page.locator(f'#{box} .save').bounding_box()['width']
+        page.click(f'#{box} .save')
+        page.wait_for_function('() => document.querySelector("#' + box + ' .save").disabled')
+        for _ in range(100):
+            if pending:
+                break
+            page.wait_for_timeout(20)
+        assert len(pending) == 1
+        assert pending[0].request.post_data_json['body'] == text
+        assert page.locator(f'#{box} input:enabled, #{box} textarea:enabled, #{box} button:enabled').count() == 0
+        assert page.get_attribute(f'#{box} .save', 'aria-label') == '저장 중'
+        assert page.get_attribute(f'#{box} .save svg use', 'href') == '#i-loader-circle'
+        assert abs(page.locator(f'#{box} .save').bounding_box()['width'] - width) < 1
+        # 비활성 버튼의 합성 이벤트까지 중복 제출을 막는다.
+        page.locator(f'#{box} .save').dispatch_event('click')
+        page.wait_for_timeout(100)
+        assert len(pending) == 1
+        if box == 'body':
+            assert pending[0].request.post_data_json['title'] == '수정한 제목'
+            for scheme in ('light', 'dark'):
+                page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+                page.emulate_media(color_scheme=scheme)
+                for w, tag in ((1300, 'desktop'), (390, 'mobile')):
+                    page.set_viewport_size({'width': w, 'height': 850})
+                    page.wait_for_timeout(300)
+                    assert page.evaluate('document.documentElement.scrollWidth') <= w + 1
+                    page.screenshot(path=str(shots / f'saving_{scheme}_{tag}.png'), full_page=True)
+            page.emulate_media(reduced_motion='reduce')
+            assert page.locator('#body .list-spinner').evaluate("e => getComputedStyle(e).animationName") == 'none'
+            page.emulate_media(reduced_motion='no-preference')
+            page.set_viewport_size({'width': 1300, 'height': 850})
+        pending.pop().fulfill(status=500, content_type='application/json', body=json.dumps({'detail': '시험 저장 실패'}))
+        page.wait_for_function('() => !document.querySelector("#' + box + ' .save").disabled')
+        assert page.input_value(f'#{box} textarea') == text
+        assert page.inner_text(f'#{box} .save') == '저장'
+        assert page.get_attribute(f'#{box} .save', 'aria-busy') is None
+        assert page.is_enabled(f'#{box} .cancel')
+        if box == 'body':
+            assert page.input_value('#body .edit-title') == '수정한 제목'
+        page.click(f'#{box} .save')
+        for _ in range(100):
+            if pending:
+                break
+            page.wait_for_timeout(20)
+        assert len(pending) == 1
+        pending.pop().continue_()
+        page.wait_for_selector(f'#{box} textarea', state='detached')
+        got = page.request.get(f'{BASE}/api/issues/{ref}').json()
+        assert (got['body'] if box == 'body' else got['plan']['body']) == text
+        page.unroute(url, hold)
+    page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+    page.emulate_media(color_scheme='light')
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 ns_port, dev_port = free_port(), free_port()
@@ -634,6 +708,8 @@ try:
         assert page.is_enabled("#ask-review") and "차례로" in page.inner_text(".side")
         assert page.is_enabled("#ask-codex-review")
         check_review_buttons(page, fresh, shots)
+        check_edit_saving(page, shots)
+        page.goto(BASE + f'/#/issue/{fresh}'); page.wait_for_selector('#ask-codex-review')
         for scheme in ("light", "dark"):
             page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)
             page.emulate_media(color_scheme=scheme)

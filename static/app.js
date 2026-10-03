@@ -730,9 +730,33 @@ function editInPlace(box, value, save, title){
   box.innerHTML = `${title !== undefined ? `<input class="edit-title" style="width:100%;margin-bottom:6px" value="${esc(title)}">` : ''}
     <textarea style="min-height:240px">${esc(value)}</textarea><div class="row-end" style="margin-top:6px"><button class="cancel">취소</button><button class="primary save">저장</button></div>`;
   box.querySelector('.cancel').addEventListener('click', route);
-  box.querySelector('.save').addEventListener('click', () => {
+  const button = box.querySelector('.save');
+  let saving = false;
+  button.addEventListener('click', async () => {
+    if(saving) return;
     const t = box.querySelector('.edit-title');
-    save(box.querySelector('textarea').value, t ? t.value : undefined).catch(() => {});
+    const body = box.querySelector('textarea').value;
+    const heading = t ? t.value : undefined;
+    const controls = [...box.querySelectorAll('input, textarea, button')];
+    saving = true;
+    button.style.width = `${button.getBoundingClientRect().width}px`;
+    controls.forEach(control => { control.disabled = true; });
+    button.setAttribute('aria-label', '저장 중');
+    button.setAttribute('title', '저장 중');
+    button.setAttribute('aria-busy', 'true');
+    button.innerHTML = '<svg class="ico list-spinner" aria-hidden="true"><use href="#i-loader-circle"/></svg>';
+    try {
+      await save(body, heading);
+    } catch {
+      // API 오류 알림 후 편집 내용을 그대로 두고 재시도를 허용한다.
+      saving = false;
+      controls.forEach(control => { control.disabled = false; });
+      button.textContent = '저장';
+      button.style.width = '';
+      button.removeAttribute('aria-label');
+      button.removeAttribute('title');
+      button.removeAttribute('aria-busy');
+    }
   });
   box.querySelector('textarea').focus();
 }
