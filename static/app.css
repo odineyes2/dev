@@ -176,6 +176,8 @@ table.issues tr[hidden]{ display:none; }
 table.issues tr.child td.ref{ padding-left:calc(var(--sp-4) + 24px); }
 table.issues tr.child td:first-child{ box-shadow:inset 2px 0 0 var(--border); }
 table.issues.tasks td:nth-child(2){ overflow-wrap:anywhere; }
+.task-actions{ display:flex; gap:var(--sp-1); }
+.task-actions button{ white-space:nowrap; }
 .tog{ all:unset; cursor:pointer; box-sizing:border-box; width:20px; height:20px; margin:0 4px 0 -6px; display:inline-flex; align-items:center; justify-content:center; color:var(--dim); vertical-align:middle; }
 .tog:hover{ color:var(--text); }
 .tog:focus-visible{ outline:2px solid currentColor; outline-offset:-2px; }
@@ -285,6 +287,9 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
   #project-filter{ max-width:30vw; }
   main{ padding:14px; }
   table.issues .hide-m, .tab-bar .hide-m{ display:none; }
+  .task-actions{ flex-direction:column; padding:var(--sp-1) 0; }
+  .task-actions button{ min-width:40px; min-height:40px; padding:var(--sp-2); }
+  table.issues.tasks td{ padding:0 var(--sp-1); }
   table.issues td, table.issues th{ padding:0 10px; }
   .user-chip-name{ max-width:64px; } .user-chip .role-badge{ display:none; }
   .col{ flex-basis:82vw; }

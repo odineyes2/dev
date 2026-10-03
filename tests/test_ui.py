@@ -40,6 +40,62 @@ def wait_port(port):
     raise RuntimeError(f"port {port} not up")
 
 
+def check_task_actions(page, ref, shots, answers, asked):
+    """실행 요청을 가로채 계정 호출 없이 provider·경합·복구를 확인한다."""
+    url = '**/api/issues/DEV-4-1/execute'
+    pending = []
+    def hold(route):
+        pending.append(route)
+    page.route(url, hold)
+    def buttons():
+        return page.locator('.run-task[data-ref="DEV-4-1"]')
+    for provider, icon in (('claude', 'claude'), ('codex', 'openai')):
+        selected = buttons().filter(has=page.locator(f'use[href="#i-{icon}"]'))
+        assert selected.count() == 1
+        answers.append(None)
+        selected.click()
+        page.wait_for_function("() => [...document.querySelectorAll('.run-task[data-ref=\"DEV-4-1\"]')].every(b => !b.disabled)")
+        assert not pending and page.evaluate('location.hash') == f'#/issue/{ref}'
+        assert ('Codex' if provider == 'codex' else 'Claude') in asked[-1]
+        assert ('비용 상한은 없어요' if provider == 'codex' else '비용 상한은 $2') in asked[-1]
+        selected.click()
+        for _ in range(100):
+            if pending:
+                break
+            page.wait_for_timeout(20)
+        assert len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
+        assert all(buttons().nth(i).is_disabled() for i in range(2))
+        # disabled 속성을 우회한 교차 클릭도 Task 단위 잠금으로 차단한다.
+        buttons().evaluate_all("bs => bs.forEach(b => b.dispatchEvent(new MouseEvent('click', {bubbles:true})))")
+        page.wait_for_timeout(100)
+        assert len(pending) == 1 and page.evaluate('location.hash') == f'#/issue/{ref}'
+        pending.pop().fulfill(status=500, content_type='application/json', body='{"detail":"시험 실패"}')
+        page.wait_for_function("() => [...document.querySelectorAll('.run-task[data-ref=\"DEV-4-1\"]')].every(b => !b.disabled)")
+    page.unroute(url, hold)
+    # 서버의 기존 승인·상태 조건을 유지한다.
+    assert page.evaluate("() => [null, {stale:true, verdict:'approve'}, {stale:false, verdict:'reject'}].every(approval => taskActionsHtml({approval}, {status:'backlog'}) === '')")
+    assert page.evaluate("() => ['in_progress', 'in_review', 'done', 'closed', 'on_hold'].every(status => taskActionsHtml({approval:{verdict:'approve'}}, {status}) === '')")
+    for scheme in ('light', 'dark'):
+        page.evaluate('s => { document.documentElement.dataset.theme = s; }', scheme)
+        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.wait_for_timeout(150)
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            for i in range(2):
+                button = buttons().nth(i)
+                assert button.get_attribute('title') == button.get_attribute('aria-label')
+                if tag == 'mobile':
+                    box = button.bounding_box()
+                    assert box['width'] >= 40 and box['height'] >= 40
+                    assert not button.inner_text()
+                page.keyboard.press('Tab')
+                button.focus()
+                assert button.evaluate("b => b.matches(':focus-visible') && getComputedStyle(b).outlineStyle !== 'none'")
+            page.screenshot(path=str(shots / f'task_actions_{scheme}_{tag}.png'), full_page=True)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    # 실제 POST는 running 가짜 run을 넣은 뒤 큐에만 추가한다.
+
+
 def check_list_loading(page, shots):
     """응답을 보류하여 요청 수명·경합·시각 상태를 검사한다."""
     pending = []
@@ -648,6 +704,8 @@ try:
                 page.wait_for_timeout(300)
                 assert page.is_enabled("#ask-execute") and "비용 상한 $2" in page.inner_text(".exec")
                 assert page.is_enabled("#ask-codex-execute") and "Codex: 시간 제한 30분 · 비용 상한 없음" in page.inner_text(".exec")
+                assert page.locator('#ask-execute .brand-icon use').get_attribute('href') == '#i-claude'
+                assert page.locator('#ask-codex-execute .brand-icon use').get_attribute('href') == '#i-openai'
                 txt = page.inner_text(".exec .branch"); assert "relay/DEV-4-1" in txt and "커밋 1개" in txt and "new_feature.py" in txt and "git merge relay/DEV-4-1" in txt, txt
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
@@ -657,7 +715,8 @@ try:
         assert page.is_enabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec") and "차례로" in page.inner_text(".exec")
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review", state="attached"); assert page.locator("#ask-execute").count() == 0
         # 부모 화면에서 바로 실행(선행이 안 끝난 DEV-4-2도 눌러 두면 줄에 선다, 삭제는 아이콘 하나)
-        page.wait_for_selector("tr.row"); n = page.locator(".run-task").count(); assert n == 2, n
+        page.wait_for_selector("tr.row"); n = page.locator(".run-task").count(); assert n == 4, n
+        check_task_actions(page, pr, shots, answers, asked)
         assert page.locator("#delete svg").count() == 1 and not page.text_content("#delete").strip()
 
         # 대기열(DEV-43) — 진짜 claude를 돌리지 않게 도는 run 하나를 심어 두고 줄을 DB에 직접 넣는다
@@ -679,7 +738,8 @@ try:
                 page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
                 for r in ("DEV-4-1", "DEV-4-2"):
                     b = page.locator(f'.run-task[data-ref="{r}"]')
-                    assert b.is_disabled() and b.get_attribute("aria-label") == "실행 대기 중", r
+                    assert b.is_disabled() and b.get_attribute("aria-label") == "Claude 실행 대기 중", r
+                    assert b.locator('.brand-icon use').get_attribute('href') == '#i-claude'
                     # 모바일은 아이콘만(DEV-46) — 글자가 표를 넓혀 가로 스크롤을 만들었다
                     assert ("실행 대기 중" in b.inner_text()) == (tag == "desktop"), r
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
@@ -694,14 +754,24 @@ try:
         page.click(".jobs li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")
         page.wait_for_function("() => document.querySelector('.jobs summary') && document.querySelector('.jobs summary').innerText.includes('1건')")
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
-        b1, b2 = (page.locator(f'.run-task[data-ref="{r}"]') for r in ("DEV-4-1", "DEV-4-2"))
-        assert b1.is_enabled() and "실행 맡기기" in b1.inner_text() and b2.is_disabled() and "실행 대기 중" in b2.inner_text()
+        b1 = page.locator('.run-task[data-ref="DEV-4-1"][data-provider="claude"]')
+        b2 = page.locator('.run-task[data-ref="DEV-4-2"]')
+        assert b1.is_enabled() and "Claude" in b1.inner_text() and b2.is_disabled() and "실행 대기 중" in b2.inner_text()
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
         assert "대기 1번째" in page.inner_text(".exec")
         page.click(".exec .cancel-job"); page.wait_for_selector("#ask-execute")
         assert page.request.get(f"{BASE}/api/jobs").json()["jobs"] == []
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
-        assert page.locator(".run-task:not([disabled])").count() == 2 and "실행 대기 중" not in str(page.locator("tr.row").all_inner_texts())
+        assert page.locator(".run-task:not([disabled])").count() == 4 and "실행 대기 중" not in str(page.locator("tr.row").all_inner_texts())
+        for provider in ('claude', 'codex'):
+            page.click(f'.run-task[data-ref="DEV-4-1"][data-provider="{provider}"]')
+            page.wait_for_selector('.task-queued[data-ref="DEV-4-1"]')
+            queued = page.request.get(f"{BASE}/api/jobs").json()['jobs']
+            assert len(queued) == 1 and queued[0]['provider'] == provider and queued[0]['ref'] == 'DEV-4-1'
+            assert page.locator('.run-task[data-ref="DEV-4-1"]').count() == 1
+            assert page.locator('.task-queued').get_attribute('data-provider') == provider
+            page.request.delete(f"{BASE}/api/jobs/{queued[0]['id']}", headers=H)
+            page.reload(); page.wait_for_selector('.run-task[data-ref="DEV-4-1"]:not([disabled])')
         # 바쁠 때도 검토 버튼은 눌러 둘 수 있다
         fresh = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "바쁠 때 검토"}, headers=H).json()["ref"]
         page.goto(BASE + f"/#/issue/{fresh}"); page.reload(); page.wait_for_selector("#ask-review")
