@@ -21,16 +21,16 @@ function toast(msg){
   el.textContent = msg; el.hidden = false;
   clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, 3000);
 }
-async function api(method, url, body){
+async function api(method, url, body, isCurrent = () => true){
   const opt = { method, headers: { 'X-Requested-With': 'dev' } };
   if(body !== undefined){ opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   const t0 = performance.now();
   const res = await fetch(url, opt);
   perf.fetchMs += performance.now() - t0;
   perf.server = res.headers.get('Server-Timing') || perf.server;
-  if(res.status === 401){ showLogin(); throw new Error('로그인이 필요해요.'); }
+  if(res.status === 401){ if(isCurrent()) showLogin(); throw new Error('로그인이 필요해요.'); }
   const data = res.status === 204 ? null : await res.json().catch(() => null);
-  if(!res.ok){ const msg = (data && data.detail) || `요청이 실패했어요(${res.status}).`; toast(msg); throw new Error(msg); }
+  if(!res.ok){ const msg = (data && data.detail) || `요청이 실패했어요(${res.status}).`; if(isCurrent()) toast(msg); throw new Error(msg); }
   return data;
 }
 // 저장 버튼은 요청이 끝날 때까지 막는다 — 두 번 눌러(모바일 두 번 탭) 같은 이슈가 두 번 저장되던 문제(DEV-12).
@@ -202,6 +202,7 @@ function perfReport(name, t0){
 
 // ---- 라우팅 ----
 async function route(){
+  disposeList();
   const h = location.hash.replace(/^#\/?/, '').split('?')[0];
   const [name, arg] = h.split('/');
   const t0 = performance.now();
@@ -226,6 +227,19 @@ function listState(){ return JSON.parse(localStorage.getItem('dev.list') || '{"s
 // 필터·검색이 바뀌면 결과 칸만 처음부터 다시 받는다(검색 글칸의 포커스가 유지되게).
 const LIST_PAGE = 50;
 let listLoad = null;   // { seq, qs, offset, done, busy, seen }
+let listObserver = null;
+let listSearchTimer = null;
+function disposeList(){
+  clearTimeout(listSearchTimer);
+  if(listLoad){
+    clearTimeout(listLoad.timer);
+    listLoad.body.setAttribute('aria-busy', 'false');
+    listLoad.loading?.remove();
+  }
+  listLoad = null;
+  listObserver?.disconnect();
+  listObserver = null;
+}
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
     <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
@@ -275,8 +289,10 @@ async function renderList(){
     <div id="jobs-box"></div><div id="list-body"></div><div id="list-more" class="list-more"></div>`;
   loadJobs();
   const save = (patch) => { localStorage.setItem('dev.list', JSON.stringify({ ...listState(), ...patch })); loadList(); };
-  let t;
-  view.querySelector('#q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => save({ q: e.target.value }), 300); });
+  view.querySelector('#q').addEventListener('input', (e) => {
+    clearTimeout(listSearchTimer);
+    listSearchTimer = setTimeout(() => save({ q: e.target.value }), 300);
+  });
   view.querySelectorAll('[data-st]').forEach(ch => ch.addEventListener('click', () => {
     const s = ch.dataset.st, cur = listState().statuses;
     ch.classList.toggle('on', !cur.includes(s));
@@ -300,26 +316,51 @@ async function renderList(){
     const r = e.target.closest('tr.row');
     if(r) location.hash = `#/issue/${r.dataset.ref}`;
   });
-  new IntersectionObserver((entries) => { if(entries.some(en => en.isIntersecting)) loadMoreIssues(); }, { rootMargin: '400px' })
-    .observe(view.querySelector('#list-more'));
+  const sentinel = view.querySelector('#list-more');
+  listObserver = new IntersectionObserver((entries) => {
+    if(sentinel === view.querySelector('#list-more') && entries.some(en => en.isIntersecting)) loadMoreIssues();
+  }, { rootMargin: '400px' });
+  listObserver.observe(sentinel);
   await loadList();
 }
 async function loadList(){
+  const body = view.querySelector('#list-body'), more = view.querySelector('#list-more');
+  if(!body || !more || location.hash.replace(/^#\/?/, '').split('?')[0]) return;
+  if(listLoad){ clearTimeout(listLoad.timer); listLoad.loading?.remove(); }
   const st = listState();
   const statuses = st.statuses.length ? st.statuses : (st.closed ? [] : OPEN_STATUSES);
-  listLoad = { qs: { project: currentProject(), status: statuses.join(','), q: st.q, ...(st.approved ? { approved: 'true' } : {}) }, offset: 0, done: false, busy: false, seen: new Set() };
-  view.querySelector('#list-body').innerHTML = '';
+  listLoad = { body, more, qs: { project: currentProject(), status: statuses.join(','), q: st.q, ...(st.approved ? { approved: 'true' } : {}) }, offset: 0, done: false, busy: false, seen: new Set() };
+  body.innerHTML = ''; more.textContent = '';
   await loadMoreIssues();
 }
 async function loadMoreIssues(){
   const L = listLoad, body = view.querySelector('#list-body'), more = view.querySelector('#list-more');
-  if(!L || L.done || L.busy || !body) return;
+  if(!L || L.done || L.busy || !body || body !== L.body || more !== L.more) return;
+  const current = () => L === listLoad && body === view.querySelector('#list-body') && more === view.querySelector('#list-more');
   L.busy = true;
-  more.textContent = L.offset ? '더 불러오는 중…' : '';
+  body.setAttribute('aria-busy', 'true');
+  L.timer = setTimeout(() => {
+    if(!current()) return;
+    L.loading = document.createElement('div');
+    L.loading.className = 'list-loading'; L.loading.setAttribute('role', 'status');
+    L.loading.innerHTML = '<svg class="ico list-spinner" aria-hidden="true"><use href="#i-loader-circle"/></svg><span>Issue를 불러오는 중이에요</span>';
+    (L.offset ? more : body).append(L.loading);
+  }, 300);
+  const finish = () => {
+    clearTimeout(L.timer); L.loading?.remove(); L.busy = false;
+    if(current()) body.setAttribute('aria-busy', 'false');
+  };
   let data;
-  try{ data = await api('GET', '/api/issues?' + new URLSearchParams({ ...L.qs, limit: LIST_PAGE, offset: L.offset })); }
-  catch(e){ L.busy = false; more.textContent = ''; return; }
-  if(L !== listLoad) return;   // 그 사이 필터가 바뀌었다
+  try{ data = await api('GET', '/api/issues?' + new URLSearchParams({ ...L.qs, limit: LIST_PAGE, offset: L.offset }), undefined, current); }
+  catch(e){
+    finish();
+    if(!current()) return;
+    L.done = true;   // 실패 후 교차 관찰로 자동 요청이 반복되지 않게 한다.
+    (L.offset ? more : body).innerHTML = '<div class="list-error" role="status">Issue를 불러오지 못했어요. 새로고침해 보세요.</div>';
+    return;
+  }
+  finish();
+  if(!current()) return;   // 필터 변경과 탭 이동 후의 응답은 버린다.
   // 고친 순 정렬이라 사이에 바뀐 이슈가 두 번 올 수 있다 — 이미 그린 것은 건너뛴다.
   const items = data.issues.filter(i => !L.seen.has(i.ref));
   items.forEach(i => L.seen.add(i.ref));

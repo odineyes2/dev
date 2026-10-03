@@ -2,6 +2,7 @@
 로그인 폼 → 프로젝트 만들기 → 새 이슈 → 상세(계획서·댓글·상태) → 목록·칸반(끌어서 상태) → 에이전트 키 발급 → 모바일 폭."""
 import os, socket, subprocess, sys, tempfile, time
 from pathlib import Path
+import json
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +40,131 @@ def wait_port(port):
     raise RuntimeError(f"port {port} not up")
 
 
+def check_list_loading(page, shots):
+    """응답을 보류하여 요청 수명·경합·시각 상태를 검사한다."""
+    pending = []
+    page.route("**/api/issues?*", lambda route: pending.append(route))
+    def request_count(n):
+        for _ in range(100):
+            if len(pending) >= n:
+                return
+            page.wait_for_timeout(20)
+        raise AssertionError(f"목록 요청 누락: {n}")
+    def reply(route, items=(), more=False, status=200):
+        route.fulfill(status=status, content_type="application/json", body=json.dumps(
+            {"issues": list(items), "has_more": more} if status == 200 else {"detail": "시험 오류"}))
+    def item(n):
+        return {"ref": f"TEST-{n}", "title": f"시험 Issue {n}", "status": "backlog", "labels": []}
+    def reload_list():
+        page.evaluate("() => { loadList(); }")
+        request_count(1)
+        return pending.pop(0)
+    def settled():
+        page.wait_for_function("document.querySelector('#list-body').getAttribute('aria-busy') === 'false'")
+        assert page.locator('.list-loading').count() == 0
+
+    page.goto(BASE + '/#/projects')
+    page.wait_for_selector('#project-form')
+    page.goto(BASE + '/#/')
+    request_count(1)
+    first = pending.pop(0)
+    assert page.get_attribute('#list-body', 'aria-busy') == 'true'
+    page.wait_for_selector('#list-body .list-loading')
+    for scheme in ('light', 'dark'):
+        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            page.evaluate("s => { document.documentElement.dataset.theme = s; }", scheme)
+            page.set_viewport_size({"width": width, "height": 850})
+            page.wait_for_timeout(200)
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            box = page.locator('.list-loading').bounding_box()
+            assert box['x'] >= 0 and box['x'] + box['width'] <= width
+            page.screenshot(path=str(shots / f'loading_{scheme}_{tag}.png'), full_page=True)
+    page.emulate_media(reduced_motion='reduce')
+    assert page.locator('.list-spinner').evaluate("el => getComputedStyle(el).animationName") == 'none'
+    assert page.locator('.list-loading').inner_text() == 'Issue를 불러오는 중이에요'
+    page.screenshot(path=str(shots / 'loading_reduced_motion.png'), full_page=True)
+    page.emulate_media(reduced_motion='no-preference')
+    page.set_viewport_size({"width": 1300, "height": 850})
+    reply(first, [item(1)])
+    page.wait_for_selector('tr.row'); settled()
+
+    # 빠른 응답과 빈 결과: 남은 타이머가 표시를 되살리지 않는다.
+    reply(reload_list()); settled()
+    page.wait_for_timeout(400)
+    assert page.locator('.empty').count() == 1 and page.locator('.list-loading').count() == 0
+    failed = reload_list(); page.wait_for_selector('.list-loading')
+    reply(failed, status=500); settled()
+    assert page.locator('#list-body .list-error').count() == 1
+    page.wait_for_timeout(500); assert not pending
+
+    # 필터 경합: 이전 성공·실패가 새 요청의 busy·표시·결과를 건드리지 않는다.
+    for status in (200, 500):
+        old = reload_list()
+        page.click('[data-st="backlog"]')
+        request_count(1); new = pending.pop(0)
+        page.wait_for_selector('.list-loading')
+        reply(old, [item(99)], status=status)
+        page.wait_for_timeout(100)
+        assert page.get_attribute('#list-body', 'aria-busy') == 'true'
+        assert page.locator('.list-loading').count() == 1
+        reply(new, [item(2)]); settled()
+        assert page.locator('tr.row').get_attribute('data-ref') == 'TEST-2'
+    # 새 결과 후 늦은 응답도 무시한다.
+    old = reload_list(); new = reload_list()
+    reply(new, [item(3)]); settled()
+    reply(old, [item(99)]); page.wait_for_timeout(100)
+    assert page.locator('tr.row').get_attribute('data-ref') == 'TEST-3'
+
+    # 검색 debounce와 프로젝트·승인 필터에도 같은 로딩 수명을 적용한다.
+    page.fill('#q', '검색 시험'); request_count(1)
+    search = pending.pop(0)
+    assert 'q=' in search.request.url
+    page.wait_for_selector('.list-loading'); reply(search); settled()
+    page.fill('#q', ''); request_count(1); reply(pending.pop(0)); settled()
+    page.check('#only-approved'); request_count(1)
+    approved = pending.pop(0)
+    assert 'approved=true' in approved.request.url
+    page.wait_for_selector('.list-loading'); reply(approved); settled()
+    page.uncheck('#only-approved'); request_count(1); reply(pending.pop(0)); settled()
+    page.evaluate("() => { const s = document.querySelector('#list-project'); s.add(new Option('시험', 'TEST')); }")
+    page.select_option('#list-project', 'TEST'); request_count(1)
+    project = pending.pop(0)
+    assert 'project=TEST' in project.request.url
+    page.wait_for_selector('.list-loading'); reply(project); settled()
+    page.select_option('#list-project', ''); request_count(1); reply(pending.pop(0)); settled()
+    network = reload_list(); page.wait_for_selector('.list-loading')
+    network.abort(); settled()
+    assert page.locator('#list-body .list-error').count() == 1
+
+    # 추가 페이지를 자동으로 이어 받는 동안 기존 행을 유지한다.
+    first = reload_list(); reply(first, [item(1)], more=True)
+    request_count(1); extra = pending.pop(0)
+    page.wait_for_selector('#list-more .list-loading')
+    assert page.locator('tr.row').count() == 1
+    reply(extra, [item(2)]); settled()
+    assert page.locator('tr.row').count() == 2
+    first = reload_list(); reply(first, [item(1)], more=True)
+    request_count(1); extra = pending.pop(0)
+    page.wait_for_selector('#list-more .list-loading')
+    reply(extra, status=500); settled()
+    assert page.locator('tr.row').count() == 1 and page.locator('#list-more .list-error').count() == 1
+    page.wait_for_timeout(500); assert not pending
+
+    # 탭 이동 후의 지연 응답과 검색 debounce가 목록을 되살리지 않는다.
+    for status in (200, 500):
+        old = reload_list()
+        page.fill('#q', '나중 검색')
+        page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-form')
+        reply(old, [item(99)], more=True, status=status)
+        page.wait_for_timeout(500)
+        assert page.locator('#project-form').count() == 1
+        assert page.locator('.list-loading').count() == 0 and not pending
+        page.goto(BASE + '/#/'); request_count(1)
+        reply(pending.pop(0)); settled()
+    page.unroute('**/api/issues?*')
+    page.evaluate("localStorage.removeItem('dev.list'); document.documentElement.dataset.theme = 'light'")
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 ns_port, dev_port = free_port(), free_port()
@@ -66,6 +192,11 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        check_list_loading(page, shots)
+        if '--list-loading-only' in sys.argv:
+            assert not errs, errs
+            print('OK: list loading')
+            sys.exit(0)
 
         # 프로젝트 없이 New issue → 안내
         page.click("a[href=\"#/new\"]")
