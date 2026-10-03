@@ -154,7 +154,8 @@ assert issues.get_issue(ref)['status'] == 'changes_requested'
 jid = queued('execute')
 issues.decide(me, parent['ref'], 'reject', 'test rejection', plan_version=1)
 jobs.pump()
-assert issues.get_issue(ref)['status'] == 'changes_requested' and not jobs.list_jobs()
+assert issues.get_issue(ref)['status'] == 'closed' and not jobs.list_jobs()
+issues.set_status(me, ref, 'changes_requested')
 issues.set_status(me, parent['ref'], 'triage')
 issues.decide(me, parent['ref'], 'approve', plan_version=1)
 
