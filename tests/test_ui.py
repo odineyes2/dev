@@ -425,6 +425,85 @@ def check_edit_saving(page, shots):
     page.emulate_media(color_scheme='light')
 
 
+def check_board_pan(page, shots):
+    """빈 영역 이동과 포인터 정리, 기본 스크롤 및 카드 클릭을 검사한다."""
+    board = page.locator('.kanban')
+    changes = []
+    def record(req):
+        if req.method == 'POST' and req.url.endswith('/status'):
+            changes.append(req.url)
+    page.on('request', record)
+    def left():
+        return board.evaluate('e => e.scrollLeft')
+    def drag(dx, selector='.kanban', outside=False):
+        box = page.locator(selector).first.bounding_box()
+        x, y = box['x'] + min(box['width'] - 20, 240), box['y'] + box['height'] - 20
+        page.mouse.move(x, y); page.mouse.down()
+        page.mouse.move(x + dx, y, steps=10)
+        if outside:
+            page.mouse.move(x + dx, 5)
+        page.mouse.up()
+        assert not board.evaluate("e => e.classList.contains('panning')")
+    assert board.evaluate("e => getComputedStyle(e).scrollbarWidth") == 'none'
+    assert board.evaluate("e => getComputedStyle(e, '::-webkit-scrollbar').display") == 'none'
+    assert board.evaluate('e => e.scrollWidth > e.clientWidth')
+    drag(-150, outside=True); assert left() >= 140
+    drag(100); assert left() < 70
+    board.evaluate('e => e.scrollLeft = 0')
+    drag(-100, '.col[data-col="triage"] .cards'); assert left() >= 90
+    for event in ('pointercancel', 'lostpointercapture'):
+        box = board.bounding_box()
+        page.mouse.move(box['x'] + 200, box['y'] + box['height'] - 20)
+        page.mouse.down(); page.mouse.move(box['x'] + 150, box['y'] + box['height'] - 20)
+        board.dispatch_event(event, {'pointerId': 1})
+        assert not board.evaluate("e => e.classList.contains('panning')")
+        page.mouse.up()
+        drag(-50)
+    board.evaluate('e => e.scrollLeft = 0')
+    drag(100); assert left() == 0
+    board.evaluate('e => e.scrollLeft = e.scrollWidth')
+    end = left(); drag(-100); assert left() == end
+    board.focus(); page.keyboard.press('ArrowLeft'); assert left() < end
+    page.keyboard.press('ArrowRight'); assert left() == end
+    board.evaluate('e => e.scrollLeft = 0')
+    box = board.bounding_box()
+    page.mouse.move(box['x'] + 100, box['y'] + 150)
+    page.mouse.wheel(160, 0)
+    page.wait_for_function("document.querySelector('.kanban').scrollLeft > 0")
+    # 길어진 열은 독립적으로 세로 스크롤한다. 임시 DOM은 화면 재진입으로 제거한다.
+    page.locator('.cards').filter(has=page.locator('.card')).first.evaluate('e => { const card = e.querySelector(".card"); for(let i=0;i<20;i++) e.append(card.cloneNode(true)); e.scrollTop=100; }')
+    assert page.locator('.cards').filter(has=page.locator('.card')).first.evaluate('e => e.scrollTop') > 0
+    assert changes == []
+    page.remove_listener('request', record)
+    page.goto(BASE + '/#/'); page.wait_for_selector('table.issues')
+    page.goto(BASE + '/#/board'); page.wait_for_selector('.kanban')
+    drag(-100); assert 90 <= left() <= 110
+    board.evaluate('e => e.scrollLeft = 0')
+    page.locator('.card[data-ref="NS-1-1"] .t').click()
+    page.wait_for_selector('h1#title')
+    assert page.url.endswith('/issue/NS-1-1')
+    page.goto(BASE + '/#/board'); page.wait_for_selector('.kanban')
+    for scheme in ('light', 'dark'):
+        page.evaluate('s => { localStorage.setItem("dev.theme", s); document.documentElement.dataset.theme = s; }', scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            page.set_viewport_size({'width': width, 'height': 850})
+            board.evaluate('e => e.scrollLeft = 0')
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'board_pan_{scheme}_{tag}.png'), full_page=True)
+            board.evaluate('e => e.scrollLeft = e.scrollWidth')
+            assert page.locator('.col').last.bounding_box()['x'] < width
+            assert board.evaluate('e => getComputedStyle(e).touchAction') == 'auto'
+            before = left()
+            board.dispatch_event('pointerdown', {'pointerType': 'touch', 'pointerId': 9, 'button': 0, 'clientX': 200})
+            board.dispatch_event('pointermove', {'pointerType': 'touch', 'pointerId': 9, 'buttons': 1, 'clientX': 100})
+            assert left() == before and not board.evaluate("e => e.classList.contains('panning')")
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.emulate_media(color_scheme='light')
+    page.evaluate('localStorage.setItem("dev.theme", "light"); document.documentElement.dataset.theme = "light"')
+    board.evaluate('e => e.scrollLeft = 0')
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 ns_port, dev_port = free_port(), free_port()
@@ -548,6 +627,7 @@ try:
         page.drag_and_drop('.card[data-ref="NS-1-1"]', '.col[data-col="in_progress"] .cards')
         page.wait_for_selector('.col[data-col="in_progress"] .card[data-ref="NS-1-1"]')
         page.screenshot(path=str(shots / "board.png"))
+        check_board_pan(page, shots)
 
         # 에이전트 — 키는 한 번만
         page.click("[data-nav=agents]")

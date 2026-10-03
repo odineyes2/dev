@@ -204,6 +204,7 @@ function perfReport(name, t0){
 // ---- 라우팅 ----
 async function route(){
   disposeList();
+  cleanupBoard();
   const h = location.hash.replace(/^#\/?/, '').split('?')[0];
   const [name, arg] = h.split('/');
   const t0 = performance.now();
@@ -380,10 +381,47 @@ async function loadMoreIssues(){
 }
 
 // ---- 칸반 ----
+let cleanupBoard = () => {};
+function enableBoardPan(board){
+  const events = new AbortController();
+  let pan = null;
+  const excluded = '.card, h3 .status, h3 .ref, a, button, input, textarea, select, [contenteditable], [role="button"]';
+  function stop(){
+    const id = pan?.id;
+    pan = null;
+    board.classList.remove('panning');
+    if(id != null && board.hasPointerCapture(id)) board.releasePointerCapture(id);
+  }
+  const on = (type, fn) => board.addEventListener(type, fn, { signal: events.signal });
+  on('pointerdown', e => {
+    if(e.pointerType !== 'mouse' || e.button !== 0 || e.target.closest(excluded)) return;
+    pan = { id: e.pointerId, x: e.clientX, left: board.scrollLeft, active: false };
+    board.setPointerCapture(e.pointerId);
+    board.focus({ preventScroll: true });
+  });
+  on('pointermove', e => {
+    if(!pan || pan.id !== e.pointerId) return;
+    if(!(e.buttons & 1)){ stop(); return; }
+    const dx = e.clientX - pan.x;
+    if(!pan.active && Math.abs(dx) < 5) return;
+    pan.active = true;
+    board.classList.add('panning');
+    e.preventDefault();
+    board.scrollLeft = pan.left - dx;
+  });
+  for(const type of ['pointerup', 'pointercancel', 'lostpointercapture']) on(type, stop);
+  on('keydown', e => {
+    if(e.target !== board || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+    e.preventDefault();
+    board.scrollLeft += (e.key === 'ArrowRight' ? 1 : -1) * 272;
+  });
+  cleanupBoard = () => { stop(); events.abort(); cleanupBoard = () => {}; };
+}
 async function renderBoard(){
+  cleanupBoard();
   const cols = STATUSES.filter(s => s !== 'closed');
   const items = (await api('GET', '/api/issues?' + new URLSearchParams({ project: currentProject(), status: cols.join(',') }))).issues;
-  view.innerHTML = `<div class="kanban">${cols.map(s => {
+  view.innerHTML = `<div class="kanban" tabindex="0" role="region" aria-label="Issue 보드 — 빈 영역을 끌거나 좌우 방향키로 이동해요">${cols.map(s => {
     const mine = items.filter(i => i.status === s);
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
@@ -391,6 +429,7 @@ async function renderBoard(){
         ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div></div>`).join('')}
     </div></div>`;
   }).join('')}</div>`;
+  enableBoardPan(view.querySelector('.kanban'));
   view.querySelectorAll('.card').forEach(card => {
     card.addEventListener('click', () => { location.hash = `#/issue/${card.dataset.ref}`; });
     card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', card.dataset.ref); });
