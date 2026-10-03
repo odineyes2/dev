@@ -479,8 +479,8 @@ function executeHtml(it, liveMode){
     : x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
     : it.review_busy ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : `격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}.`;
   const b = x.branch;
-  return `<div class="exec">${job ? jobHtml(job) : `<button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>${running ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
-    <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>Codex에게 실행 맡기기</button>
+  return `<div class="exec">${job ? jobHtml(job) : `<button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>${running ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
+    <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>Codex에게 실행 맡기기</button>
     <div class="dim hint">${hint}</div><div class="dim hint">Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음.</div>`}
     ${b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
       ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}</div>`;
@@ -536,6 +536,19 @@ function canRun(it, ch){
   const a = it.approval;
   return a && !a.stale && a.verdict !== 'reject' && ['backlog', 'changes_requested'].includes(ch.status);
 }
+const pendingTasks = new Set();
+function taskActionsHtml(it, ch){
+  const icon = provider => `<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>`;
+  if(ch.job){
+    const provider = ch.job.provider || 'claude', label = `${PROVIDER_NAME[provider]} 실행 대기 중`;
+    return `<div class="task-actions"><button class="run-task task-queued" data-ref="${esc(ch.ref)}" data-provider="${provider}" disabled aria-label="${label}" title="${esc(`${label} — 대기 ${ch.job.position}번째${ch.job.note ? ' — ' + ch.job.note : ''}`)}">${icon(provider)}<span class="hide-m">${label}</span></button></div>`;
+  }
+  if(!canRun(it, ch)) return '';
+  return `<div class="task-actions">${['claude', 'codex'].map(provider => {
+    const label = `${PROVIDER_NAME[provider]}에게 실행 맡기기`;
+    return `<button class="run-task" data-ref="${esc(ch.ref)}" data-provider="${provider}"${pendingTasks.has(ch.ref) ? ' disabled' : ''} title="${label}" aria-label="${label}">${icon(provider)}<span class="hide-m">${PROVIDER_NAME[provider]}</span></button>`;
+  }).join('')}</div>`;
+}
 // 갱신 중에도 아직 응답하지 않은 검토 요청의 provider를 유지한다.
 const pendingReviews = new Map();
 async function renderIssue(ref){
@@ -564,8 +577,7 @@ async function renderIssue(ref){
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues tasks">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}</td><td>${statusHtml(ch.status)}${ch.merge_state ? ` <span class="dim hide-m">${esc(ch.merge_state)}</span>` : ''}${ch.claimed_by ? ` <span class="dim hide-m">${esc(actorName(ch.claimed_by))}</span>` : ''}</td>
-            <td>${ch.job ? `<button class="run-task" data-ref="${esc(ch.ref)}" disabled aria-label="실행 대기 중" title="${esc(`대기 ${ch.job.position}번째${ch.job.note ? ' — ' + ch.job.note : ''}`)}"><svg class="ico"><use href="#i-bot"/></svg><span class="hide-m">실행 대기 중</span></button>`
-              : canRun(it, ch) ? `<button class="run-task" data-ref="${esc(ch.ref)}" aria-label="실행 맡기기"><svg class="ico"><use href="#i-bot"/></svg><span class="hide-m">실행 맡기기</span></button>` : ''}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
+            <td>${taskActionsHtml(it, ch)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">댓글 달기</button></div></div></div>
@@ -663,13 +675,31 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
     $('decision-cancel').addEventListener('click', () => { $('decision-form').hidden = true; $('decision-actions').hidden = false; });
     $('decision-send').addEventListener('click', (e) => whileBusy(e.currentTarget, () => send(verdict, $('decision-note').value)));
   }
-  view.querySelectorAll('.run-task').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); whileBusy(b, async () => {
-    if(!confirm(`${b.dataset.ref}을(를) Claude에게 실행 맡길까요?
-홈서버에서 relay/${b.dataset.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
-사용량은 이 서버에 로그인된 Claude 계정에서 나가요.
+  view.querySelectorAll('.run-task').forEach(b => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const ref = b.dataset.ref, provider = b.dataset.provider;
+    if(b.disabled || pendingTasks.has(ref)) return;
+    pendingTasks.add(ref);
+    b.closest('.task-actions').querySelectorAll('button').forEach(button => { button.disabled = true; });
+    try{
+      const task = await api('GET', `/api/issues/${encodeURIComponent(ref)}`);
+      const name = PROVIDER_NAME[provider], x = task.execute;
+      const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(x.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${x.budget_usd}이에요.`;
+      if(!confirm(`${ref}을(를) ${name}에게 실행 맡길까요?
+홈서버에서 relay/${ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
-    const r = await api('POST', `/api/issues/${encodeURIComponent(b.dataset.ref)}/execute`); toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요')); reload();
-  }); }));
+      const r = await api('POST', `/api/issues/${encodeURIComponent(ref)}/execute`, { provider });
+      toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요'));
+      await reload();
+    }catch(e){ /* api()가 오류를 알린다 */ }
+    finally{
+      pendingTasks.delete(ref);
+      view.querySelectorAll('.run-task').forEach(button => {
+        if(button.dataset.ref === ref && !button.classList.contains('task-queued')) button.disabled = false;
+      });
+    }
+  }));
   if($('release')) $('release').addEventListener('click', async () => { await api('POST', `/api/issues/${R}/release`).catch(() => {}); reload(); });
   // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게
   for(const [id, provider] of [['ask-execute', 'claude'], ['ask-codex-execute', 'codex']]) {
