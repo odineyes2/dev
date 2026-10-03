@@ -536,18 +536,24 @@ function canRun(it, ch){
   const a = it.approval;
   return a && !a.stale && a.verdict !== 'reject' && ['backlog', 'changes_requested'].includes(ch.status);
 }
+// 갱신 중에도 아직 응답하지 않은 검토 요청의 provider를 유지한다.
+const pendingReviews = new Map();
 async function renderIssue(ref){
   const [it, { runs }] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), agentsById.size ? null : loadAgents()]);
   const agentOpts = ['<option value="">(없음)</option>'].concat([...agentsById.values()].map(a =>
     `<option value="${a.id}"${a.id === it.assignee_agent_id ? ' selected' : ''}>${esc(a.name)}</option>`)).join('');
-  const liveMode = (runs.find(r => r.status === 'running') || {}).mode;
+  const liveRun = runs.find(r => r.status === 'running') || {};
+  const liveMode = liveRun.mode;
+  const reviewProvider = pendingReviews.get(ref) || (it.review_running && liveMode === 'review' ? liveRun.provider : null);
+  const reviewBusy = it.review_running || pendingReviews.has(ref);
+  const reviewButton = (provider, id) => `<button id="${id}"${reviewBusy ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${reviewProvider === provider ? '검토 중…' : `${PROVIDER_NAME[provider]}에게 검토 맡기기`}</button>`;
   view.innerHTML = `
     <div class="detail">
       <div>
         <div class="ref">${esc(it.ref)}${it.parent_ref ? ` · Task of <a href="#/issue/${esc(it.parent_ref)}">${esc(it.parent_ref)}</a>` : ''}</div>
         <h1 id="title">${titleHtml(it)}</h1>
         <div class="byline">${actorHtml(it.reporter)}<span>·</span><span>${fmtTime(it.created_at)}</span>${labelsHtml(it.labels)}</div>
-        ${stageHtml(it, liveMode, (runs.find(r => r.status === 'running') || {}).provider)}
+        ${stageHtml(it, liveMode, liveRun.provider)}
         <div class="panel"><h2>Description<span class="right"><button id="edit-body">고치기</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
         <div class="panel"><h2>Plan${it.plan ? ` <span class="meta">v${it.plan.version} · ${esc(actorName(it.plan.author))} · ${fmtTime(it.plan.created_at)}</span>` : ''}
@@ -574,7 +580,7 @@ async function renderIssue(ref){
           <button id="release" class="ghost">놓기</button>` : '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Agent</span>
-          ${it.job && it.job.mode === 'review' ? jobHtml(it.job) : `<button id="ask-review"${it.review_running ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running && liveMode !== 'execute' ? '검토 중…' : 'Claude에게 검토 맡기기'}</button><button id="ask-codex-review"${it.review_running ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico"><use href="#i-bot"/></svg>Codex에게 검토 맡기기</button>
+          ${it.job && it.job.mode === 'review' ? jobHtml(it.job) : `${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}
           <div class="dim hint"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>${it.review_busy && !it.review_running ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>`}
           ${it.execute ? executeHtml(it, liveMode) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
@@ -678,15 +684,26 @@ ${QUEUE_LINE}`)) return;
   }));
   }
   for(const [id, provider] of [['ask-review', 'claude'], ['ask-codex-review', 'codex']]) {
-    if($(id)) $(id).addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
+    if($(id)) $(id).addEventListener('click', async (e) => {
+      if(e.currentTarget.disabled || pendingReviews.has(ref)) return;
       const name = PROVIDER_NAME[provider];
       if(!confirm(`${it.ref}을(를) ${name}에게 검토 맡길까요?
 홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
-      const r = await api('POST', `/api/issues/${R}/review`, { provider });
-      toast(queuedMsg(r, '검토를 맡겼어요 — 몇 분 뒤 계획서가 올라와요')); reload();
-    }));
+      pendingReviews.set(ref, provider);
+      for(const buttonId of ['ask-review', 'ask-codex-review']) $(buttonId).disabled = true;
+      const label = e.currentTarget.lastChild;
+      label.textContent = '검토 중…';
+      try {
+        const r = await api('POST', `/api/issues/${R}/review`, { provider });
+        toast(queuedMsg(r, '검토를 맡겼어요 — 몇 분 뒤 계획서가 올라와요'));
+      } catch(e) { /* api()가 이미 오류를 알린다. */ }
+      finally {
+        pendingReviews.delete(ref);
+        if(location.hash === `#/issue/${it.ref}`) await reload();
+      }
+    });
   }
   if(it.review_running || it.job) setTimeout(() => { if(location.hash === `#/issue/${it.ref}`) reload(); }, 15000);
   $('delete').addEventListener('click', async () => {

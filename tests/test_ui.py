@@ -165,6 +165,75 @@ def check_list_loading(page, shots):
     page.evaluate("localStorage.removeItem('dev.list'); document.documentElement.dataset.theme = 'light'")
 
 
+def check_review_buttons(page, ref, shots):
+    """실제 Agent 호출 없이 provider별 요청·실행·복구 상태를 검사한다."""
+    url = f'{BASE}/api/issues/{ref}'
+    original = page.request.get(url).json()
+    state = {'running': False, 'provider': None, 'mode': 'review', 'records': True}
+    pending = []
+    page.route(url, lambda route: route.fulfill(json={**original, 'review_running': state['running'], 'job': None}))
+    def runs(route):
+        route.fulfill(json={'runs': [{'id': 999, 'mode': state['mode'], 'provider': state['provider'],
+            'status': 'running', 'actor': 'human:admin', 'started_at': '2026-10-03T00:00:00+00:00'}]
+            if state['running'] and state['records'] else []})
+    page.route(url + '/runs', runs)
+    page.route(url + '/review', lambda route: pending.append(route))
+    def refresh():
+        page.evaluate('(ref) => renderIssue(ref)', ref)
+    def buttons(provider=None, busy=False):
+        for name, selector in (('claude', '#ask-review'), ('codex', '#ask-codex-review')):
+            button = page.locator(selector)
+            assert button.is_disabled() == busy
+            assert button.inner_text() == ('검토 중…' if name == provider else f'{name.title()}에게 검토 맡기기')
+            assert button.locator('svg').get_attribute('aria-hidden') == 'true'
+            assert button.locator('use').get_attribute('href') == ('#i-claude' if name == 'claude' else '#i-openai')
+    for provider, selector in (('claude', '#ask-review'), ('codex', '#ask-codex-review')):
+        state.update(running=False, provider=provider)
+        refresh(); buttons()
+        page.click(selector)
+        page.wait_for_timeout(100)
+        assert len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
+        buttons(provider, True)
+        page.evaluate("() => { document.querySelector('#ask-review').click(); document.querySelector('#ask-codex-review').click(); }")
+        assert len(pending) == 1
+        refresh(); buttons(provider, True)
+        # 오류 후 두 버튼과 라벨이 복구되어 재시도할 수 있다.
+        pending.pop().fulfill(status=500, json={'detail': '시험 오류'})
+        page.wait_for_function("!document.querySelector('#ask-review').disabled")
+        buttons()
+        page.click(selector); page.wait_for_timeout(100)
+        state['running'] = True
+        pending.pop().fulfill(json={'status': 'running'})
+        page.wait_for_timeout(100); buttons(provider, True)
+        refresh(); buttons(provider, True)
+        page.reload(); page.wait_for_selector('#ask-review'); buttons(provider, True)
+        # 실제 15초 갱신 뒤에도 서버 기록으로 provider를 복원한다.
+        if provider == 'codex':
+            page.wait_for_timeout(15500); buttons(provider, True)
+        state['running'] = False
+        refresh(); buttons()
+    state.update(running=True, provider='codex')
+    refresh(); buttons('codex', True)
+    for scheme in ('light', 'dark'):
+        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            page.evaluate('s => { document.documentElement.dataset.theme = s; }', scheme)
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            for selector in ('#ask-review', '#ask-codex-review'):
+                box = page.locator(selector + ' svg').bounding_box()
+                assert box['width'] > 0 and box['x'] >= 0 and box['x'] + box['width'] <= width
+                assert page.locator(selector + ' svg').evaluate('el => getComputedStyle(el).stroke') == 'none'
+            page.screenshot(path=str(shots / f'review_running_{scheme}_{tag}.png'), full_page=True)
+    # 실행 기록의 시차나 execute 실행을 Claude 검토로 단정하지 않는다.
+    state['records'] = False
+    refresh(); buttons(busy=True)
+    state.update(records=True, mode='execute')
+    refresh(); buttons(busy=True)
+    page.unroute(url); page.unroute(url + '/runs'); page.unroute(url + '/review')
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.reload(); page.wait_for_selector('#ask-review')
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 ns_port, dev_port = free_port(), free_port()
@@ -564,6 +633,7 @@ try:
         page.goto(BASE + f"/#/issue/{fresh}"); page.reload(); page.wait_for_selector("#ask-review")
         assert page.is_enabled("#ask-review") and "차례로" in page.inner_text(".side")
         assert page.is_enabled("#ask-codex-review")
+        check_review_buttons(page, fresh, shots)
         for scheme in ("light", "dark"):
             page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)
             page.emulate_media(color_scheme=scheme)

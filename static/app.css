@@ -98,6 +98,7 @@ input[type=checkbox]{ width:16px; height:16px; padding:0; accent-color:var(--acc
 
 /* 헤더·전역 탭 — nightshift(01-base.css)와 같은 구성·스타일(DEV-4) */
 .ico{ width:1.2em; height:1.2em; flex:none; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; vertical-align:-0.22em; }
+.ico.brand-icon{ fill:currentColor; stroke:none; }
 .top{ position:relative; display:flex; align-items:center; justify-content:space-between; padding:18px 28px;
   background:var(--panel); border-bottom:1px solid var(--border); }
 .brand{ display:flex; align-items:center; gap:12px; color:var(--text); }
