@@ -579,6 +579,8 @@ try:
         page.wait_for_selector(".timeline >> text=시작할게요")
         page.select_option("#status", "in_review")
         page.wait_for_selector("#approve")
+        assert page.locator('#result').count() == 1
+        assert page.locator('#result').evaluate("e => e.closest('.panel').previousElementSibling.querySelector('h2').textContent.startsWith('Plan')")
         page.click("#request-changes")
         page.click("#result-send"); page.wait_for_timeout(200)   # 메모 없이는 안 보낸다
         assert page.evaluate("document.getElementById('status').value") == "in_review"
@@ -695,6 +697,26 @@ try:
         page.set_viewport_size({"width": 1300, "height": 850})
         page.request.post(f"{BASE}/api/issues/NS-1-1/status", data={"status": "in_review"}, headers={"X-Requested-With": "dev"})
         page.goto(BASE + "/#/issue/NS-1-1"); page.wait_for_selector("#approve")
+        # Task는 Activity(댓글 입력 포함) 바로 뒤에 Result를 한 번만 출력한다.
+        assert page.locator('#result').count() == 1
+        assert page.locator('.detail > div > .panel > h2').evaluate_all("es => es.map(e => e.firstChild.textContent.trim())") == ['Description', 'Plan', 'Tasks', 'Activity', 'Result']
+        assert page.locator('#result').evaluate("e => e.closest('.panel').previousElementSibling.contains(document.getElementById('comment'))")
+        for scheme in ('light', 'dark'):
+            page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+            page.emulate_media(color_scheme=scheme)
+            for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+                page.set_viewport_size({'width': width, 'height': 850})
+                page.locator('#comment').focus()
+                for target in ('#send-comment', '#approve', '#result-actions .complete-tree', '#request-changes', '#result-actions [data-to="closed"]'):
+                    page.keyboard.press('Tab')
+                    assert page.locator(target).evaluate('e => e === document.activeElement')
+                    box = page.locator(target).bounding_box()
+                    assert box and box['x'] >= 0 and box['x'] + box['width'] <= width + 1
+                assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+                page.screenshot(path=str(shots / f'task_result_{scheme}_{tag}.png'), full_page=True)
+        page.set_viewport_size({'width': 1300, 'height': 850})
+        page.emulate_media(color_scheme='light')
+        page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
         page.click("#approve")
         page.wait_for_function("location.hash === '#/'")
         assert "NS-1-1을(를) 끝냈어요" in page.inner_text("#toast")
@@ -718,6 +740,10 @@ try:
         page.select_option("#status", "in_progress")   # 끝내는 게 아니면 그 자리에 머문다
         page.wait_for_function("document.getElementById('status') && document.getElementById('status').value === 'in_progress'")
         assert page.evaluate("location.hash") == "#/issue/NS-1-1"
+        # 검토 상태 외에는 Task Result를 표시하지 않는다.
+        for status in ('backlog', 'triage', 'waiting', 'in_progress', 'changes_requested', 'on_hold', 'done', 'closed'):
+            assert page.evaluate("s => resultHtml({status:s, parent_ref:'NS-1', children:[]})", status) == ''
+        assert page.locator('#result').count() == 0
 
         # 목록 나눠 읽기(DEV-7) — 처음 50개, 끝까지 내리면 더 붙는다
         for n in range(110):

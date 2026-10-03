@@ -613,7 +613,7 @@ async function renderIssue(ref){
           <span class="right">${it.plan && it.plan.version > 1 ? '<button id="plan-history">이전 판</button>' : ''}<button id="edit-plan">${it.plan ? '고쳐 쓰기' : '쓰기'}</button></span></h2>
           <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div>
           ${it.plan && !['done', 'closed'].includes(it.status) ? decisionHtml(it) : ''}</div>
-        ${resultHtml(it)}
+        ${it.parent_ref ? '' : resultHtml(it)}
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues tasks">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}</td><td>${statusHtml(ch.status)}${ch.merge_state ? ` <span class="dim hide-m">${esc(ch.merge_state)}</span>` : ''}${ch.claimed_by ? ` <span class="dim hide-m">${esc(actorName(ch.claimed_by))}</span>` : ''}</td>
@@ -621,6 +621,7 @@ async function renderIssue(ref){
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">댓글 달기</button></div></div></div>
+        ${it.parent_ref ? resultHtml(it) : ''}
       </div>
       <aside class="side panel">
         <div class="field"><span>Status</span><select id="status">${STATUSES.map(s => `<option value="${s}"${s === it.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}</select>
