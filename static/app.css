@@ -53,6 +53,10 @@ a{ color:var(--accent); text-decoration:none; }
 a:hover{ text-decoration:underline; text-underline-offset:3px; }
 [hidden]{ display:none !important; }
 .dim{ color:var(--dim); }
+.list-loading, .list-error{ display:flex; align-items:center; justify-content:center; gap:var(--sp-2); padding:var(--sp-5) var(--sp-4); color:var(--dim); font-size:13px; }
+.list-spinner{ flex:none; animation:list-spin 1s linear infinite; }
+@keyframes list-spin{ to{ transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce){ .list-spinner{ animation:none; } }
 .error{ color:var(--danger); min-height:1.2em; margin:0; font-size:13px; }
 ::selection{ background:rgba(var(--accent-rgb),0.2); }
 
