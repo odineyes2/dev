@@ -120,12 +120,20 @@ def _merged(repo, ref) -> bool:
 
 
 def run_tests(repo) -> str | None:
-    """repo의 tests/test_*.py를 하나씩 돌린다. 실패한 첫 파일과 출력 끝부분(없으면 None)."""
+    """검사를 하나씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다."""
     for t in sorted(Path(repo, "tests").glob("test_*.py")):
         r = subprocess.run([sys.executable, str(t)], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
+                           env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
         if r.returncode:
-            return f"{t.name}: {(r.stdout + r.stderr).strip()[-1500:]}"
+            detail = (f"검사: {t}\n작업 폴더: {repo}\nPython: {sys.executable}\n"
+                      f"종료 코드: {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n"
+                      f"\n--- stdout ---\n{r.stdout}\n--- stderr ---\n{r.stderr}")
+            logs = config.DATA_DIR / "merge-tests"
+            logs.mkdir(parents=True, exist_ok=True)
+            log = logs / f"{t.stem}-{time.time_ns()}.log"
+            log.write_text(detail, encoding="utf-8")
+            output = (r.stdout + r.stderr).strip() or "표준 출력과 오류 출력이 없어요."
+            return f"{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}"
     return None
 
 

@@ -75,6 +75,15 @@ status, note = orchestrate.merge(str(repo), "T-6")
 assert status == "changes_requested" and "test_bad.py" in note and "boom" in note, note
 assert git("log", "-1", "--format=%s").startswith("Revert")
 assert not (repo / "f.txt").exists() and not git("diff", before, "HEAD", "--stat")
+assert "종료 코드 1 (0x00000001)" in note and "전체 로그:" in note, note
+failure_log = next((orchestrate.config.DATA_DIR / "merge-tests").glob("test_bad-*.log"))
+assert "boom" in failure_log.read_text("utf-8")
+
+# 출력 없이 종료해도 원인을 구분할 종료 코드와 로그를 남긴다.
+(repo / "tests" / "test_silent.py").write_text("import os; os._exit(7)\n")
+note = orchestrate.run_tests(str(repo))
+assert "종료 코드 7 (0x00000007)" in note and "출력이 없어요" in note, note
+(repo / "tests" / "test_silent.py").unlink()
 
 # ---- 재시작·health(DEV-40-2) — 가짜 pm2(로그 파일에 한 줄)와 가짜 health·busy 서버 ----
 import json, threading  # noqa: E401,E402
