@@ -136,7 +136,15 @@ with TestClient(A.app) as c:
     assert execute.worktree_path("EX-1-1").is_dir() and review.running_ref() == "EX-1-1"
     assert issues.get_issue('EX-1-1')['status'] == 'in_progress'
     assert post("EX-1-2").json()["job_id"] == jobs.list_jobs()[0]["id"] and len(jobs.list_jobs()) == 1   # 중복으로 안 넣음
+    # 실행 중 종결은 거부하고, 선행 실행이 끝난 뒤에만 완료한다.
+    for terminal in ("done", "closed"):
+        assert "EX-1-1" in rejects(issues.set_status, me, "EX-1-1", terminal)
+        assert issues.get_issue("EX-1-1")["status"] == "in_progress"
+    wait_idle()
+    assert review.list_runs("EX-1-1")[0]["status"] == "ok"
+    assert review.list_runs("EX-1-2") == [] and len(jobs.list_jobs()) == 1
     issues.set_status(me, "EX-1-1", "done")
+    jobs.pump()
     wait_idle()                                                         # 선행 done → EX-1-1이 끝나면 EX-1-2가 이어서 돈다
     assert review.list_runs("EX-1-2")[0]["status"] == "ok" and jobs.list_jobs() == []
     run = review.list_runs("EX-1-1")[0]
