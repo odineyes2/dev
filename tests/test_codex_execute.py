@@ -7,6 +7,14 @@ import test_execute as base
 import execute, issues, review, orchestrate, jobs
 
 os.environ['DEV_CODEX_AGENT_KEY'] = 'test-secret'
+projects = [{'key': 'DEV', 'local_path': r'C:\Projects\dev'},
+            {'key': 'NS', 'local_path': r'C:\Projects\nightshift'}]
+scope = lambda body: execute.scope_reason({'project_key': 'DEV', 'body': body}, projects)
+assert 'NS' in scope('**바꿀 파일**: dev/static/style.css, nightshift/static/style.css')
+assert 'NS' in scope(r'파일: C:\Projects\nightshift\static\style.css | 확인: 검사')
+assert scope('**바꿀 파일**: static/style.css\n참고: nightshift/CLAUDE.md') is None
+assert scope('파일: my-nightshift/style.css') is None
+assert scope('파일: dev/static/style.css') is None
 cmd = execute.codex_command_for('EX-1-2', 'EX-1')
 assert cmd[cmd.index('--sandbox') + 1] == 'workspace-write'
 assert '--output-schema' in cmd and '--dangerously-bypass-approvals-and-sandbox' not in cmd
@@ -42,6 +50,12 @@ try:
         assert post('EX-1-2', 'other').status_code == 400
         assert post('EX-1').status_code == 409
         assert post('EX-2-1').status_code == 409
+        issues.create_project(base.me, 'OTHER', 'Other project', local_path=str(base.tmp / 'other'))
+        cross = issues.create_issue(base.me, 'EX', 'Cross repository task',
+                                    body='**바꿀 파일**: other/static/style.css', parent='EX-1')
+        rejected = post(cross['ref'])
+        assert rejected.status_code == 409 and 'OTHER' in rejected.json()['detail'], rejected.text
+        assert not review.list_runs(cross['ref']) and not execute.worktree_path(cross['ref']).exists()
         assert post('EX-1-2').json()['started']
         task = issues.create_issue(base.me, 'EX', 'Another task', parent='EX-1')
         queued = post(task['ref']).json()
