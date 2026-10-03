@@ -157,6 +157,64 @@ def check_task_actions(page, ref, shots, answers, asked):
     # 실제 POST는 running 가짜 run을 넣은 뒤 큐에만 추가한다.
 
 
+def check_execute_buttons(page, shots, answers):
+    """실행 요청과 기록을 모의하여 provider 표시·중복 방지·복구를 확인한다."""
+    ref = 'DEV-4-1'
+    url = f'**/api/issues/{ref}/execute'
+    pending = []
+    def hold(route):
+        pending.append(route)
+    page.route(url, hold)
+    ids = {'claude': '#ask-execute', 'codex': '#ask-codex-execute'}
+    def ready():
+        page.wait_for_selector('#ask-execute:not([disabled])')
+        assert page.is_enabled('#ask-codex-execute')
+    def active(provider):
+        for key, selector in ids.items():
+            assert page.is_disabled(selector)
+            assert page.inner_text(selector) == ('실행 중…' if key == provider else f'{"Claude" if key == "claude" else "Codex"}에게 실행 맡기기')
+    page.goto(BASE + f'/#/issue/{ref}'); page.reload(); ready()
+    for provider in ids:
+        answers.append(None); page.click(ids[provider]); ready()
+        assert not pending
+        page.click(ids[provider])
+        page.wait_for_timeout(100)
+        assert len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
+        active(provider)
+        page.evaluate('() => { renderIssue("DEV-4-1"); }')
+        page.wait_for_timeout(200); active(provider)
+        page.locator('.exec button').evaluate_all("bs => bs.forEach(b => b.dispatchEvent(new MouseEvent('click', {bubbles:true})))")
+        page.wait_for_timeout(100); assert len(pending) == 1
+        pending.pop().fulfill(status=500, content_type='application/json', body='{"detail":"시험 실패"}')
+        ready()
+    page.unroute(url, hold)
+    # 서버 재조회와 브라우저 새로고침은 실행 기록의 provider를 사용한다.
+    original = page.request.get(BASE + f'/api/issues/{ref}').json()
+    state = {'running': True, 'provider': 'claude'}
+    def issue(route):
+        route.fulfill(json={**original, 'review_running': state['running']})
+    def runs(route):
+        route.fulfill(json={'runs': [{'id': 999, 'mode': 'execute', 'status': 'running' if state['running'] else 'ok', 'provider': state['provider'], 'started_at': '2026-10-03T00:00:00+00:00'}]})
+    page.route(f'**/api/issues/{ref}', issue)
+    page.route(f'**/api/issues/{ref}/runs', runs)
+    for provider in ids:
+        state.update(running=True, provider=provider)
+        page.reload(); page.wait_for_selector(ids[provider]); active(provider)
+        page.evaluate('() => { renderIssue("DEV-4-1"); }'); page.wait_for_timeout(200); active(provider)
+        for scheme in ('light', 'dark'):
+            page.evaluate('s => { document.documentElement.dataset.theme = s; }', scheme)
+            for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+                page.set_viewport_size({'width': width, 'height': 850})
+                assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+                page.screenshot(path=str(shots / f'execute_running_{provider}_{scheme}_{tag}.png'), full_page=True)
+        state['running'] = False
+        page.reload(); ready()
+        assert '실행 중' not in page.inner_text('.exec')
+    page.unroute(f'**/api/issues/{ref}', issue)
+    page.unroute(f'**/api/issues/{ref}/runs', runs)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+
+
 def check_list_loading(page, shots):
     """응답을 보류하여 요청 수명·경합·시각 상태를 검사한다."""
     pending = []
@@ -883,6 +941,8 @@ try:
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
+        page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
+        check_execute_buttons(page, shots, answers)
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
         # 선행 대기는 눌러 둘 수 있다(DEV-43) — 줄에서 기다린다
         assert page.is_enabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec") and "차례로" in page.inner_text(".exec")

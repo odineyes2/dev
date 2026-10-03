@@ -511,16 +511,18 @@ view.addEventListener('click', (e) => {
 // ---- Task 실행(DEV-32): 격리된 worktree에서 구현, 결과는 브랜치로 ----
 // ponytail: 선행 대기는 서버 문구로 가린다 — panel이 대기/불가를 따로 주면 그걸로
 function waitOnly(blocked){ return !!blocked && blocked.startsWith('선행 Task'); }
-function executeHtml(it, liveMode){
+const pendingExecutions = new Map();
+function executeHtml(it, liveMode, liveProvider){
   const x = it.execute, running = it.review_running && liveMode === 'execute';
   const job = it.job && it.job.mode === 'execute' ? it.job : null;
-  const off = running || (x.blocked && !waitOnly(x.blocked));
+  const provider = pendingExecutions.get(it.ref) || (running ? liveProvider || 'claude' : null);
+  const off = !!provider || (x.blocked && !waitOnly(x.blocked));
   const hint = running ? '구현하는 중이에요 — 끝나면 in_review로 올라와요.'
     : x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
     : it.review_busy ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : `격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}.`;
   const b = x.branch;
-  return `<div class="exec">${job ? jobHtml(job) : `<button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>${running ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
-    <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>Codex에게 실행 맡기기</button>
+  return `<div class="exec">${job ? jobHtml(job) : `<button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>${provider === 'claude' ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
+    <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>${provider === 'codex' ? '실행 중…' : 'Codex에게 실행 맡기기'}</button>
     <div class="dim hint">${hint}</div><div class="dim hint">Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음.</div>`}
     ${b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
       ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}</div>`;
@@ -635,7 +637,7 @@ async function renderIssue(ref){
         <div class="field"><span>Agent</span>
           ${it.job && it.job.mode === 'review' ? jobHtml(it.job) : `${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}
           <div class="dim hint"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>${it.review_busy && !it.review_running ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>`}
-          ${it.execute ? executeHtml(it, liveMode) : ''}</div>
+          ${it.execute ? executeHtml(it, liveMode, liveRun.provider) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
       </aside>
@@ -744,15 +746,26 @@ ${QUEUE_LINE}`)) return;
   if($('release')) $('release').addEventListener('click', async () => { await api('POST', `/api/issues/${R}/release`).catch(() => {}); reload(); });
   // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게
   for(const [id, provider] of [['ask-execute', 'claude'], ['ask-codex-execute', 'codex']]) {
-    if($(id)) $(id).addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
+    if($(id)) $(id).addEventListener('click', async (e) => {
+    if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;
     const name = PROVIDER_NAME[provider];
     const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(it.execute.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${it.execute.budget_usd}이에요.`;
     if(!confirm(`${it.ref}을(를) ${name}에게 실행 맡길까요?
 홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
-    const r = await api('POST', `/api/issues/${R}/execute`, { provider }); toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요')); reload();
-  }));
+    pendingExecutions.set(ref, provider);
+    for(const buttonId of ['ask-execute', 'ask-codex-execute']) $(buttonId).disabled = true;
+    e.currentTarget.lastChild.textContent = '실행 중…';
+    try {
+      const r = await api('POST', `/api/issues/${R}/execute`, { provider });
+      toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요'));
+    } catch(e) { /* api()가 이미 오류를 알린다. */ }
+    finally {
+      pendingExecutions.delete(ref);
+      if(location.hash === `#/issue/${it.ref}`) await reload();
+    }
+  });
   }
   for(const [id, provider] of [['ask-review', 'claude'], ['ask-codex-review', 'codex']]) {
     if($(id)) $(id).addEventListener('click', async (e) => {
