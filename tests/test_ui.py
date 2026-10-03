@@ -12,7 +12,9 @@ from fastapi.responses import JSONResponse
 app = FastAPI()
 @app.get("/api/auth/me")
 def me(request: Request):
-    return {"user": {"id": 1, "username": "admin", "role": "admin"} if request.cookies.get("ns_session") == "adm" else None}
+    users = {"adm": {"id": 1, "username": "admin", "role": "admin"},
+             "mem": {"id": 2, "username": "admin", "role": "user"}}
+    return {"user": users.get(request.cookies.get("ns_session"))}
 @app.post("/api/auth/login")
 async def login(request: Request):
     b = await request.json()
@@ -38,6 +40,65 @@ def wait_port(port):
         except OSError:
             time.sleep(0.1)
     raise RuntimeError(f"port {port} not up")
+
+
+def check_account_menu(page, shots):
+    """검증된 admin에게만 외부 링크를 보여 주고 로그인 전환 시 숨긴다."""
+    link = page.locator('#open-jupyter')
+    page.click('#user-chip')
+    assert link.is_visible() and link.inner_text() == 'jupyter 열기'
+    assert link.get_attribute('href') == 'https://jupyter.lomebrote.com/'
+    assert link.get_attribute('target') == '_blank'
+    assert link.get_attribute('rel') == 'noopener'
+    assert link.get_attribute('role') == 'menuitem'
+    assert page.get_attribute('#open-nightshift', 'href') == page.request.get(BASE + '/api/auth/me').json()['nightshift_url']
+    targets = []
+    def intercept(route):
+        targets.append(route.request.url)
+        route.fulfill(status=200, content_type='text/html', body='<title>검사</title>')
+    page.context.route('https://jupyter.lomebrote.com/**', intercept)
+    with page.expect_popup() as popup:
+        link.click()
+    popup.value.wait_for_load_state()
+    assert targets == ['https://jupyter.lomebrote.com/']
+    assert popup.value.evaluate('window.opener === null')
+    popup.value.close()
+    page.context.unroute('https://jupyter.lomebrote.com/**', intercept)
+    page.keyboard.press('Escape')
+    assert page.locator('#user-menu').is_hidden()
+    page.click('#user-chip'); page.click('header .brand')
+    assert page.locator('#user-menu').is_hidden()
+    for scheme in ('light', 'dark'):
+        page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.locator('#user-chip').focus(); page.keyboard.press('Enter')
+            page.keyboard.press('Tab'); assert page.locator('#theme').evaluate('e => e === document.activeElement')
+            page.keyboard.press('Tab'); assert page.locator('#open-nightshift').evaluate('e => e === document.activeElement')
+            page.keyboard.press('Tab'); assert link.evaluate('e => e === document.activeElement')
+            assert link.evaluate('e => getComputedStyle(e).outlineStyle') != 'none'
+            box = page.locator('#user-menu').bounding_box()
+            assert box['x'] >= 0 and box['x'] + box['width'] <= width
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'jupyter_menu_{scheme}_{tag}.png'), full_page=True)
+            page.keyboard.press('Escape')
+    page.click('#user-chip'); page.click('#logout')
+    page.wait_for_selector('#login:not([hidden])')
+    assert link.is_hidden() and link.get_attribute('hidden') is not None
+    page.reload(); page.wait_for_selector('#login:not([hidden])')
+    assert link.get_attribute('hidden') is not None
+    page.context.add_cookies([{'name': 'ns_session', 'value': 'mem', 'url': BASE}])
+    page.reload(); page.wait_for_function("document.getElementById('login-error').textContent.includes('관리자')")
+    assert link.is_hidden() and link.get_attribute('hidden') is not None
+    assert page.request.get(BASE + '/api/auth/me').json()['reason'] == 'not_admin'
+    page.context.clear_cookies()
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+    page.emulate_media(color_scheme='light')
+    page.fill('#login-username', 'admin'); page.fill('#login-password', 'pw'); page.click('#login-form button')
+    page.wait_for_selector('#shell:not([hidden])')
+    assert link.get_attribute('hidden') is None
 
 
 def check_task_actions(page, ref, shots, answers, asked):
@@ -387,10 +448,16 @@ try:
         page.on("dialog", on_dialog)
         page.goto(BASE)
         page.wait_for_selector("#login-form")
+        assert page.locator('#open-jupyter').get_attribute('hidden') is not None
         page.fill("#login-username", "admin"); page.fill("#login-password", "nope"); page.click("#login-form button")
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        check_account_menu(page, shots)
+        if '--account-menu-only' in sys.argv:
+            assert not errs, errs
+            print('OK: account menu')
+            sys.exit(0)
         check_list_loading(page, shots)
         if '--list-loading-only' in sys.argv:
             assert not errs, errs
@@ -836,6 +903,7 @@ try:
 
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
+        assert page.locator('#open-jupyter').get_attribute('hidden') is not None
         assert not errs, errs
     print("OK")
 finally:

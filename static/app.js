@@ -113,6 +113,7 @@ function inline(s){
 
 // ---- 로그인 ----
 function showLogin(reason){
+  document.getElementById('open-jupyter').hidden = true;
   document.getElementById('shell').hidden = true;
   document.getElementById('login').hidden = false;
   document.getElementById('login-error').textContent = reason === 'not_admin' ? 'nightshift 관리자 계정만 쓸 수 있어요.' : '';
@@ -154,7 +155,7 @@ document.getElementById('theme').addEventListener('click', () => {
 darkQuery.addEventListener('change', paintTheme);   // 고른 적 없으면 운영체제를 따라 아이콘도 바뀐다
 paintTheme();
 
-// ---- 사용자 칩 → 메뉴(nightshift 열기·로그아웃) ----
+// ---- 사용자 칩 → 메뉴(nightshift 열기·jupyter 열기·로그아웃) ----
 const userChip = document.getElementById('user-chip'), userMenu = document.getElementById('user-menu');
 function setUserMenu(open){ userMenu.hidden = !open; userChip.setAttribute('aria-expanded', String(open)); }
 userChip.addEventListener('click', (e) => { e.stopPropagation(); setUserMenu(userMenu.hidden); });
@@ -898,6 +899,7 @@ async function boot(){
   const data = await res.json();
   if(!data.actor || data.actor.kind !== 'human'){ showLogin(data.reason); return; }
   me = data.actor;
+  document.getElementById('open-jupyter').hidden = false;
   document.getElementById('user-chip-name').textContent = me.name;
   document.getElementById('open-nightshift').href = data.nightshift_url;
   document.getElementById('login').hidden = true;
