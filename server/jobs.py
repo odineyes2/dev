@@ -45,11 +45,13 @@ def busy() -> bool:
     return _threads > 0 or review.running_ref() is not None
 
 
-def enqueue(actor: dict, ref: str, mode: str) -> dict:
+def enqueue(actor: dict, ref: str, mode: str, provider: str = "claude") -> dict:
     """줄에 넣고 펌프를 돌린다. 바로 시작하면 {started}, 아니면 {queued, position}."""
     import execute
     if actor["kind"] != "human":
         raise issues.StoreError("검토·실행은 사람만 맡길 수 있어요.", 403)
+    if provider not in ("claude", "codex"):
+        raise issues.StoreError("지원하지 않는 검토 도구예요.", 400)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
     if mode == "execute":
@@ -57,11 +59,15 @@ def enqueue(actor: dict, ref: str, mode: str) -> dict:
         if why:
             raise issues.StoreError(why, 409)
     with db.connect() as c:
+        existing = c.execute("SELECT provider FROM runs WHERE issue_id=? AND mode=? AND status='running' UNION ALL SELECT provider FROM jobs WHERE issue_id=? AND mode=? AND status='queued' LIMIT 1",
+                             (issue["id"], mode, issue["id"], mode)).fetchone()
+        if existing and existing["provider"] != provider:
+            raise issues.StoreError("이 이슈는 다른 검토 도구로 이미 맡겼어요 — 대기 항목을 취소하거나 끝난 뒤 다시 맡겨 주세요.", 409)
         if c.execute("SELECT 1 FROM runs WHERE issue_id=? AND mode=? AND status='running'", (issue["id"], mode)).fetchone():
             return {"started": True, "ref": ref}   # 이미 도는 중 — 중복 클릭
         if not c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND mode=? AND status='queued'", (issue["id"], mode)).fetchone():
-            c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at) VALUES(?, ?, ?, 'queued', ?)",
-                      (issue["id"], mode, issues.actor_label(actor), db.now_iso()))
+            c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, provider) VALUES(?, ?, ?, 'queued', ?, ?)",
+                      (issue["id"], mode, issues.actor_label(actor), db.now_iso(), provider))
     pump()
     job = next((j for j in list_jobs() if j["issue_id"] == issue["id"] and j["mode"] == mode), None)
     if job is None:
@@ -98,7 +104,7 @@ def pump() -> None:
             actor = _actor(j["actor"])
             try:
                 if j["mode"] == "review":
-                    review.start(actor, j["ref"])
+                    review.start(actor, j["ref"], j["provider"])
                 else:
                     issue = issues.get_issue(j["ref"])
                     parent = issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None
@@ -111,7 +117,7 @@ def pump() -> None:
                     if why:   # 선행 대기 — 뒤 항목을 먼저 본다
                         _set(j["id"], "queued", why)
                         continue
-                    execute.start(actor, j["ref"])
+                    execute.start(actor, j["ref"], j["provider"])
             except issues.StoreError as e:
                 if e.status == 404:
                     _set(j["id"], "skipped", str(e))

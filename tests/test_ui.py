@@ -42,7 +42,7 @@ def wait_port(port):
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 ns_port, dev_port = free_port(), free_port()
-env = {**os.environ, "DEV_DATA_DIR": str(tmp / "data"), "DEV_AUTO_REVIEW": "0", "DEV_NIGHTSHIFT_URL": f"http://127.0.0.1:{ns_port}"}
+env = {**os.environ, "DEV_DATA_DIR": str(tmp / "data"), "DEV_NIGHTSHIFT_URL": f"http://127.0.0.1:{ns_port}"}
 procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "fake_ns:app", "--port", str(ns_port)], cwd=tmp, stderr=subprocess.DEVNULL),
          subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app", "--port", str(dev_port)], cwd=ROOT / "server", env=env, stderr=subprocess.DEVNULL)]
 BASE = f"http://127.0.0.1:{dev_port}"
@@ -370,7 +370,10 @@ try:
             for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
                 page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
                 page.goto(BASE + "/#/issue/DEV-4-1"); page.reload(); page.wait_for_selector("#ask-execute")
+                page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)
+                page.wait_for_timeout(300)
                 assert page.is_enabled("#ask-execute") and "비용 상한 $2" in page.inner_text(".exec")
+                assert page.is_enabled("#ask-codex-execute") and "Codex: 시간 제한 30분 · 비용 상한 없음" in page.inner_text(".exec")
                 txt = page.inner_text(".exec .branch"); assert "relay/DEV-4-1" in txt and "커밋 1개" in txt and "new_feature.py" in txt and "git merge relay/DEV-4-1" in txt, txt
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
@@ -408,7 +411,7 @@ try:
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_tasks_{scheme}_{tag}.png"), full_page=True)
                 page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector(".jobs summary")
-                assert "Claude 대기 2건" in page.inner_text(".jobs summary")
+                assert "Agent 대기 2건" in page.inner_text(".jobs summary")
                 page.click(".jobs summary"); assert page.locator(".jobs li").count() == 2
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
@@ -429,6 +432,31 @@ try:
         fresh = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "바쁠 때 검토"}, headers=H).json()["ref"]
         page.goto(BASE + f"/#/issue/{fresh}"); page.reload(); page.wait_for_selector("#ask-review")
         assert page.is_enabled("#ask-review") and "차례로" in page.inner_text(".side")
+        assert page.is_enabled("#ask-codex-review")
+        for scheme in ("light", "dark"):
+            page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)
+            page.emulate_media(color_scheme=scheme)
+            for w, tag in ((1300, "desktop"), (390, "mobile")):
+                page.set_viewport_size({"width": w, "height": 850})
+                page.wait_for_timeout(300)
+                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                page.screenshot(path=str(shots / f"codex_review_{scheme}_{tag}.png"), full_page=True)
+        page.click("#ask-codex-review")
+        page.wait_for_selector(".side .queued")
+        queued = page.request.get(f"{BASE}/api/jobs").json()["jobs"]
+        assert queued[0]["provider"] == "codex" and "Codex" in page.inner_text(".side .queued")
+        page.click(".side .cancel-job")
+        page.wait_for_selector("#ask-codex-review")
+        page.goto(BASE + "/#/issue/DEV-4-1"); page.reload(); page.wait_for_selector("#ask-codex-execute")
+        page.click("#ask-codex-execute")
+        page.wait_for_selector(".exec .queued")
+        queued = page.request.get(f"{BASE}/api/jobs").json()["jobs"]
+        assert queued[0]["provider"] == "codex" and queued[0]["mode"] == "execute"
+        page.click(".exec .cancel-job")
+        page.wait_for_selector("#ask-codex-execute")
+        page.set_viewport_size({"width": 1300, "height": 850})
+        page.emulate_media(color_scheme="light")
+        page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
         db.execute("UPDATE runs SET status='ok' WHERE status='running'"); db.commit(); db.close()
 
         # 결과 거절 → 닫히고 사유가 남는다(DEV-16)

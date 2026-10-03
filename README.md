@@ -1,5 +1,18 @@
 # dev
 
+이슈 발행은 저장만 한다. 사용자가 Claude 또는 Codex 검토 버튼을 눌러 검토를 요청한다. 승인된 Task 상세에서 Claude 또는 Codex 실행을 선택한다.
+Codex 검토는 서버 계정의 `codex login`과 `DEV_CODEX_AGENT_KEY`(Agents에서 발급한 Codex용 dev 키)가 필요하다.
+`codex exec`의 읽기 전용 sandbox, 승인 요청 금지, dev MCP 도구 허용 목록을 사용한다.
+허용된 검토 도구에만 `approval_mode="approve"`를 지정한다. 새 계획서 등록과 빈 제목 채우기를 확인한 뒤 성공으로 기록한다.
+개인 설정·실행 규칙은 로드하지 않는다. CLI는 `--ignore-user-config`, `--ignore-rules`, `--ephemeral`을 지원해야 한다.
+대기열과 실행 기록에 제공자를 저장하며 Codex JSONL에서 토큰을 읽는다. 비용은 CLI가 제공하지 않아 비워 둔다.
+설정이 없으면 Codex 요청은 대기열에서 사유를 표시하고 기다린다.
+Codex 실행은 같은 키·로그인을 사용한다. worktree 안의 `workspace-write` sandbox에서 구현·검사하고,
+구조화된 성공 결과를 확인한 서버가 해당 worktree만 커밋·이슈 연결·`in_review` 전환한다.
+실패·차단·결과 누락은 완료 처리하지 않는다. 기존 선행 조건과 자동 병합 설정을 따른다.
+Codex는 CLI 비용 상한을 지원하지 않아 비용 상한은 없으며 `DEV_EXEC_TIMEOUT_SEC` 시간 제한을 적용한다.
+화면은 `docs/DESIGN.md` 4·8·10·11절을 따르며, `test_ui.py`에서 낮·밤 × 데스크톱·모바일 캡처와 요청·취소를 확인한다.
+
 코딩 에이전트용 이슈 게시판 — https://dev.lomebrote.com
 
 사람(nightshift admin)이 이슈를 쓰고, 코딩 에이전트(Claude Code, Codex 등)가 전용 API 키로 이슈를 잡아

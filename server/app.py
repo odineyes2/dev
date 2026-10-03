@@ -277,9 +277,6 @@ async def api_create_issue(request: Request):
     a = actor(request)
     it = issues.create_issue(a, b.get("project"), b.get("title"), b.get("body", ""), b.get("priority", "none"),
                              b.get("labels"), b.get("parent"), b.get("status", "backlog"))
-    # 사람이 발행한 최상위 이슈는 바로 검토 대기열에 넣는다(DEV-43). Task는 부모 계획서가 곧 계획이라 넣지 않는다.
-    if config.AUTO_REVIEW and a["kind"] == "human" and not it.get("parent_id"):
-        it["job"] = jobs.enqueue(a, it["ref"], "review")
     return it
 
 
@@ -375,13 +372,17 @@ import jobs  # noqa: E402
 
 
 @app.post("/api/issues/{ref}/execute")
-def api_execute(ref: str, request: Request):
-    return jobs.enqueue(actor(request), ref, "execute")   # 바쁘면 줄에 선다(DEV-43)
+async def api_execute(ref: str, request: Request):
+    me = actor(request)
+    b = await json_body(request) if await request.body() else {}
+    return jobs.enqueue(me, ref, "execute", b.get("provider", "claude"))
 
 
 @app.post("/api/issues/{ref}/review")
-def api_review(ref: str, request: Request):
-    return jobs.enqueue(actor(request), ref, "review")
+async def api_review(ref: str, request: Request):
+    me = actor(request)
+    b = await json_body(request) if await request.body() else {}
+    return jobs.enqueue(me, ref, "review", b.get("provider", "claude"))
 
 
 @app.get("/api/jobs")

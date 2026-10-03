@@ -3,6 +3,7 @@ import os, sys, tempfile, time
 from pathlib import Path
 
 os.environ["DEV_DATA_DIR"] = tempfile.mkdtemp()
+os.environ["DEV_AUTO_REVIEW"] = "1"   # 옛 설정이 남아 있어도 자동 검토하지 않는다.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 import db, issues, jobs, review  # noqa: E402
 
@@ -66,7 +67,7 @@ jobs.enqueue(me, "JQ-4", "review"); jobs.enqueue(me, "JQ-2", "review")
 issues.delete_issue(me, "JQ-2")
 wait_idle()
 
-# 이슈 발행 시 자동 검토 — 사람이 발행한 최상위 이슈만 review job, Task·에이전트 발행은 안 넣는다
+# 이슈 발행은 저장만 한다. 검토는 사람이 도구를 골라 직접 요청한다.
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 import app as A, auth  # noqa: E402
@@ -77,16 +78,20 @@ fake.write_text("import time\ntime.sleep(2)\nprint('ok')\n", "utf-8")   # 첫 �
 with TestClient(A.app) as c:
     c.cookies.set("ns_session", "adm")
     top = c.post("/api/issues", json={"project": "JQ", "title": "발행"}, headers=H).json()
-    assert top["job"]["started"] and top["ref"] == "JQ-5", top
+    assert "job" not in top and top["ref"] == "JQ-5", top
     top2 = c.post("/api/issues", json={"project": "JQ", "title": "발행 둘"}, headers=H).json()
-    assert top2["job"]["queued"] and top2["job"]["position"] == 1, top2
+    assert "job" not in top2 and top2["ref"] == "JQ-6", top2
     task = c.post("/api/issues", json={"project": "JQ", "title": "Task", "parent": "JQ-5"}, headers=H).json()
     assert "job" not in task and task["parent_ref"] == "JQ-5"
     key = c.post("/api/agents", json={"name": "a"}, headers=H).json()["key"]
     c.cookies.clear()
     r = c.post("/api/issues", json={"project": "JQ", "title": "에이전트 발행"}, headers={"Authorization": f"Bearer {key}"})
     assert r.status_code == 200 and "job" not in r.json(), r.text
-    assert [j["ref"] for j in jobs.list_jobs()] == ["JQ-6"]
+    assert jobs.list_jobs() == []
     wait_idle()
-    assert [len(review.list_runs(ref)) for ref in ("JQ-5", "JQ-6", task["ref"], r.json()["ref"])] == [1, 1, 0, 0]
+    assert [len(review.list_runs(ref)) for ref in ("JQ-5", "JQ-6", task["ref"], r.json()["ref"])] == [0, 0, 0, 0]
+    c.cookies.set("ns_session", "adm")
+    assert c.post("/api/issues/JQ-5/review", headers=H).json()["started"]
+    wait_idle()
+    assert review.list_runs("JQ-5")[0]["provider"] == "claude"
 print("OK")

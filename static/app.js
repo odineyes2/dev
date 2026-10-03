@@ -391,6 +391,7 @@ function decisionQuestions(body){   // 계획서의 "정해야 할 것" 절의 �
 }
 // ---- 실행 기록(DEV-29) ----
 const RUN_STATUS = { running: ['in_progress', '도는 중'], ok: ['done', '완료'], failed: ['changes_requested', '실패'], timeout: ['in_progress', '시간 초과'], orphaned: ['on_hold', '끊김'] };
+const PROVIDER_NAME = { claude: 'Claude', codex: 'Codex' };
 const RUN_MODE = { review: '검토', execute: '실행' };
 function fmtTokens(n){ return n == null ? '' : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
 function runsHtml(runs){
@@ -400,7 +401,7 @@ function runsHtml(runs){
     const sec = r.ended_at ? Math.round((new Date(r.ended_at) - new Date(r.started_at)) / 1000) : null;
     const dur = sec == null ? '' : sec >= 60 ? `${Math.floor(sec / 60)}분 ${sec % 60}초` : `${sec}초`;
     const tok = r.input_tokens == null && r.output_tokens == null ? '' : `토큰 ${fmtTokens(r.input_tokens)} → ${fmtTokens(r.output_tokens)}${r.cost_usd != null ? ` · $${r.cost_usd.toFixed(2)}` : ''}`;
-    return `<li><div><span class="status" style="--sc:var(--s-${color})">${label}</span> ${RUN_MODE[r.mode] || r.mode} <span class="dim">${fmtTime(r.started_at)}</span></div>
+    return `<li><div><span class="status" style="--sc:var(--s-${color})">${label}</span> ${PROVIDER_NAME[r.provider] || 'Claude'} ${RUN_MODE[r.mode] || r.mode} <span class="dim">${fmtTime(r.started_at)}</span></div>
       <div class="dim">${[dur, tok].filter(Boolean).join(' · ')}</div>
       ${r.note ? `<div class="dim">${esc(r.note)}</div>` : ''}${r.log_file ? `<div class="dim"><code>${esc(r.log_file)}</code></div>` : ''}</li>`;
   }).join('')}</ul>`;
@@ -408,7 +409,7 @@ function runsHtml(runs){
 // ---- 대기열(DEV-43): 바쁠 때 누른 것은 줄에 서고 하나씩 차례로 ----
 const QUEUE_LINE = '다른 일이 돌고 있으면 끝난 뒤 차례로 시작해요.';
 function jobHtml(j){   // 이 이슈가 줄에 있으면 버튼 자리에 "대기 n번째 · 취소"
-  return `<div class="queued"><span class="status" style="--sc:var(--s-backlog)">대기 ${j.position}번째</span>
+  return `<div class="queued"><span class="status" style="--sc:var(--s-backlog)">${PROVIDER_NAME[j.provider] || 'Claude'} 대기 ${j.position}번째</span>
     <button class="ghost cancel-job" data-job="${j.id}">취소</button></div>${j.note ? `<div class="dim hint">${esc(j.note)}</div>` : ''}`;
 }
 function queuedMsg(r, started){ return r && r.queued ? `대기열에 넣었어요 — ${r.position}번째` : started; }
@@ -416,8 +417,8 @@ async function loadJobs(){   // 목록 화면 위의 "Claude 대기 n건" — �
   const box = view.querySelector('#jobs-box');
   if(!box) return;
   const { jobs } = await api('GET', '/api/jobs').catch(() => ({ jobs: [] }));
-  box.innerHTML = jobs.length ? `<details class="jobs"><summary><span class="status" style="--sc:var(--s-backlog)">Claude 대기 ${jobs.length}건</span></summary>
-    <ul>${jobs.map(j => `<li><span class="ref">${j.position}</span> <a href="#/issue/${esc(j.ref)}">${esc(j.ref)}</a> ${RUN_MODE[j.mode] || esc(j.mode)}
+  box.innerHTML = jobs.length ? `<details class="jobs"><summary><span class="status" style="--sc:var(--s-backlog)">Agent 대기 ${jobs.length}건</span></summary>
+    <ul>${jobs.map(j => `<li><span class="ref">${j.position}</span> <a href="#/issue/${esc(j.ref)}">${esc(j.ref)}</a> ${PROVIDER_NAME[j.provider] || 'Claude'} ${RUN_MODE[j.mode] || esc(j.mode)}
       ${j.note ? `<span class="dim">${esc(j.note)}</span>` : ''}<button class="ghost cancel-job" data-job="${j.id}">취소</button></li>`).join('')}</ul></details>` : '';
 }
 view.addEventListener('click', (e) => {
@@ -435,10 +436,11 @@ function executeHtml(it, liveMode){
   const off = running || (x.blocked && !waitOnly(x.blocked));
   const hint = running ? '구현하는 중이에요 — 끝나면 in_review로 올라와요.'
     : x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
-    : it.review_busy ? `다른 이슈에서 Claude가 일하는 중이에요 — ${QUEUE_LINE}` : `격리된 worktree에서 구현해요 — push 없음, 비용 상한 $${x.budget_usd}.`;
+    : it.review_busy ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : `격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}.`;
   const b = x.branch;
   return `<div class="exec">${job ? jobHtml(job) : `<button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>${running ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
-    <div class="dim hint">${hint}</div>`}
+    <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico"><use href="#i-bot"/></svg>Codex에게 실행 맡기기</button>
+    <div class="dim hint">${hint}</div><div class="dim hint">Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음.</div>`}
     ${b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
       ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}</div>`;
 }
@@ -473,15 +475,15 @@ function resultHtml(it){
       <button data-to="closed" class="danger">결과 거절</button></div></div></div>`;
 }
 // ---- 단계 안내: 지금 어디이고 다음에 뭘 하면 되는지 한 줄 ----
-function stageHtml(it, liveMode){
+function stageHtml(it, liveMode, liveProvider){
   const a = it.approval, x = it.execute, ok = a && !a.stale && a.verdict !== 'reject';
   let msg = '';
   if(['done', 'closed'].includes(it.status)) return '';
-  if(it.review_running) msg = liveMode === 'execute' ? 'Claude가 구현하는 중이에요 — 끝나면 결과 확인 단계로 올라와요.' : 'Claude가 검토하는 중이에요 — 끝나면 계획서가 올라와요.';
-  else if(it.job) msg = `Claude ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — 앞의 일이 끝나면 차례로 시작해요.`;
+  if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 끝나면 결과 확인 단계로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
+  else if(it.job) msg = `${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — 앞의 일이 끝나면 차례로 시작해요.`;
   else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
-  else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → 오른쪽 “Claude에게 실행 맡기기”를 눌러 주세요.';
-  else if(!it.plan) msg = '계획서가 없어요 → 오른쪽 “Claude에게 검토 맡기기”로 계획서를 받아 보세요.';
+  else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
+  else if(!it.plan) msg = '계획서가 없어요 → Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
   else if(!ok) msg = '계획서 승인 대기 → 계획서 아래에서 승인·메모 붙여 승인·거절을 골라 주세요.';
   else { const next = it.children.find(c => !['done', 'closed', 'in_review'].includes(c.status));
     msg = next ? `계획 승인됨 → <a href="#/issue/${esc(next.ref)}">${esc(next.ref)}</a>에서 실행 맡기기` : it.children.length ? '모든 Task가 실행됐어요 — 결과를 확인해 주세요.' : '계획 승인됨.'; }
@@ -504,7 +506,7 @@ async function renderIssue(ref){
         <div class="ref">${esc(it.ref)}${it.parent_ref ? ` · Task of <a href="#/issue/${esc(it.parent_ref)}">${esc(it.parent_ref)}</a>` : ''}</div>
         <h1 id="title">${titleHtml(it)}</h1>
         <div class="byline">${actorHtml(it.reporter)}<span>·</span><span>${fmtTime(it.created_at)}</span>${labelsHtml(it.labels)}</div>
-        ${stageHtml(it, liveMode)}
+        ${stageHtml(it, liveMode, (runs.find(r => r.status === 'running') || {}).provider)}
         <div class="panel"><h2>Description<span class="right"><button id="edit-body">고치기</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
         <div class="panel"><h2>Plan${it.plan ? ` <span class="meta">v${it.plan.version} · ${esc(actorName(it.plan.author))} · ${fmtTime(it.plan.created_at)}</span>` : ''}
@@ -530,9 +532,9 @@ async function renderIssue(ref){
         <div class="field"><span>Claimed</span>${it.claimed_by ? `${esc(actorName(it.claimed_by))} <span class="dim">~${new Date(it.lease_until).toLocaleTimeString()}</span>
           <button id="release" class="ghost">놓기</button>` : '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
-        <div class="field"><span>Claude</span>
-          ${it.job && it.job.mode === 'review' ? jobHtml(it.job) : `<button id="ask-review"${it.review_running ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running && liveMode !== 'execute' ? '검토 중…' : 'Claude에게 검토 맡기기'}</button>
-          <div class="dim hint"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>${it.review_busy && !it.review_running ? `다른 이슈에서 Claude가 일하는 중이에요 — ${QUEUE_LINE}` : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>`}
+        <div class="field"><span>Agent</span>
+          ${it.job && it.job.mode === 'review' ? jobHtml(it.job) : `<button id="ask-review"${it.review_running ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico"><use href="#i-bot"/></svg>${it.review_running && liveMode !== 'execute' ? '검토 중…' : 'Claude에게 검토 맡기기'}</button><button id="ask-codex-review"${it.review_running ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico"><use href="#i-bot"/></svg>Codex에게 검토 맡기기</button>
+          <div class="dim hint"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>${it.review_busy && !it.review_running ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>`}
           ${it.execute ? executeHtml(it, liveMode) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
@@ -623,20 +625,28 @@ ${QUEUE_LINE}`)) return;
   }); }));
   if($('release')) $('release').addEventListener('click', async () => { await api('POST', `/api/issues/${R}/release`).catch(() => {}); reload(); });
   // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게
-  if($('ask-execute')) $('ask-execute').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
-    if(!confirm(`${it.ref}을(를) Claude에게 실행 맡길까요?
+  for(const [id, provider] of [['ask-execute', 'claude'], ['ask-codex-execute', 'codex']]) {
+    if($(id)) $(id).addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
+    const name = PROVIDER_NAME[provider];
+    const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(it.execute.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${it.execute.budget_usd}이에요.`;
+    if(!confirm(`${it.ref}을(를) ${name}에게 실행 맡길까요?
 홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
-비용 상한은 $${it.execute.budget_usd}이고, 사용량은 이 서버에 로그인된 Claude 계정에서 나가요.
+${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
-    const r = await api('POST', `/api/issues/${R}/execute`); toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요')); reload();
+    const r = await api('POST', `/api/issues/${R}/execute`, { provider }); toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요')); reload();
   }));
-  if($('ask-review')) $('ask-review').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
-    if(!confirm(`${it.ref}을(를) Claude에게 검토 맡길까요?
-홈서버에서 Claude Code가 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
-사용량은 이 서버에 로그인된 Claude 계정에서 나가요.
+  }
+  for(const [id, provider] of [['ask-review', 'claude'], ['ask-codex-review', 'codex']]) {
+    if($(id)) $(id).addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
+      const name = PROVIDER_NAME[provider];
+      if(!confirm(`${it.ref}을(를) ${name}에게 검토 맡길까요?
+홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
+사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
-    const r = await api('POST', `/api/issues/${R}/review`); toast(queuedMsg(r, '검토를 맡겼어요 — 몇 분 뒤 계획서가 올라와요')); reload();
-  }));
+      const r = await api('POST', `/api/issues/${R}/review`, { provider });
+      toast(queuedMsg(r, '검토를 맡겼어요 — 몇 분 뒤 계획서가 올라와요')); reload();
+    }));
+  }
   if(it.review_running || it.job) setTimeout(() => { if(location.hash === `#/issue/${it.ref}`) reload(); }, 15000);
   $('delete').addEventListener('click', async () => {
     if(!confirm(`${it.ref}을(를) 지울까요? 계획서·활동 기록도 같이 지워져요.`)) return;
@@ -692,8 +702,7 @@ function renderNew(params){
       priority: view.querySelector('#n-priority').value, status: view.querySelector('#n-status').value,
       labels: view.querySelector('#n-labels').value.split(',').map(s => s.trim()).filter(Boolean), parent: parent || undefined,
     });
-    // 사람이 발행한 최상위 이슈는 서버가 바로 검토 대기열에 넣는다(DEV-43)
-    if(it.job) toast(it.job.queued ? `검토 대기에 넣었어요(${it.job.position}번째)` : '검토를 맡겼어요 — 몇 분 뒤 계획서가 올라와요');
+    toast('이슈를 발행했어요 — Claude나 Codex에게 검토를 맡길 수 있어요.');
     location.hash = `#/issue/${it.ref}`;
   }); });
 }

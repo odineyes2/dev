@@ -5,7 +5,6 @@ import os, statistics, subprocess, sys, tempfile, time
 from pathlib import Path
 
 os.environ["DEV_DATA_DIR"] = tempfile.mkdtemp()
-os.environ["DEV_AUTO_REVIEW"] = "0"
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

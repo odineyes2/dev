@@ -157,6 +157,11 @@ MIGRATIONS = [
         run_id INTEGER
     );
     CREATE INDEX jobs_status ON jobs(status, id);
+    """,
+    # 검토 제공자를 대기열과 실행 기록에 보존한다. 기존 항목은 Claude다.
+    """
+    ALTER TABLE jobs ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';
+    ALTER TABLE runs ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude';
     """
 ]
 

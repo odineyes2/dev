@@ -43,6 +43,30 @@ def claude_bin() -> str:
     return os.environ.get("DEV_CLAUDE_BIN") or shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude.exe")
 
 
+def codex_command(prompt: str, tools: list[str], sandbox: str) -> list[str]:
+    """개인 설정 대신 dev MCP만 주입하고 읽기 전용으로 검토한다. 키는 환경변수로만 전달한다."""
+    binary = os.environ.get("DEV_CODEX_BIN") or shutil.which("codex") or "codex"
+    launcher = [binary]
+    if os.name == "nt" and Path(binary).suffix.lower() in (".cmd", ".ps1", ".bat"):
+        script = Path(binary).parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+        launcher = [shutil.which("node") or "node", str(script)]
+    mcp = ('mcp_servers={dev={url=' + json.dumps(os.environ.get("DEV_CODEX_MCP_URL") or config.PUBLIC_URL + "/mcp/")
+           + ',bearer_token_env_var="DEV_CODEX_AGENT_KEY",required=true,enabled_tools='
+           + json.dumps(tools) + ',default_tools_approval_mode="prompt",tools={'
+           + ','.join(t + '={approval_mode="approve"}' for t in tools) + '}}}')
+    return launcher + ["exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check",
+                       "--sandbox", sandbox, "--json", "-c", 'approval_policy="never"',
+                       "-c", "web_search=\"disabled\"", "-c", "features.hooks=false", "-c", mcp, prompt]
+
+
+def codex_command_for(ref: str) -> list[str]:
+    tools = [t.removeprefix("mcp__dev__") for t in ALLOWED_TOOLS if t.startswith("mcp__dev__")]
+    prompt = prompt_for(ref).replace("Claude", "Codex").replace("Read/Grep/Glob으로", "읽기 전용 명령으로")
+    prompt = prompt.replace("코드를 고치거나 명령을 실행하지 않는다(그런 도구도 없다).", "코드를 고치지 않는다. 파일 조회에 필요한 읽기 전용 명령만 사용한다.")
+    prompt = prompt.replace("CLAUDE.md 규칙", "AGENTS.md와 CLAUDE.md 규칙")
+    return codex_command(prompt, tools, "read-only")
+
+
 def prompt_for(ref: str) -> str:
     return f"""dev 이슈 {ref}를 **검토만** 한다. 코드를 고치거나 명령을 실행하지 않는다(그런 도구도 없다).
 
@@ -82,36 +106,61 @@ def list_runs(ref: str) -> list[dict]:
         return [dict(r) for r in c.execute("SELECT * FROM runs WHERE issue_id=? ORDER BY id DESC", (iid,))]
 
 
-def start(actor: dict, ref: str) -> dict:
+def start(actor: dict, ref: str, provider: str = "claude") -> dict:
     """검토를 시작한다(사람만). 이미 하나 돌고 있으면 409. 이슈가 없으면 404. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
     if actor["kind"] != "human":
         raise issues.StoreError("검토는 사람만 맡길 수 있어요.", 403)
+    if provider not in ("claude", "codex"):
+        raise issues.StoreError("지원하지 않는 검토 도구예요.", 400)
+    if provider == "codex" and not os.environ.get("DEV_CODEX_AGENT_KEY"):
+        raise issues.StoreError("서버에 DEV_CODEX_AGENT_KEY를 설정해 주세요 — Codex용 dev Agent 키가 필요해요.", 409)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
-    log_path, run_id = begin(actor, issue, "review")
-    issues.add_comment(actor, ref, "🔎 Claude에게 검토를 맡겼어요 — 홈서버에서 검토만 해요(코드 수정 없음). 몇 분 뒤 계획서가 올라와요.")
+    cmd = codex_command_for(ref) if provider == "codex" else command_for(ref)
+    baseline_plan_id = (issue.get("plan") or {}).get("id", 0)
+    log_path, run_id = begin(actor, issue, "review", provider)
+    name = "Codex" if provider == "codex" else "Claude"
+    issues.add_comment(actor, ref, f"🔎 {name}에게 검토를 맡겼어요 — 홈서버에서 검토만 해요(코드 수정 없음). 몇 분 뒤 계획서가 올라와요.")
     import jobs
-    threading.Thread(target=jobs.run_then_pump, args=(run_headless, actor, ref, log_path, run_id, command_for(ref), PROJECTS_DIR, None, TIMEOUT_SEC, "검토"),
+    threading.Thread(target=jobs.run_then_pump, args=(run_headless, actor, ref, log_path, run_id, cmd, PROJECTS_DIR, None, TIMEOUT_SEC, "검토", provider, baseline_plan_id),
                      daemon=True).start()
     return {"started": True, "ref": ref}
 
 
-def begin(actor: dict, issue: dict, mode: str) -> tuple[Path, int]:
+def begin(actor: dict, issue: dict, mode: str, provider: str = "claude") -> tuple[Path, int]:
     """한 번에 하나만 — 도는 것이 있으면 409, 없으면 runs에 running 행을 만들고 (로그 경로, run id)를 돌려준다."""
     with _lock:
         busy = running_ref()
         if busy:
             raise issues.StoreError(f"{busy} 실행이 아직 돌고 있어요 — 끝나면 다시 눌러 주세요.", 409)
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log_path = LOG_DIR / f"{issue['ref']}-{time.strftime('%Y%m%d-%H%M%S')}.log"
+        log_path = LOG_DIR / f"{issue['ref']}-{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}.log"
         with db.connect() as c:
-            run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file) VALUES(?, ?, 'running', ?, ?, ?)",
-                               (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name)).lastrowid
+            run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file, provider) VALUES(?, ?, 'running', ?, ?, ?, ?)",
+                               (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name, provider)).lastrowid
     return log_path, run_id
 
 
-def _parse(out: str) -> tuple[str, dict]:
+def _parse(out: str, provider: str = "claude") -> tuple[str, dict]:
     """JSON 출력에서 (결과 글, 토큰·비용)을 뽑는다. 읽지 못하면 원문과 빈 dict."""
+    if provider == "codex":
+        messages, stats = [], {}
+        for line in out.splitlines():
+            try:
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    continue
+                item = event.get("item") or {}
+                if event.get("type") == "item.completed" and item.get("type") == "agent_message":
+                    messages.append(item.get("text", ""))
+                if event.get("type") == "turn.completed":
+                    u = event.get("usage") or {}
+                    stats = {"input_tokens": u.get("input_tokens"), "output_tokens": u.get("output_tokens")}
+                if event.get("type") in ("error", "turn.failed"):
+                    messages.append(str(event.get("message") or event.get("error") or event))
+            except (ValueError, AttributeError, TypeError):
+                continue
+        return "\n\n".join(messages) or out, stats
     try:
         d = json.loads(out)
         u = d.get("usage") or {}
@@ -130,9 +179,10 @@ def _kill_tree(proc) -> None:
         proc.kill()
 
 
-def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[str], cwd, env, timeout: float, label: str) -> None:
+def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[str], cwd, env, timeout: float, label: str, provider: str = "claude", baseline_plan_id: int = 0) -> str:
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     code, note, status, out, err = None, "", "ok", "", ""
+    name = "Codex" if provider == "codex" else "Claude Code"
     try:
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                 stdin=subprocess.DEVNULL, env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"})
@@ -144,19 +194,40 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             out, err = proc.communicate()
             status, note = "timeout", f"{int(timeout // 60)}분 안에 끝나지 않아 멈췄어요"
     except OSError as e:
-        status, note = "failed", f"Claude Code를 실행하지 못했어요({e})"
+        status, note = "failed", f"{name}를 실행하지 못했어요({e})"
     if code:
         status = "failed"
-    text, stats = _parse(out)
+    text, stats = _parse(out, provider)
+    if provider == "codex" and status == "ok":
+        for line in out.splitlines():
+            try:
+                event = json.loads(line)
+                if isinstance(event, dict) and event.get("type") in ("error", "turn.failed"):
+                    status, note = "failed", f"Codex {label}가 실패했어요 — 로그를 확인해 주세요."
+            except ValueError:
+                pass
+    if provider == "codex" and label == "검토" and status == "ok":
+        result = issues.get_issue(ref)
+        if (result.get("plan") or {}).get("id", 0) <= baseline_plan_id:
+            status, note = "failed", "새 계획서가 이슈에 등록되지 않았어요 — dev MCP 호출 결과를 로그에서 확인해 주세요."
+        elif result.get("title_missing") and "goal" not in result.get("labels", []):
+            status, note = "failed", "계획서는 등록됐지만 빈 제목이 채워지지 않았어요 — 로그를 확인해 주세요."
+    if provider == "codex" and label == "실행" and status == "ok":
+        import execute
+        try:
+            execute.finalize_codex(actor, ref, cwd, out)
+        except (issues.StoreError, ValueError, OSError) as e:
+            status, note = "failed", f"Codex 실행을 완료하지 못했어요 — {e}"
     log_path.write_text(text + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
     with db.connect() as c:
         c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=?",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
     if note or code:
         why = note or f"종료 코드 {code}"
-        issues.add_comment(actor, ref, f"⚠️ Claude {label} 작업이 끝나지 못했어요 — {why}. 로그: `{log_path.name}`")
+        issues.add_comment(actor, ref, f"⚠️ {name} {label} 작업이 끝나지 못했어요 — {why}. 로그: `{log_path.name}`")
         notify.send(ref, f"⚠️ {label} 작업이 끝나지 못했어요", why, "high")
     elif label == "검토":
         notify.send(ref, "📋 계획서가 나왔어요 — 승인해 주세요")
     else:
         notify.send(ref, f"✅ {label} 완료 — 확인해 주세요")
+    return status

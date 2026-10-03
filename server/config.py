@@ -14,5 +14,3 @@ PUBLIC_URL = (os.environ.get("DEV_PUBLIC_URL") or "https://dev.lomebrote.com").r
 NTFY_URL = (os.environ.get("NTFY_URL") or "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC") or ""
 NTFY_TOKEN = os.environ.get("NTFY_TOKEN") or ""
-# 사람이 발행한 최상위 이슈를 바로 검토 대기열에 넣는다(DEV-43). 진짜 claude를 부르면 안 되는 테스트는 0으로 끈다.
-AUTO_REVIEW = os.environ.get("DEV_AUTO_REVIEW", "1") != "0"
