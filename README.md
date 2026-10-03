@@ -5,6 +5,8 @@ Codex 검토는 서버 계정의 `codex login`과 `DEV_CODEX_AGENT_KEY`(Agents�
 `codex exec`의 읽기 전용 sandbox, 승인 요청 금지, dev MCP 도구 허용 목록을 사용한다.
 허용된 검토 도구에만 `approval_mode="approve"`를 지정한다. 새 계획서 등록과 빈 제목 채우기를 확인한 뒤 성공으로 기록한다.
 개인 설정·실행 규칙은 로드하지 않는다. CLI는 `--ignore-user-config`, `--ignore-rules`, `--ephemeral`을 지원해야 한다.
+Windows에서는 개인 설정을 제외해도 native sandbox가 활성화되도록 `windows.sandbox="elevated"`를 직접 지정한다.
+서버 계정에서 Windows sandbox 설정이 완료되어 있어야 한다. 관리자 설정을 사용할 수 없으면 `DEV_CODEX_WINDOWS_SANDBOX=unelevated`로 명시할 수 있다.
 대기열과 실행 기록에 제공자를 저장하며 Codex JSONL에서 토큰을 읽는다. 비용은 CLI가 제공하지 않아 비워 둔다.
 설정이 없으면 Codex 요청은 대기열에서 사유를 표시하고 기다린다.
 Codex 실행은 같은 키·로그인을 사용한다. worktree 안의 `workspace-write` sandbox에서 구현·검사하고,

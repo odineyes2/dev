@@ -54,9 +54,16 @@ def codex_command(prompt: str, tools: list[str], sandbox: str) -> list[str]:
            + ',bearer_token_env_var="DEV_CODEX_AGENT_KEY",required=true,enabled_tools='
            + json.dumps(tools) + ',default_tools_approval_mode="prompt",tools={'
            + ','.join(t + '={approval_mode="approve"}' for t in tools) + '}}}')
+    native_sandbox = []
+    if os.name == "nt":
+        mode = os.environ.get("DEV_CODEX_WINDOWS_SANDBOX") or "elevated"
+        if mode not in ("elevated", "unelevated"):
+            raise issues.StoreError("DEV_CODEX_WINDOWS_SANDBOX는 elevated 또는 unelevated로 설정해 주세요.", 400)
+        # --ignore-user-config가 계정의 Windows sandbox 설정도 제외하므로 직접 지정한다.
+        native_sandbox = ["-c", "windows.sandbox=" + json.dumps(mode)]
     return launcher + ["exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check",
                        "--sandbox", sandbox, "--json", "-c", 'approval_policy="never"',
-                       "-c", "web_search=\"disabled\"", "-c", "features.hooks=false", "-c", mcp, prompt]
+                       "-c", "web_search=\"disabled\"", "-c", "features.hooks=false", "-c", mcp] + native_sandbox + [prompt]
 
 
 def codex_command_for(ref: str) -> list[str]:

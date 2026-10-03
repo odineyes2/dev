@@ -14,6 +14,17 @@ cmd = review.codex_command_for('CX-1')
 assert '--ignore-user-config' in cmd and '--ignore-rules' in cmd
 assert cmd[cmd.index('--sandbox') + 1] == 'read-only'
 assert 'approval_policy="never"' in cmd and '--json' in cmd
+if os.name == 'nt':
+    assert 'windows.sandbox="elevated"' in cmd
+    os.environ['DEV_CODEX_WINDOWS_SANDBOX'] = 'unelevated'
+    assert 'windows.sandbox="unelevated"' in review.codex_command_for('CX-1')
+    os.environ['DEV_CODEX_WINDOWS_SANDBOX'] = 'invalid'
+    try:
+        review.codex_command_for('CX-1')
+        raise AssertionError('Invalid Windows sandbox was accepted')
+    except review.issues.StoreError as e:
+        assert e.status == 400
+    del os.environ['DEV_CODEX_WINDOWS_SANDBOX']
 assert 'test-secret' not in ' '.join(cmd)
 mcp = next(v for v in cmd if v.startswith('mcp_servers='))
 assert 'required=true' in mcp and 'post_plan' in mcp and 'link_commit' not in mcp
