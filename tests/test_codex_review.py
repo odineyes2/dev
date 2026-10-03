@@ -75,12 +75,12 @@ with TestClient(A.app) as c:
     assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()['started']
     assert issues.get_issue('CX-1')['status'] == 'in_progress'
     start = [e for e in issues.get_issue('CX-1')['events'] if e['kind'] == 'status'][-1]
-    assert start['data']['from'] == 'backlog' and start['data']['run_id'] == review.list_runs('CX-1')[0]['id']
+    assert start['data']['from'] == 'waiting' and start['data']['restore_status'] == 'backlog' and start['data']['run_id'] == review.list_runs('CX-1')[0]['id']
     assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()['started']
     assert len(review.list_runs('CX-1')) == 1
     queued = c.post('/api/issues/CX-2/review', json={'provider': 'codex'}, headers=H).json()
     assert queued['queued'] and jobs.list_jobs()[0]['provider'] == 'codex'
-    assert issues.get_issue('CX-2')['status'] == 'backlog'
+    assert issues.get_issue('CX-2')['status'] == 'waiting'
     assert c.post('/api/issues/CX-2/review', json={'provider': 'claude'}, headers=H).status_code == 409
     assert c.post('/api/issues/CX-2/review', json={'provider': 'codex'}, headers=H).json()['job_id'] == queued['job_id']
     wait_idle()
@@ -162,11 +162,12 @@ with TestClient(A.app) as c:
     del os.environ['DEV_CODEX_AGENT_KEY']
     result = c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()
     assert result['queued'] and 'DEV_CODEX_AGENT_KEY' in result['note']
-    assert issues.get_issue('CX-1')['status'] == 'triage'
+    assert issues.get_issue('CX-1')['status'] == 'waiting'
     assert len(review.list_runs('CX-1')) == 2
     db.init()
     assert jobs.list_jobs()[0]['provider'] == 'codex'
     jobs.cancel({'kind': 'human', 'name': 'admin'}, result['job_id'])
+    assert issues.get_issue('CX-1')['status'] == 'triage'
     key = c.post('/api/agents', json={'name': 'codex-test'}, headers=H).json()['key']
     c.cookies.clear()
     assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers={'Authorization': 'Bearer ' + key}).status_code == 403

@@ -24,7 +24,7 @@
   --shadow-pop:0 8px 24px rgba(16,24,40,0.12);
 
   /* 상태색 — 진행 중은 nightshift의 "실행 중" 주황, 검토는 파랑 */
-  --s-backlog:#98A2B3; --s-triage:#7C3AED; --s-in_progress:#B45309; --s-in_review:#2563EB;
+  --s-backlog:#98A2B3; --s-waiting:var(--s-backlog); --s-triage:#7C3AED; --s-in_progress:#B45309; --s-in_review:#2563EB;
   --s-changes_requested:#DC2626; --s-on_hold:#6B7280; --s-done:#15803D; --s-closed:#98A2B3;
 
   /* 여백·모서리 — 촘촘하지 않게 */

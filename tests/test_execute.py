@@ -21,7 +21,8 @@ git(bare, "init", "-q", "--bare")
 git(repo, "init", "-q", "-b", "main")
 (repo / "a.txt").write_text("a\n"); git(repo, "add", "."); git(repo, "commit", "-qm", "init")
 git(repo, "remote", "add", "origin", str(bare))
-git(repo, "push", "-q", "origin", "main")
+# 상위 실행기의 원격 차단은 유지하고, 이 테스트가 만든 로컬 bare에만 전송한다.
+git(repo, "push", "-q", str(bare), "main")
 
 
 def rejects(fn, *a):
@@ -68,8 +69,8 @@ env = execute.safe_env(str(repo))
 assert "GH_TOKEN" not in env and env["GIT_TERMINAL_PROMPT"] == "0"
 blocked = subprocess.run(["git", "push", "origin", "HEAD"], cwd=wt, env=env, capture_output=True, text=True)
 assert blocked.returncode != 0 and "relay/T-1" not in git(bare, "branch", "--list").stdout
-assert git(repo, "config", "remote.origin.pushurl", check=False).stdout.strip() == ""   # 저장소 설정은 안 건드림
-subprocess.run(["git", "push", "-q", "origin", "HEAD"], cwd=wt, capture_output=True, text=True, check=True)
+assert git(repo, "config", "--local", "remote.origin.pushurl", check=False).stdout.strip() == ""   # 저장소 설정은 안 건드림
+subprocess.run(["git", "push", "-q", str(bare), "HEAD"], cwd=wt, capture_output=True, text=True, check=True)
 assert "relay/T-1" in git(bare, "branch", "--list").stdout   # 대조군: 환경만 다르면 나간다
 
 # 명령 — 권한·상한
@@ -129,9 +130,11 @@ with TestClient(A.app) as c:
     assert "승인되지 않았어요" in post("EX-2-1").json()["detail"]          # 계획서 미승인
     r = post("EX-1-2"); assert r.status_code == 200 and r.json()["queued"] and "EX-1-1" in r.json()["note"], r.text   # 선행 미완료 → 줄에서 대기
     assert not execute.worktree_path("EX-1-2").exists() and review.list_runs("EX-1-2") == []
+    assert issues.get_issue('EX-1-2')['status'] == 'waiting'
 
     r = post("EX-1-1"); assert r.status_code == 200 and r.json()["started"], r.text   # 앞의 대기 항목이 막혀도 뒤 항목은 돈다
     assert execute.worktree_path("EX-1-1").is_dir() and review.running_ref() == "EX-1-1"
+    assert issues.get_issue('EX-1-1')['status'] == 'in_progress'
     assert post("EX-1-2").json()["job_id"] == jobs.list_jobs()[0]["id"] and len(jobs.list_jobs()) == 1   # 중복으로 안 넣음
     issues.set_status(me, "EX-1-1", "done")
     wait_idle()                                                         # 선행 done → EX-1-1이 끝나면 EX-1-2가 이어서 돈다
@@ -149,6 +152,7 @@ with TestClient(A.app) as c:
     post("EX-1-2"); wait_idle()
     last = review.list_runs("EX-1-2")[0]
     assert last["status"] == "failed" and last["exit_code"] == 3
+    assert issues.get_issue('EX-1-2')['status'] == 'changes_requested'
     assert "실행 작업이 끝나지 못했어요" in issues.get_issue("EX-1-2")["events"][-1]["body"]
     assert len(review.list_runs("EX-1-2")) == 2 and execute.worktree_path("EX-1-2").is_dir()   # 같은 worktree에서 이어서
     assert post("EX-1-1").status_code == 409                            # done인 Task는 다시 못 맡김

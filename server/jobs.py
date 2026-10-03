@@ -8,6 +8,7 @@ Claude 맡기기 대기열(DEV-43) — 검토·실행을 여러 개 눌러 두�
   막힌 실행 항목은 건너뛰고(note에 이유), 영영 못 도는 항목은 skipped + 댓글.
 - 펌프 시점: 넣을 때, 각 실행 스레드가 끝난 뒤(실행은 병합까지), 서버가 뜰 때, 그리고 60초 주기(선행 done 등을 놓치지 않게).
 """
+import json
 import threading
 import time
 
@@ -45,6 +46,51 @@ def busy() -> bool:
     return _threads > 0 or review.running_ref() is not None
 
 
+def _latest(c, issue_id):
+    event = c.execute("SELECT data_json FROM events WHERE issue_id=? AND kind='status' ORDER BY id DESC LIMIT 1", (issue_id,)).fetchone()
+    return json.loads(event[0]) if event else {}
+
+
+def _waiting(c, j):
+    row = c.execute("SELECT * FROM issues WHERE id=?", (j["issue_id"],)).fetchone()
+    if j["previous_status"] is not None or row["status"] in ("done", "closed") or "goal" in json.loads(row["labels_json"]):
+        return
+    prior = row["status"]
+    if prior == "waiting":
+        other = c.execute("SELECT previous_status FROM jobs WHERE issue_id=? AND status='queued' AND previous_status IS NOT NULL ORDER BY id LIMIT 1", (row["id"],)).fetchone()
+        prior = other[0] if other else "backlog"
+    c.execute("UPDATE jobs SET previous_status=? WHERE id=?", (prior, j["id"]))
+    issues._set_status(c, _actor(j["actor"]), row, "waiting", "작업 대기열에 넣었어요", {"job_id": j["id"]})
+
+
+def _restore(c, j):
+    row = c.execute("SELECT * FROM issues WHERE id=?", (j["issue_id"],)).fetchone()
+    if not row or row["status"] != "waiting" or _latest(c, row["id"]).get("job_id") != j["id"]:
+        return
+    other = c.execute("SELECT * FROM jobs WHERE issue_id=? AND status='queued' AND id<>? ORDER BY id LIMIT 1", (row["id"], j["id"])).fetchone()
+    if other:
+        c.execute("UPDATE jobs SET previous_status=? WHERE id=?", (j["previous_status"], other["id"]))
+        issues._set_status(c, _actor(other["actor"]), row, "waiting", "다른 작업이 대기 중이에요", {"job_id": other["id"]})
+    else:
+        issues._set_status(c, _actor(j["actor"]), row, j["previous_status"] or "backlog", "대기 전 상태로 복구했어요")
+
+
+def reconcile():
+    """이전 대기 항목과 재시작으로 끊긴 착수 상태를 정합화한다."""
+    import review
+    with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        for r in c.execute("SELECT r.* FROM runs r JOIN issues i ON i.id=r.issue_id WHERE r.status='orphaned' AND i.status='in_progress'").fetchall():
+            row = c.execute("SELECT * FROM issues WHERE id=?", (r["issue_id"],)).fetchone()
+            start = review.owned_start(c, r["issue_id"], r["id"])
+            if row and start:
+                issues._set_status(c, _actor(r["actor"]), row, start.get("restore_status", start["from"]), "재시작으로 끊긴 작업을 복구했어요")
+                # 복구한 상태를 남은 대기의 원래 상태로 보존하고 소유권을 넘긴다.
+                c.execute("UPDATE jobs SET previous_status=NULL WHERE issue_id=? AND status='queued'", (r["issue_id"],))
+        for j in _rows(c):
+            _waiting(c, j)
+
+
 def enqueue(actor: dict, ref: str, mode: str, provider: str = "claude") -> dict:
     """줄에 넣고 펌프를 돌린다. 바로 시작하면 {started}, 아니면 {queued, position}."""
     import execute
@@ -52,9 +98,13 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str = "claude") -> dict:
         raise issues.StoreError("검토·실행은 사람만 맡길 수 있어요.", 403)
     if provider not in ("claude", "codex"):
         raise issues.StoreError("지원하지 않는 검토 도구예요.", 400)
+    if mode not in ("review", "execute"):
+        raise issues.StoreError("지원하지 않는 작업이에요.", 400)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
     with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        issue = issues.get_issue(ref)
         existing = c.execute("SELECT provider FROM runs WHERE issue_id=? AND mode=? AND status='running' UNION ALL SELECT provider FROM jobs WHERE issue_id=? AND mode=? AND status='queued' LIMIT 1",
                              (issue["id"], mode, issue["id"], mode)).fetchone()
         if existing and existing["provider"] != provider:
@@ -68,9 +118,15 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str = "claude") -> dict:
                     raise issues.StoreError(why, 409)
             c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, provider) VALUES(?, ?, ?, 'queued', ?, ?)",
                       (issue["id"], mode, issues.actor_label(actor), db.now_iso(), provider))
+        j = c.execute("SELECT * FROM jobs WHERE issue_id=? AND mode=? AND status='queued'", (issue["id"], mode)).fetchone()
+        _waiting(c, j)
     pump()
     job = next((j for j in list_jobs() if j["issue_id"] == issue["id"] and j["mode"] == mode), None)
     if job is None:
+        with db.connect() as c:
+            ended = c.execute("SELECT status,note FROM jobs WHERE id=?", (j["id"],)).fetchone()
+        if ended and ended["status"] == "skipped":
+            raise issues.StoreError(ended["note"], 409)
         return {"started": True, "ref": ref}
     return {"queued": True, "ref": ref, "job_id": job["id"], "position": job["position"], "note": job["note"]}
 
@@ -79,23 +135,39 @@ def cancel(actor: dict, job_id: int) -> dict:
     """queued인 것만 취소한다(사람만)."""
     if actor["kind"] != "human":
         raise issues.StoreError("대기열은 사람만 고칠 수 있어요.", 403)
-    with db.connect() as c:
+    with _lock, db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        j = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not c.execute("UPDATE jobs SET status='cancelled' WHERE id=? AND status='queued'", (job_id,)).rowcount:
             raise issues.StoreError("대기 중인 항목이 아니에요.", 404)
+        _restore(c, j)
     return {"cancelled": job_id}
 
 
 def _set(job_id: int, status: str, note: str = "") -> None:
     with db.connect() as c:
-        run = c.execute("SELECT id FROM runs WHERE status='running' ORDER BY id DESC LIMIT 1").fetchone() if status == "started" else None
+        c.execute("BEGIN IMMEDIATE")
+        j = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not j:  # 시작 준비 중 이슈가 지워지면 대기 항목도 함께 사라진다.
+            return
+        run = c.execute("SELECT id FROM runs WHERE issue_id=? AND mode=? ORDER BY id DESC LIMIT 1", (j["issue_id"], j["mode"])).fetchone() if status == "started" else None
         c.execute("UPDATE jobs SET status=?, note=?, started_at=?, run_id=? WHERE id=?",
                   (status, note, db.now_iso() if status == "started" else None, run["id"] if run else None, job_id))
+
+        if status == "queued" and j["status"] == "started":
+            row = c.execute("SELECT * FROM issues WHERE id=?", (j["issue_id"],)).fetchone()
+            if row["status"] == j["previous_status"] and _latest(c, row["id"]).get("job_id") == job_id:
+                c.execute("UPDATE jobs SET previous_status=NULL WHERE id=?", (job_id,))
+                _waiting(c, c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+        if status in ("cancelled", "skipped"):
+            _restore(c, j)
 
 
 def pump() -> None:
     """도는 것이 없으면 시작할 수 있는 첫 항목을 돌린다."""
     import execute, review
     with _lock:
+        reconcile()
         if busy():
             return
         with db.connect() as c:
@@ -103,6 +175,13 @@ def pump() -> None:
         for j in queued:
             actor = _actor(j["actor"])
             try:
+                with db.connect() as c:
+                    row = c.execute("SELECT * FROM issues WHERE id=?", (j["issue_id"],)).fetchone()
+                    owner = _latest(c, j["issue_id"]).get("job_id")
+                    owned = c.execute("SELECT 1 FROM jobs WHERE id=? AND issue_id=? AND status='queued'", (owner, j["issue_id"])).fetchone()
+                if not row or row["status"] != "waiting" or not owned:
+                    _set(j["id"], "skipped", "상태가 바뀌었거나 보호된 이슈여서 대기를 종료했어요")
+                    continue
                 if j["mode"] == "review":
                     review.start(actor, j["ref"], j["provider"])
                 else:

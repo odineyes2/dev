@@ -667,10 +667,17 @@ try:
         db.executemany("INSERT INTO jobs(issue_id, mode, actor, status, note, created_at) VALUES(?, 'execute', 'human:admin', 'queued', ?, '2026-10-02T00:00:00+00:00')",
                        [(i41, ""), (i42, "선행 Task(DEV-4-1)가 done이 되어야 해요.")])
         db.commit()
+        # 이전 버전 대기 항목도 펌프에서 Waiting으로 정합화한다.
+        page.request.post(f"{BASE}/api/issues/DEV-4-1/execute", headers=H)
+        assert page.request.get(t5).json()["status"] == "waiting"
+        assert page.request.get(t6).json()["status"] == "waiting"
         for scheme in ("light", "dark"):
+            page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
             for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
                 page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
                 page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
+                assert page.input_value('#status') == 'waiting'
+                assert 'Waiting' in page.inner_text('#stage')
                 assert "대기 2번째" in page.inner_text(".exec") and "선행 Task" in page.inner_text(".exec") and page.locator("#ask-execute").count() == 0
                 assert "대기 2번째" in page.inner_text("#stage")
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
@@ -689,6 +696,17 @@ try:
                 page.click(".jobs summary"); assert page.locator(".jobs li").count() == 2
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
+                page.click('[data-st="waiting"]')
+                page.wait_for_function("document.querySelector('#list-body').getAttribute('aria-busy') === 'false'")
+                assert page.locator('tr.row').count() == 2
+                assert all('Waiting' in text for text in page.locator('tr.row').all_inner_texts())
+                page.screenshot(path=str(shots / f"waiting_filter_{scheme}_{tag}.png"), full_page=True)
+                page.click('[data-st="waiting"]')
+                page.goto(BASE + '/#/board'); page.wait_for_selector('[data-col="waiting"] .card')
+                assert page.locator('[data-col="waiting"] .card').count() == 2
+                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                page.screenshot(path=str(shots / f"waiting_board_{scheme}_{tag}.png"), full_page=True)
+                page.goto(BASE + '/#/'); page.wait_for_selector('.jobs summary'); page.click('.jobs summary')
         assert page.request.get(f"{BASE}/api/issues/{pr}").json()["children"][0]["job"]["mode"] == "execute"
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
         page.click(".jobs li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")

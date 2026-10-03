@@ -54,4 +54,38 @@ with db.connect() as c:
     assert [r[0] for r in c.execute("SELECT status FROM runs ORDER BY id")] == ["orphaned", "ok"]
     c.execute("DELETE FROM issues WHERE id=?", (iid,))
     assert c.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0   # 이슈를 지우면 기록도
+# 이전 스키마를 기록이 있는 상태로 확장해 참조·번호·인덱스 보존을 검증한다.
+original_path = db.config.DB_PATH
+db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'legacy.db'
+with sqlite3.connect(db.config.DB_PATH) as c:
+    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+        c.executescript(sql + f'PRAGMA user_version={version};')
+    c.execute("INSERT INTO projects VALUES(1,'OLD','old','','',3,0,?)", (now,))
+    c.execute("INSERT INTO agents VALUES(1,'a','','','hash','prefix',1,?,NULL)", (now,))
+    c.execute("INSERT INTO issues(id,project_id,number,title,reporter,created_at,updated_at,assignee_agent_id) VALUES(1,1,1,'parent','human:admin',?,?,1)", (now, now))
+    c.execute("INSERT INTO issues(id,project_id,number,parent_id,title,reporter,created_at,updated_at,sub_of,sub_number) VALUES(2,1,-2,1,'task','human:admin',?,?,1,1)", (now, now))
+    c.execute("INSERT INTO issue_deps VALUES(2,1)")
+    c.execute("INSERT INTO plans VALUES(1,1,1,'plan','human:admin',?)", (now,))
+    c.execute("INSERT INTO decisions VALUES(1,1,'plan',1,'approve','','human:admin',?)", (now,))
+    c.execute("INSERT INTO events(issue_id,actor,kind,created_at) VALUES(2,'human:admin','comment',?)", (now,))
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(2,'execute','ok','human:admin',?)", (now,))
+    c.execute("INSERT INTO jobs(issue_id,mode,status,actor,created_at) VALUES(2,'execute','queued','human:admin',?)", (now,))
+    tables = ('projects','agents','issues','issue_deps','plans','decisions','events','runs','jobs')
+    before = {t: c.execute(f'SELECT * FROM {t}').fetchall() for t in tables}
+assert db.init() == len(db.MIGRATIONS)
+assert db.init() == len(db.MIGRATIONS)
+with db.connect() as c:
+    for table in tables:
+        after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
+        assert after == ([r + (None,) for r in before[table]] if table == 'jobs' else before[table]), table
+    assert c.execute('PRAGMA foreign_key_check').fetchall() == []
+    assert {'issues_status','issues_parent','issues_sub'} <= {r[1] for r in c.execute('PRAGMA index_list(issues)')}
+    c.execute("UPDATE issues SET status='waiting' WHERE id=2")
+    assert c.execute("SELECT id FROM issues WHERE status='waiting'").fetchone()[0] == 2
+assert rejected("UPDATE issues SET status='invalid' WHERE id=2")
+with db.connect() as c:
+    c.execute('DELETE FROM issues WHERE id=1')
+    assert c.execute('SELECT parent_id FROM issues WHERE id=2').fetchone()[0] is None
+    assert not c.execute('SELECT * FROM issue_deps').fetchall()
+db.config.DB_PATH = original_path
 print("OK")

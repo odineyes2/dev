@@ -68,7 +68,7 @@ def list_projects() -> list[dict]:
 @mcp.tool
 def list_issues(project: str | None = None, status: str | None = None, parent: str | None = None,
                 q: str | None = None, limit: int = 100, offset: int = 0, approved: bool = False) -> list[dict]:
-    """이슈 목록(본문 제외, 최근 고친 순). status는 쉼표로 여러 개(backlog,triage,in_progress,in_review,
+    """이슈 목록(본문 제외, 최근 고친 순). status는 쉼표로 여러 개(backlog,waiting,triage,in_progress,in_review,
     changes_requested,on_hold,done,closed). parent="NS-1"이면 그 하위 Task만, "none"이면 최상위만.
     approved=true면 최신 계획서가 사람에게 승인된(조건부 포함) 이슈만 — 착수해도 되는 것들.
     각 행의 approval은 {verdict, plan_version, stale} 요약.
@@ -119,7 +119,7 @@ def post_plan(ref: str, body: str) -> dict:
 
 @mcp.tool
 def set_status(ref: str, status: str, note: str = "") -> dict:
-    """상태 바꾸기 — backlog/triage/in_progress/in_review/changes_requested/on_hold. done/closed는 사람만.
+    """상태 바꾸기 — backlog/waiting/triage/in_progress/in_review/changes_requested/on_hold. done/closed는 사람만.
     in_review로 올릴 때 note에 바꾼 것과 확인하는 법을 적는다."""
     return _call(issues.set_status, _actor(), ref, status, note)
 

@@ -66,7 +66,7 @@ try:
         task = issues.create_issue(base.me, 'EX', 'Another task', parent='EX-1')
         queued = post(task['ref']).json()
         assert queued['queued'] and jobs.list_jobs()[0]['provider'] == 'codex'
-        assert issues.get_issue(task['ref'])['status'] == 'backlog'
+        assert issues.get_issue(task['ref'])['status'] == 'waiting'
         assert post(task['ref']).json()['job_id'] == queued['job_id']
         jobs.cancel(base.me, queued['job_id'])
         base.wait_idle()
@@ -98,7 +98,7 @@ try:
         fake.write_text(output_script({'outcome': 'blocked', 'summary': 'retry', 'tests': []}, False), 'utf-8')
         post('EX-1-2')
         queued = post(task['ref']).json()
-        assert queued['queued'] and issues.get_issue(task['ref'])['status'] == 'backlog'
+        assert queued['queued'] and issues.get_issue(task['ref'])['status'] == 'waiting'
         base.wait_idle()
         task_issue = issues.get_issue(task['ref'])
         assert task_issue['status'] == 'backlog'
@@ -136,8 +136,9 @@ try:
         del os.environ['DEV_CODEX_AGENT_KEY']
         missing = post('EX-1-2').json()
         assert missing['queued'] and 'DEV_CODEX_AGENT_KEY' in missing['note']
-        assert issues.get_issue('EX-1-2')['status'] == 'changes_requested'
+        assert issues.get_issue('EX-1-2')['status'] == 'waiting'
         jobs.cancel(base.me, missing['job_id'])
+        assert issues.get_issue('EX-1-2')['status'] == 'changes_requested'
         c.cookies.clear()
         assert c.post('/api/issues/EX-1-2/execute', json={'provider': 'codex'}, headers={'Authorization': 'Bearer ' + base.key}).status_code == 403
 finally:
