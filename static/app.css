@@ -196,7 +196,12 @@ table.issues.tasks td:nth-child(2){ overflow-wrap:anywhere; }
 .empty{ padding:64px var(--sp-4); text-align:center; color:var(--dim); background:var(--panel); border:1px dashed var(--border); border-radius:var(--r-md); }
 
 /* 칸반 */
-.kanban{ display:flex; gap:var(--sp-3); overflow-x:auto; padding-bottom:var(--sp-3); align-items:flex-start; }
+.kanban{ display:flex; gap:var(--sp-3); overflow-x:auto; padding-bottom:var(--sp-3); align-items:flex-start;
+  min-height:calc(100dvh - 150px); scrollbar-width:none; cursor:grab; }
+.kanban::-webkit-scrollbar{ display:none; }
+.kanban:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+.kanban.panning, .kanban.panning *{ cursor:grabbing; user-select:none; }
+.kanban h3 .status, .kanban h3 .ref{ cursor:text; }
 .col{ flex:0 0 272px; background:var(--panel-2); border:1px solid var(--border); border-radius:var(--r-md); display:flex; flex-direction:column;
   max-height:calc(100vh - 150px); }
 .col h3{ margin:0; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; }
