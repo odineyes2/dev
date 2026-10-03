@@ -219,6 +219,64 @@ with TestClient(A.app) as c:
     assert r.status_code == 409 and ks[1] in r.json()["detail"], r.text
     assert [st(x) for x in (top, *ks)] == ["backlog", "backlog", "backlog", "closed"]   # 아무것도 안 바뀜
 
+    # 일반 종결은 선택한 하위 트리만 동기화하고 재요청의 이벤트를 중복하지 않는다.
+    status = lambda ref, value: human('POST', f'/api/issues/{ref}/status', json={'status': value, 'note': '사람 메모'})
+    for terminal in ('done', 'closed'):
+        top, ks = tree()
+        grand = ok(human('POST', '/api/issues', json={'project': 'DEV', 'title': '손자', 'parent': ks[0]}))['ref']
+        ok(status(grand, 'closed' if terminal == 'done' else 'done'))
+        assert a('POST', f'/api/issues/{top}/status', json={'status': terminal}).status_code == 403
+        ok(status(ks[0], terminal))
+        assert st(top) == 'backlog' and st(ks[1]) == 'backlog' and st(ks[2]) == 'closed'
+        assert st(grand) == terminal
+        with db.connect() as cx:
+            cx.execute("UPDATE issues SET claimed_by='agent:1', lease_until=? WHERE id=?", ('2099-01-01', issues.get_issue(ks[1])['id']))
+        ok(status(top, terminal))
+        for ref in (top, *ks, grand):
+            item = issues.get_issue(ref)
+            assert item['status'] == terminal and item['closed_at'] and item['claimed_by'] is None and item['lease_until'] is None
+        ev = issues.get_issue(ks[1])['events'][-1]
+        assert ev['data'] == {'from': 'backlog', 'to': terminal, 'tree_from': top} and ev['body'] == '사람 메모'
+        before = {ref: issues.get_issue(ref) for ref in (top, *ks, grand)}
+        ok(status(top, terminal))
+        assert before == {ref: issues.get_issue(ref) for ref in before}
+        ok(status(grand, 'backlog'))
+        ok(status(top, terminal))
+        assert st(grand) == terminal and issues.get_issue(top)['events'] == before[top]['events']
+
+    # 실행 중 후손이 있으면 결정·상태·이벤트 모두 롤백한다.
+    top, ks = tree()
+    ok(a('POST', f'/api/issues/{top}/plans', json={'body': '거절 검사'}))
+    with db.connect() as cx:
+        run_id = cx.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?,?,?,?,?)",
+                            (issues.get_issue(ks[0])['id'], 'execute', 'running', 'human:admin', db.now_iso())).lastrowid
+    before = {ref: issues.get_issue(ref) for ref in (top, *ks)}
+    for terminal in ('done', 'closed'):
+        assert status(top, terminal).status_code == 409
+        assert before == {ref: issues.get_issue(ref) for ref in before}
+    assert dec(top, 'reject', '거절 메모', 1).status_code == 409
+    assert before == {ref: issues.get_issue(ref) for ref in before}
+    with db.connect() as cx:
+        cx.execute("UPDATE runs SET status='ok' WHERE id=?", (run_id,))
+    ok(dec(top, 'reject', '거절 메모', 1))
+    assert all(st(ref) == 'closed' for ref in before)
+    assert issues.get_issue(ks[0])['events'][-1]['body'] == '거절 (계획서 v1): 거절 메모'
+
+    # 중간 이벤트 쓰기 실패도 이미 바꾼 부모와 결정을 되돌린다.
+    from unittest.mock import patch
+    top, ks = tree()
+    ok(a('POST', f'/api/issues/{top}/plans', json={'body': '원자성 검사'}))
+    before = {ref: issues.get_issue(ref) for ref in (top, *ks)}
+    original_event = issues._event
+    def fail_child(cx, issue_id, *args, **kwargs):
+        if issue_id == before[ks[0]]['id']:
+            raise issues.StoreError('event failed', 409)
+        return original_event(cx, issue_id, *args, **kwargs)
+    with patch.object(issues, '_event', side_effect=fail_child):
+        assert status(top, 'done').status_code == 409
+        assert dec(top, 'reject', '실패', 1).status_code == 409
+    assert before == {ref: issues.get_issue(ref) for ref in before}
+
     # 쓰기 요청의 형식 오류
     assert c.post("/api/issues", content=b"not json", headers={**H, "content-type": "application/json"}).status_code == 400
 print("OK")

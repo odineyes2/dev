@@ -376,6 +376,22 @@ def _set_status(c, actor, row, status, note="", data=None):
     _event(c, row["id"], actor, "status", note, {"from": row["status"], "to": status, **(data or {})})
 
 
+def _sync_terminal_status(c, actor, row, status, note):
+    """선택한 이슈와 같은 프로젝트의 후손을 원자적으로 종결한다."""
+    ids = [r[0] for r in c.execute(
+        "WITH RECURSIVE t(id) AS (SELECT ? UNION SELECT i.id FROM issues i JOIN t ON i.parent_id=t.id WHERE i.project_id=?) SELECT id FROM t",
+        (row["id"], row["project_id"]))]
+    marks = ",".join("?" * len(ids))
+    busy = [r["ref"] for r in c.execute(
+        f"SELECT DISTINCT {ref_sql('i', 'p')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id WHERE r.status='running' AND i.id IN ({marks})", ids)]
+    if busy:
+        raise StoreError(f"실행 중인 이슈가 있어요: {', '.join(busy)} — 끝난 뒤 다시 해 주세요.", 409)
+    for child in c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({marks}) ORDER BY i.id", ids).fetchall():
+        if child["status"] != status:
+            _set_status(c, actor, child, status, note,
+                        {"tree_from": row["ref"]} if child["id"] != row["id"] else None)
+
+
 def set_status(actor, ref, status, note="") -> dict:
     status = str(status or "")
     if status not in db.STATUSES:
@@ -384,8 +400,12 @@ def set_status(actor, ref, status, note="") -> dict:
         raise _forbidden("done/closed는 사람이 확인하고 바꿔요 — 끝냈으면 in_review로 올려 주세요.")
     note = _text(note, "메모", 20_000)
     with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
         row = _find(c, ref)
         _guard_goal(row, actor, "상태")
+        if status in HUMAN_ONLY_STATUSES:
+            _sync_terminal_status(c, actor, row, status, note)
+            return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
         if row["status"] == status:
             return _issue_dict(row)
         _set_status(c, actor, row, status, note)
@@ -499,6 +519,7 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
     if verdict != "approve" and not note.strip():
         raise StoreError(f"{VERDICT_LABEL[verdict]}은(는) 메모가 필요해요 — " + ("답하거나 고칠 내용을 적어 주세요." if verdict == "approve_notes" else "거절 이유를 적어 주세요."))
     with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
         row = _find(c, ref)
         latest = c.execute("SELECT MAX(version) FROM plans WHERE issue_id=?", (row["id"],)).fetchone()[0]
         if latest is None:
@@ -516,8 +537,8 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
                    + (f"\n\n하위 Task {made}개를 만들었어요." if made else ""),
                    {"decision": verdict, "plan_version": latest})
             c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), row["id"]))
-    if verdict == "reject":
-        set_status(actor, ref, "closed", f"거절 (계획서 v{latest}): {note.strip()}")
+        if verdict == "reject":
+            _sync_terminal_status(c, actor, row, "closed", f"거절 (계획서 v{latest}): {note.strip()}")
     return get_issue(ref)
 
 
