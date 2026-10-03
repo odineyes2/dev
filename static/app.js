@@ -52,7 +52,7 @@ function fmtTime(iso){
   return d.toLocaleDateString();
 }
 function titleHtml(i){ return i.title_missing ? '<span class="dim">(제목 없음 — 에이전트가 지어요)</span>' : esc(i.title); }
-function statusHtml(s){ return `<span class="status" style="--sc:var(--s-${esc(s)})">${esc(STATUS_LABEL[s] || s)}</span>`; }
+function statusHtml(s){ return `<span class="status${s === 'in_progress' ? ' status-in-progress' : ''}" style="--sc:var(--s-${esc(s)})">${esc(STATUS_LABEL[s] || s)}</span>`; }
 function prioHtml(p){ return p && p !== 'none' ? `<span class="prio ${esc(p)}">${esc(p)}</span>` : ''; }
 function approvalHtml(a){   // 계획서 결정 배지 — 새 판이 올라와 무효가 된 것은 흐리게
   if(!a) return '';
