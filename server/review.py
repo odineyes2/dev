@@ -34,7 +34,7 @@ TIMEOUT_SEC = float(os.environ.get("DEV_REVIEW_TIMEOUT_SEC") or 1200)
 LOG_DIR = config.DATA_DIR / "reviews"
 ALLOWED_TOOLS = ["Read", "Grep", "Glob"] + [f"mcp__dev__{t}" for t in (
     "whoami", "list_projects", "list_issues", "get_issue", "post_plan", "add_comment", "set_status", "update_issue",
-    "claim_issue", "release_issue", "list_project_documents", "read_project_document")]
+    "claim_issue", "release_issue", "list_project_documents", "read_project_document", "list_issue_types", "classify_issue")]
 BLOCKED_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]
 
 _lock = threading.Lock()
@@ -80,6 +80,10 @@ def prompt_for(ref: str) -> str:
 
 1. mcp__dev__claim_issue로 {ref}를 잡고, mcp__dev__get_issue로 본문·계획서·타임라인을 읽는다.
    제목이 비었으면(title_missing) 본문을 보고 짧은 제목을 지어 mcp__dev__update_issue로 채운다.
+   종류(type_ids)가 비어 있고 goal 라벨이 없으면 mcp__dev__list_issue_types로 활성 카탈로그를 조회한다.
+   제목·본문에 맞는 종류를 하나 이상 복수 선택하고 mcp__dev__classify_issue(ref, type_ids, expected_revision=조회한 type_revision)로 저장한다.
+   기존 선택은 그대로 보존한다. update_issue로 종류를 바꾸지 않는다. 충돌하면 다시 조회하여 사람 선택을 보존한다.
+   분류 실패는 댓글과 최종 결과에 남긴다. 카탈로그 수정이나 별도 유료 호출은 하지 않는다.
 2. mcp__dev__list_projects에서 그 프로젝트의 local_path를 찾아, 관련 코드를 Read/Grep/Glob으로 읽는다(짧게, 필요한 곳만).
    그 저장소의 CLAUDE.md 규칙을 따르고, 화면 작업이면 dev/docs/DESIGN.md를 참고한다.
 3. mcp__dev__post_plan으로 계획서를 올린다(한국어): 원인 또는 요구의 이해, 방향(추천 하나), 바꿀 파일, 검사 방법, 크기(작음/중간/큼),
@@ -276,6 +280,10 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             status, note = "failed", "새 계획서가 이슈에 등록되지 않았어요 — dev MCP 호출 결과를 로그에서 확인해 주세요."
         elif result.get("title_missing") and "goal" not in result.get("labels", []):
             status, note = "failed", "계획서는 등록됐지만 빈 제목이 채워지지 않았어요 — 로그를 확인해 주세요."
+    if label == "검토" and status == "ok":
+        result = issues.get_issue(ref)
+        if not result["type_ids"] and "goal" not in result.get("labels", []):
+            status, note = "failed", "자동 분류가 저장되지 않았어요 — 종류 선택과 MCP 호출 결과를 확인하고 검토를 다시 맡겨 주세요."
     if provider == "codex" and label == "실행" and status == "ok":
         import execute
         try:
