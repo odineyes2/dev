@@ -215,10 +215,11 @@ async function route(){
     if(!name) await renderList();
     else if(name === 'board') await renderBoard();
     else if(name === 'issue' && arg) await renderIssue(decodeURIComponent(arg));
-    else if(name === 'new') renderNew(new URLSearchParams(location.hash.split('?')[1] || ''));
+    else if(name === 'new') await renderNew(new URLSearchParams(location.hash.split('?')[1] || ''));
     else if(name === 'agents') await renderAgents();
     else if(name === 'projects') renderProjects();
     else if(name === 'settings') await renderSettings();
+    else if(name === 'types') await renderTypes();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
   }catch(e){ if(!view.innerHTML) view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   perfReport(name || 'issues', t0);
@@ -246,7 +247,7 @@ function disposeList(){
 }
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
-    <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
+    <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${typesHtml(i)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
     <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td></tr>`;
 }
@@ -427,7 +428,7 @@ async function renderBoard(){
     const mine = items.filter(i => i.status === s);
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
-        <div class="t">${titleHtml(i)}</div><div class="meta">${prioHtml(i.priority)}${approvalHtml(i.approval)}${labelsHtml(i.labels)}
+        <div class="t">${titleHtml(i)}</div><div class="meta">${prioHtml(i.priority)}${approvalHtml(i.approval)}${labelsHtml(i.labels)}${typesHtml(i)}
         ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div></div>`).join('')}
     </div></div>`;
   }).join('')}</div>`;
@@ -596,7 +597,7 @@ function taskActionsHtml(it, ch){
 // 갱신 중에도 아직 응답하지 않은 검토 요청의 provider를 유지한다.
 const pendingReviews = new Map();
 async function renderIssue(ref){
-  const [it, { runs }] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), agentsById.size ? null : loadAgents()]);
+  const [it, { runs }, catalog] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), api('GET', '/api/issue-types?include_inactive=true'), agentsById.size ? null : loadAgents()]);
   const agentOpts = ['<option value="">(없음)</option>'].concat([...agentsById.values()].map(a =>
     `<option value="${a.id}"${a.id === it.assignee_agent_id ? ' selected' : ''}>${esc(a.name)}</option>`)).join('');
   const liveRun = runs.find(r => r.status === 'running') || {};
@@ -609,7 +610,7 @@ async function renderIssue(ref){
       <div>
         <div class="ref">${esc(it.ref)}${it.parent_ref ? ` · Task of <a href="#/issue/${esc(it.parent_ref)}">${esc(it.parent_ref)}</a>` : ''}</div>
         <h1 id="title">${titleHtml(it)}</h1>
-        <div class="byline">${actorHtml(it.reporter)}<span>·</span><span>${fmtTime(it.created_at)}</span>${labelsHtml(it.labels)}</div>
+        <div class="byline">${actorHtml(it.reporter)}<span>·</span><span>${fmtTime(it.created_at)}</span>${labelsHtml(it.labels)}${typesHtml(it)}</div>
         ${stageHtml(it, liveMode, liveRun.provider)}
         <div class="panel"><h2>Description<span class="right"><button id="edit-body">고치기</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
@@ -632,7 +633,7 @@ async function renderIssue(ref){
           ${it.children.length || it.parent_ref ? '<button class="complete-tree" title="최상위 이슈와 모든 Task를 한 번에 Done으로">전체 완료</button>' : ''}</div>
         <div class="field"><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
         <div class="field"><span>Assignee</span><select id="assignee">${agentOpts}</select></div>
-        <div class="field"><span>Labels (쉼표로)</span><input id="labels" value="${esc(it.labels.join(', '))}"></div>
+        <div class="field" id="issue-type-editor">${typePicker(catalog.types, it.type_ids || [])}<p class="dim">${(it.types || []).some(t => t.source === 'agent') ? '자동 분류 결과예요.' : '종류를 선택하거나 비울 수 있어요.'}</p><button id="save-types" type="button">종류 저장</button><p id="types-status" role="status"></p></div><div class="field"><span>Labels (쉼표로)</span><input id="labels" value="${esc(it.labels.join(', '))}"></div>
         <div class="field"><span>Claimed</span>${it.claimed_by ? `${esc(actorName(it.claimed_by))} <span class="dim">~${new Date(it.lease_until).toLocaleTimeString()}</span>
           <button id="release" class="ghost">놓기</button>` : '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
@@ -644,6 +645,17 @@ async function renderIssue(ref){
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
       </aside>
     </div>`;
+  const editor = view.querySelector('#issue-type-editor');
+  bindTypePicker(editor);
+  editor.querySelector('#save-types').onclick = async () => {
+    const controls = [...editor.querySelectorAll('button')];
+    if(controls.some(b => b.disabled)) return;
+    controls.forEach(b => b.disabled = true);
+    editor.querySelector('#types-status').textContent = '저장 중…';
+    try{ await api('PATCH', `/api/issues/${encodeURIComponent(it.ref)}`, {type_ids:selectedTypes(editor)}); if(editor.isConnected) await renderIssue(it.ref); }
+    catch(e){ if(editor.isConnected) editor.querySelector('#types-status').textContent = `${e.message} 다시 시도해 주세요.`; }
+    finally{ controls.forEach(b => b.disabled = false); }
+  };
   const R = encodeURIComponent(it.ref);
   const reload = () => renderIssue(it.ref);
   const $ = (id) => view.querySelector('#' + id);
@@ -853,7 +865,10 @@ function editInPlace(box, value, save, title){
 }
 
 // ---- 새 이슈 ----
-function renderNew(params){
+async function renderNew(params){
+  const hash = location.hash;
+  const {types} = await api('GET', '/api/issue-types');
+  if(location.hash !== hash) return;
   const parent = params.get('parent') || '';
   const proj = parent ? parent.split('-')[0] : currentProject();
   if(!projects.length){ view.innerHTML = '<div class="empty">먼저 <a href="#/projects">Projects</a>에서 프로젝트를 만들어 주세요.</div>'; return; }
@@ -865,14 +880,16 @@ function renderNew(params){
       <label>Status<select id="n-status"><option>backlog</option><option>triage</option></select></label></div>
     <label>Title<input id="n-title" maxlength="300" placeholder="비워 두면 이슈를 맡은 에이전트가 본문을 보고 지어요"></label>
     <label>Description (마크다운)<textarea id="n-body" style="min-height:260px"></textarea></label>
-    <label>Labels (쉼표로)<input id="n-labels"></label>
+    ${typePicker(types)}<label>Labels (쉼표로)<input id="n-labels"></label>
     <div class="row-end"><a class="button" href="#/">취소</a><button class="primary" type="submit">만들기</button></div>
   </form>`;
+  bindTypePicker(view.querySelector('#new-form'));
   view.querySelector('#n-title').focus();
   view.querySelector('#new-form').addEventListener('submit', (e) => { e.preventDefault(); whileBusy(submitBtn(e), async () => {
     const it = await api('POST', '/api/issues', {
       project: view.querySelector('#n-project').value, title: view.querySelector('#n-title').value, body: view.querySelector('#n-body').value,
       priority: view.querySelector('#n-priority').value, status: view.querySelector('#n-status').value,
+      type_ids: selectedTypes(view.querySelector('#new-form')),
       labels: view.querySelector('#n-labels').value.split(',').map(s => s.trim()).filter(Boolean), parent: parent || undefined,
     });
     toast('이슈를 발행했어요 — Claude나 Codex에게 검토를 맡길 수 있어요.');
@@ -1131,7 +1148,7 @@ async function renderSettings(){
   settingsSession = session;
   const key = projectSel.value;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = `<section class="panel auto-settings"><h2>설정</h2><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
+  view.innerHTML = `<section class="panel auto-settings"><h2>설정</h2><a class="button" href="#/types">종류 관리</a><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
   const body = view.querySelector('#settings-body');
   if(!key){ body.innerHTML = '<div class="empty">위의 프로젝트 필터에서 설정할 프로젝트를 선택해 주세요.</div>'; return; }
   body.innerHTML = '<div class="settings-skeleton" aria-label="설정을 불러오는 중" aria-busy="true"></div>';
@@ -1176,4 +1193,40 @@ async function renderSettings(){
     save({provider_order: order}, `[data-move="${j}"][data-direction="${-Number(b.dataset.direction)}"]`);
   };
   paint();
+}
+
+// 종류는 Labels와 독립적으로 안정 ID를 사용한다.
+function typesHtml(it){
+  return `<span class="issue-types">${(it.types || []).length ? it.types.map(t => `<span class="type-badge" title="${t.source === 'agent' ? '자동 분류' : t.source === 'human' ? '사람 선택' : '문서 생성 요청'}">${esc(t.name)}${t.active ? '' : ' · 비활성'}</span>`).join('') : '<span class="dim">미분류</span>'}</span>`;
+}
+function typePicker(types, selected = []){
+  return `<fieldset class="type-picker"><legend>종류 (복수 선택)</legend><div>${types.filter(t => t.active || selected.includes(t.id)).map(t => `<button type="button" data-type="${t.id}" aria-pressed="${selected.includes(t.id)}">${esc(t.name)}${t.active ? '' : ' · 비활성'}</button>`).join('')}</div><p class="dim">비워 두면 검토를 맡길 때 Agent가 자동 분류해요.</p></fieldset>`;
+}
+function bindTypePicker(root){
+  root.querySelectorAll('[data-type]').forEach(b => b.onclick = () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')));
+}
+function selectedTypes(root){ return [...root.querySelectorAll('[data-type][aria-pressed="true"]')].map(b => Number(b.dataset.type)); }
+async function renderTypes(){
+  if(me?.kind !== 'human'){ view.innerHTML = '<div class="empty">관리자만 종류를 관리할 수 있어요.</div>'; return; }
+  const hash = location.hash;
+  const {types} = await api('GET', '/api/issue-types?include_inactive=true');
+  if(location.hash !== hash) return;
+  view.innerHTML = `<section class="panel type-management"><h2>종류 관리</h2><p class="dim">모든 프로젝트에서 함께 사용해요. 비활성화해도 기존 Issue의 연결은 보존돼요.</p><form id="type-create"><label>새 종류 이름<input name="name" maxlength="100" required></label><button type="submit">추가</button></form><div>${types.map(t => `<form class="type-row" data-id="${t.id}"><label>종류 이름<input name="name" aria-label="${esc(t.name)} 이름" maxlength="100" required value="${esc(t.name)}"></label><button type="submit">이름 저장</button><button type="button" class="type-active auto-switch" role="switch" aria-label="${esc(t.name)} 활성" aria-checked="${t.active}"><span class="switch-track" aria-hidden="true"></span><span>${t.active ? '활성' : '비활성'}</span></button></form>`).join('')}</div><p id="type-status" role="status"></p></section>`;
+  const root = view.querySelector('.type-management');
+  async function save(form, method, url, data){
+    const controls = [...form.querySelectorAll('input,button')];
+    const focus = form.id === 'type-create' ? '#type-create input' : `.type-row[data-id="${form.dataset.id}"] ${document.activeElement?.classList.contains('type-active') ? '.type-active' : '[type=submit]'}`;
+    if(form.getAttribute('aria-busy') === 'true') return;
+    form.setAttribute('aria-busy', 'true'); controls.forEach(c => c.disabled = true);
+    root.querySelector('#type-status').textContent = '저장 중…';
+    try{ await api(method, url, data); if(root.isConnected){ await renderTypes(); if(location.hash === hash){ view.querySelector('#type-status').textContent = '저장했어요.'; view.querySelector(focus)?.focus(); } } }
+    catch(e){ if(root.isConnected) root.querySelector('#type-status').textContent = `${e.message} 다시 시도해 주세요.`; }
+    finally{ form.setAttribute('aria-busy','false'); controls.forEach(c => c.disabled = false); }
+  }
+  root.querySelector('#type-create').onsubmit = e => { e.preventDefault(); save(e.target, 'POST', '/api/issue-types', {name:e.target.elements.name.value}); };
+  root.querySelectorAll('.type-row').forEach(form => {
+    form.onsubmit = e => { e.preventDefault(); save(form, 'PATCH', `/api/issue-types/${form.dataset.id}`, {name:form.elements.name.value}); };
+    const b = form.querySelector('.type-active');
+    b.onclick = () => save(form, 'PATCH', `/api/issue-types/${form.dataset.id}`, {active:b.getAttribute('aria-checked') !== 'true'});
+  });
 }
