@@ -2,8 +2,10 @@
 오케스트레이터(DEV-40) — 실행이 통과한 Task 브랜치를 base 브랜치에 자동으로 합친다.
 `<데이터폴더>/orchestrate.json`에서 프로젝트별로 조정한다. `auto_merge`는 기본 켜짐(끄려면 false) — 재시작은 `pm2_app`을 적은 프로젝트만 한다.
 
-순서: 작업 폴더 확인(base 체크아웃·깨끗) → 선행 Task 병합 확인 → `merge-tree`로 충돌 재확인 → `git merge --no-ff`
-→ 병합한 결과로 `python tests/test_*.py` → 실패하면 `git revert -m 1`(이력 보존, reset은 쓰지 않음).
+순서: 작업 폴더 확인(base 체크아웃·깨끗) → 선행 Task 병합 확인 → 최신 base와 Task 커밋 고정
+→ 임시 detached worktree에서 `git merge --no-ff` → `tests/test_*.py` 전체 검사
+→ 원본 base·Task·작업 폴더가 그대로인지 확인 → 검사한 커밋을 `git merge --ff-only`로 운영에 반영.
+충돌·검사 실패는 운영 사본을 변경하지 않는다. 재시작·health 실패의 revert 복구는 유지한다.
 결과는 Task 상태로: 작업 폴더·선행 문제는 on_hold, 충돌·테스트 실패는 changes_requested, 성공은 그대로(in_review)에 댓글.
 
 병합 뒤 재시작(DEV-40-2): 바뀐 파일이 `restart_when` 패턴에 걸릴 때만 `restart_cmd`를 돌린다(화면 파일만이면 생략).
@@ -22,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -120,10 +123,16 @@ def _merged(repo, ref) -> bool:
 
 
 def run_tests(repo) -> str | None:
-    """검사를 하나씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다."""
+    """발견한 검사를 모두 돌리고 실패 시 종료 코드와 전체 출력을 보존한다."""
+    failures = []
     for t in sorted(Path(repo, "tests").glob("test_*.py")):
-        r = subprocess.run([sys.executable, str(t)], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
+        try:
+            r = subprocess.run([sys.executable, str(t)], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
+        except subprocess.TimeoutExpired as error:
+            def decoded(value):
+                return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
+            r = subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
         if r.returncode:
             detail = (f"검사: {t}\n작업 폴더: {repo}\nPython: {sys.executable}\n"
                       f"종료 코드: {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n"
@@ -133,12 +142,17 @@ def run_tests(repo) -> str | None:
             log = logs / f"{t.stem}-{time.time_ns()}.log"
             log.write_text(detail, encoding="utf-8")
             output = (r.stdout + r.stderr).strip() or "표준 출력과 오류 출력이 없어요."
-            return f"{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}"
-    return None
+            failures.append(f"{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
+    return '\n\n'.join(failures) or None
 
 
 def merge(repo: str, ref: str, after: list[str] = ()) -> tuple[str, str]:
-    """relay/<ref>를 base에 병합한다. (Task가 갈 상태, 메모) — 성공이면 ("merged", 병합 커밋)."""
+    """시험 병합을 검사한 뒤 동일한 커밋을 반영한다. 병합·거절 롤백과 직렬화한다."""
+    with _lock:
+        return _merge(repo, ref, after)
+
+
+def _merge(repo: str, ref: str, after: list[str]) -> tuple[str, str]:
     head = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if head != BASE_BRANCH:
         return "on_hold", f"저장소가 {BASE_BRANCH}가 아니라 {head}에 있어 병합 보류 — {BASE_BRANCH}로 돌려 놓은 뒤 재개해 주세요."
@@ -148,21 +162,56 @@ def merge(repo: str, ref: str, after: list[str] = ()) -> tuple[str, str]:
     if waiting:
         return "on_hold", f"선행 Task({', '.join(waiting)})가 아직 병합되지 않아 병합 보류."
     branch = branch_name(ref)
-    r = _git(repo, "merge-tree", "--write-tree", "--name-only", "--no-messages", BASE_BRANCH, branch)
-    if r.returncode:
-        files = r.stdout.split()[1:]
-        return "changes_requested", f"{BASE_BRANCH}와 충돌해서 병합하지 않았어요: {', '.join(files) or r.stderr.strip()}"
-    r = _git(repo, "merge", "--no-ff", "--no-edit", "-m", f"Merge {branch} ({ref})", branch)
-    if r.returncode:
-        _git(repo, "merge", "--abort")
-        return "changes_requested", f"병합에 실패해서 되돌렸어요: {(r.stdout + r.stderr).strip()[-800:]}"
-    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    failed = run_tests(repo)
-    if failed:
-        r = _git(repo, "revert", "-m", "1", "--no-edit", sha)
-        how = "revert 커밋으로 되돌렸어요" if not r.returncode else f"revert도 실패했어요 — 직접 확인해 주세요({r.stderr.strip()})"
-        return "changes_requested", f"병합 뒤 테스트가 실패해 {how}.\n\n```\n{failed}\n```"
-    return "merged", sha
+    before = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
+    task = _git(repo, 'rev-parse', '--verify', f'{branch}^{{commit}}')
+    if task.returncode:
+        return 'on_hold', 'Task 브랜치를 읽을 수 없어 시험 병합을 보류했어요.'
+    task_sha = task.stdout.strip()
+    if not _git(repo, 'merge-base', '--is-ancestor', task_sha, before).returncode:
+        return 'on_hold', '새로 병합할 Task 커밋이 없어요 — 이미 반영했거나 롤백한 작업을 확인해 주세요.'
+    folder = config.DATA_DIR / 'merge-worktrees'
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        worktree = Path(tempfile.mkdtemp(prefix='merge-', dir=folder)).resolve()
+    except OSError as error:
+        return 'on_hold', '시험 병합 폴더를 만들지 못했어요: ' + str(error)
+    added = False
+    try:
+        r = _git(repo, 'worktree', 'add', '--detach', str(worktree), before)
+        if r.returncode:
+            return 'on_hold', '시험 병합 사본을 만들지 못했어요: ' + r.stderr.strip()
+        added = True
+        r = _git(str(worktree), 'merge', '--no-ff', '--no-edit', '-m', f'Merge {branch} ({ref})', task_sha)
+        if r.returncode:
+            return 'changes_requested', f'{BASE_BRANCH}와 시험 병합이 실패했어요 — 운영 코드는 유지했어요.\n' + (r.stdout + r.stderr).strip()[-1500:]
+        sha = _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()
+        failed = run_tests(str(worktree))
+        if failed:
+            return 'changes_requested', f'시험 병합 전체 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
+        if _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip() != sha or _git(str(worktree), 'status', '--porcelain', '--untracked-files=no').stdout.strip():
+            return 'changes_requested', '검사 중 시험 병합 사본이 변경됐어요 — 검사 결과를 반영하지 않았어요.'
+        if (_git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip() != BASE_BRANCH
+                or _git(repo, 'rev-parse', 'HEAD').stdout.strip() != before
+                or _git(repo, 'rev-parse', branch).stdout.strip() != task_sha
+                or _git(repo, 'status', '--porcelain', '--untracked-files=no').stdout.strip()):
+            return 'on_hold', '검사 중 기준 브랜치·Task·작업 폴더가 바뀌었어요 — 최신 상태로 다시 시험 병합해 주세요.'
+        r = _git(repo, 'merge', '--ff-only', sha)
+        if r.returncode:
+            return 'on_hold', '검사한 커밋 반영에 실패했어요: ' + (r.stdout + r.stderr).strip()[-800:]
+        return 'merged', sha
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        return 'on_hold', '시험 병합 처리에 실패했어요: ' + str(error)
+    finally:
+        assert worktree.is_relative_to(folder.resolve())
+        try:
+            if added:
+                result = _git(repo, 'worktree', 'remove', '--force', str(worktree))
+                if result.returncode:
+                    print(f'시험 병합 사본 정리 실패: {worktree}: {result.stderr.strip()}')
+            elif worktree.exists():
+                worktree.rmdir()
+        except OSError as error:
+            print(f'시험 병합 사본 정리 실패: {worktree}: {error}')
 
 
 def handle(actor: dict, ref: str) -> str | None:
@@ -175,7 +224,7 @@ def handle(actor: dict, ref: str) -> str | None:
     with _lock:
         status, note = merge(repo, ref, [b["ref"] for b in issue["blocked_by"]])
         if status == "merged":
-            issues.add_comment(actor, ref, f"🔀 `{branch_name(ref)}`를 {BASE_BRANCH}에 병합했어요(`{note[:7]}`) — 병합 뒤 테스트 통과.")
+            issues.add_comment(actor, ref, f"🔀 `{branch_name(ref)}`를 {BASE_BRANCH}에 병합했어요(`{note[:7]}`) — 임시 worktree 시험 병합 전체 검사 통과, 검사한 커밋을 그대로 반영했어요.")
             status, note = deploy(repo, cfg, note, lambda msg: issues.add_comment(actor, ref, msg))
     if status == "merged":
         issues.add_comment(actor, ref, f"🔁 {note}")
