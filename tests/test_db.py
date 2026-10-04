@@ -81,7 +81,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
         after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
-        added = {'jobs': (None, 'manual', None, None), 'projects': ('',)}.get(table, ())
+        added = {'jobs': (None, 'manual', None, None, None, None), 'projects': ('',)}.get(table, ())
         assert after == [r + added for r in before[table]], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=2').fetchone()
     assert job['source'] == 'manual'
@@ -102,7 +102,8 @@ db.config.DB_PATH = original_path
 # Auto 계획 승인 직전 판에서 실제 설정·위임·참조와 실행 게이트를 보존한다.
 db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'auto-legacy.db'
 with sqlite3.connect(db.config.DB_PATH) as c:
-    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+    approval_version = next(i for i, sql in enumerate(db.MIGRATIONS) if 'CREATE TABLE project_auto_settings_new' in sql)
+    for version, sql in enumerate(db.MIGRATIONS[:approval_version], 1):
         c.executescript(sql + f'PRAGMA user_version={version};')
     c.execute("INSERT INTO projects(key,name,created_at) VALUES('AUTO','자동',?)", (now,))
     c.execute("INSERT INTO issues(project_id,number,title,reporter,created_at,updated_at) VALUES(1,1,'이슈','human:admin',?,?)", (now, now))
@@ -118,7 +119,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings')] == settings_before
     assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings_events')] == [r + (0,) for r in event_before]
-    assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == job_before
+    assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == [r + (None, None) for r in job_before]
     assert c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='auto_run_gate'").fetchone()[0] == trigger_before
     assert c.execute('PRAGMA foreign_key_check').fetchall() == []
     c.execute('UPDATE project_auto_settings SET auto_approve=1 WHERE project_id=1')

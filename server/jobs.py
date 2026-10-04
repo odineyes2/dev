@@ -142,7 +142,7 @@ def cancel(actor: dict, job_id: int) -> dict:
     with _lock, db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         j = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if not c.execute("UPDATE jobs SET status='cancelled' WHERE id=? AND status='queued'", (job_id,)).rowcount:
+        if not c.execute("UPDATE jobs SET status='cancelled',cancellation_reason='human_cancel' WHERE id=? AND status='queued'", (job_id,)).rowcount:
             raise issues.StoreError("대기 중인 항목이 아니에요.", 404)
         _restore(c, j)
     return {"cancelled": job_id}
@@ -183,9 +183,11 @@ def pump() -> None:
             try:
                 if j['source'] == 'auto':
                     with db.connect() as c:
+                        c.execute('BEGIN IMMEDIATE')
                         valid = automation.valid_job(c, j)
+                        if not valid:
+                            automation.cancel_invalid(c, j)
                     if not valid:
-                        _set(j['id'], 'cancelled', '자동 위임 조건이 바뀌었어요')
                         continue
                 with db.connect() as c:
                     row = c.execute("SELECT * FROM issues WHERE id=?", (j["issue_id"],)).fetchone()
@@ -212,7 +214,9 @@ def pump() -> None:
             except sqlite3.IntegrityError as e:
                 if j['source'] != 'auto':
                     raise
-                _set(j['id'], 'cancelled', str(e))
+                with db.connect() as c:
+                    c.execute('BEGIN IMMEDIATE')
+                    automation.cancel_invalid(c, j, start_error=str(e) != '자동 위임 조건이 바뀌었어요')
                 continue
             except issues.StoreError as e:
                 if j['source'] == 'auto' or e.status == 404:
