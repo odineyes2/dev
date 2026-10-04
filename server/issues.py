@@ -75,6 +75,69 @@ def _event(c, issue_id, actor, kind, body="", data=None):
               (issue_id, actor_label(actor), kind, body, json.dumps(d, ensure_ascii=False), db.now_iso()))
 
 
+# ---- 종류 카탈로그 ----
+def _type_dict(row):
+    return {**dict(row), "active": bool(row["active"])}
+
+
+def list_issue_types(include_inactive=False):
+    with db.connect() as c:
+        return [_type_dict(r) for r in c.execute(
+            "SELECT * FROM issue_types" + ("" if include_inactive else " WHERE active=1") + " ORDER BY id")]
+
+
+def create_issue_type(actor, name):
+    if not _is_human(actor):
+        raise _forbidden("종류 관리는 사람만 할 수 있어요.")
+    name = _text(name, "종류 이름", 100, required=True).strip()
+    try:
+        with db.connect() as c:
+            tid = c.execute("INSERT INTO issue_types(name) VALUES(?)", (name,)).lastrowid
+            return _type_dict(c.execute("SELECT * FROM issue_types WHERE id=?", (tid,)).fetchone())
+    except sqlite3.IntegrityError:
+        raise StoreError("같은 이름의 종류가 있어요.", 409)
+
+
+def update_issue_type(actor, type_id, fields):
+    if not _is_human(actor):
+        raise _forbidden("종류 관리는 사람만 할 수 있어요.")
+    sets = {}
+    if "name" in fields:
+        sets["name"] = _text(fields["name"], "종류 이름", 100, required=True).strip()
+    if "active" in fields:
+        if not isinstance(fields["active"], bool):
+            raise StoreError("active는 참/거짓이어야 해요.")
+        sets["active"] = int(fields["active"])
+    if not sets:
+        raise StoreError("바꿀 내용이 없어요.")
+    try:
+        with db.connect() as c:
+            if not c.execute(f"UPDATE issue_types SET {', '.join(k+'=?' for k in sets)} WHERE id=?",
+                             (*sets.values(), type_id)).rowcount:
+                raise _not_found("종류")
+            return _type_dict(c.execute("SELECT * FROM issue_types WHERE id=?", (type_id,)).fetchone())
+    except sqlite3.IntegrityError:
+        raise StoreError("같은 이름의 종류가 있어요.", 409)
+
+
+def _type_ids(c, value, issue_id=None):
+    if not isinstance(value, list) or any(type(x) is not int or x <= 0 for x in value):
+        raise StoreError("type_ids는 양의 정수 ID 목록이어야 해요.")
+    ids = sorted(set(value))
+    existing = {r[0] for r in c.execute("SELECT type_id FROM issue_type_links WHERE issue_id=?", (issue_id,))} if issue_id else set()
+    for tid in ids:
+        row = c.execute("SELECT active FROM issue_types WHERE id=?", (tid,)).fetchone()
+        if row is None or (not row[0] and tid not in existing):
+            raise StoreError("없거나 비활성화된 종류는 새로 선택할 수 없어요.")
+    return ids
+
+
+def _replace_types(c, iid, ids, actor):
+    c.execute("DELETE FROM issue_type_links WHERE issue_id=?", (iid,))
+    c.executemany("INSERT INTO issue_type_links(issue_id,type_id,source,actor,created_at) VALUES(?,?,?,?,?)",
+                  [(iid, tid, actor["kind"], actor_label(actor), db.now_iso()) for tid in ids])
+
+
 # ---- 프로젝트 ----
 def _project_row(r) -> dict:
     d = dict(r)
@@ -195,7 +258,10 @@ def ref_sql(i, k):
 _PARENT_REF = f"(SELECT {ref_sql('q', 'p')} FROM issues q WHERE q.id=i.parent_id)"
 _ISSUE_SELECT = (f"SELECT i.*, p.key AS project_key, {ref_sql('i', 'p')} AS ref, {_PARENT_REF} AS parent_ref, "
                  f"{_DEC_VERDICT} AS dec_verdict, {_DEC_VERSION} AS dec_version, "
-                 f"{_LATEST_PLAN} AS latest_plan FROM issues i JOIN projects p ON p.id = i.project_id")
+                 f"{_LATEST_PLAN} AS latest_plan, "
+                 "(SELECT json_group_array(json_object('id',t.id,'name',t.name,'active',t.active,'source',l.source)) "
+                 "FROM issue_type_links l JOIN issue_types t ON t.id=l.type_id WHERE l.issue_id=i.id ORDER BY t.id) AS types_json "
+                 "FROM issues i JOIN projects p ON p.id = i.project_id")
 
 
 def _lease_active(row, now=None) -> bool:
@@ -211,6 +277,10 @@ def _issue_dict(r) -> dict:
     d = dict(r)
     d["title_missing"] = title_missing(d["title"])
     d["labels"] = json.loads(d.pop("labels_json") or "[]")
+    d["types"] = sorted(json.loads(d.pop("types_json") or "[]"), key=lambda t: t["id"])
+    for t in d["types"]:
+        t["active"] = bool(t["active"])
+    d["type_ids"] = [t["id"] for t in d["types"]]
     verdict, version, latest = d.pop("dec_verdict"), d.pop("dec_version"), d.pop("latest_plan")
     # 결정은 그 계획서 판에 붙는다 — 새 판이 올라오면 stale(승인이 무효, 다시 결정해야 한다)
     d["approval"] = {"verdict": verdict, "plan_version": version, "stale": version != latest} if verdict else None
@@ -332,7 +402,7 @@ def _next_number(c, proj, parent=None) -> tuple:
     return number, None, None
 
 
-def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog") -> dict:
+def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None) -> dict:
     # 제목은 비워도 된다 — 본문만 쓰면 이슈를 처리하는 에이전트가 제목을 지어 채운다(DEV-8). 둘 다 비면 안 된다.
     title = _text(title, "제목", 300).strip()
     body = _text(body, "본문")
@@ -352,19 +422,22 @@ def create_issue(actor, project, title, body="", priority="none", labels=None, p
             if par["project_id"] != proj["id"]:
                 raise StoreError("하위 이슈는 부모와 같은 프로젝트여야 해요.")
             parent_id = par["id"]
+        ids = _type_ids(c, type_ids if type_ids is not None else [])
         number, sub_of, sub = _next_number(c, proj, par)
         iid = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
                         "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (proj["id"], number, sub_of, sub, parent_id, title, body, status, _priority(priority), _labels(labels),
                          actor_label(actor), now, now)).lastrowid
+        _replace_types(c, iid, ids, actor)
         return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (iid,)).fetchone())
 
 
 def update_issue(actor, ref, fields: dict) -> dict:
     with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
         row = _find(c, ref)
         own = row["reporter"] == actor_label(actor)
-        _guard_goal(row, actor, "제목·본문·라벨·우선순위")
+        _guard_goal(row, actor, "제목·본문·라벨·우선순위·종류")
         sets, changed = {}, []
         if "title" in fields or "body" in fields:
             # 예외: 제목이 없는 이슈(DEV-8)는 에이전트가 제목만 채울 수 있다 — 본문(지시)은 여전히 못 고친다.
@@ -394,12 +467,20 @@ def update_issue(actor, ref, fields: dict) -> dict:
                 sets["parent_id"] = par["id"]
             else:
                 sets["parent_id"] = None
+        types_changed = False
+        if "type_ids" in fields:
+            ids = _type_ids(c, fields["type_ids"], row["id"])
+            types_changed = ids != _issue_dict(row)["type_ids"]
+            if types_changed:
+                _replace_types(c, row["id"], ids, actor)
         sets = {k: v for k, v in sets.items() if row[k] != v}
-        if not sets:
+        if not sets and not types_changed:
             return _issue_dict(row)
         sets["updated_at"] = db.now_iso()
         c.execute(f"UPDATE issues SET {', '.join(k + '=?' for k in sets)} WHERE id=?", (*sets.values(), row["id"]))
         changed = [k.replace("_json", "") for k in sets if k != "updated_at"]
+        if types_changed:
+            changed.append("type_ids")
         if "assignee_agent_id" in changed:
             _event(c, row["id"], actor, "assign", data={"agent_id": sets["assignee_agent_id"]})
             changed.remove("assignee_agent_id")
