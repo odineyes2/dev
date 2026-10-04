@@ -83,7 +83,7 @@ def check_issue_types(page, shots):
     empty = page.request.get(BASE + '/api/issues/' + empty_ref).json()
     assert empty['type_ids'] == [] and empty['plan'] is None and not empty['job']
     assert '미분류' in page.locator('.byline').inner_text()
-    page.goto(BASE + '/#/settings'); page.wait_for_selector('a[href="#/types"]'); page.click('a[href="#/types"]')
+    page.goto(BASE + '/#/settings'); page.wait_for_selector('a[href="#/settings/types"]'); page.click('a[href="#/settings/types"]')
     page.wait_for_selector('#type-create'); page.fill('#type-create input', '추가 종류 <검사>'); page.click('#type-create button')
     page.wait_for_selector('.type-row input[value="추가 종류 <검사>"]')
     added = page.request.get(BASE + '/api/issue-types').json()['types'][-1]
@@ -202,6 +202,111 @@ def check_auto_settings(page, shots):
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
     for key in ('AUTOA', 'AUTOB'):
+        assert page.request.delete(BASE + '/api/projects/' + key, headers=H).ok
+    page.evaluate("localStorage.removeItem('dev.project')")
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+
+
+def check_settings_navigation(page, shots):
+    """설정 하위 주소·이력·범위와 조회/저장 응답 격리를 확인한다."""
+    H = {'X-Requested-With': 'dev'}
+    for key in ('NAVA', 'NAVB'):
+        assert page.request.post(BASE + '/api/projects', headers=H, data={'key': key, 'name': key}).ok
+    page.reload(); page.wait_for_selector('#project-filter')
+    page.select_option('#project-filter', '')
+
+    def selected(tab, selector):
+        page.wait_for_selector(selector)
+        assert page.locator('[data-nav=settings]').get_attribute('class').endswith('active')
+        assert page.locator('#settings-nav [aria-current=page]').get_attribute('data-settings') == tab
+        assert page.locator('#settings-nav a').count() == 2
+        assert page.locator('#settings-nav').is_visible()
+
+    page.goto(BASE + '/#/settings'); selected('auto', '#settings-body .empty')
+    assert page.url.endswith('/#/settings/auto')
+    page.locator('[data-settings=types]').focus(); page.keyboard.press('Enter')
+    selected('types', '#type-create')
+    assert '모든 프로젝트' in page.locator('.type-management').inner_text()
+    page.go_back(); selected('auto', '#settings-body .empty')
+    page.go_forward(); selected('types', '#type-create')
+    page.reload(); selected('types', '#type-create')
+    page.goto(BASE + '/#/types'); selected('types', '#type-create')
+    assert page.url.endswith('/#/settings/types')
+    page.select_option('#project-filter', 'NAVA'); selected('types', '#type-create')
+    page.select_option('#project-filter', 'NAVB'); selected('types', '#type-create')
+    page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+    assert page.locator('#settings-nav').is_hidden()
+
+    # 같은 주소로 돌아와도 앞선 조회가 최신 화면을 덮지 않아야 한다.
+    held = []
+    pattern = '**/api/issue-types?include_inactive=true'
+    catalog = page.request.get(BASE + '/api/issue-types?include_inactive=true').json()
+    page.route(pattern, lambda route: held.append(route))
+    page.goto(BASE + '/#/settings/types'); page.wait_for_selector('.settings-skeleton')
+    page.goto(BASE + '/#/settings/auto'); selected('auto', '#auto_review')
+    page.goto(BASE + '/#/settings/types'); page.wait_for_selector('.settings-skeleton')
+    page.wait_for_function('true'); assert len(held) == 2
+    held.pop().fulfill(json=catalog); selected('types', '#type-create')
+    held.pop().fulfill(status=401, json={'detail': 'late load'})
+    page.wait_for_timeout(100); selected('types', '#type-create')
+    assert page.locator('#shell').is_visible()
+    page.unroute(pattern)
+
+    # 저장 완료 뒤 재조회 중 전환하는 경우까지 분리한다.
+    page.route(pattern, lambda route: held.append(route))
+    page.fill('#type-create input', '응답 격리 검사'); page.click('#type-create button')
+    page.wait_for_selector('.settings-skeleton')
+    page.goto(BASE + '/#/settings/auto'); selected('auto', '#auto_review')
+    assert len(held) == 1
+    held.pop().fulfill(json=catalog)
+    page.wait_for_timeout(100); selected('auto', '#auto_review')
+    page.unroute(pattern)
+
+    page.goto(BASE + '/#/settings/types'); selected('types', '#type-create')
+    page.route('**/api/issue-types', lambda route: held.append(route))
+    page.fill('#type-create input', '늦은 저장 검사'); page.click('#type-create button')
+    page.wait_for_selector('#type-create[aria-busy=true]')
+    page.select_option('#project-filter', 'NAVA'); selected('types', '#type-create')
+    held.pop().fulfill(status=401, json={'detail': 'late save'})
+    page.wait_for_timeout(100); selected('types', '#type-create')
+    assert page.locator('#type-status').inner_text() == ''
+    assert page.locator('#shell').is_visible()
+    page.unroute('**/api/issue-types')
+
+    auto_pattern = '**/api/projects/NAVA/auto-settings'
+    page.route(auto_pattern, lambda route: held.append(route))
+    page.goto(BASE + '/#/settings/auto'); page.wait_for_selector('.settings-skeleton')
+    page.goto(BASE + '/#/settings/types'); selected('types', '#type-create')
+    held.pop().fulfill(status=401, json={'detail': 'late auto load'})
+    page.wait_for_timeout(100); selected('types', '#type-create')
+    page.unroute(auto_pattern)
+    page.goto(BASE + '/#/settings/auto'); selected('auto', '#auto_review')
+    page.route(auto_pattern, lambda route: held.append(route))
+    page.click('#auto_review'); page.wait_for_selector('#settings-body[aria-busy=true]')
+    page.goto(BASE + '/#/settings/types'); selected('types', '#type-create')
+    held.pop().fulfill(status=401, json={'detail': 'late auto save'})
+    page.wait_for_timeout(100); selected('types', '#type-create')
+    assert page.locator('#shell').is_visible()
+    page.unroute(auto_pattern)
+
+    for scheme in ('light', 'dark'):
+        page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            for tab, selector in (('auto', '#auto_review'), ('types', '#type-create')):
+                page.goto(BASE + '/#/settings/' + tab); selected(tab, selector)
+                assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+                assert page.locator('#settings-nav').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+                page.keyboard.press('Tab')
+                page.locator('[data-settings=' + tab + ']').focus()
+                assert page.locator('[data-settings=' + tab + ']').evaluate('e => getComputedStyle(e).outlineStyle') != 'none'
+                page.locator('#toast').evaluate('e => e.hidden = true')
+                page.screenshot(path=str(shots / f'settings_{tab}_{scheme}_{width}.png'), full_page=True)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("localStorage.setItem('dev.theme','light');document.documentElement.dataset.theme='light'")
+    page.emulate_media(color_scheme='light')
+    for key in ('NAVA', 'NAVB'):
         assert page.request.delete(BASE + '/api/projects/' + key, headers=H).ok
     page.evaluate("localStorage.removeItem('dev.project')")
     page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
@@ -1033,7 +1138,9 @@ def check_board_pan(page, shots):
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 ns_port, dev_port = free_port(), free_port()
-env = {**os.environ, "DEV_DATA_DIR": str(tmp / "data"), "DEV_NIGHTSHIFT_URL": f"http://127.0.0.1:{ns_port}"}
+env = {**os.environ, "DEV_DATA_DIR": str(tmp / "data"), "DEV_NIGHTSHIFT_URL": f"http://127.0.0.1:{ns_port}",
+       "DEV_CLAUDE_BIN": str(tmp / 'disabled-claude'), "DEV_CODEX_AGENT_KEY": "",
+       "DEV_REVIEW_MCP_CONFIG": str(tmp / 'no-mcp.json'), "NTFY_TOPIC": ""}
 procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "fake_ns:app", "--port", str(ns_port)], cwd=tmp, stderr=subprocess.DEVNULL),
          subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app", "--port", str(dev_port)], cwd=ROOT / "server", env=env, stderr=subprocess.DEVNULL)]
 BASE = f"http://127.0.0.1:{dev_port}"
@@ -1059,6 +1166,8 @@ try:
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
         check_account_menu(page, shots)
+        check_settings_navigation(page, shots)
+        page.goto(BASE + '/#/'); page.wait_for_selector('#list-body[aria-busy="false"]')
         if '--issue-types-only' in sys.argv:
             check_issue_types(page, shots)
             assert not errs, errs

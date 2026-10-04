@@ -206,8 +206,20 @@ async function route(){
   settingsSession = null;
   disposeList();
   cleanupBoard();
-  const h = location.hash.replace(/^#\/?/, '').split('?')[0];
+  let h = location.hash.replace(/^#\/?/, '').split('?')[0];
+  // 기존 주소를 같은 설정 영역의 하위 주소로 정규화한다.
+  if(h === 'settings' || h === 'types'){
+    h = h === 'types' ? 'settings/types' : 'settings/auto';
+    history.replaceState(null, '', '#/' + h + (location.hash.includes('?') ? '?' + location.hash.split('?')[1] : ''));
+  }
   const [name, arg] = h.split('/');
+  const settingsTab = name === 'settings' ? (arg || 'auto') : null;
+  document.getElementById('settings-nav').hidden = !settingsTab;
+  document.querySelectorAll('[data-settings]').forEach(a => {
+    const active = a.dataset.settings === settingsTab;
+    a.classList.toggle('active', active);
+    if(active) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
   const t0 = performance.now();
   perf.fetchMs = 0; perf.server = '';
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === (name || 'issues')));
@@ -218,8 +230,8 @@ async function route(){
     else if(name === 'new') await renderNew(new URLSearchParams(location.hash.split('?')[1] || ''));
     else if(name === 'agents') await renderAgents();
     else if(name === 'projects') renderProjects();
-    else if(name === 'settings') await renderSettings();
-    else if(name === 'types') await renderTypes();
+    else if(name === 'settings' && settingsTab === 'auto') await renderSettings();
+    else if(name === 'settings' && settingsTab === 'types') await renderTypes();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
   }catch(e){ if(!view.innerHTML) view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   perfReport(name || 'issues', t0);
@@ -1148,7 +1160,7 @@ async function renderSettings(){
   settingsSession = session;
   const key = projectSel.value;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = `<section class="panel auto-settings"><h2>설정</h2><a class="button" href="#/types">종류 관리</a><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
+  view.innerHTML = `<section class="panel auto-settings"><h2>Auto 위임 설정</h2><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
   const body = view.querySelector('#settings-body');
   if(!key){ body.innerHTML = '<div class="empty">위의 프로젝트 필터에서 설정할 프로젝트를 선택해 주세요.</div>'; return; }
   body.innerHTML = '<div class="settings-skeleton" aria-label="설정을 불러오는 중" aria-busy="true"></div>';
@@ -1208,10 +1220,21 @@ function bindTypePicker(root){
 function selectedTypes(root){ return [...root.querySelectorAll('[data-type][aria-pressed="true"]')].map(b => Number(b.dataset.type)); }
 async function renderTypes(){
   if(me?.kind !== 'human'){ view.innerHTML = '<div class="empty">관리자만 종류를 관리할 수 있어요.</div>'; return; }
-  const hash = location.hash;
-  const {types} = await api('GET', '/api/issue-types?include_inactive=true');
-  if(location.hash !== hash) return;
-  view.innerHTML = `<section class="panel type-management"><h2>종류 관리</h2><p class="dim">모든 프로젝트에서 함께 사용해요. 비활성화해도 기존 Issue의 연결은 보존돼요.</p><form id="type-create"><label>새 종류 이름<input name="name" maxlength="100" required></label><button type="submit">추가</button></form><div>${types.map(t => `<form class="type-row" data-id="${t.id}"><label>종류 이름<input name="name" aria-label="${esc(t.name)} 이름" maxlength="100" required value="${esc(t.name)}"></label><button type="submit">이름 저장</button><button type="button" class="type-active auto-switch" role="switch" aria-label="${esc(t.name)} 활성" aria-checked="${t.active}"><span class="switch-track" aria-hidden="true"></span><span>${t.active ? '활성' : '비활성'}</span></button></form>`).join('')}</div><p id="type-status" role="status"></p></section>`;
+  const session = {};
+  settingsSession = session;
+  const current = () => settingsSession === session && !document.getElementById('shell').hidden;
+  view.innerHTML = '<section class="panel type-management"><h2>이슈 종류 관리</h2><p class="dim">모든 프로젝트에서 함께 사용해요.</p><div class="settings-skeleton" aria-label="종류를 불러오는 중" aria-busy="true"></div></section>';
+  let types;
+  try{ ({types} = await api('GET', '/api/issue-types?include_inactive=true', undefined, current)); }
+  catch(e){
+    if(current()){
+      view.innerHTML = `<section class="panel type-management"><h2>이슈 종류 관리</h2><p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="types-retry" type="button">다시 불러오기</button></section>`;
+      view.querySelector('#types-retry').onclick = renderTypes;
+    }
+    return;
+  }
+  if(!current()) return;
+  view.innerHTML = `<section class="panel type-management"><h2>이슈 종류 관리</h2><p class="dim">모든 프로젝트에서 함께 사용해요. 비활성화해도 기존 Issue의 연결은 보존돼요.</p><form id="type-create"><label>새 종류 이름<input name="name" maxlength="100" required></label><button type="submit">추가</button></form><div>${types.map(t => `<form class="type-row" data-id="${t.id}"><label>종류 이름<input name="name" aria-label="${esc(t.name)} 이름" maxlength="100" required value="${esc(t.name)}"></label><button type="submit">이름 저장</button><button type="button" class="type-active auto-switch" role="switch" aria-label="${esc(t.name)} 활성" aria-checked="${t.active}"><span class="switch-track" aria-hidden="true"></span><span>${t.active ? '활성' : '비활성'}</span></button></form>`).join('')}</div><p id="type-status" role="status"></p></section>`;
   const root = view.querySelector('.type-management');
   async function save(form, method, url, data){
     const controls = [...form.querySelectorAll('input,button')];
@@ -1219,8 +1242,17 @@ async function renderTypes(){
     if(form.getAttribute('aria-busy') === 'true') return;
     form.setAttribute('aria-busy', 'true'); controls.forEach(c => c.disabled = true);
     root.querySelector('#type-status').textContent = '저장 중…';
-    try{ await api(method, url, data); if(root.isConnected){ await renderTypes(); if(location.hash === hash){ view.querySelector('#type-status').textContent = '저장했어요.'; view.querySelector(focus)?.focus(); } } }
-    catch(e){ if(root.isConnected) root.querySelector('#type-status').textContent = `${e.message} 다시 시도해 주세요.`; }
+    try{
+      await api(method, url, data, current);
+      if(current() && root.isConnected){
+        const refreshed = await renderTypes();
+        if(refreshed && settingsSession === refreshed && !document.getElementById('shell').hidden){
+          view.querySelector('#type-status').textContent = '저장했어요.';
+          view.querySelector(focus)?.focus();
+        }
+      }
+    }
+    catch(e){ if(current() && root.isConnected) root.querySelector('#type-status').textContent = `${e.message} 다시 시도해 주세요.`; }
     finally{ form.setAttribute('aria-busy','false'); controls.forEach(c => c.disabled = false); }
   }
   root.querySelector('#type-create').onsubmit = e => { e.preventDefault(); save(e.target, 'POST', '/api/issue-types', {name:e.target.elements.name.value}); };
@@ -1229,4 +1261,5 @@ async function renderTypes(){
     const b = form.querySelector('.type-active');
     b.onclick = () => save(form, 'PATCH', `/api/issue-types/${form.dataset.id}`, {active:b.getAttribute('aria-checked') !== 'true'});
   });
+  return session;
 }
