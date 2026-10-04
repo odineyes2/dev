@@ -204,6 +204,7 @@ function perfReport(name, t0){
 // ---- 라우팅 ----
 async function route(){
   settingsSession = null;
+  actionSession = null;
   disposeList();
   cleanupBoard();
   let h = location.hash.replace(/^#\/?/, '').split('?')[0];
@@ -233,6 +234,76 @@ async function route(){
 window.addEventListener('hashchange', route);
 
 // ---- 목록 ----
+
+let actionSession = null;
+const pendingActions = new Set();
+function actionKind(i){
+  const c=i.action_context;
+  if(!c || c.has_active_job || pendingActions.has(i.ref)) return '';
+  const valid=c => c?.plan_version && c.approval && !c.approval.stale && c.approval.plan_version===c.plan_version && ['approve','approve_notes'].includes(c.approval.verdict);
+  if(i.parent_id!=null || i.parent_ref) return i.status==='backlog' && !c.has_execution && valid(c.parent) ? 'execute' : '';
+  if(i.status==='triage' && c.has_children) return 'complete-tree';
+  if(i.status==='triage' && c.plan_version && !valid(c)) return 'decision';
+  return i.status==='backlog' && !c.plan_version && !c.has_children ? 'review' : '';
+}
+function actionOff(kind,s){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='decision' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
+function actionHtml(i){
+  const kind=actionKind(i); if(!kind) return '';
+  const settings=actionSession?.settings.get(i.project_key);
+  return `<div class="issue-actions" aria-label="Action">${(['review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
+    const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':'전체 완료';
+    return `<button type="button" draggable="false" data-action="${kind}" data-ref="${esc(i.ref)}" data-provider="${provider}" title="${label}" aria-label="${label}" aria-disabled="${!settings || !!actionOff(kind,settings)}">${provider?`<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider==='claude'?'claude':'openai'}"/></svg>`:label}</button>`;
+  }).join('')}</div>`;
+}
+function beginActions(current){ return actionSession={settings:new Map(),items:new Map(),current}; }
+async function loadActionSettings(session,items){
+  items.forEach(i=>session.items.set(i.ref,i));
+  await Promise.all([...new Set(items.map(i=>i.project_key))].filter(k=>!session.settings.has(k)).map(async key=>{
+    try{ const s=await api('GET',`/api/projects/${encodeURIComponent(key)}/auto-settings`,undefined,session.current);
+      if(typeof s.auto_review!=='boolean' || typeof s.auto_execute!=='boolean') throw new Error('설정');
+      session.settings.set(key,s);
+    }catch(e){ session.settings.set(key,null); }
+  }));
+}
+function bindActions(container,session,refresh){
+  container.querySelectorAll('[data-action]').forEach(b=>{
+    if(b.dataset.bound) return; b.dataset.bound='true';
+    for(const type of ['pointerdown','mousedown','dragstart']) b.addEventListener(type,e=>{e.stopPropagation();if(type==='dragstart')e.preventDefault();});
+    b.addEventListener('click',async e=>{
+      e.stopPropagation();
+      const i=session.items.get(b.dataset.ref),kind=b.dataset.action,provider=b.dataset.provider;
+      const current=()=>actionSession===session && session.current();
+      if(!current() || pendingActions.has(i.ref) || actionKind(i)!==kind) return;
+      const settings=session.settings.get(i.project_key);
+      if(!settings){toast('Auto 설정을 확인하지 못했어요. 새로고침해 다시 조회해 주세요.');return;}
+      if(actionOff(kind,settings)){toast('Auto 모드에서는 해당 버튼이 비활성화됩니다.');return;}
+      pendingActions.add(i.ref);
+      container.querySelectorAll('[data-action]').forEach(x=>{if(x.dataset.ref===i.ref)x.disabled=true;});
+      try{
+        if(kind==='complete-tree'){
+          const root=await api('GET',`/api/issues/${encodeURIComponent(i.ref)}`,undefined,current);
+          if(!current())return;
+          const open=[root,...root.children].filter(x=>!['done','closed'].includes(x.status));
+          const warn=root.children.filter(x=>!['done','closed'].includes(x.status) && (x.status!=='in_review' || ['병합 대기','재시작 대기','되돌림'].includes(x.merge_state)));
+          if(!open.length){toast('이미 모두 끝났어요');return;}
+          if(!confirm(`${root.ref} 묶음 전체를 Done으로 바꿀까요? 되돌리기 기능은 없어요.\n\n닫힐 이슈:\n${open.map(x=>`· ${x.ref} ${x.title}`).join('\n')}`+(warn.length?`\n\n주의:\n${warn.map(x=>`· ${x.ref} — ${STATUS_LABEL[x.status]} ${x.merge_state||''}`).join('\n')}`:'')))return;
+        }else if(kind!=='decision'){
+          const name=provider==='claude'?'Claude':'Codex';
+          const task=kind==='execute'?await api('GET',`/api/issues/${encodeURIComponent(i.ref)}`,undefined,current):null;
+          if(!current())return;
+          const limit=task?(provider==='codex'?`시간 제한은 ${Math.floor(task.execute.timeout_sec/60)}분이고 비용 상한은 없어요.`:`비용 상한은 $${task.execute.budget_usd}이에요.`):'';
+          const scope=task ? '홈서버의 격리된 worktree에서 구현해요. 실행 후 기존 자동 병합 정책이 적용돼요.' : '홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).';
+          if(!confirm(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?\n${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}`))return;
+        }
+        if(!current())return;
+        await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:provider?{provider}:{},current);
+        if(current())toast(kind==='decision'?'계획을 승인했어요.':kind==='complete-tree'?'묶음을 끝냈어요.':'작업을 대기열에 등록했어요.');
+      }catch(e){ /* 최신 정보로 다시 판단한다. */ }
+      finally{pendingActions.delete(i.ref);if(current())await refresh();}
+    });
+  });
+}
+
 function listState(){ return JSON.parse(localStorage.getItem('dev.list') || '{"statuses":[],"closed":false,"q":""}'); }
 // 목록은 LIST_PAGE개씩 — 끝(#list-more)이 보이면 다음 묶음을 붙인다(DEV-7). 도구줄은 한 번만 그리고
 // 필터·검색이 바뀌면 결과 칸만 처음부터 다시 받는다(검색 글칸의 포커스가 유지되게).
@@ -255,7 +326,7 @@ function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
     <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${typesHtml(i)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
-    <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td></tr>`;
+    <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
 // Task는 부모 바로 아래에 들여써서 붙이고(부모가 아직 안 왔으면 오는 순간 끌어온다) 접고 펼 수 있다. 접힘은 부모 ref별로 기억한다.
 function collapsedSet(){ return new Set(JSON.parse(localStorage.getItem('dev.collapsed') || '[]')); }
@@ -316,6 +387,7 @@ async function renderList(){
     localStorage.setItem('dev.project', e.target.value); projectSel.value = e.target.value; loadList();
   });
   view.querySelector('#list-body').addEventListener('click', (e) => {
+    if(e.target.closest('[data-action]')) return;
     const tog = e.target.closest('.tog');
     if(tog){
       const tr = tog.closest('tr.row'), set = collapsedSet();
@@ -341,6 +413,8 @@ async function loadList(){
   const st = listState();
   const statuses = st.statuses.length ? st.statuses : (st.closed ? [] : OPEN_STATUSES);
   listLoad = { body, more, qs: { project: currentProject(), status: statuses.join(','), q: st.q, ...(st.approved ? { approved: 'true' } : {}) }, offset: 0, done: false, busy: false, seen: new Set() };
+  listLoad.actions = beginActions(() => listLoad === L && body === view.querySelector('#list-body'));
+  const L = listLoad;
   body.innerHTML = ''; more.textContent = '';
   await loadMoreIssues();
 }
@@ -373,6 +447,9 @@ async function loadMoreIssues(){
   finish();
   if(!current()) return;   // 필터 변경과 탭 이동 후의 응답은 버린다.
   // 고친 순 정렬이라 사이에 바뀐 이슈가 두 번 올 수 있다 — 이미 그린 것은 건너뛴다.
+  L.busy = true;   // Auto 설정을 기다리는 동안 같은 페이지를 다시 요청하지 않는다.
+  await loadActionSettings(L.actions, data.issues);
+  if(!current()) return;
   const items = data.issues.filter(i => !L.seen.has(i.ref));
   items.forEach(i => L.seen.add(i.ref));
   L.offset += data.issues.length;
@@ -380,10 +457,10 @@ async function loadMoreIssues(){
   L.busy = false;
   if(!body.querySelector('table, .empty')){
     body.innerHTML = items.length ? `<table class="issues"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th class="hide-m">Priority</th>
-      <th class="hide-m">Claimed</th><th class="hide-m">Updated</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
+      <th class="hide-m">Claimed</th><th class="hide-m">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
   }
   const tbody = body.querySelector('tbody');
-  if(tbody) items.forEach(i => placeRow(tbody, i));
+  if(tbody){ items.forEach(i => placeRow(tbody, i)); bindActions(tbody, L.actions, loadList); }
   more.textContent = '';
   // 한 화면이 다 안 찼으면 바로 다음 묶음
   if(!L.done && more.getBoundingClientRect().top < window.innerHeight + 400) loadMoreIssues();
@@ -428,16 +505,21 @@ function enableBoardPan(board){
 }
 async function renderBoard(){
   cleanupBoard();
+  const key = currentProject(), hash = location.hash;
+  const session = beginActions(() => currentProject() === key && location.hash === hash);
   const cols = STATUSES.filter(s => s !== 'closed');
   const items = (await api('GET', '/api/issues?' + new URLSearchParams({ project: currentProject(), status: cols.join(',') }))).issues;
+  await loadActionSettings(session, items);
+  if(actionSession !== session || !session.current()) return;
   view.innerHTML = `<div class="kanban" tabindex="0" role="region" aria-label="Issue 보드 — 빈 영역을 끌거나 좌우 방향키로 이동해요">${cols.map(s => {
     const mine = items.filter(i => i.status === s);
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
         <div class="t">${titleHtml(i)}</div><div class="meta">${prioHtml(i.priority)}${approvalHtml(i.approval)}${labelsHtml(i.labels)}${typesHtml(i)}
-        ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div></div>`).join('')}
+        ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div>${actionHtml(i)}</div>`).join('')}
     </div></div>`;
   }).join('')}</div>`;
+  bindActions(view.querySelector('.kanban'), session, renderBoard);
   enableBoardPan(view.querySelector('.kanban'));
   view.querySelectorAll('.card').forEach(card => {
     card.addEventListener('click', () => { location.hash = `#/issue/${card.dataset.ref}`; });

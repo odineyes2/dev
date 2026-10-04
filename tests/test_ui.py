@@ -1215,6 +1215,123 @@ def check_board_pan(page, shots):
     board.evaluate('e => e.scrollLeft = 0')
 
 
+
+def check_board_actions(page, shots, answers, asked):
+    """Action의 판단과 요청 차단을 모의 응답으로 검사한다."""
+    settings = {'auto_review': False, 'auto_execute': False}
+    context = dict(plan_version=None, approval=None, has_children=False, has_execution=False, has_active_job=False, parent=None)
+    def item(n, status='backlog', **patch):
+        return dict(ref=f'ACT-{n}', title='Action 검사', project_key='ACT', status=status, parent_id=None,
+                    labels=[], types=[], priority='none', action_context={**context, **patch})
+    valid = {'verdict':'approve_notes','plan_version':2,'stale':False}
+    rows = [item(1), item(2,'triage',plan_version=2), item(3,'triage',has_children=True),
+            {**item(4, parent={'plan_version':2,'approval':valid}), 'parent_id':100,'parent_ref':'ACT-100'},
+            item(5,'in_review',plan_version=2), item(6,'triage',plan_version=2,approval=valid),
+            {**item(7,has_execution=True,parent={'plan_version':2,'approval':valid}),'parent_id':100},
+            item(8,has_active_job=True), {**item(9),'parent_id':101},
+            *[item(n,status,plan_version=2) for n,status in enumerate(
+                ('waiting','in_progress','done','closed','on_hold','changes_requested'),10)],
+            {**item(20,parent={'plan_version':3,'approval':{**valid,'stale':True}}),'parent_id':102}]
+    posts, pending = [], []
+    delay = False
+    conflict = False
+    fail_settings = False
+    delay_settings = False
+    pending_settings = []
+    def issues(route): route.fulfill(json={'issues':rows,'has_more':False})
+    def auto(route):
+        if delay_settings:
+            pending_settings.append(route); return
+        route.fulfill(status=500 if fail_settings else 200, json={'detail':'병합 대기'} if fail_settings else settings)
+    def action(route):
+        if route.request.method == 'POST':
+            posts.append((route.request.url, route.request.post_data_json))
+            if delay: pending.append(route); return
+            route.fulfill(status=409 if conflict else 200, json={'detail':'? 묶음을 끝냈어요.'} if conflict else {})
+        else:
+            route.fulfill(json={**rows[2], 'children':[{'ref':'ACT-3-1','title':'?미완료 Task','status':'backlog','merge_state':'병합 대기'}],
+                                'execute':{'timeout_sec':1800,'budget_usd':2}})
+    page.route('**/api/issues?*', issues)
+    page.route('**/api/projects/*/auto-settings', auto)
+    page.route('**/api/issues/ACT-**', action)
+    def ready(board=False):
+        page.goto(BASE + ('/#/board' if board else '/#/'))
+        page.reload(); page.wait_for_selector('[data-action]')
+    def btn(ref, kind, provider=''):
+        return page.locator(f'[data-action="{kind}"][data-ref="ACT-{ref}"][data-provider="{provider}"]')
+    try:
+        for board in (False,True):
+            ready(board)
+            assert page.locator('[data-action]').count() == 6
+            for kind, ref in [('review',1),('execute',4)]:
+                for provider in ('claude','codex'):
+                    btn(ref,kind,provider).click()
+                    page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
+                    assert posts[-1][0].endswith('/'+kind) and posts[-1][1] == {'provider':provider}
+                    assert page.url.endswith('/#/board' if board else '/#/')
+            settings.update(auto_review=True,auto_execute=True)
+            ready(board); before = len(posts); asked.clear()
+            for kind,ref in [('review',1),('execute',4)]:
+                for key in ('Enter','Space'):
+                    btn(ref,kind,'claude').focus(); page.keyboard.press(key)
+                    assert page.inner_text('#toast') == 'Auto 모드에서는 해당 버튼이 비활성화됩니다.'
+                btn(ref,kind,'codex').click(force=True)
+            assert len(posts) == before and not asked
+            settings.update(auto_review=False,auto_execute=False)
+            ready(board)
+            settings.update(auto_plan_approve=True,auto_plan_approve_available=True)
+            ready(board); before = len(posts); asked.clear()
+            btn(2,'decision').click(force=True)
+            assert len(posts) == before and not asked
+            assert page.inner_text('#toast') == 'Auto 모드에서는 해당 버튼이 비활성화됩니다.'
+            settings.update(auto_plan_approve=False)
+            ready(board)
+            conflict = True; btn(2,'decision').click()
+            page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
+            assert posts[-1][1]['plan_version'] == 2
+            conflict = False
+            before = len(posts); answers.append(None); btn(3,'complete-tree').click()
+            page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
+            assert len(posts) == before
+            btn(3,'complete-tree').click(); page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
+            assert posts[-1][0].endswith('/complete-tree') and '?미완료 Task' in asked[-1] and '병합 대기' in asked[-1]
+            for scheme in ('light','dark'):
+                page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}',scheme)
+                page.emulate_media(color_scheme=scheme)
+                for width in (1300,390):
+                    page.set_viewport_size({'width':width,'height':850})
+                    page.wait_for_timeout(200)
+                    assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+                    page.screenshot(path=str(shots / f'action_{"board" if board else "list"}_{scheme}_{width}.png'),full_page=True)
+            page.set_viewport_size({'width':1300,'height':850})
+        ready(); delay = True; before = len(posts)
+        btn(1,'review','claude').evaluate('e => {e.click();e.click()}')
+        page.wait_for_timeout(200); assert len(posts) == before + 1
+        page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects') if page.locator('.projects').count() else page.wait_for_timeout(200)
+        pending.pop().fulfill(json={}); delay = False
+        page.wait_for_timeout(200); assert page.url.endswith('/#/projects')
+        fail_settings = True; ready(); before = len(posts); btn(1,'review','claude').click(force=True)
+        assert len(posts) == before and '새로고침' in page.inner_text('#toast')
+        fail_settings = False; delay_settings = True
+        page.evaluate('void loadList()')
+        page.wait_for_timeout(100)
+        page.evaluate('localStorage.setItem("dev.project","OTHER");void loadList()')
+        page.wait_for_timeout(100)
+        assert len(pending_settings) == 2
+        pending_settings.pop().fulfill(json=settings)
+        page.wait_for_selector('[data-action]')
+        pending_settings.pop().fulfill(status=500,json={'detail':'오래된 오류'})
+        page.wait_for_timeout(100)
+        assert page.locator('[data-action]').count() == 6
+        assert page.inner_text('#toast') != '오래된 오류'
+        page.evaluate('localStorage.removeItem("dev.project")')
+    finally:
+        page.unroute('**/api/issues?*',issues); page.unroute('**/api/projects/*/auto-settings',auto); page.unroute('**/api/issues/ACT-**',action)
+        page.set_viewport_size({'width':1300,'height':850})
+        page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
+        page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 ns_port, dev_port = free_port(), free_port()
@@ -1245,6 +1362,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--board-actions-only' in sys.argv:
+            check_board_actions(page, shots, answers, asked)
+            assert not errs, errs
+            print('OK: board actions'); sys.exit(0)
         check_account_menu(page, shots)
         check_settings_navigation(page, shots)
         page.goto(BASE + '/#/'); page.wait_for_selector('#list-body[aria-busy="false"]')
@@ -1287,6 +1408,7 @@ try:
         check_project_documents(page, shots)
         check_auto_settings(page, shots)
         check_published_notice(page, shots)
+        check_board_actions(page, shots, answers, asked)
         if '--project-flows-only' in sys.argv:
             assert not errs, errs
             print('OK: project flows')
