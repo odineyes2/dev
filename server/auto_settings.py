@@ -5,7 +5,7 @@ import db
 from issues import StoreError, actor_label
 
 PROVIDERS = ("claude", "codex")
-FIELDS = {"auto_review", "auto_execute", "auto_approve", "provider_order"}
+FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order"}
 
 
 def _project(c, key):
@@ -23,6 +23,8 @@ def _settings(c, project):
         "auto_execute": bool(row["auto_execute"]) if row else False,
         "auto_approve": bool(row["auto_approve"]) if row else False,
         "provider_order": json.loads(row["provider_order_json"]) if row else list(PROVIDERS),
+        "auto_plan_approve": bool(row["auto_plan_approve"]) if row else False,
+        "auto_plan_approve_available": True,
         "auto_approve_available": True,
         "auto_approve_disabled_reason": "",
         "updated_by": row["updated_by"] if row else None,
@@ -40,7 +42,7 @@ def update_settings(actor, key, changes):
         raise StoreError("설정 변경은 사람(관리자)만 할 수 있어요.", 403)
     if not isinstance(changes, dict) or set(changes) - FIELDS:
         raise StoreError("자동화 설정 항목이 맞지 않아요.")
-    for field in ("auto_review", "auto_execute", "auto_approve"):
+    for field in ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve"):
         if field in changes and type(changes[field]) is not bool:
             raise StoreError(f"{field}는 boolean이어야 해요.")
     if "provider_order" in changes:
@@ -57,14 +59,14 @@ def update_settings(actor, key, changes):
         updated = {**before, **changes}
         who, now = actor_label(actor), db.now_iso()
         c.execute("""INSERT INTO project_auto_settings
-            (project_id,auto_review,auto_execute,auto_approve,provider_order_json,updated_by,updated_at)
-            VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+            (project_id,auto_review,auto_execute,auto_approve,provider_order_json,updated_by,updated_at,auto_plan_approve)
+            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
             auto_review=excluded.auto_review, auto_execute=excluded.auto_execute,
-            auto_approve=excluded.auto_approve,
+            auto_approve=excluded.auto_approve, auto_plan_approve=excluded.auto_plan_approve,
             provider_order_json=excluded.provider_order_json,
             updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
             (project["id"], updated["auto_review"], updated["auto_execute"], updated["auto_approve"],
-             json.dumps(updated["provider_order"], separators=(",", ":")), who, now))
+             json.dumps(updated["provider_order"], separators=(",", ":")), who, now, updated["auto_plan_approve"]))
         after = _settings(c, project)
         c.execute("""INSERT INTO project_auto_settings_events
             (project_id,actor,before_json,after_json,created_at,plan_id_floor)

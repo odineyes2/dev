@@ -359,6 +359,11 @@ MIGRATIONS = [
     );
     """,
 
+    # 계획 승인과 Task 결과 승인은 각각 별도 관리자 위임으로 저장한다.
+    """
+    ALTER TABLE project_auto_settings ADD COLUMN auto_plan_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_plan_approve IN (0,1));
+    """,
+
 ]
 
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.
