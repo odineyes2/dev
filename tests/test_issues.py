@@ -277,6 +277,103 @@ with TestClient(A.app) as c:
         assert dec(top, 'reject', '실패', 1).status_code == 409
     assert before == {ref: issues.get_issue(ref) for ref in before}
 
+    # 프로젝트 삭제 — 빈 프로젝트, 사람 권한, 확인 후 내용 변경, 실행 보호와 FK 정리.
+    ok(human('POST', '/api/projects', json={'key': 'DEL', 'name': '삭제 검사',
+                                          'repo_url': 'https://example.com/repo', 'local_path': '/untouched'}))
+    check = lambda: ok(human('GET', '/api/projects/del/delete-check'))
+    remove = lambda token: human('DELETE', '/api/projects/DEL', json={'confirmation_token': token})
+    empty = check()
+    assert empty['issue_count'] == 0 and empty['can_delete'] and not empty['confirmation_required']
+    assert a('GET', '/api/projects/DEL/delete-check').status_code == 403
+    assert a('DELETE', '/api/projects/DEL', json={}).status_code == 403
+    item = ok(human('POST', '/api/issues', json={'project': 'DEL', 'title': '삭제 대상', 'labels': ['goal']}))
+    task = ok(human('POST', '/api/issues', json={'project': 'DEL', 'title': 'Task', 'parent': item['ref']}))
+    ok(human('POST', f"/api/issues/{task['ref']}/status", json={'status': 'closed'}))
+    assert remove(empty['confirmation_token']).status_code == 409
+    assert human('DELETE', '/api/projects/DEL').status_code == 409
+    initial = check()
+    assert initial['issue_count'] == 2 and initial['confirmation_required'] and initial['warning']
+    ok(human('POST', f"/api/issues/{item['ref']}/comments", json={'body': '확인 후 새 기록'}))
+    assert remove(initial['confirmation_token']).status_code == 409
+    ok(a('POST', f"/api/issues/{item['ref']}/claim"))
+    assert not check()['can_delete'] and remove(check()['confirmation_token']).status_code == 409
+    with db.connect() as cx:
+        cx.execute("UPDATE issues SET lease_until='2000-01-01T00:00:00+00:00' WHERE id=?", (item['id'],))
+        rid = cx.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'review','running','human:admin',?)",
+                         (item['id'], db.now_iso())).lastrowid
+    assert not check()['can_delete'] and remove(check()['confirmation_token']).status_code == 409
+    with db.connect() as cx:
+        cx.execute("UPDATE runs SET status='ok' WHERE id=?", (rid,))
+        cx.execute("INSERT INTO jobs(issue_id,mode,status,actor,created_at) VALUES(?,'review','queued','human:admin',?)", (item['id'], db.now_iso()))
+        cx.execute("INSERT INTO issue_deps(issue_id,blocked_by_id) VALUES(?,?)", (d1['id'], item['id']))
+        cx.execute("INSERT INTO plans(issue_id,version,body,author,created_at) VALUES(?,1,'plan','human:admin',?)", (item['id'], db.now_iso()))
+        cx.execute("INSERT INTO decisions(issue_id,gate,plan_version,verdict,actor,created_at) VALUES(?,'plan',1,'approve','human:admin',?)", (item['id'], db.now_iso()))
+    ready = check()
+    assert ready['can_delete'] and ready['external_dependency_count'] == 1
+    # 삭제 도중 실패하면 이슈와 연쇄 기록까지 되돌린다.
+    with db.connect() as cx:
+        cx.execute("CREATE TRIGGER fail_project_delete BEFORE DELETE ON projects WHEN OLD.key='DEL' BEGIN SELECT RAISE(ABORT, 'test rollback'); END")
+    import sqlite3
+    try:
+        issues.delete_project({'kind': 'human', 'name': 'admin'}, 'DEL', ready['confirmation_token'])
+        assert False, '삭제 실패를 예상한다'
+    except sqlite3.IntegrityError:
+        pass
+    assert check() == ready
+    with db.connect() as cx:
+        cx.execute('DROP TRIGGER fail_project_delete')
+    # 시작이 먼저 커밋되면 삭제는 거부한다.
+    with db.connect() as cx:
+        cx.execute("UPDATE runs SET status='running' WHERE id=?", (rid,))
+    assert remove(ready['confirmation_token']).status_code == 409
+    with db.connect() as cx:
+        cx.execute("UPDATE runs SET status='ok' WHERE id=?", (rid,))
+    assert remove(check()['confirmation_token']).status_code == 204
+    assert human('GET', '/api/projects/DEL/delete-check').status_code == 404
+    assert human('DELETE', '/api/projects/DEL').status_code == 404
+    assert ok(human('GET', '/api/issues/DEV-1'))['id'] == d1['id']
+    with db.connect() as cx:
+        for table in ('issues', 'plans', 'events', 'decisions', 'runs', 'jobs'):
+            column = 'id' if table == 'issues' else 'issue_id'
+            assert cx.execute(f'SELECT COUNT(*) FROM {table} WHERE {column} IN (?,?)', (item['id'], task['id'])).fetchone()[0] == 0
+        assert cx.execute('SELECT COUNT(*) FROM issue_deps WHERE blocked_by_id=?', (item['id'],)).fetchone()[0] == 0
+        assert not cx.execute('PRAGMA foreign_key_check').fetchall()
+    ok(human('POST', '/api/projects', json={'key': 'EMPTY', 'name': '빈 프로젝트'}))
+    assert human('DELETE', '/api/projects/EMPTY').status_code == 204
+
+    # 삭제가 먼저 잠금을 잡으면 늦게 시작한 작업은 FK 검증에서 거부된다.
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    ok(human('POST', '/api/projects', json={'key': 'RACE', 'name': '동시성'}))
+    race = ok(human('POST', '/api/issues', json={'project': 'RACE', 'title': '대상'}))
+    race_token = ok(human('GET', '/api/projects/RACE/delete-check'))['confirmation_token']
+    locked, starting, release = threading.Event(), threading.Event(), threading.Event()
+    original_deletion = issues._project_deletion
+    def paused_deletion(cx, key):
+        result = original_deletion(cx, key)
+        locked.set()
+        assert release.wait(5)
+        return result
+    def late_start():
+        starting.set()
+        with db.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            cx.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'review','running','human:admin',?)", (race['id'], db.now_iso()))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with patch.object(issues, '_project_deletion', side_effect=paused_deletion):
+            deletion = pool.submit(issues.delete_project, {'kind': 'human', 'name': 'admin'}, 'RACE', race_token)
+            assert locked.wait(5)
+            start = pool.submit(late_start)
+            assert starting.wait(5)
+            release.set()
+            deletion.result(timeout=5)
+            try:
+                start.result(timeout=5)
+                assert False, '삭제된 이슈의 실행 기록은 만들 수 없다'
+            except sqlite3.IntegrityError:
+                pass
+    assert human('GET', '/api/projects/RACE/delete-check').status_code == 404
+
     # 쓰기 요청의 형식 오류
     assert c.post("/api/issues", content=b"not json", headers={**H, "content-type": "application/json"}).status_code == 400
 print("OK")
