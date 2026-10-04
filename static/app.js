@@ -846,6 +846,13 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
     pendingTasks.add(ref);
     b.closest('.task-actions').querySelectorAll('button').forEach(button => { button.disabled = true; });
     try{
+      const task = await api('GET', `/api/issues/${encodeURIComponent(ref)}`);
+      const name = PROVIDER_NAME[provider], x = task.execute;
+      const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(x.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${x.budget_usd}이에요.`;
+      if(!confirm(`${ref}을(를) ${name}에게 실행 맡길까요?
+홈서버에서 relay/${ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
+${QUEUE_LINE}`)) return;
       const r = await api('POST', `/api/issues/${encodeURIComponent(ref)}/execute`, { provider });
       toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요'));
       await reload();
@@ -862,6 +869,12 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
   for(const [id, provider] of [['ask-execute', 'claude'], ['ask-codex-execute', 'codex']]) {
     if($(id)) $(id).addEventListener('click', async (e) => {
     if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;
+    const name = PROVIDER_NAME[provider];
+    const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(it.execute.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${it.execute.budget_usd}이에요.`;
+    if(!confirm(`${it.ref}을(를) ${name}에게 실행 맡길까요?
+홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
+${QUEUE_LINE}`)) return;
     pendingExecutions.set(ref, provider);
     for(const buttonId of ['ask-execute', 'ask-codex-execute']) $(buttonId).disabled = true;
     e.currentTarget.lastChild.textContent = '실행 중…';
@@ -878,6 +891,11 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
   for(const [id, provider] of [['ask-review', 'claude'], ['ask-codex-review', 'codex']]) {
     if($(id)) $(id).addEventListener('click', async (e) => {
       if(e.currentTarget.disabled || pendingReviews.has(ref)) return;
+      const name = PROVIDER_NAME[provider];
+      if(!confirm(`${it.ref}을(를) ${name}에게 검토 맡길까요?
+홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
+사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
+${QUEUE_LINE}`)) return;
       pendingReviews.set(ref, provider);
       for(const buttonId of ['ask-review', 'ask-codex-review']) $(buttonId).disabled = true;
       const label = e.currentTarget.lastChild;
