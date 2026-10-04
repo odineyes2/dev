@@ -42,6 +42,115 @@ def wait_port(port):
     raise RuntimeError(f"port {port} not up")
 
 
+def check_attachments(page, shots):
+    """혼합 첨부·실패 재시도·취소·미리보기와 네 화면을 확인한다."""
+    import base64, io, wave
+    H = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=H, data={'key':'FILES','name':'첨부 검사'}).ok
+    page.reload(); page.wait_for_selector('#project-filter'); page.select_option('#project-filter', 'FILES')
+    uploads, posts = [], []
+    def record(r):
+        if r.method == 'POST' and r.url == BASE + '/api/attachments': uploads.append(r)
+        if r.method == 'POST' and r.url == BASE + '/api/issues': posts.append(r)
+    page.on('request', record)
+    def new():
+        page.goto(BASE + '/#/new'); page.wait_for_selector('#n-files')
+        page.fill('#n-title', '혼합 첨부'); page.fill('#n-body', '기존 Description https://example.com/body')
+    def ready(n):
+        page.wait_for_function('(n) => document.querySelectorAll("#n-attachments [data-remove]").length === n && !document.querySelector("#new-form [type=submit]").disabled', arg=n)
+    png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=')
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000); w.writeframes(b'\x00\x00' * 800)
+    # 브라우저가 지원하는 실제 영상으로 재생을 확인한다.
+    video = bytes(page.evaluate('''async () => {
+        const canvas = document.createElement('canvas'); canvas.width = canvas.height = 32;
+        const stream = canvas.captureStream(10), recorder = new MediaRecorder(stream, {mimeType:'video/webm'});
+        const chunks = [];
+        recorder.ondataavailable = e => chunks.push(e.data);
+        const done = new Promise(resolve => recorder.onstop = resolve);
+        recorder.start();
+        const timer = setInterval(() => {
+            const ctx = canvas.getContext('2d'); ctx.fillStyle = `rgb(${Math.floor(Math.random()*255)},0,0)`; ctx.fillRect(0,0,32,32);
+        },50);
+        await new Promise(resolve => setTimeout(resolve,600)); clearInterval(timer); recorder.stop(); await done;
+        stream.getTracks().forEach(t => t.stop());
+        return Array.from(new Uint8Array(await new Blob(chunks).arrayBuffer()));
+    }'''))
+    payloads = [{'name':name, 'mimeType':mime, 'buffer':data} for name,mime,data in [
+        ('pixel.png','image/png',png), ('movie.webm','video/webm',video),
+        ('sound.wav','audio/wav',buf.getvalue()), ('note.md','text/markdown',b'<script>window.attachmentXSS=1</script>\n' + b'x' * 70000),
+        ('data.json','application/json',b'{"ok":true}')]]
+    pixel = tmp / 'pixel.png'; pixel.write_bytes(png)
+    new()
+    def fail_upload(route): route.fulfill(status=500,json={'detail':'업로드 검사 실패'})
+    page.route('**/api/attachments',fail_upload)
+    page.set_input_files('#n-files',str(pixel)); page.wait_for_selector('[data-retry]')
+    assert page.locator('#new-form [type=submit]').is_disabled()
+    page.unroute('**/api/attachments',fail_upload)
+    page.locator('[data-retry]').focus(); page.keyboard.press('Enter'); ready(1)
+    page.set_input_files('#n-files',str(pixel)); ready(1)
+    assert len(uploads) == 2
+    page.set_input_files('#n-files',payloads[1:]); ready(5)
+    page.fill('#n-url','https://example.com/reference'); page.locator('#add-url').focus(); page.keyboard.press('Enter'); ready(6)
+    page.fill('#n-url','https://example.com/reference'); page.click('#add-url'); ready(6)
+    def fail_publish(route): route.fulfill(status=500,json={'detail':'발행 검사 실패'})
+    page.route('**/api/issues',fail_publish)
+    page.click('#new-form [type=submit]'); page.wait_for_function('document.querySelector("#attachment-status").textContent.includes("입력과 첨부")')
+    assert page.input_value('#n-body').startswith('기존 Description')
+    ready(6); assert len(uploads) == 6
+    page.unroute('**/api/issues',fail_publish)
+    before = len(posts)
+    page.locator('#new-form [type=submit]').evaluate('e => {e.click();e.click()}')
+    page.wait_for_selector('.attachments'); assert len(posts) == before + 1
+    ref = page.url.split('/issue/')[-1]
+    assert len(page.request.get(BASE + '/api/issues/' + ref).json()['attachments']) == 6
+    page.reload(); page.wait_for_selector('.attachments')
+    assert page.locator('.attachment').count() == 6
+    assert page.locator('#body a').get_attribute('href') == 'https://example.com/body'
+    page.locator('.attachment').filter(has_text='note.md').locator('summary').click()
+    page.wait_for_function("Array.from(document.querySelectorAll('[data-text-url] pre')).some(e => e.textContent.includes('<script>'))")
+    assert page.evaluate('window.attachmentXSS') is None
+    assert len(page.locator('.attachment').filter(has_text='note.md').locator('pre').inner_text()) < 66000
+    page.locator('.attachment').filter(has_text='data.json').locator('summary').click()
+    page.wait_for_function('Array.from(document.querySelectorAll("[data-text-url] pre")).some(e => e.textContent.includes("ok"))')
+    assert page.locator('video[controls]').count() == page.locator('audio[controls]').count() == 1
+    page.wait_for_function('document.querySelector(".attachment img").naturalWidth === 1')
+    page.wait_for_function('document.querySelector("audio").readyState >= 1')
+    page.locator('audio').evaluate('e => e.play()'); page.wait_for_function('!document.querySelector("audio").paused')
+    page.wait_for_function('document.querySelector("video").readyState >= 1')
+    page.locator('video').evaluate('e => {e.loop = true; return e.play()}'); page.wait_for_function('!document.querySelector("video").paused')
+    with page.expect_download() as dl: page.locator('.attachment').filter(has_text='pixel.png').locator('a[download]').click()
+    assert dl.value.suggested_filename == 'pixel.png'
+    for scheme in ('light','dark'):
+        page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}',scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width in (1300,390):
+            page.set_viewport_size({'width':width,'height':850})
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'attachments_detail_{scheme}_{width}.png'),full_page=True)
+            new()
+            page.fill('#n-url','https://example.com/' + 'long' * 50); page.click('#add-url'); ready(1)
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'attachments_new_{scheme}_{width}.png'),full_page=True)
+            # 취소하면 임시 URL도 삭제한다.
+            with page.expect_request(lambda r: r.method == 'DELETE' and '/api/attachments/' in r.url) as deleted:
+                page.click('#cancel-new')
+            aid = deleted.value.url.split('/')[-1]
+            page.wait_for_function('location.hash === "#/"')
+            for _ in range(30):
+                if page.request.get(BASE + '/api/attachments/' + aid + '/content').status == 404: break
+                page.wait_for_timeout(100)
+            else: raise AssertionError('취소한 임시 첨부가 남았어요')
+            page.goto(BASE + '/#/issue/' + ref); page.wait_for_selector('.attachments')
+    page.remove_listener('request',record)
+    token = page.request.get(BASE + '/api/projects/FILES/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/FILES',headers=H,data={'confirmation_token':token}).ok
+    page.set_viewport_size({'width':1300,'height':850}); page.emulate_media(color_scheme='light')
+    page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-filter'); page.select_option('#project-filter','')
+
+
 def check_published_notice(page, shots):
     """발행 프로젝트의 최신 설정과 실패·지연을 유료 작업 없이 확인한다."""
     H = {'X-Requested-With': 'dev'}
@@ -1530,6 +1639,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--attachments-only' in sys.argv:
+            check_attachments(page, shots)
+            assert not errs, errs
+            print('OK: attachments'); sys.exit(0)
         if '--progress-only' in sys.argv:
             check_progress_refresh(page, shots)
             assert not errs, errs
@@ -1579,6 +1692,7 @@ try:
         check_project_flows(page, shots, answers, asked)
         check_project_documents(page, shots)
         check_auto_settings(page, shots)
+        check_attachments(page, shots)
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)
         if '--project-flows-only' in sys.argv:

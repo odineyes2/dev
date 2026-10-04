@@ -23,7 +23,8 @@ function toast(msg){
 }
 async function api(method, url, body, isCurrent = () => true){
   const opt = { method, headers: { 'X-Requested-With': 'dev' } };
-  if(body !== undefined){ opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  if(body instanceof FormData) opt.body = body;
+  else if(body !== undefined){ opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   const t0 = performance.now();
   const res = await fetch(url, opt);
   perf.fetchMs += performance.now() - t0;
@@ -586,6 +587,31 @@ async function renderBoard(){
 }
 
 // ---- 이슈 상세 ----
+function attachmentsHtml(items){
+  if(!items?.length) return '';
+  return `<section class="panel attachments"><h2>Attachments</h2><p class="dim">미디어 재생과 에이전트의 자료 이해는 브라우저와 사용 도구에 따라 달라요.</p>${items.map(a => {
+    const url = `/api/attachments/${encodeURIComponent(a.id)}/content`;
+    if(a.kind === 'url') return `<article class="attachment"><a href="${esc(/^https?:\/\//i.test(a.url) ? a.url : '#')}" target="_blank" rel="noopener noreferrer">${esc(a.url)}</a></article>`;
+    const preview = a.kind === 'image' ? `<img src="${url}" alt="${esc(a.name)}" loading="lazy">` :
+      ['video','audio'].includes(a.kind) ? `<${a.kind} src="${url}" controls preload="metadata" aria-label="${esc(a.name)}"></${a.kind}><p class="dim">재생이 안 되면 다운로드해 주세요.</p>` :
+      `<details data-text-url="${url}"><summary>텍스트 미리보기 (최대 64KiB)</summary><pre role="status"></pre></details>`;
+    return `<article class="attachment"><div class="attachment-heading"><span>${esc(a.name)} · ${Math.ceil(a.size / 1024)} KiB</span><a href="${url}" download>다운로드</a></div>${preview}</article>`;
+  }).join('')}</section>`;
+}
+function bindAttachmentPreviews(){
+  view.querySelectorAll('[data-text-url]').forEach(el => el.addEventListener('toggle', async () => {
+    if(!el.open || el.dataset.loading) return;
+    el.dataset.loading = 'true';
+    const pre = el.querySelector('pre'); pre.textContent = '불러오는 중…';
+    try{
+      const r = await fetch(el.dataset.textUrl, {headers:{Range:'bytes=0-65535'}});
+      if(!r.ok) throw new Error();
+      pre.textContent = await r.text();
+      if(r.status === 206) pre.append(document.createTextNode('\n[최대 64KiB 미리보기예요.]'));
+    }catch{ pre.textContent = '미리보기를 불러오지 못했어요. 접었다 펼쳐 다시 시도해 주세요.'; delete el.dataset.loading; }
+  }));
+}
+
 function eventHtml(e){
   const who = actorHtml(e.actor, e.data && e.data.model);
   const when = `<span class="when" title="${esc(e.created_at)}">${fmtTime(e.created_at)}</span>`;
@@ -764,6 +790,7 @@ async function renderIssue(ref, background = false){
         ${stageHtml(it, liveMode, liveRun.provider)}
         <div class="panel"><h2>Description<span class="right"><button id="edit-body">고치기</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
+        ${attachmentsHtml(it.attachments)}
         <div class="panel"><h2>Plan${it.plan ? ` <span class="meta">v${it.plan.version} · ${esc(actorName(it.plan.author))} · ${fmtTime(it.plan.created_at)}</span>` : ''}
           <span class="right">${it.plan && it.plan.version > 1 ? '<button id="plan-history">이전 판</button>' : ''}<button id="edit-plan">${it.plan ? '고쳐 쓰기' : '쓰기'}</button></span></h2>
           <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div>
@@ -795,6 +822,7 @@ async function renderIssue(ref, background = false){
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
       </aside>
     </div>`;
+  bindAttachmentPreviews();
   const editor = view.querySelector('#issue-type-editor');
   bindTypePicker(editor);
   editor.dataset.initialTypes = JSON.stringify(selectedTypes(editor));
@@ -1056,21 +1084,79 @@ async function renderNew(params){
       <label>Status<select id="n-status"><option>backlog</option><option>triage</option></select></label></div>
     <label>Title<input id="n-title" maxlength="300" placeholder="비워 두면 이슈를 맡은 에이전트가 본문을 보고 지어요"></label>
     <label>Description (마크다운)<textarea id="n-body" style="min-height:260px"></textarea></label>
+    <fieldset class="attachment-input"><legend>Attachments</legend>
+      <p class="dim" id="attachment-help">이미지·영상·오디오·Markdown·JSON 파일과 http(s) URL을 함께 첨부해요. 기본 제한은 파일당 25MiB, 총 10개·100MiB예요.</p>
+      <label>파일 선택<input id="n-files" type="file" multiple accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mp3,.wav,.ogg,.m4a,.md,.json" aria-describedby="attachment-help"></label>
+      <div class="line"><label>URL<input id="n-url" type="url" placeholder="https://example.com/reference"></label><button type="button" id="add-url">URL 추가</button></div>
+      <div id="n-attachments" aria-live="polite"></div><p id="attachment-status" role="status"></p>
+    </fieldset>
     ${typePicker(types)}<label>Labels (쉼표로)<input id="n-labels"></label>
-    <div class="row-end"><a class="button" href="#/">취소</a><button class="primary" type="submit">만들기</button></div>
+    <div class="row-end"><a class="button" id="cancel-new" href="#/">취소</a><button class="primary" type="submit">만들기</button></div>
   </form>`;
-  bindTypePicker(view.querySelector('#new-form'));
+  const form = view.querySelector('#new-form'), entries = [];
+  let departed = false, published = false, saving = false;
+  const status = form.querySelector('#attachment-status'), list = form.querySelector('#n-attachments');
+  const remove = a => api('DELETE', `/api/attachments/${encodeURIComponent(a.id)}`, undefined, () => !departed).catch(() => {});
+  const leave = () => {
+    departed = true; window.removeEventListener('hashchange', leave);
+    if(!published && !saving) entries.forEach(e => { if(e.data) void remove(e.data); });
+  };
+  window.addEventListener('hashchange', leave);
+  const draw = () => {
+    list.innerHTML = entries.map((e,i) => `<div class="attachment-heading"><span>${esc(e.name)} — ${esc(e.busy ? '업로드 중…' : e.error || '첨부 준비됐어요')}</span><span>${e.error ? `<button type="button" data-retry="${i}">재시도</button>` : ''}<button type="button" data-remove="${i}" ${e.busy || saving ? 'disabled' : ''}>제거</button></span></div>`).join('');
+    form.querySelector('[type=submit]').disabled = saving || entries.some(e => e.busy || e.error);
+    list.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
+      if(saving) return;
+      const e = entries[+b.dataset.remove];
+      if(e.busy) return;
+      e.busy = true; draw();
+      if(e.data){ try{ await api('DELETE', `/api/attachments/${encodeURIComponent(e.data.id)}`); }catch{ e.busy = false; draw(); return; } }
+      entries.splice(entries.indexOf(e),1); draw();
+    });
+    list.querySelectorAll('[data-retry]').forEach(b => b.onclick = () => upload(entries[+b.dataset.retry]));
+  };
+  const upload = async e => {
+    if(e.busy || saving) return;
+    e.busy = true; e.error = ''; draw();
+    try{
+      const body = e.file ? new FormData() : {url:e.name};
+      if(e.file) body.append('file',e.file);
+      e.data = await api('POST', e.file ? '/api/attachments' : '/api/attachments/url', body, () => !departed);
+      if(departed) void remove(e.data);
+    }catch(err){ e.error = `${err.message} 다시 시도하거나 제거해 주세요.`; }
+    finally{ e.busy = false; if(!departed) draw(); }
+  };
+  const add = (name,file) => {
+    if(saving || entries.some(e => e.file ? file && e.name === name && e.file.size === file.size && e.file.lastModified === file.lastModified : !file && e.name === name)) return;
+    const e = {name,file}; entries.push(e); void upload(e);
+  };
+  form.querySelector('#n-files').onchange = e => { [...e.target.files].forEach(f => add(f.name,f)); e.target.value = ''; };
+  form.querySelector('#add-url').onclick = () => {
+    const input = form.querySelector('#n-url');
+    if(!/^https?:\/\//i.test(input.value.trim())){ status.textContent = 'http(s) URL을 입력해 주세요.'; input.focus(); return; }
+    add(input.value.trim()); input.value = ''; status.textContent = '';
+  };
+  bindTypePicker(form);
   view.querySelector('#n-title').focus();
-  view.querySelector('#new-form').addEventListener('submit', (e) => { e.preventDefault(); whileBusy(submitBtn(e), async () => {
+  view.querySelector('#new-form').addEventListener('submit', (e) => { e.preventDefault(); if(saving || entries.some(e => e.busy || e.error)) return; whileBusy(submitBtn(e), async () => {
+    saving = true; draw(); status.textContent = '발행 중…';
+    form.querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = true);
+    form.querySelector('#cancel-new').onclick = ev => ev.preventDefault();
+    try{
     const it = await api('POST', '/api/issues', {
       project: view.querySelector('#n-project').value, title: view.querySelector('#n-title').value, body: view.querySelector('#n-body').value,
       priority: view.querySelector('#n-priority').value, status: view.querySelector('#n-status').value,
-      type_ids: selectedTypes(view.querySelector('#new-form')),
+      attachment_ids: entries.map(e => e.data.id),
+      type_ids: selectedTypes(form),
       labels: view.querySelector('#n-labels').value.split(',').map(s => s.trim()).filter(Boolean), parent: parent || undefined,
     });
+    published = true;
+    if(departed) return;
     toast('이슈를 발행했어요.');
     location.hash = `#/issue/${it.ref}`;
     void showPublishedNotice(it);
+    }catch(err){ if(departed) entries.forEach(e => { if(e.data) void remove(e.data); }); else status.textContent = `${err.message} 입력과 첨부를 유지했어요. 다시 발행해 주세요.`; }
+    finally{ saving = false; if(!departed){ form.querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = false); form.querySelector('#n-project').disabled = !!parent; form.querySelector('#cancel-new').onclick = null; draw(); } }
   }); });
 }
 
