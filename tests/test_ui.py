@@ -376,7 +376,7 @@ def check_account_menu(page, shots):
     assert link.get_attribute('hidden') is None
 
 
-def check_task_actions(page, ref, shots, answers, asked):
+def check_task_actions(page, ref, shots, asked):
     """실행 요청을 가로채 계정 호출 없이 provider·경합·복구를 확인한다."""
     url = '**/api/issues/DEV-4-1/execute'
     pending = []
@@ -388,18 +388,13 @@ def check_task_actions(page, ref, shots, answers, asked):
     for provider, icon in (('claude', 'claude'), ('codex', 'openai')):
         selected = buttons().filter(has=page.locator(f'use[href="#i-{icon}"]'))
         assert selected.count() == 1
-        answers.append(None)
-        selected.click()
-        page.wait_for_function("() => [...document.querySelectorAll('.run-task[data-ref=\"DEV-4-1\"]')].every(b => !b.disabled)")
-        assert not pending and page.evaluate('location.hash') == f'#/issue/{ref}'
-        assert ('Codex' if provider == 'codex' else 'Claude') in asked[-1]
-        assert ('비용 상한은 없어요' if provider == 'codex' else '비용 상한은 $2') in asked[-1]
+        asked.clear()
         selected.click()
         for _ in range(100):
             if pending:
                 break
             page.wait_for_timeout(20)
-        assert len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
+        assert not asked and len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
         assert all(buttons().nth(i).is_disabled() for i in range(2))
         # disabled 속성을 우회한 교차 클릭도 Task 단위 잠금으로 차단한다.
         buttons().evaluate_all("bs => bs.forEach(b => b.dispatchEvent(new MouseEvent('click', {bubbles:true})))")
@@ -432,7 +427,7 @@ def check_task_actions(page, ref, shots, answers, asked):
     # 실제 POST는 running 가짜 run을 넣은 뒤 큐에만 추가한다.
 
 
-def check_execute_buttons(page, shots, answers):
+def check_execute_buttons(page, shots, asked):
     """실행 요청과 기록을 모의하여 provider 표시·중복 방지·복구를 확인한다."""
     ref = 'DEV-4-1'
     url = f'**/api/issues/{ref}/execute'
@@ -450,11 +445,10 @@ def check_execute_buttons(page, shots, answers):
             assert page.inner_text(selector) == ('실행 중…' if key == provider else f'{"Claude" if key == "claude" else "Codex"}에게 실행 맡기기')
     page.goto(BASE + f'/#/issue/{ref}'); page.reload(); ready()
     for provider in ids:
-        answers.append(None); page.click(ids[provider]); ready()
-        assert not pending
+        asked.clear()
         page.click(ids[provider])
         page.wait_for_timeout(100)
-        assert len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
+        assert not asked and len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
         active(provider)
         page.evaluate('() => { renderIssue("DEV-4-1"); }')
         page.wait_for_timeout(200); active(provider)
@@ -617,7 +611,7 @@ def check_list_loading(page, shots):
     page.evaluate("localStorage.removeItem('dev.list'); document.documentElement.dataset.theme = 'light'")
 
 
-def check_review_buttons(page, ref, shots):
+def check_review_buttons(page, ref, shots, asked):
     """실제 Agent 호출 없이 provider별 요청·실행·복구 상태를 검사한다."""
     url = f'{BASE}/api/issues/{ref}'
     original = page.request.get(url).json()
@@ -642,9 +636,10 @@ def check_review_buttons(page, ref, shots):
     for provider, selector in (('claude', '#ask-review'), ('codex', '#ask-codex-review')):
         state.update(running=False, provider=provider)
         refresh(); buttons()
+        asked.clear()
         page.click(selector)
         page.wait_for_timeout(100)
-        assert len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
+        assert not asked and len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
         buttons(provider, True)
         page.evaluate("() => { document.querySelector('#ask-review').click(); document.querySelector('#ask-codex-review').click(); }")
         assert len(pending) == 1
@@ -1257,14 +1252,14 @@ try:
                 page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
-        check_execute_buttons(page, shots, answers)
+        check_execute_buttons(page, shots, asked)
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
         # 선행 대기는 눌러 둘 수 있다(DEV-43) — 줄에서 기다린다
         assert page.is_enabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec") and "차례로" in page.inner_text(".exec")
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review", state="attached"); assert page.locator("#ask-execute").count() == 0
         # 부모 화면에서 바로 실행(선행이 안 끝난 DEV-4-2도 눌러 두면 줄에 선다, 삭제는 아이콘 하나)
         page.wait_for_selector("tr.row"); n = page.locator(".run-task").count(); assert n == 4, n
-        check_task_actions(page, pr, shots, answers, asked)
+        check_task_actions(page, pr, shots, asked)
         assert page.locator("#delete svg").count() == 1 and not page.text_content("#delete").strip()
 
         # 대기열(DEV-43) — 진짜 claude를 돌리지 않게 도는 run 하나를 심어 두고 줄을 DB에 직접 넣는다
@@ -1343,7 +1338,7 @@ try:
         page.goto(BASE + f"/#/issue/{fresh}"); page.reload(); page.wait_for_selector("#ask-review")
         assert page.is_enabled("#ask-review") and "차례로" in page.inner_text(".side")
         assert page.is_enabled("#ask-codex-review")
-        check_review_buttons(page, fresh, shots)
+        check_review_buttons(page, fresh, shots, asked)
         check_edit_saving(page, shots)
         page.goto(BASE + f'/#/issue/{fresh}'); page.wait_for_selector('#ask-codex-review')
         for scheme in ("light", "dark"):
