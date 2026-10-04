@@ -363,3 +363,25 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .project-docs[hidden], #project-form[hidden]{ display:none; }
 .project-docs .skeleton{ padding:var(--sp-4); color:var(--dim); }
 .project-docs .skeleton::after{ content:""; display:block; height:32px; margin-top:var(--sp-3); border-radius:var(--r-sm); background:var(--panel-2); }
+
+/* 설정 — 디자인 2~5·7·8·11절의 토큰과 스위치 규칙을 따른다. */
+.auto-settings{ max-width:800px; padding:var(--sp-5); }
+.auto-settings h3{ font:600 12px var(--mono); letter-spacing:var(--track-label); margin:var(--sp-5) 0 var(--sp-3); }
+.setting-row{ display:flex; align-items:center; justify-content:space-between; gap:var(--sp-4); padding:var(--sp-4) 0; border-bottom:1px solid var(--border); }
+.setting-row > div{ min-width:0; }
+.setting-row p{ margin:var(--sp-1) 0 0; font-size:13px; }
+.auto-switch{ flex:none; min-height:40px; border:none; background:transparent; padding:var(--sp-2); font-size:12px; }
+.switch-track{ display:block; width:40px; height:24px; border-radius:999px; background:var(--dim); padding:4px; }
+.switch-track::before{ content:''; display:block; width:16px; height:16px; border-radius:999px; background:var(--panel); transition:transform 150ms ease; }
+.auto-switch[aria-checked="true"] .switch-track{ background:var(--s-done); }
+.auto-switch[aria-checked="true"] .switch-track::before{ transform:translateX(16px); }
+.auto-settings button:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+#provider-order{ padding-left:var(--sp-5); }
+#provider-order li{ padding:var(--sp-2); }
+#provider-order li > span{ display:inline-block; min-width:80px; }
+#provider-order li > div{ display:inline-flex; gap:var(--sp-2); }
+#provider-order button{ min-height:40px; font-size:13px; }
+.settings-policy{ border-top:1px solid var(--border); margin-top:var(--sp-5); font-size:13px; }
+.settings-skeleton{ height:160px; border-radius:var(--r-md); background:var(--panel-2); }
+@media(max-width:800px){ .auto-settings{ padding:var(--sp-4); } .auto-switch{ flex-direction:column; } }
+@media(prefers-reduced-motion:reduce){ .switch-track::before{ transition:none; } }

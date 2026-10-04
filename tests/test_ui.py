@@ -42,6 +42,86 @@ def wait_port(port):
     raise RuntimeError(f"port {port} not up")
 
 
+def check_auto_settings(page, shots):
+    """프로젝트 격리·실패 복원·키보드와 네 화면을 확인한다."""
+    H = {'X-Requested-With': 'dev'}
+    for key in ('AUTOA', 'AUTOB'):
+        assert page.request.post(BASE + '/api/projects', headers=H, data={'key': key, 'name': key}).ok
+    page.reload(); page.wait_for_selector('#project-filter')
+    page.select_option('#project-filter', '')
+    page.goto(BASE + '/#/settings')
+    page.wait_for_selector('#settings-body .empty')
+    page.select_option('#project-filter', 'AUTOA')
+    review = page.locator('#auto_review')
+    page.wait_for_selector('#auto_review')
+    assert review.get_attribute('aria-checked') == 'false'
+    assert page.locator('#auto_approve').is_disabled()
+    assert '확정되지' in page.locator('#auto_approve-help').inner_text()
+    review.focus(); page.keyboard.press('Space')
+    page.wait_for_function("document.querySelector('#settings-status').textContent === '저장했어요.'")
+    assert review.get_attribute('aria-checked') == 'true'
+    page.locator('#auto_execute').focus(); page.keyboard.press('Enter')
+    page.wait_for_function("document.querySelector('#auto_execute').getAttribute('aria-checked') === 'true' && !document.querySelector('#auto_execute').disabled")
+    page.click('[data-move="0"][data-direction="1"]')
+    page.wait_for_function("document.querySelector('#provider-order li span').textContent === 'Codex' && document.querySelector('#settings-body').getAttribute('aria-busy') === 'false'")
+    def fail(route):
+        if route.request.method == 'PATCH':
+            route.fulfill(status=500, content_type='application/json', body='{"detail":"저장 실패"}')
+        else:
+            route.continue_()
+    page.route('**/api/projects/AUTOA/auto-settings', fail)
+    review.click()
+    page.wait_for_function("document.querySelector('#settings-status').textContent.includes('복원')")
+    assert review.get_attribute('aria-checked') == 'true' and review.is_enabled()
+    page.click('[data-move="0"][data-direction="1"]')
+    page.wait_for_function("document.querySelector('#settings-status').textContent.includes('복원') && document.querySelector('#provider-order li span').textContent === 'Codex'")
+    page.unroute('**/api/projects/AUTOA/auto-settings', fail)
+    page.select_option('#project-filter', 'AUTOB')
+    page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'false'")
+    page.select_option('#project-filter', 'AUTOA')
+    page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'true'")
+    held = []
+    def hold(route):
+        held.append(route)
+    page.route('**/api/projects/AUTOA/auto-settings', hold)
+    review.click()
+    page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'true'")
+    assert review.is_disabled() and page.locator('#auto_execute').is_disabled()
+    page.select_option('#project-filter', 'AUTOB')
+    page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'false'")
+    assert len(held) == 1
+    held.pop().fulfill(status=500, content_type='application/json', body='{"detail":"late error"}')
+    page.wait_for_timeout(100)
+    assert page.locator('#settings-status').inner_text() == ''
+    page.select_option('#project-filter', 'AUTOA')
+    page.wait_for_selector('.settings-skeleton')
+    page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+    assert len(held) == 1
+    held.pop().fulfill(status=500, content_type='application/json', body='{"detail":"late load"}')
+    page.wait_for_timeout(100)
+    assert page.locator('#project-create').is_visible()
+    page.unroute('**/api/projects/AUTOA/auto-settings', hold)
+    page.goto(BASE + '/#/settings'); page.wait_for_selector('#auto_review')
+    for scheme in ('light', 'dark'):
+        page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            assert page.locator('.auto-settings').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+            page.screenshot(path=str(shots / f'auto_settings_{scheme}_{tag}.png'), full_page=True)
+    page.emulate_media(reduced_motion='reduce')
+    assert review.locator('.switch-track').evaluate("e => getComputedStyle(e, '::before').transitionDuration") == '0s'
+    page.emulate_media(reduced_motion='no-preference')
+    page.reload(); page.wait_for_selector('#auto_review')
+    assert review.get_attribute('aria-checked') == 'true'
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+    for key in ('AUTOA', 'AUTOB'):
+        assert page.request.delete(BASE + '/api/projects/' + key, headers=H).ok
+    page.evaluate("localStorage.removeItem('dev.project')")
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+
+
 def check_project_dialog(page, shots):
     """생성창의 키보드·오류 복구·경합과 네 화면을 브라우저에서 검사한다."""
     opener = page.locator('#project-create')
@@ -926,6 +1006,7 @@ try:
         check_project_dialog(page, shots)
         check_project_flows(page, shots, answers, asked)
         check_project_documents(page, shots)
+        check_auto_settings(page, shots)
         if '--project-flows-only' in sys.argv:
             assert not errs, errs
             print('OK: project flows')
