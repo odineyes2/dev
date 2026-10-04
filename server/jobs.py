@@ -91,11 +91,14 @@ def reconcile():
             _waiting(c, j)
 
 
-def enqueue(actor: dict, ref: str, mode: str, provider: str = "claude") -> dict:
+def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None) -> dict:
     """줄에 넣고 펌프를 돌린다. 바로 시작하면 {started}, 아니면 {queued, position}."""
     import execute
+    import project_docs
     if actor["kind"] != "human":
         raise issues.StoreError("검토·실행은 사람만 맡길 수 있어요.", 403)
+    issue = issues.get_issue(ref)
+    provider = project_docs.resolve_provider(issue['id'], provider)
     if provider not in ("claude", "codex"):
         raise issues.StoreError("지원하지 않는 검토 도구예요.", 400)
     if mode not in ("review", "execute"):
