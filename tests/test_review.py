@@ -15,6 +15,8 @@ auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
 H = {"X-Requested-With": "dev"}
 fake = Path(tempfile.mkdtemp()) / "fake_claude.py"
 fake.write_text("import json, sys, time\nprint(json.dumps({'result': 'args ' + str(sys.argv[1:]), 'total_cost_usd': 0.5, 'usage': {'input_tokens': 10, 'cache_read_input_tokens': 90, 'output_tokens': 7}}) if len(sys.argv) > 4 else 'args ' + str(sys.argv[1:]))\ntime.sleep(float(sys.argv[2]))\nsys.exit(int(sys.argv[3]))\n", "utf-8")
+classification_script = "import sys\nsys.path.insert(0, " + repr(str(Path(review.__file__).parent)) + ")\nimport issues\nactor = {'kind': 'agent', 'id': 1, 'name': 'a'}\ncurrent = issues.get_issue(sys.argv[1])\nif not current['type_ids']:\n    catalog = issues.list_issue_types()\n    issues.classify_issue(actor, sys.argv[1], [t['id'] for t in catalog[:2]], current['type_revision'])\n"
+fake.write_text(classification_script + fake.read_text('utf-8'), 'utf-8')
 behave = {"sleep": "1", "code": "0"}
 
 # 실제 명령의 안전장치 — 가짜로 바꾸기 전에 확인
@@ -24,6 +26,7 @@ blocked = real[real.index("--disallowedTools") + 1:real.index("--no-session-pers
 assert {"Bash", "Edit", "Write"} <= set(blocked)
 allowed = real[real.index("--allowedTools") + 1:real.index("--disallowedTools")]
 assert all(t in ("Read", "Grep", "Glob") or t.startswith("mcp__dev__") for t in allowed) and "mcp__dev__post_plan" in allowed
+assert "mcp__dev__list_issue_types" in allowed and "mcp__dev__classify_issue" in allowed
 assert "검토만" in review.prompt_for("NS-1") and "NS-1" in review.prompt_for("NS-1")
 review.command_for = lambda ref: [sys.executable, str(fake), ref, behave["sleep"], behave["code"], *(["json"] if behave.get("json") else [])]
 
@@ -53,6 +56,7 @@ with TestClient(A.app) as c:
             break
         time.sleep(0.2)
     it = c.get("/api/issues/NS-1").json()
+    assert it["type_ids"] == [1, 2] and all(t["source"] == "agent" for t in it["types"])
     assert not it["review_running"] and "끝나지 못했어요" not in it["events"][-1]["body"]
     log = sorted((Path(os.environ["DEV_DATA_DIR"]) / "reviews").glob("NS-1-*.log"))[-1].read_text("utf-8")
     assert "args" in log and "{" not in log    # 토큰을 못 읽는 출력도 ok, 로그는 원문
@@ -96,4 +100,25 @@ with TestClient(A.app) as c:
     time.sleep(0.3)
     assert "끝나지 않아 멈췄어요" in c.get("/api/issues/NS-2").json()["events"][-1]["body"]
     assert review.list_runs("NS-2")[0]["status"] == "timeout" and len(review.list_runs("NS-2")) == 2
+    # 분류가 없는 정상 종료도 실패로 기록한다.
+    c.post("/api/issues", json={"project": "NS", "title": "미분류"}, headers=H)
+    fake.write_text("print('no classification')", "utf-8")
+    behave.update(sleep="0", code="0")
+    c.post("/api/issues/NS-3/review", headers=H)
+    for _ in range(60):
+        if not review.running_ref():
+            break
+        time.sleep(.2)
+    assert review.list_runs("NS-3")[0]["status"] == "failed"
+    assert "자동 분류" in review.list_runs("NS-3")[0]["note"]
+    # 사람 선택이 있으면 분류 호출 없이도 검토 완료로 처리한다.
+    c.patch("/api/issues/NS-3", json={"type_ids": [3, 4]}, headers=H)
+    c.post("/api/issues/NS-3/review", headers=H)
+    for _ in range(60):
+        if not review.running_ref():
+            break
+        time.sleep(.2)
+    assert review.list_runs("NS-3")[0]["status"] == "ok"
+    selected = c.get("/api/issues/NS-3").json()
+    assert selected["type_ids"] == [3, 4] and all(t["source"] == "human" for t in selected["types"])
 print("OK")

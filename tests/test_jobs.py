@@ -26,7 +26,7 @@ db.init()
 me = {"kind": "human", "name": "admin"}
 issues.create_project(me, "JQ", "q", "", "/nowhere/q")
 for t in ("하나", "둘", "셋", "넷"):
-    issues.create_issue(me, "JQ", t)
+    issues.create_issue(me, "JQ", t, type_ids=[1])  # 분류 호출이 없는 모의 검토용 초기 선택이다.
 
 try:
     jobs.enqueue({"kind": "agent", "id": 1}, "JQ-1", "review")
