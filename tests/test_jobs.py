@@ -42,6 +42,8 @@ assert (r2["position"], r3["position"], r4["position"]) == (1, 2, 3), (r2, r3, r
 assert jobs.enqueue(me, "JQ-2", "review")["job_id"] == r2["job_id"] and len(jobs.list_jobs()) == 3   # 중복 클릭은 하나만
 assert jobs.enqueue(me, "JQ-1", "review")["started"] and len(jobs.list_jobs()) == 3                # 도는 중인 것도 다시 안 넣음
 jobs.cancel(me, r3["job_id"])                                                                      # 취소한 것은 안 돎
+with db.connect() as c:
+    assert c.execute('SELECT cancellation_reason,cancellation_event_id FROM jobs WHERE id=?', (r3['job_id'],)).fetchone()[:] == ('human_cancel', None)
 assert issues.get_issue("JQ-3")["status"] == "backlog"
 try:
     jobs.cancel(me, r3["job_id"]); raise AssertionError("두 번은 못 취소")
