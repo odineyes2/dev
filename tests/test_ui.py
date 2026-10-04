@@ -145,8 +145,8 @@ def check_project_documents(page, shots):
     assert page.locator('#doc-content script, #doc-content img').count() == 0
     assert '병합 대기' in page.inner_text('#docs-requests')
     def check_document_buttons(active=None):
-        for provider, name, symbol in (('codex', 'Codex 문서 생성', '#i-openai'),
-                                       ('claude', 'Claude 문서 생성', '#i-claude')):
+        for provider, name, symbol in (('codex', 'Codex로 문서 생성', '#i-openai'),
+                                       ('claude', 'Claude로 문서 생성', '#i-claude')):
             button = page.locator(f'[data-doc-provider="{provider}"]')
             assert button.inner_text() == ('등록 중…' if provider == active else name)
             assert button.locator('svg.ico.brand-icon').count() == 1
