@@ -107,6 +107,104 @@ def check_project_dialog(page, shots):
     page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
 
 
+def check_project_flows(page, shots, answers, asked):
+    """문자열 제안과 임시 DB의 생성·삭제·재확인을 검사한다."""
+    cases = [
+        ('https://example.com/team/old.git', r'C:\work\old', 'https://example.com/team/new.git', r'C:\work\new'),
+        ('https://example.com/team/old/', '/work/old/', 'https://example.com/team/new/', '/work/new/'),
+        ('', 'C:\\work\\old\\', '', 'C:\\work\\new\\'),
+        ('', '/work/old', '', '/work/new'),
+        ('https://example.com/old.git', '', 'https://example.com/new.git', ''),
+        ('https://example.com', 'C:', None, None),
+    ]
+    for repo, path, expected_repo, expected_path in cases:
+        result = page.evaluate("""([repo,path]) => {
+            const saved = projects;
+            projects = [{id:1, created_at:'2026-01-01', repo_url:repo, local_path:path}];
+            try { return projectSuggestion('new'); } finally { projects = saved; }
+        }""", [repo, path])
+        assert result == (None if expected_repo is None else {'repo_url': expected_repo, 'local_path': expected_path}), result
+    result = page.evaluate("""() => {
+        const saved = projects;
+        projects = [{id:9,created_at:'2025-01-01',repo_url:'',local_path:'/wrong/old'},
+                    {id:2,created_at:'2026-01-01',repo_url:'',local_path:'/first/old'},
+                    {id:3,created_at:'2026-01-01',archived:true,repo_url:'',local_path:'/latest/old'}];
+        try { return projectSuggestion('new'); } finally { projects = saved; }
+    }""")
+    assert result['local_path'] == '/latest/new'
+    H = {'X-Requested-With': 'dev'}
+    def create(key, **fields):
+        r = page.request.post(BASE + '/api/projects', headers=H, data={'key':key,'name':key,**fields})
+        assert r.ok, r.text()
+    def refresh():
+        page.reload(); page.wait_for_selector('#project-create')
+    def empty_form(key, name):
+        page.click('#project-create'); page.fill('#p-key', key); page.fill('#p-name', name)
+        page.click('#project-form button[type=submit]')
+    create('REF', repo_url='https://example.com/team/old.git', local_path='/work/old/')
+    refresh(); empty_form('NEW', 'new')
+    page.wait_for_selector('#project-suggestion')
+    assert 'https://example.com/team/new.git' in page.inner_text('#project-suggestion')
+    for scheme in ('light', 'dark'):
+        page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width, tag in ((1300,'desktop'),(390,'mobile')):
+            page.set_viewport_size({'width':width,'height':850})
+            page.wait_for_timeout(300)
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'project_suggestion_{scheme}_{tag}.png'), full_page=True)
+    page.set_viewport_size({'width':1300,'height':850})
+    page.click('#suggest-reject')
+    assert page.input_value('#p-key') == 'NEW' and page.input_value('#p-name') == 'new'
+    assert len(page.request.get(BASE + '/api/projects').json()['projects']) == 1
+    page.fill('#p-repo','https://example.com/manual.git')
+    page.click('#project-form button[type=submit]'); page.wait_for_selector('[data-delete-project="NEW"]')
+    new = next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key']=='NEW')
+    assert new['repo_url']=='https://example.com/manual.git' and new['local_path']==''
+    empty_form('YES','yes'); page.wait_for_selector('#suggest-accept'); page.click('#suggest-accept')
+    page.wait_for_selector('[data-delete-project="YES"]')
+    yes = next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key']=='YES')
+    assert yes['repo_url']=='https://example.com/yes.git' and yes['local_path']==''
+    empty_form('BAD','bad/name')
+    page.wait_for_selector('#project-error:text("직접 입력")')
+    assert page.input_value('#p-name')=='bad/name'; page.click('#p-cancel')
+    # 비어 있으면 확인창 없이 삭제하고 저장된 필터도 지운다.
+    page.select_option('#project-filter','YES'); page.wait_for_selector('[data-delete-project="YES"]')
+    asked.clear(); page.click('[data-delete-project="YES"]')
+    page.wait_for_selector('[data-delete-project="YES"]',state='detached')
+    assert not asked and page.input_value('#project-filter')==''
+    assert page.evaluate("localStorage.getItem('dev.project')") is None
+    # 사전 확인 뒤 내용 추가는 서버가 거부하고 다음 클릭에서 경고한다.
+    raced = []
+    def add_content(route):
+        if route.request.method == 'DELETE' and not raced:
+            r=page.request.post(BASE+'/api/issues', headers=H, data={'project':'NEW','title':'경합 내용'})
+            assert r.ok; raced.append(True)
+        route.continue_()
+    page.route('**/api/projects/NEW', add_content)
+    asked.clear(); page.click('[data-delete-project="NEW"]')
+    page.wait_for_function("document.getElementById('toast').textContent.includes('사전 확인')")
+    page.unroute('**/api/projects/NEW', add_content)
+    assert not asked and page.locator('[data-delete-project="NEW"]').count()==1
+    answers.append(None); page.click('[data-delete-project="NEW"]')
+    page.wait_for_function("!document.querySelector('[data-delete-project=NEW]').disabled")
+    assert 'Issue·Task 1개' in asked[-1] and '의존 연결' in asked[-1] and '댓글' in asked[-1]
+    page.click('[data-delete-project="NEW"]'); page.wait_for_selector('[data-delete-project="NEW"]',state='detached')
+    asked.clear(); page.click('[data-delete-project="REF"]'); page.wait_for_selector('[data-delete-project="REF"]',state='detached')
+    assert not asked
+    # 가장 최근 프로젝트에 참고값이 없으면 이전 값을 가져오지 않는다.
+    create('EMPTY')
+    refresh(); empty_form('NONE', 'none')
+    page.wait_for_selector('[data-delete-project="NONE"]')
+    none = next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key']=='NONE')
+    assert none['repo_url']=='' and none['local_path']==''
+    for key in ('NONE','EMPTY'):
+        page.click(f'[data-delete-project="{key}"]')
+        page.wait_for_selector(f'[data-delete-project="{key}"]',state='detached')
+    page.emulate_media(color_scheme='light')
+    page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+
+
 def check_account_menu(page, shots):
     """검증된 admin에게만 외부 링크를 보여 주고 로그인 전환 시 숨긴다."""
     link = page.locator('#open-jupyter')
@@ -660,7 +758,8 @@ try:
             assert not errs, errs
             print('OK: account menu')
             sys.exit(0)
-        check_list_loading(page, shots)
+        if '--project-flows-only' not in sys.argv:
+            check_list_loading(page, shots)
         if '--list-loading-only' in sys.argv:
             assert not errs, errs
             print('OK: list loading')
@@ -671,6 +770,11 @@ try:
         page.wait_for_selector("text=먼저")
         page.goto(BASE + "/#/projects")
         check_project_dialog(page, shots)
+        check_project_flows(page, shots, answers, asked)
+        if '--project-flows-only' in sys.argv:
+            assert not errs, errs
+            print('OK: project flows')
+            sys.exit(0)
         page.click("#project-create")
         page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button[type=submit]")
         page.wait_for_selector("td.ref:text('NS')")
