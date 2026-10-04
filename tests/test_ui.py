@@ -1099,9 +1099,13 @@ def check_progress_refresh(page, shots):
     parent = page.request.post(BASE + '/api/issues', data={'project': 'LIVE', 'title': '진행 부모'}, headers=headers).json()['ref']
     ref = page.request.post(BASE + '/api/issues', data={'project': 'LIVE', 'title': '진행 Task', 'parent': parent}, headers=headers).json()['ref']
     state = {'phase': '병합 검사 중', 'status': 'in_progress', 'queued': True}
+    # 모의 단계 갱신은 고정 응답을 복사한다. 라우트 안의 반복 서버 요청으로 인한 일시적인 연결 끊김을 피한다.
+    snapshots = {r: page.request.get(BASE + '/api/issues/' + r).json() for r in (ref, parent)}
+    listing = page.request.get(BASE + '/api/issues?project=LIVE').json()
     def mock(route):
         url = route.request.url
-        response = page.request.get(url).json()
+        original = {} if '/api/jobs' in url else listing if 'issues?' in url else snapshots[url.rsplit('/', 1)[-1]]
+        response = json.loads(json.dumps(original))
         def patch(i):
             if i['ref'] == ref:
                 i.update(status=state['status'], merge_state=state['phase'])
