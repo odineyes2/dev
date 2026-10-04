@@ -329,7 +329,7 @@ async def api_update_issue_type(type_id: int, request: Request):
 @app.get("/api/issues")
 def api_issues(project: str = "", status: str = "", assignee: int | None = None, parent: str = "", q: str = "",
                limit: int = 500, offset: int = 0, approved: bool = False):
-    """offset부터 limit개 — 하나 더 읽어 보고 뒤에 더 있는지(has_more)를 알려 준다(화면의 나눠 읽기)."""
+    """offset부터 limit개와 action_context를 제공한다. 페이지 밖 부모의 근거도 포함한다."""
     limit = max(1, min(limit, 2000))
     items = issues.list_issues(project or None, status or None, assignee, parent or None, q or None, limit + 1, offset,
                                approved=approved)

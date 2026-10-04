@@ -351,6 +351,28 @@ def _priority(value) -> str:
     return v
 
 
+def _list_action_context(c, rows):
+    """목록과 페이지 밖 부모의 판단 근거를 묶음 조회한다. 실행 권한 검사를 대신하지 않는다."""
+    ids = sorted({r["id"] for r in rows} | {r["parent_id"] for r in rows if r["parent_id"] is not None})
+    if not ids:
+        return {}
+    marks = ','.join('?' * len(ids))
+    contexts = {}
+    for r in c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({marks})", ids):
+        issue = _issue_dict(r)
+        contexts[r["id"]] = {"plan_version": r["latest_plan"], "approval": issue["approval"],
+                              "has_children": False, "has_execution": False, "has_active_job": False}
+    for r in c.execute(f"SELECT DISTINCT parent_id FROM issues WHERE parent_id IN ({marks})", ids):
+        contexts[r["parent_id"]]["has_children"] = True
+    for r in c.execute(f"SELECT DISTINCT issue_id FROM runs WHERE mode='execute' AND issue_id IN ({marks})", ids):
+        contexts[r["issue_id"]]["has_execution"] = True
+    for r in c.execute(f"SELECT DISTINCT j.issue_id FROM jobs j LEFT JOIN runs r ON r.id=j.run_id "
+                       f"WHERE (j.status='queued' OR (j.status='started' AND (r.id IS NULL OR r.status='running'))) "
+                       f"AND j.issue_id IN ({marks})", ids):
+        contexts[r["issue_id"]]["has_active_job"] = True
+    return {r["id"]: {**contexts[r["id"]], "parent": contexts.get(r["parent_id"])} for r in rows}
+
+
 def list_issues(project=None, status=None, assignee=None, parent=None, q=None, limit=500, offset=0, approved=False) -> list[dict]:
     """status: 목록 또는 쉼표 문자열. parent: 이슈 ref(그 하위만) 또는 "none"(최상위만). offset부터 limit개(나눠 읽기).
     approved: 최신 계획서가 승인(조건부 포함)된 이슈만."""
@@ -368,6 +390,7 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
     if assignee:
         where.append("i.assignee_agent_id=?"); args.append(int(assignee))
     with db.connect() as c:
+        c.execute("BEGIN")   # 목록과 판단 근거를 같은 읽기 스냅샷에서 구한다.
         if parent == "none":
             where.append("i.parent_id IS NULL")
         elif parent:
@@ -376,10 +399,12 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
             where.append("(i.title LIKE ? OR i.body LIKE ?)"); args += [f"%{q}%"] * 2
         sql = _ISSUE_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?"
         rows = c.execute(sql, (*args, max(1, min(int(limit), 2001)), max(0, int(offset)))).fetchall()
+        contexts = _list_action_context(c, rows)
     out = []
     for r in rows:
         d = _issue_dict(r)
         d.pop("body")   # 목록에는 본문을 싣지 않는다(에이전트 토큰 절약) — get_issue로 읽는다
+        d["action_context"] = contexts[r["id"]]
         out.append(d)
     return out
 
