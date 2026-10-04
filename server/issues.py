@@ -138,35 +138,6 @@ def _replace_types(c, iid, ids, actor):
                   [(iid, tid, actor["kind"], actor_label(actor), db.now_iso()) for tid in ids])
 
 
-def _type_revision(c, iid):
-    for e in c.execute("SELECT id, data_json FROM events WHERE issue_id=? AND kind='edit' ORDER BY id DESC", (iid,)):
-        if "type_ids" in json.loads(e["data_json"]).get("fields", []):
-            return e["id"]
-    return 0
-
-
-def classify_issue(actor, ref, type_ids, expected_revision):
-    """미분류 상태와 종류 수정 판을 원자적으로 확인하고 자동 분류한다."""
-    if _is_human(actor):
-        raise _forbidden("자동 분류는 에이전트 전용이에요.")
-    with db.connect() as c:
-        c.execute("BEGIN IMMEDIATE")
-        row = _find(c, ref)
-        _guard_goal(row, actor, "종류")
-        current = _issue_dict(row)
-        if current["type_ids"]:
-            return {"saved": False, "reason": "already_classified", "type_ids": current["type_ids"]}
-        if type(expected_revision) is not int or expected_revision != _type_revision(c, row["id"]):
-            raise StoreError("종류 선택이 바뀌었어요 — 다시 조회해 주세요.", 409)
-        ids = _type_ids(c, type_ids)
-        if not ids:
-            raise StoreError("자동 분류에는 종류를 하나 이상 선택해야 해요.")
-        _replace_types(c, row["id"], ids, actor)
-        c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), row["id"]))
-        _event(c, row["id"], actor, "edit", data={"fields": ["type_ids"], "automatic": True})
-        return {"saved": True, "type_ids": ids}
-
-
 # ---- 프로젝트 ----
 def _project_row(r) -> dict:
     d = dict(r)
@@ -388,7 +359,6 @@ def get_issue(ref) -> dict:
     with db.connect() as c:
         row = _find(c, ref)
         d = _issue_dict(row)
-        d["type_revision"] = _type_revision(c, row["id"])
         plan = c.execute("SELECT * FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1", (row["id"],)).fetchone()
         d["plan"] = dict(plan) if plan else None
         dec = c.execute("SELECT * FROM decisions WHERE issue_id=? AND gate='plan' ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
@@ -499,11 +469,8 @@ def update_issue(actor, ref, fields: dict) -> dict:
                 sets["parent_id"] = None
         types_changed = False
         if "type_ids" in fields:
-            if not _is_human(actor) and (not own or any(t["source"] == "human" for t in _issue_dict(row)["types"])):
-                raise _forbidden("에이전트의 자동 분류는 classify_issue를 사용해 주세요.")
             ids = _type_ids(c, fields["type_ids"], row["id"])
-            # 같은 선택이나 빈 선택도 사람의 의사와 경합 검사를 위해 기록한다.
-            types_changed = True
+            types_changed = ids != _issue_dict(row)["type_ids"]
             if types_changed:
                 _replace_types(c, row["id"], ids, actor)
         sets = {k: v for k, v in sets.items() if row[k] != v}
