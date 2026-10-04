@@ -249,9 +249,14 @@ with patch.object(notify, 'send') as sent, patch.object(orchestrate, 'promote_pa
     assert orchestrate._finish(me, record, 'merged', 'fake health verified') == 'merged'
     assert orchestrate._finish(me, record, 'merged', 'duplicate') is None
     assert sent.call_count == 1
+sequence = []
 def next_start(actor, ref, provider):
+    assert sequence and sequence[-1] == 'recover'
+    assert not orchestrate.pending()
+    sequence.append('start')
     review.begin(actor, issues.get_issue(ref), 'review', provider)
-with patch.object(review, 'start', side_effect=next_start) as start, patch.object(orchestrate, 'promote_parent', return_value=False):
+with patch.object(orchestrate, 'recover', side_effect=lambda: sequence.append('recover')), patch.object(review, 'start', side_effect=next_start) as start, patch.object(orchestrate, 'promote_parent', return_value=False):
     jobs.pump(); jobs.pump()
     assert start.call_count == 1 and not jobs.list_jobs()
+    assert sequence == ['recover', 'start', 'recover']
 print('OK completion queue boundary')

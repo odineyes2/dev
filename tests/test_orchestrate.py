@@ -3,6 +3,7 @@
 import os, subprocess, sys, tempfile
 from pathlib import Path
 from unittest.mock import patch
+from contextlib import nullcontext
 
 os.environ["DEV_DATA_DIR"] = tempfile.mkdtemp()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
@@ -379,3 +380,127 @@ with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(not
     with db.connect() as c:
         assert c.execute('SELECT phase FROM execution_completion WHERE run_id=?', (rid,)).fetchone()[0] == 'abandoned'
 print('OK persistent completion')
+
+# 재시작 경계의 중단은 새 프로세스의 DB 소유권 인계로 재현한다.
+with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(notify, 'send') as sent:
+    for boundary in ('checking', 'applying', 'deployed', 'finalizing', 'publishing'):
+        ref, rid = ready()
+        before = git('rev-parse', 'HEAD')
+        original_finish = orchestrate._finish
+        def interrupt_save(record, phase, **values):
+            result = save(record, phase, **values)
+            if phase == boundary:
+                raise Interrupted()
+            return result
+        def interrupt_finish(*args):
+            raise Interrupted()
+        try:
+            with patch.object(orchestrate, '_save', side_effect=interrupt_save), \
+                 patch.object(orchestrate, '_finish', side_effect=interrupt_finish if boundary == 'finalizing' else original_finish), \
+                 (patch.object(orchestrate, '_publish', side_effect=Interrupted()) if boundary == 'publishing' else nullcontext()):
+                orchestrate.handle(me, ref)
+            raise AssertionError('expected interruption at ' + boundary)
+        except Interrupted:
+            pass
+        assert issues.get_issue(ref)['status'] == ('in_review' if boundary == 'publishing' else 'in_progress')
+        notices = sent.call_count
+        db.init(); jobs.reconcile()
+        with patch.object(orchestrate, 'PROCESS_ID', 'recovered-' + str(rid)), patch.object(orchestrate, '_restart') as restart:
+            orchestrate.take_over()
+            orchestrate.recover(); orchestrate.recover()
+            restart.assert_not_called()
+        expected = 'on_hold' if boundary == 'applying' else 'in_review'
+        assert issues.get_issue(ref)['status'] == expected, boundary
+        assert sent.call_count == notices + (expected == 'in_review'), boundary
+        assert not orchestrate.pending()
+        if boundary == 'applying':
+            assert git('rev-parse', 'HEAD') == before
+
+    # 最終 health 成功と状態保存の間に人が判断しても通知・昇格しない。
+    for status in ('on_hold', 'changes_requested', 'done', 'closed'):
+        ref, rid = ready(restart=True)
+        notices = sent.call_count
+        def human_decision(cfg, record):
+            # 運用のロールバックは別検査で扱い、ここでは状態所有権を検査する。
+            with db.connect() as c:
+                issues._set_status(c, me, issues._find(c, ref), status, 'human decision')
+            return True
+        with patch.object(orchestrate, '_restart', return_value=None), patch.object(orchestrate, '_verified_health', side_effect=human_decision), patch.object(orchestrate, 'promote_parent') as promote:
+            assert orchestrate.handle(me, ref) is None
+            promote.assert_not_called()
+        assert issues.get_issue(ref)['status'] == status
+        assert orchestrate.completion(ref)['phase'] == 'abandoned'
+        assert sent.call_count == notices and not orchestrate.pending()
+
+    # revert 完了直後の中断は復旧コミット・再起動を重複させない。
+    ref, rid = ready(restart=True)
+    def interrupt_revert(record, phase, **values):
+        if phase == 'rollback_applied':
+            raise Interrupted()
+        return save(record, phase, **values)
+    try:
+        with patch.object(orchestrate, '_save', side_effect=interrupt_revert), patch.object(orchestrate, '_restart', return_value=None), patch.object(orchestrate, '_verified_health', return_value=False):
+            orchestrate.handle(me, ref)
+        raise AssertionError('expected interruption after revert')
+    except Interrupted:
+        pass
+    reverted = git('rev-parse', 'HEAD')
+    assert git('log', '-1', '--format=%s').startswith('Revert')
+    with patch.object(orchestrate, 'PROCESS_ID', 'rollback-recovery'), patch.object(orchestrate, '_restart', return_value=None) as restart, patch.object(orchestrate, '_verified_health', return_value=True):
+        orchestrate.take_over(); orchestrate.recover(); orchestrate.recover()
+        assert restart.call_count == 1
+    assert git('rev-parse', 'HEAD') == reverted
+    assert issues.get_issue(ref)['status'] == 'changes_requested' and not orchestrate.pending()
+    # 재시작 명령 실패는 revert 복구로, busy 시간 초과는 보류로 끝난다.
+    ref, rid = ready(restart=True)
+    notices = sent.call_count
+    with patch.object(orchestrate, '_restart', side_effect=['command denied', None]) as restart, patch.object(orchestrate, '_verified_health', return_value=True):
+        assert orchestrate.handle(me, ref) == 'changes_requested'
+        assert restart.call_count == 2
+    assert git('log', '-1', '--format=%s').startswith('Revert')
+    assert orchestrate.completion(ref)['phase'] == 'failed'
+    assert sent.call_count == notices and not orchestrate.pending()
+    ref, rid = ready(restart=True)
+    with db.connect() as c:
+        cfg = json.loads(orchestrate.completion(ref)['cfg_json'])
+        cfg['wait_minutes'] = 0
+        c.execute('UPDATE execution_completion SET cfg_json=? WHERE run_id=?', (json.dumps(cfg), rid))
+    with patch.object(orchestrate, '_busy', return_value=True), patch.object(orchestrate, '_restart') as restart:
+        assert orchestrate.handle(me, ref) == 'on_hold'
+        restart.assert_not_called()
+    assert orchestrate.completion(ref)['phase'] == 'held'
+    assert sent.call_count == notices and not orchestrate.pending()
+
+    # 재시작 대기 중 실제 거절 롤백이 들어오면 오래된 후처리는 되살리지 않는다.
+    import rollback
+    ref, rid = ready(restart=True)
+    notices = sent.call_count
+    try:
+        with patch.object(orchestrate, '_restart', side_effect=Interrupted()):
+            orchestrate.handle(me, ref)
+        raise AssertionError('expected interruption before rejection')
+    except Interrupted:
+        pass
+    with patch.object(rollback, 'start_recovery'), patch.object(orchestrate, '_restart', return_value=None), patch.object(orchestrate, '_healthy', return_value=True):
+        issues.set_status(me, ref, 'closed', '반영 결과 거절')
+        rollback.recover()
+        assert issues.get_issue(ref)['status'] == 'closed'
+        rejected_head = git('rev-parse', 'HEAD')
+        with patch.object(orchestrate, 'PROCESS_ID', 'after-rejection'), patch.object(orchestrate, '_restart') as restart:
+            orchestrate.take_over(); orchestrate.recover(); rollback.recover(); orchestrate.recover()
+            restart.assert_not_called()
+    assert git('rev-parse', 'HEAD') == rejected_head
+    assert issues.get_issue(ref)['status'] == 'closed'
+    assert orchestrate.completion(ref)['phase'] == 'abandoned'
+    assert sent.call_count == notices and not orchestrate.pending()
+
+    # 상태가 그대로여도 goal 보호를 새로 붙이면 후처리 소유권은 사라진다.
+    ref, rid = ready()
+    before = git('rev-parse', 'HEAD')
+    with db.connect() as c:
+        c.execute('UPDATE issues SET labels_json=? WHERE id=?', ('["goal"]', orchestrate.completion(ref)['issue_id']))
+    assert orchestrate.handle(me, ref) is None
+    assert git('rev-parse', 'HEAD') == before
+    assert issues.get_issue(ref)['status'] == 'in_progress'
+    assert orchestrate.completion(ref)['phase'] == 'abandoned'
+print('OK interruption and protected completion boundaries')

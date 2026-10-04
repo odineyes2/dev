@@ -49,7 +49,11 @@ with db.connect() as c:
     iid = issues.get_issue(t2)['id']
     rid = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'execute','ok','human:admin',?)", (iid, db.now_iso())).lastrowid
     c.execute("INSERT INTO execution_completion(run_id,issue_id,ref,actor,task_sha,auto_merge,phase,owner_event,cfg_json,updated_at) VALUES(?,?,?,'human:admin',?,1,'restart_requested',0,'{}',?)", (rid, iid, t2, git('rev-parse', 'relay/' + t2), db.now_iso()))
-assert not orchestrate.promote_parent(me, t2)
+for phase in orchestrate.ACTIVE_PHASES + ('failed', 'held', 'abandoned'):
+    with db.connect() as c:
+        c.execute('UPDATE execution_completion SET phase=? WHERE run_id=?', (phase, rid))
+    assert not orchestrate.promote_parent(me, t2), phase
+    assert issues.get_issue(p)['status'] == 'backlog'
 with db.connect() as c:
     c.execute("UPDATE execution_completion SET phase='complete' WHERE run_id=?", (rid,))
 assert orchestrate.promote_parent(me, t2)

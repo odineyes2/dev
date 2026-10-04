@@ -1128,8 +1128,11 @@ def check_progress_refresh(page, shots):
                 page.reload()
                 page.wait_for_selector('#stage')
                 page.fill('#comment', '갱신 중인 댓글 초안')
-                state['phase'] = '재시작 확인 중'
-                page.wait_for_function("document.querySelector('#stage')?.textContent.includes('재시작 확인 중')", timeout=12000)
+                for phase in ('운영 반영 중', '재시작 확인 중', '복구 중', '복구 확인 중'):
+                    state['phase'] = phase
+                    page.wait_for_function("phase => document.querySelector('#stage')?.textContent.includes(phase)", arg=phase, timeout=12000)
+                    assert page.locator('#result-actions').count() == 0
+                    assert page.input_value('#comment') == '갱신 중인 댓글 초안'
                 assert page.input_value('#comment') == '갱신 중인 댓글 초안'
                 assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
                 page.screenshot(path=str(shots / f'progress_{scheme}_{width}.png'), full_page=True)
