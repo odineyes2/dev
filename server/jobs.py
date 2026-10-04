@@ -9,6 +9,7 @@ Claude 맡기기 대기열(DEV-43) — 검토·실행을 여러 개 눌러 두�
 - 펌프 시점: 넣을 때, 각 실행 스레드가 끝난 뒤(실행은 병합까지), 서버가 뜰 때, 그리고 60초 주기(선행 done 등을 놓치지 않게).
 """
 import json
+import sqlite3
 import threading
 import time
 
@@ -170,6 +171,8 @@ def pump() -> None:
     """도는 것이 없으면 시작할 수 있는 첫 항목을 돌린다."""
     import execute, review
     with _lock:
+        import automation
+        automation.sync()
         reconcile()
         if busy():
             return
@@ -178,6 +181,12 @@ def pump() -> None:
         for j in queued:
             actor = _actor(j["actor"])
             try:
+                if j['source'] == 'auto':
+                    with db.connect() as c:
+                        valid = automation.valid_job(c, j)
+                    if not valid:
+                        _set(j['id'], 'cancelled', '자동 위임 조건이 바뀌었어요')
+                        continue
                 with db.connect() as c:
                     row = c.execute("SELECT * FROM issues WHERE id=?", (j["issue_id"],)).fetchone()
                     owner = _latest(c, j["issue_id"]).get("job_id")
@@ -200,8 +209,13 @@ def pump() -> None:
                         _set(j["id"], "queued", why)
                         continue
                     execute.start(actor, j["ref"], j["provider"])
+            except sqlite3.IntegrityError as e:
+                if j['source'] != 'auto':
+                    raise
+                _set(j['id'], 'cancelled', str(e))
+                continue
             except issues.StoreError as e:
-                if e.status == 404:
+                if j['source'] == 'auto' or e.status == 404:
                     _set(j["id"], "skipped", str(e))
                 else:   # 저장소가 깨끗하지 않음 등 — 줄에서 기다린다
                     _set(j["id"], "queued", str(e))
