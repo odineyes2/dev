@@ -1224,26 +1224,36 @@ def check_board_actions(page, shots, answers, asked):
         return dict(ref=f'ACT-{n}', title='Action 검사', project_key='ACT', status=status, parent_id=None,
                     labels=[], types=[], priority='none', action_context={**context, **patch})
     valid = {'verdict':'approve_notes','plan_version':2,'stale':False}
-    rows = [item(1), item(2,'triage',plan_version=2), item(3,'triage',has_children=True),
+    rows = [item(1), item(2,'triage',plan_version=2), item(3,'in_review',has_children=True),
             {**item(4, parent={'plan_version':2,'approval':valid}), 'parent_id':100,'parent_ref':'ACT-100'},
             item(5,'in_review',plan_version=2), item(6,'triage',plan_version=2,approval=valid),
             {**item(7,has_execution=True,parent={'plan_version':2,'approval':valid}),'parent_id':100},
             item(8,has_active_job=True), {**item(9),'parent_id':101},
             *[item(n,status,plan_version=2) for n,status in enumerate(
                 ('waiting','in_progress','done','closed','on_hold','changes_requested'),10)],
-            {**item(20,parent={'plan_version':3,'approval':{**valid,'stale':True}}),'parent_id':102}]
+            {**item(20,parent={'plan_version':3,'approval':{**valid,'stale':True}}),'parent_id':102},
+            item(21,'triage',has_children=True,plan_version=2,approval=valid),
+            {**item(22,'in_review'),'parent_id':100,'parent_ref':'ACT-100'},
+            {**item(23,'in_review'),'parent_id':101,'parent_ref':'ACT-101'},
+            {**item(24,'done'),'parent_id':100,'parent_ref':'ACT-100'}]
     posts, pending = [], []
     delay = False
     conflict = False
     fail_settings = False
     delay_settings = False
     pending_settings = []
+    parent_status = 'triage'
+    fail_parent = False
     def issues(route): route.fulfill(json={'issues':rows,'has_more':False})
     def auto(route):
         if delay_settings:
             pending_settings.append(route); return
         route.fulfill(status=500 if fail_settings else 200, json={'detail':'병합 대기'} if fail_settings else settings)
     def action(route):
+        if route.request.method == 'GET' and route.request.url.endswith(('/ACT-100', '/ACT-101')):
+            route.fulfill(status=500 if fail_parent else 200,
+                          json={'status':parent_status if route.request.url.endswith('/ACT-100') else 'in_review'})
+            return
         if route.request.method == 'POST':
             posts.append((route.request.url, route.request.post_data_json))
             if delay: pending.append(route); return
@@ -1262,13 +1272,39 @@ def check_board_actions(page, shots, answers, asked):
     try:
         for board in (False,True):
             ready(board)
-            assert page.locator('[data-action]').count() == 6
+            assert page.locator('[data-action]').count() == 7
             for kind, ref in [('review',1),('execute',4)]:
                 for provider in ('claude','codex'):
                     btn(ref,kind,provider).click()
                     page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
                     assert posts[-1][0].endswith('/'+kind) and posts[-1][1] == {'provider':provider}
                     assert page.url.endswith('/#/board' if board else '/#/')
+            # 아이콘의 기하학적 중심이 버튼 중심과 일치한다.
+            for provider in ('claude','codex'):
+                assert btn(1,'review',provider).evaluate('''b => {
+                    const r=b.getBoundingClientRect(), s=b.querySelector('svg').getBoundingClientRect();
+                    return Math.abs(r.x+r.width/2-s.x-s.width/2)<1 && Math.abs(r.y+r.height/2-s.y-s.height/2)<1;
+                }''')
+            before = len(posts); asked.clear()
+            btn(22,'task-approve').click()
+            page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
+            assert len(posts) == before + 1 and posts[-1][0].endswith('/ACT-22/status')
+            assert posts[-1][1] == {'status':'done'} and not asked
+            settings.update(auto_approve=True)
+            ready(board); before = len(posts); asked.clear()
+            assert btn(22,'task-approve').get_attribute('aria-disabled') == 'true'
+            for key in ('Enter','Space'):
+                btn(22,'task-approve').focus(); page.keyboard.press(key)
+                assert page.inner_text('#toast') == 'Auto 모드에서는 해당 버튼이 비활성화됩니다.'
+            btn(22,'task-approve').click(force=True)
+            assert len(posts) == before and not asked
+            settings.update(auto_approve=False)
+            for parent_status in ('backlog','in_review','done','closed','on_hold'):
+                ready(board)
+                assert btn(22,'task-approve').count() == 0
+            parent_status = 'triage'; fail_parent = True
+            ready(board); assert btn(22,'task-approve').count() == 0
+            fail_parent = False
             settings.update(auto_review=True,auto_execute=True)
             ready(board); before = len(posts); asked.clear()
             for kind,ref in [('review',1),('execute',4)]:
@@ -1303,13 +1339,18 @@ def check_board_actions(page, shots, answers, asked):
                     page.wait_for_timeout(200)
                     assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
                     page.screenshot(path=str(shots / f'action_{"board" if board else "list"}_{scheme}_{width}.png'),full_page=True)
+                    if board:
+                        page.locator('.kanban').evaluate('e => { const col=e.querySelector("[data-col=in_review]"); e.scrollLeft += col.getBoundingClientRect().left-e.getBoundingClientRect().left; }')
+                        page.wait_for_timeout(200)
+                        page.screenshot(path=str(shots / f'action_board_review_{scheme}_{width}.png'),full_page=True)
             page.set_viewport_size({'width':1300,'height':850})
-        ready(); delay = True; before = len(posts)
-        btn(1,'review','claude').evaluate('e => {e.click();e.click()}')
-        page.wait_for_timeout(200); assert len(posts) == before + 1
-        page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects') if page.locator('.projects').count() else page.wait_for_timeout(200)
-        pending.pop().fulfill(json={}); delay = False
-        page.wait_for_timeout(200); assert page.url.endswith('/#/projects')
+        for ref, kind, provider in ((1,'review','claude'), (22,'task-approve','')):
+            ready(); delay = True; before = len(posts)
+            btn(ref,kind,provider).evaluate('e => {e.click();e.click()}')
+            page.wait_for_timeout(200); assert len(posts) == before + 1
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects') if page.locator('.projects').count() else page.wait_for_timeout(200)
+            pending.pop().fulfill(json={}); delay = False
+            page.wait_for_timeout(200); assert page.url.endswith('/#/projects')
         fail_settings = True; ready(); before = len(posts); btn(1,'review','claude').click(force=True)
         assert len(posts) == before and '새로고침' in page.inner_text('#toast')
         fail_settings = False; delay_settings = True
@@ -1322,7 +1363,7 @@ def check_board_actions(page, shots, answers, asked):
         page.wait_for_selector('[data-action]')
         pending_settings.pop().fulfill(status=500,json={'detail':'오래된 오류'})
         page.wait_for_timeout(100)
-        assert page.locator('[data-action]').count() == 6
+        assert page.locator('[data-action]').count() == 7
         assert page.inner_text('#toast') != '오래된 오류'
         page.evaluate('localStorage.removeItem("dev.project")')
     finally:

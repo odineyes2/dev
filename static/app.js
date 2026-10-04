@@ -241,23 +241,32 @@ function actionKind(i){
   const c=i.action_context;
   if(!c || c.has_active_job || pendingActions.has(i.ref)) return '';
   const valid=c => c?.plan_version && c.approval && !c.approval.stale && c.approval.plan_version===c.plan_version && ['approve','approve_notes'].includes(c.approval.verdict);
-  if(i.parent_id!=null || i.parent_ref) return i.status==='backlog' && !c.has_execution && valid(c.parent) ? 'execute' : '';
-  if(i.status==='triage' && c.has_children) return 'complete-tree';
+  if(i.parent_id!=null || i.parent_ref){
+    if(i.status==='in_review' && actionSession?.parentStatuses.get(i.parent_ref)==='triage') return 'task-approve';
+    return i.status==='backlog' && !c.has_execution && valid(c.parent) ? 'execute' : '';
+  }
+  if(i.status==='in_review' && c.has_children) return 'complete-tree';
   if(i.status==='triage' && c.plan_version && !valid(c)) return 'decision';
   return i.status==='backlog' && !c.plan_version && !c.has_children ? 'review' : '';
 }
-function actionOff(kind,s){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='decision' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
+function actionOff(kind,s){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='task-approve' ? s.auto_approve===true : kind==='decision' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
 function actionHtml(i){
   const kind=actionKind(i); if(!kind) return '';
   const settings=actionSession?.settings.get(i.project_key);
   return `<div class="issue-actions" aria-label="Action">${(['review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
-    const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':'전체 완료';
+    const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':kind==='task-approve'?'승인':'전체 완료';
     return `<button type="button" draggable="false" data-action="${kind}" data-ref="${esc(i.ref)}" data-provider="${provider}" title="${label}" aria-label="${label}" aria-disabled="${!settings || !!actionOff(kind,settings)}">${provider?`<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider==='claude'?'claude':'openai'}"/></svg>`:label}</button>`;
   }).join('')}</div>`;
 }
-function beginActions(current){ return actionSession={settings:new Map(),items:new Map(),current}; }
+function beginActions(current){ return actionSession={settings:new Map(),items:new Map(),parentStatuses:new Map(),current}; }
 async function loadActionSettings(session,items){
   items.forEach(i=>session.items.set(i.ref,i));
+  // 목록 요약에 부모 상태가 없으므로 승인 후보의 부모만 조회한다. 실패하면 승인을 표시하지 않는다.
+  await Promise.all([...new Set(items.filter(i=>i.status==='in_review' && i.parent_ref).map(i=>i.parent_ref))].filter(ref=>!session.parentStatuses.has(ref)).map(async ref=>{
+    try{ const parent=await api('GET',`/api/issues/${encodeURIComponent(ref)}`,undefined,session.current);
+      session.parentStatuses.set(ref,parent.status);
+    }catch(e){ session.parentStatuses.set(ref,null); }
+  }));
   await Promise.all([...new Set(items.map(i=>i.project_key))].filter(k=>!session.settings.has(k)).map(async key=>{
     try{ const s=await api('GET',`/api/projects/${encodeURIComponent(key)}/auto-settings`,undefined,session.current);
       if(typeof s.auto_review!=='boolean' || typeof s.auto_execute!=='boolean') throw new Error('설정');
@@ -287,7 +296,7 @@ function bindActions(container,session,refresh){
           const warn=root.children.filter(x=>!['done','closed'].includes(x.status) && (x.status!=='in_review' || ['병합 대기','재시작 대기','되돌림'].includes(x.merge_state)));
           if(!open.length){toast('이미 모두 끝났어요');return;}
           if(!confirm(`${root.ref} 묶음 전체를 Done으로 바꿀까요? 되돌리기 기능은 없어요.\n\n닫힐 이슈:\n${open.map(x=>`· ${x.ref} ${x.title}`).join('\n')}`+(warn.length?`\n\n주의:\n${warn.map(x=>`· ${x.ref} — ${STATUS_LABEL[x.status]} ${x.merge_state||''}`).join('\n')}`:'')))return;
-        }else if(kind!=='decision'){
+        }else if(!['decision','task-approve'].includes(kind)){
           const name=provider==='claude'?'Claude':'Codex';
           const task=kind==='execute'?await api('GET',`/api/issues/${encodeURIComponent(i.ref)}`,undefined,current):null;
           if(!current())return;
@@ -296,8 +305,8 @@ function bindActions(container,session,refresh){
           if(!confirm(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?\n${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}`))return;
         }
         if(!current())return;
-        await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:provider?{provider}:{},current);
-        if(current())toast(kind==='decision'?'계획을 승인했어요.':kind==='complete-tree'?'묶음을 끝냈어요.':'작업을 대기열에 등록했어요.');
+        await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:provider?{provider}:{},current);
+        if(current())toast(kind==='decision'?'계획을 승인했어요.':kind==='task-approve'?'Task를 승인했어요.':kind==='complete-tree'?'묶음을 끝냈어요.':'작업을 대기열에 등록했어요.');
       }catch(e){ /* 최신 정보로 다시 판단한다. */ }
       finally{pendingActions.delete(i.ref);if(current())await refresh();}
     });
