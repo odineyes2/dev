@@ -220,7 +220,9 @@ def check_settings_navigation(page, shots):
         assert page.locator('[data-nav=settings]').get_attribute('class').endswith('active')
         assert page.locator('#settings-nav [aria-current=page]').get_attribute('data-settings') == tab
         assert page.locator('#settings-nav a').count() == 2
-        assert page.locator('#settings-nav').is_visible()
+        assert page.locator('#view > .panel #settings-nav').is_visible()
+        assert page.locator('#shell > #settings-nav').count() == 0
+        assert page.locator('#view > .panel > h2').text_content() == 'Settings'
 
     page.goto(BASE + '/#/settings'); selected('auto', '#settings-body .empty')
     assert page.url.endswith('/#/settings/auto')
@@ -235,7 +237,7 @@ def check_settings_navigation(page, shots):
     page.select_option('#project-filter', 'NAVA'); selected('types', '#type-create')
     page.select_option('#project-filter', 'NAVB'); selected('types', '#type-create')
     page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
-    assert page.locator('#settings-nav').is_hidden()
+    assert page.locator('#settings-nav').count() == 0
 
     # 같은 주소로 돌아와도 앞선 조회가 최신 화면을 덮지 않아야 한다.
     held = []
