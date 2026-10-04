@@ -346,3 +346,20 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
   .project-create{ right:var(--sp-4); bottom:var(--sp-4); }
   .project-dialog .line{ grid-template-columns:1fr; }
 }
+/* 프로젝트 관리·문서 — DESIGN 2~4, 7~8, 10~12절의 토큰과 범위 줄을 따른다. */
+.project-scope{ margin-bottom:var(--sp-5); }
+.project-scope nav{ display:flex; gap:var(--sp-2); border-bottom:1px solid var(--border); }
+.project-scope nav button{ border:0; border-radius:0; background:transparent; min-height:40px; }
+.project-scope nav [aria-current="page"]{ color:var(--accent); border-bottom:2px solid var(--accent); }
+.form .line .project-description{ flex:1 0 100%; min-width:0; grid-column:1 / -1; }
+.form .project-description textarea{ font-family:var(--sans); font-size:14px; }
+.project-docs{ min-width:0; }
+.project-docs .line{ display:flex; gap:var(--sp-2); flex-wrap:wrap; }
+.project-docs button, .project-docs select{ min-height:40px; max-width:100%; }
+.project-docs select{ width:100%; }
+.project-docs p, .document-source{ overflow-wrap:anywhere; }
+.document-source{ white-space:pre-wrap; font-family:var(--mono); font-size:13px; line-height:1.7; padding:var(--sp-4); border:1px solid var(--border); border-radius:var(--r-md); background:var(--panel-2); }
+.project-scope button:focus-visible, .project-docs :focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+.project-docs[hidden], #project-form[hidden]{ display:none; }
+.project-docs .skeleton{ padding:var(--sp-4); color:var(--dim); }
+.project-docs .skeleton::after{ content:""; display:block; height:32px; margin-top:var(--sp-3); border-radius:var(--r-sm); background:var(--panel-2); }
