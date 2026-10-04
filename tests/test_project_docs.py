@@ -34,10 +34,14 @@ with patch.object(jobs, 'busy', return_value=True):
         ref = request['ref']
         parent = issues.get_issue(ref)
         assert parent['project_key'] == 'DOC' and parent['parent_ref'] is None
+        assert parent['type_ids'] == [2] and parent['types'][0]['source'] == 'human'
         assert '사용자 제품 설명' in parent['body']
         assert all(path in parent['body'] and purpose in parent['body'] for path, purpose in project_docs.DOCUMENTS)
         assert jobs.list_jobs()[-1]['provider'] == provider
         assert project_docs.request_documents(me, 'DOC', provider)['ref'] == ref
+        issues.update_issue(me, ref, {'type_ids': [1]})
+        assert project_docs.request_documents(me, 'DOC', provider)['ref'] == ref
+        assert issues.get_issue(ref)['type_ids'] == [1, 2]
         task = issues.create_issue(me, 'DOC', '문서 생성', parent=ref, body='바꿀 파일: docs/project/01_PRD.md, AGENTS.md')
         denied(lambda: jobs.enqueue(me, task['ref'], 'execute'), 409)
         issues.post_plan(me, ref, '대상 worktree에서 문서 작성')
@@ -71,6 +75,7 @@ issues.create_project(me, 'RETRY', '재시도', '', '/retry', '원래 설명')
 with patch.object(jobs, 'enqueue', side_effect=RuntimeError('queue failed')):
     failed = project_docs.request_documents(me, 'RETRY', 'codex')
 assert failed['retryable'] and failed['queue_error'] == 'queue failed'
+assert issues.get_issue(failed['ref'])['type_ids'] == [2]
 issues.update_project(me, 'RETRY', {'description': '새 설명'})
 with patch.object(jobs, 'busy', return_value=True):
     retry = project_docs.request_documents(me, 'RETRY', 'codex')
@@ -86,9 +91,54 @@ with patch.object(jobs, 'enqueue', return_value={'queued': True}):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: project_docs.request_documents(me, 'RACE', 'codex'), range(8)))
 assert len({r['ref'] for r in results}) == 1
+with db.connect() as c:
+    assert c.execute('SELECT COUNT(*) FROM issue_type_links WHERE issue_id=? AND type_id=2',
+                     (issues.get_issue(results[0]['ref'])['id'],)).fetchone()[0] == 1
 issues.set_status(me, results[0]['ref'], 'done')
 with patch.object(jobs, 'enqueue', return_value={'queued': True}):
     assert project_docs.request_documents(me, 'RACE', 'codex')['ref'] != results[0]['ref']
+
+# 일반 종류 선택은 공식 요청이나 유료 작업을 시작하지 않는다.
+with db.connect() as c:
+    counts = tuple(c.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0]
+                   for table in ('project_doc_requests', 'jobs', 'runs'))
+ordinary = issues.create_issue(me, 'DOC', '일반 문서', type_ids=[2])
+issues.update_issue(me, ordinary['ref'], {'type_ids': [1, 2]})
+assert project_docs.provider_for(ordinary['id']) is None
+with db.connect() as c:
+    assert counts == tuple(c.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0]
+                           for table in ('project_doc_requests', 'jobs', 'runs'))
+
+# 기존 DB 이관은 이름·활성 여부와 무관하며 종류·요청 스냅샷을 보존한다.
+import sqlite3
+with patch.object(db.config, 'DB_PATH', Path(tempfile.mkdtemp()) / 'legacy.db'):
+    with sqlite3.connect(db.config.DB_PATH) as c:
+        for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+            c.executescript(sql + f'PRAGMA user_version={version};')
+    issues.create_project(me, 'OLD', '기존', '', '/old', '현재 설명')
+    old = issues.create_issue(me, 'OLD', '기존 요청', type_ids=[1])
+    unrelated = issues.create_issue(me, 'OLD', '일반 이슈')
+    existing = issues.create_issue(me, 'OLD', '이미 연결', type_ids=[2])
+    issues.update_issue_type(me, 2, {'name': '공식 자료', 'active': False})
+    with db.connect() as c:
+        for iid, provider in ((old['id'], 'codex'), (existing['id'], 'claude')):
+            c.execute('INSERT INTO project_doc_requests VALUES(?,?,?,?,?)',
+                      (iid, old['project_id'], provider, '과거 설명', old['created_at']))
+        before = tuple(c.execute('SELECT * FROM issue_type_links WHERE issue_id=?', (existing['id'],)).fetchone())
+    assert db.init() == len(db.MIGRATIONS)
+    assert db.init() == len(db.MIGRATIONS)
+    assert issues.get_issue(old['ref'])['type_ids'] == [1, 2]
+    assert issues.get_issue(unrelated['ref'])['type_ids'] == []
+    with db.connect() as c:
+        assert tuple(c.execute('SELECT * FROM issue_type_links WHERE issue_id=?', (existing['id'],)).fetchone()) == before
+        assert [tuple(r) for r in c.execute('SELECT provider,description FROM project_doc_requests ORDER BY issue_id')] == [('codex', '과거 설명'), ('claude', '과거 설명')]
+    with patch.object(jobs, 'enqueue', return_value={'queued': True}):
+        assert project_docs.request_documents(me, 'OLD', 'codex')['ref'] == old['ref']
+        new = project_docs.request_documents(me, 'OLD', 'claude')
+        assert new['ref'] == existing['ref']
+        issues.set_status(me, existing['ref'], 'done')
+        new = project_docs.request_documents(me, 'OLD', 'claude')
+        assert issues.get_issue(new['ref'])['type_ids'] == [2]
 
 # REST는 인증된 사람의 요청을 연결하고, 도구를 생략한 후속 실행은 저장된 도구를 따른다.
 import httpx

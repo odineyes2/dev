@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 MAX_DOCUMENT_BYTES = 256 * 1024
+DOCUMENT_TYPE_ID = 2  # 표시 이름 변경·비활성화와 독립된 최초 카탈로그 ID다.
 
 
 def _project(key):
@@ -169,6 +170,10 @@ def request_documents(actor, key, provider):
                                           issues.actor_label(actor), now, now)).lastrowid
             c.execute('INSERT INTO project_doc_requests VALUES(?,?,?,?,?)',
                       (iid, project['id'], provider, project['description'], now))
+        # 재사용·대기열 재시도에서도 다른 종류를 보존하며 공식 요청 종류를 확정한다.
+        c.execute('''INSERT OR IGNORE INTO issue_type_links(issue_id,type_id,source,actor,created_at)
+            VALUES(?,?,?,?,?)''',
+            (iid, DOCUMENT_TYPE_ID, 'human', issues.actor_label(actor), db.now_iso()))
         ref = c.execute(issues._ISSUE_SELECT + ' WHERE i.id=?', (iid,)).fetchone()
         ref = issues._issue_dict(ref)['ref']
         reviewed = c.execute('SELECT 1 FROM plans WHERE issue_id=?', (iid,)).fetchone() or c.execute(
