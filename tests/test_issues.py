@@ -33,6 +33,29 @@ with TestClient(A.app) as c:
     ok(human("POST", "/api/projects", json={"key": "DEV", "name": "dev"}))
     assert human("POST", "/api/projects", json={"key": "NS", "name": "again"}).status_code == 409
 
+    # 설명 — 기존 생성 호출, 여러 줄 원문, 부분 수정, 삭제와 입력 제한을 검사한다.
+    projects = ok(a("GET", "/api/projects"))["projects"]
+    assert all(p["description"] == "" for p in projects)
+    description = "  제품 의도\n대상 고객과 핵심 가치\n"
+    described = ok(human("POST", "/api/projects", json={
+        "key": "DOC", "name": "설명 검사", "description": description}))
+    assert described["description"] == description
+    assert ok(human("PATCH", "/api/projects/doc", json={"name": "이름 수정"}))["description"] == description
+    assert a("PATCH", "/api/projects/DOC", json={"description": "권한 없음"}).status_code == 403
+    boundary = "가" * issues.MAX_TEXT
+    assert ok(human("PATCH", "/api/projects/DOC", json={"description": boundary}))["description"] == boundary
+    assert human("PATCH", "/api/projects/DOC", json={"name": "저장되면 안 됨", "description": boundary + "가"}).status_code == 400
+    stored = next(p for p in ok(a("GET", "/api/projects"))["projects"] if p["key"] == "DOC")
+    assert stored["description"] == boundary and stored["name"] == "이름 수정"
+    assert human("POST", "/api/projects", json={"key": "LONG", "name": "긴 설명", "description": boundary + "가"}).status_code == 400
+    assert not any(p["key"] == "LONG" for p in issues.list_projects())
+    assert ok(human("PATCH", "/api/projects/DOC", json={"description": ""}))["description"] == ""
+    assert ok(human("PATCH", "/api/projects/DOC", json={"description": None}))["description"] == ""
+    assert human("PATCH", "/api/projects/MISSING", json={"description": "설명"}).status_code == 404
+    # 저장소의 기존 위치 인자 호출도 호환한다.
+    legacy = issues.create_project({"kind": "human", "name": "admin"}, "LEGACY", "기존 호출", "repo", "path")
+    assert legacy["description"] == "" and legacy["repo_url"] == "repo" and legacy["local_path"] == "path"
+
     # 이슈 — 번호는 프로젝트마다
     i1 = ok(human("POST", "/api/issues", json={"project": "NS", "title": "보드 복사", "body": "사람이 쓴 지시", "priority": "high", "labels": ["board", "ui"]}))
     i2 = ok(human("POST", "/api/issues", json={"project": "NS", "title": "두 번째"}))
