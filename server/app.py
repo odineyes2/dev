@@ -268,6 +268,19 @@ def api_project_documents(key: str):
     return project_docs.list_documents(key)
 
 
+@app.get("/api/projects/{key}/auto-settings")
+def api_auto_settings(key: str):
+    import auto_settings
+    return auto_settings.get_settings(key)
+
+
+@app.patch("/api/projects/{key}/auto-settings")
+async def api_update_auto_settings(key: str, request: Request):
+    import auto_settings
+    a = human_only(request)
+    return auto_settings.update_settings(a, key, await json_body(request))
+
+
 @app.get("/api/projects/{key}/documents/content")
 def api_project_document(key: str, path: str):
     import project_docs
