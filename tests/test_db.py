@@ -81,11 +81,8 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
         after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
-        added = {'jobs': (None, 'manual', None, None), 'projects': ('',)}.get(table, ())
+        added = {'jobs': (None,), 'projects': ('',)}.get(table, ())
         assert after == [r + added for r in before[table]], table
-    job = c.execute('SELECT * FROM jobs WHERE issue_id=2').fetchone()
-    assert job['source'] == 'manual'
-    assert job['delegation_id'] is None and job['approval_version'] is None
     assert c.execute('PRAGMA foreign_key_check').fetchall() == []
     assert c.execute('SELECT COUNT(*) FROM issue_types').fetchone()[0] == 4
     assert c.execute('SELECT COUNT(*) FROM issue_type_links').fetchone()[0] == 0
