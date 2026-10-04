@@ -28,6 +28,8 @@ if os.name == 'nt':
 assert 'test-secret' not in ' '.join(cmd)
 mcp = next(v for v in cmd if v.startswith('mcp_servers='))
 assert 'list_issue_types' in mcp and 'classify_issue' in mcp and 'create_issue_type' not in mcp
+assert 'read_attachment' in mcp
+assert 'mcp__dev__read_attachment' in review.ALLOWED_TOOLS
 assert 'required=true' in mcp and 'post_plan' in mcp and 'link_commit' not in mcp
 policy = tomllib.loads(mcp)['mcp_servers']['dev']
 assert policy['default_tools_approval_mode'] == 'prompt'
