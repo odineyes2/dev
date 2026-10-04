@@ -871,6 +871,28 @@ function editInPlace(box, value, save, title){
 }
 
 // ---- 새 이슈 ----
+async function showPublishedNotice(it){
+  const manual = '이슈를 발행했어요 — Claude나 Codex에게 검토를 맡길 수 있어요.';
+  if(it.status !== 'backlog' || it.parent_ref || (it.labels || []).includes('goal')){
+    toast(manual); return;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 800);
+  try {
+    // 보조 조회 실패는 발행 오류로 표시하지 않는다. 늦은 응답도 다른 화면의 알림을 덮지 않는다.
+    const res = await fetch(`/api/projects/${encodeURIComponent(it.project_key)}/auto-settings`, {
+      headers: { 'X-Requested-With': 'dev' }, signal: controller.signal,
+    });
+    if(!res.ok) return;
+    const settings = await res.json();
+    if(typeof settings.auto_review !== 'boolean') return;
+    if(location.hash === `#/issue/${it.ref}` && !document.getElementById('toast').hidden &&
+        document.getElementById('toast').textContent === '이슈를 발행했어요.'){
+      toast(settings.auto_review ? '이슈를 발행했어요 — 잠시 후 에이전트가 계획서를 작성해요.' : manual);
+    }
+  } catch { /* 발행 성공 안내를 유지한다. */ }
+  finally { clearTimeout(timeout); }
+}
 async function renderNew(params){
   const hash = location.hash;
   const {types} = await api('GET', '/api/issue-types');
@@ -898,8 +920,9 @@ async function renderNew(params){
       type_ids: selectedTypes(view.querySelector('#new-form')),
       labels: view.querySelector('#n-labels').value.split(',').map(s => s.trim()).filter(Boolean), parent: parent || undefined,
     });
-    toast('이슈를 발행했어요 — Claude나 Codex에게 검토를 맡길 수 있어요.');
+    toast('이슈를 발행했어요.');
     location.hash = `#/issue/${it.ref}`;
+    void showPublishedNotice(it);
   }); });
 }
 

@@ -42,6 +42,84 @@ def wait_port(port):
     raise RuntimeError(f"port {port} not up")
 
 
+def check_published_notice(page, shots):
+    """발행 프로젝트의 최신 설정과 실패·지연을 유료 작업 없이 확인한다."""
+    H = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=H, data={'key':'NOTICE', 'name':'발행 안내 검사'}).ok
+    assert page.request.post(BASE + '/api/projects', headers=H, data={'key':'SELECTED', 'name':'목록 선택 검사'}).ok
+    page.reload(); page.wait_for_selector('#project-filter')
+    page.select_option('#project-filter', 'SELECTED')
+    manual = '이슈를 발행했어요 — Claude나 Codex에게 검토를 맡길 수 있어요.'
+    auto = '이슈를 발행했어요 — 잠시 후 에이전트가 계획서를 작성해요.'
+    neutral = '이슈를 발행했어요.'
+    requests, posts = [], []
+    mode = 'on'
+    pending = []
+    def settings(route):
+        requests.append(route.request.url)
+        if mode == 'delay':
+            pending.append(route); return
+        if mode == 'fail':
+            route.fulfill(status=500, json={'detail':'설정 조회 실패'}); return
+        route.fulfill(json={'auto_review': mode == 'on'})
+    def record(request):
+        if request.method == 'POST' and request.url == BASE + '/api/issues': posts.append(request)
+    page.route('**/api/projects/*/auto-settings', settings)
+    page.on('request', record)
+    def publish(status='backlog', labels='', parent=''):
+        before = len(posts)
+        page.goto(BASE + '/#/new' + ('?parent=' + parent if parent else ''))
+        page.wait_for_selector('#new-form')
+        if not parent: page.select_option('#n-project', 'NOTICE')
+        page.select_option('#n-status', status)
+        page.fill('#n-labels', labels); page.fill('#n-title', '발행 안내 검사')
+        page.click('#new-form [type=submit]')
+        page.wait_for_selector('h1#title')
+        assert '/#/issue/NOTICE-' in page.url
+        assert len(posts) == before + 1
+        return page.url.split('/issue/')[-1]
+    def notice(text):
+        page.wait_for_function('text => !document.querySelector("#toast").hidden && document.querySelector("#toast").textContent === text', arg=text)
+    try:
+        parent = publish(); notice(auto)
+        assert requests[-1].endswith('/NOTICE/auto-settings')
+        mode = 'off'; publish(); notice(manual)
+        mode = 'on'
+        for status, labels, task in [('triage','',''), ('backlog','goal',''), ('backlog','',parent)]:
+            before = len(requests)
+            publish(status, labels, task); notice(manual)
+            assert len(requests) == before
+        mode = 'fail'; publish(); notice(neutral)
+        mode = 'delay'; publish(); notice(neutral)
+        page.wait_for_timeout(1000)
+        assert page.inner_text('#toast') == neutral and len(pending) == 1
+        pending.pop().fulfill(json={'auto_review':True})
+        page.wait_for_timeout(100)
+        assert page.inner_text('#toast') == neutral
+        mode = 'on'
+        for scheme in ('light','dark'):
+            page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}', scheme)
+            page.emulate_media(color_scheme=scheme)
+            for width in (1300,390):
+                page.set_viewport_size({'width':width,'height':850})
+                publish(); notice(auto)
+                assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+                assert page.locator('#toast').evaluate('e => e.scrollWidth <= e.clientWidth && e.scrollHeight <= e.clientHeight')
+                page.screenshot(path=str(shots / f'published_notice_{scheme}_{width}.png'), full_page=True)
+    finally:
+        page.unroute('**/api/projects/*/auto-settings', settings)
+        page.remove_listener('request', record)
+        page.set_viewport_size({'width':1300,'height':850})
+        page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
+        page.emulate_media(color_scheme='light')
+        token = page.request.get(BASE + '/api/projects/NOTICE/delete-check').json()['confirmation_token']
+        assert page.request.delete(BASE + '/api/projects/NOTICE', headers=H, data={'confirmation_token':token}).ok
+        assert page.request.delete(BASE + '/api/projects/SELECTED', headers=H).ok
+        page.goto(BASE + '/#/projects')
+        page.reload(); page.wait_for_selector('#project-filter')
+        page.select_option('#project-filter', '')
+
+
 def check_issue_types(page, shots):
     """복수 선택·관리·실패 재시도와 네 화면의 배치를 확인한다."""
     H = {'X-Requested-With': 'dev'}
@@ -1208,6 +1286,7 @@ try:
         check_project_flows(page, shots, answers, asked)
         check_project_documents(page, shots)
         check_auto_settings(page, shots)
+        check_published_notice(page, shots)
         if '--project-flows-only' in sys.argv:
             assert not errs, errs
             print('OK: project flows')
