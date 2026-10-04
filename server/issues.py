@@ -88,7 +88,7 @@ def list_projects() -> list[dict]:
         return [_project_row(r) for r in c.execute("SELECT * FROM projects ORDER BY archived, key")]
 
 
-def create_project(actor, key, name, repo_url="", local_path="", description="") -> dict:
+def create_project(actor, key, name, repo_url="", local_path="") -> dict:
     if not _is_human(actor):
         raise _forbidden("프로젝트는 사람만 만들 수 있어요.")
     key = str(key or "").strip().upper()
@@ -97,9 +97,8 @@ def create_project(actor, key, name, repo_url="", local_path="", description="")
     name = _text(name, "이름", 100, required=True).strip()
     try:
         with db.connect() as c:
-            pid = c.execute("INSERT INTO projects(key, name, repo_url, local_path, description, created_at) VALUES(?,?,?,?,?,?)",
-                            (key, name, _text(repo_url, "저장소 주소", 500), _text(local_path, "로컬 경로", 500),
-                             _text(description, "프로젝트 설명"), db.now_iso())).lastrowid
+            pid = c.execute("INSERT INTO projects(key, name, repo_url, local_path, created_at) VALUES(?,?,?,?,?)",
+                            (key, name, _text(repo_url, "저장소 주소", 500), _text(local_path, "로컬 경로", 500), db.now_iso())).lastrowid
             return _project_row(c.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone())
     except sqlite3.IntegrityError:
         raise StoreError("같은 키의 프로젝트가 있어요.", 409)
@@ -114,8 +113,6 @@ def update_project(actor, key, fields: dict) -> dict:
             sets[k] = _text(fields[k], k, limit, required=(k == "name")).strip()
     if "archived" in fields:
         sets["archived"] = 1 if fields["archived"] else 0
-    if "description" in fields:
-        sets["description"] = _text(fields["description"], "프로젝트 설명")
     if not sets:
         raise StoreError("바꿀 내용이 없어요.")
     with db.connect() as c:

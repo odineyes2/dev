@@ -58,7 +58,7 @@ with db.connect() as c:
 original_path = db.config.DB_PATH
 db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'legacy.db'
 with sqlite3.connect(db.config.DB_PATH) as c:
-    for version, sql in enumerate(db.MIGRATIONS[:-2], 1):
+    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
         c.executescript(sql + f'PRAGMA user_version={version};')
     c.execute("INSERT INTO projects VALUES(1,'OLD','old','','',3,0,?)", (now,))
     c.execute("INSERT INTO agents VALUES(1,'a','','','hash','prefix',1,?,NULL)", (now,))
@@ -77,8 +77,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
         after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
-        added = {'jobs': (None,), 'projects': ('',)}.get(table, ())
-        assert after == [r + added for r in before[table]], table
+        assert after == ([r + (None,) for r in before[table]] if table == 'jobs' else before[table]), table
     assert c.execute('PRAGMA foreign_key_check').fetchall() == []
     assert {'issues_status','issues_parent','issues_sub'} <= {r[1] for r in c.execute('PRAGMA index_list(issues)')}
     c.execute("UPDATE issues SET status='waiting' WHERE id=2")

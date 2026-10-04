@@ -254,7 +254,7 @@ def api_projects():
 @app.post("/api/projects")
 async def api_create_project(request: Request):
     b = await json_body(request)
-    return issues.create_project(actor(request), b.get("key"), b.get("name"), b.get("repo_url", ""), b.get("local_path", ""), b.get("description", ""))
+    return issues.create_project(actor(request), b.get("key"), b.get("name"), b.get("repo_url", ""), b.get("local_path", ""))
 
 
 @app.patch("/api/projects/{key}")

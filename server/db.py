@@ -194,10 +194,6 @@ MIGRATIONS = [
     CREATE UNIQUE INDEX issues_sub ON issues(project_id, sub_of, sub_number) WHERE sub_number IS NOT NULL;
     ALTER TABLE jobs ADD COLUMN previous_status TEXT;
     """,
-    # 프로젝트 설명은 기존 프로젝트와 생성 호출에서 빈 문자열로 시작한다.
-    """
-    ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT '';
-    """,
 ]
 
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.
