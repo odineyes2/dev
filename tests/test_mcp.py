@@ -52,7 +52,25 @@ async def main():
         names = {t.name for t in await c.list_tools()}
         assert {"whoami", "list_issues", "get_issue", "claim_issue", "post_plan", "set_status", "add_comment",
                 "link_commit", "create_issue", "update_issue", "release_issue", "list_projects", "list_project_documents", "read_project_document"} <= names, names
-        call = lambda name, **kw: c.call_tool(name, kw)
+        call = lambda tool_name, **kw: c.call_tool(tool_name, kw)
+        assert {'list_issue_types', 'create_issue_type', 'update_issue_type'} <= names
+        types = (await call('list_issue_types')).structured_content['result']
+        assert len(types) == 4
+        for name, args in [('create_issue_type', {'name': '금지'}), ('update_issue_type', {'type_id': 1, 'active': False})]:
+            try:
+                await call(name, **args)
+                raise AssertionError('catalog mutation allowed')
+            except ToolError:
+                pass
+        typed = (await call('create_issue', project='NS', title='복수 종류', type_ids=[1, 3, 1])).data
+        assert typed['type_ids'] == [1, 3] and all(t['source'] == 'agent' for t in typed['types'])
+        cleared = (await call('update_issue', ref=typed['ref'], type_ids=[])).data
+        assert cleared['type_ids'] == []
+        try:
+            await call('update_issue', ref=typed['ref'], type_ids=[99999])
+            raise AssertionError('invalid type allowed')
+        except ToolError:
+            pass
         docs = (await call("list_project_documents", project="NS")).data
         assert len(docs["documents"]) == 7
         projects = (await call("list_projects")).structured_content["result"]
@@ -64,7 +82,7 @@ async def main():
             pass
         assert (await call("whoami")).data["model"] == "claude-opus-5-5"
         lst = (await call("list_issues", status="backlog")).structured_content["result"]
-        assert [i["ref"] for i in lst] == ["NS-1"] and "body" not in lst[0]
+        assert 'NS-1' in [i['ref'] for i in lst] and "body" not in lst[0]
         it = (await call("get_issue", ref="NS-1")).data
         assert it["body"] == "사람이 쓴 지시"
         await call("claim_issue", ref="NS-1")

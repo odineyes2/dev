@@ -8,6 +8,8 @@ import db  # noqa: E402
 
 assert db.init() == len(db.MIGRATIONS)
 assert db.init() == len(db.MIGRATIONS)   # 다시 불러도 그대로
+with db.connect() as c:
+    assert [r['name'] for r in c.execute('SELECT * FROM issue_types ORDER BY id')] == ['버그 수정', '문서 생성', 'UI/UX', '기능 추가']
 
 now = db.now_iso()
 with db.connect() as c:
@@ -82,6 +84,8 @@ with db.connect() as c:
         added = {'jobs': (None,), 'projects': ('',)}.get(table, ())
         assert after == [r + added for r in before[table]], table
     assert c.execute('PRAGMA foreign_key_check').fetchall() == []
+    assert c.execute('SELECT COUNT(*) FROM issue_types').fetchone()[0] == 4
+    assert c.execute('SELECT COUNT(*) FROM issue_type_links').fetchone()[0] == 0
     assert {'issues_status','issues_parent','issues_sub'} <= {r[1] for r in c.execute('PRAGMA index_list(issues)')}
     c.execute("UPDATE issues SET status='waiting' WHERE id=2")
     assert c.execute("SELECT id FROM issues WHERE status='waiting'").fetchone()[0] == 2

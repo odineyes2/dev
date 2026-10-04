@@ -293,6 +293,21 @@ async def api_delete_project(key: str, request: Request):
     return Response(status_code=204)
 
 
+@app.get("/api/issue-types")
+def api_issue_types(include_inactive: bool = False):
+    return {"types": issues.list_issue_types(include_inactive)}
+
+
+@app.post("/api/issue-types")
+async def api_create_issue_type(request: Request):
+    return issues.create_issue_type(actor(request), (await json_body(request)).get("name"))
+
+
+@app.patch("/api/issue-types/{type_id}")
+async def api_update_issue_type(type_id: int, request: Request):
+    return issues.update_issue_type(actor(request), type_id, await json_body(request))
+
+
 @app.get("/api/issues")
 def api_issues(project: str = "", status: str = "", assignee: int | None = None, parent: str = "", q: str = "",
                limit: int = 500, offset: int = 0, approved: bool = False):
@@ -307,7 +322,7 @@ async def api_create_issue(request: Request):
     b = await json_body(request)
     a = actor(request)
     it = issues.create_issue(a, b.get("project"), b.get("title"), b.get("body", ""), b.get("priority", "none"),
-                             b.get("labels"), b.get("parent"), b.get("status", "backlog"))
+                             b.get("labels"), b.get("parent"), b.get("status", "backlog"), b.get("type_ids"))
     return it
 
 

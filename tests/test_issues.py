@@ -56,6 +56,31 @@ with TestClient(A.app) as c:
     legacy = issues.create_project({"kind": "human", "name": "admin"}, "LEGACY", "기존 호출", "repo", "path")
     assert legacy["description"] == "" and legacy["repo_url"] == "repo" and legacy["local_path"] == "path"
 
+    # 종류는 Labels와 독립되며 비활성화 후에도 기존 연결을 보존한다.
+    catalog = ok(a('GET', '/api/issue-types'))['types']
+    assert [t['name'] for t in catalog] == ['버그 수정', '문서 생성', 'UI/UX', '기능 추가']
+    assert a('POST', '/api/issue-types', json={'name': '금지'}).status_code == 403
+    assert a('PATCH', '/api/issue-types/1', json={'active': False}).status_code == 403
+    custom = ok(human('POST', '/api/issue-types', json={'name': '테스트 종류'}))
+    tid = custom['id']
+    assert human('POST', '/api/issue-types', json={'name': '테스트 종류'}).status_code == 409
+    typed = ok(human('POST', '/api/issues', json={'project': 'DOC', 'title': '종류 검사', 'type_ids': [tid, 1, tid], 'labels': ['ui']}))
+    assert typed['type_ids'] == [1, tid] and typed['labels'] == ['ui']
+    assert all(t['source'] == 'human' for t in typed['types'])
+    for bad in ([9999], [True], ['1'], [-1], '1', None):
+        before = issues.get_issue(typed['ref'])
+        assert human('PATCH', f"/api/issues/{typed['ref']}", json={'title': '롤백', 'type_ids': bad}).status_code == 400
+        assert issues.get_issue(typed['ref']) == before
+    ok(human('PATCH', f'/api/issue-types/{tid}', json={'name': '수정된 종류', 'active': False}))
+    assert tid not in [t['id'] for t in ok(a('GET', '/api/issue-types'))['types']]
+    assert tid in [t['id'] for t in ok(a('GET', '/api/issue-types?include_inactive=true'))['types']]
+    preserved = ok(a('GET', f"/api/issues/{typed['ref']}"))
+    assert preserved['types'][-1]['name'] == '수정된 종류' and not preserved['types'][-1]['active']
+    ok(human('PATCH', f"/api/issues/{typed['ref']}", json={'type_ids': [tid, 2]}))
+    assert human('POST', '/api/issues', json={'project': 'DEV', 'title': '비활성', 'type_ids': [tid]}).status_code == 400
+    ok(human('PATCH', f"/api/issues/{typed['ref']}", json={'type_ids': []}))
+    assert human('PATCH', f"/api/issues/{typed['ref']}", json={'type_ids': [tid]}).status_code == 400
+    ok(human('DELETE', f"/api/issues/{typed['ref']}"), 204)
     # 이슈 — 번호는 프로젝트마다
     i1 = ok(human("POST", "/api/issues", json={"project": "NS", "title": "보드 복사", "body": "사람이 쓴 지시", "priority": "high", "labels": ["board", "ui"]}))
     i2 = ok(human("POST", "/api/issues", json={"project": "NS", "title": "두 번째"}))
@@ -214,7 +239,7 @@ with TestClient(A.app) as c:
     g = ok(a("POST", "/api/issues", json={"project": "DEV", "title": "최종 목표", "body": "원문", "labels": ["goal"]}))
     for body in ({"status": "in_review"}, {"status": "on_hold"}, {"status": "done"}):
         assert a("POST", f"/api/issues/{g['ref']}/status", json=body).status_code == 403, body
-    for body in ({"body": "다시 씀"}, {"title": "다른 제목"}, {"labels": []}):
+    for body in ({"body": "다시 씀"}, {"title": "다른 제목"}, {"labels": []}, {"type_ids": [1]}):
         assert a("PATCH", f"/api/issues/{g['ref']}", json=body).status_code == 403, body
     ok(a("POST", f"/api/issues/{g['ref']}/comments", json={"body": "진행 상황"}))
     assert ok(human("POST", f"/api/issues/{g['ref']}/status", json={"status": "in_progress"}))["status"] == "in_progress"

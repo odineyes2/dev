@@ -209,6 +209,26 @@ MIGRATIONS = [
     );
     CREATE INDEX project_doc_requests_project ON project_doc_requests(project_id, provider);
     """,
+    # 종류는 Labels와 독립된 안정 ID로 관리하고 비활성화해도 연결을 보존한다.
+    """
+    CREATE TABLE issue_types (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE CHECK(length(trim(name)) BETWEEN 1 AND 100),
+        active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1))
+    );
+    INSERT INTO issue_types(id,name) VALUES
+        (1,'버그 수정'),(2,'문서 생성'),(3,'UI/UX'),(4,'기능 추가');
+    CREATE TABLE issue_type_links (
+        issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        type_id INTEGER NOT NULL REFERENCES issue_types(id),
+        source TEXT NOT NULL CHECK(source IN ('human','agent')),
+        actor TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(issue_id,type_id)
+    );
+    CREATE INDEX issue_type_links_type ON issue_type_links(type_id,issue_id);
+    """,
+
 ]
 
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.
