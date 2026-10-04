@@ -209,6 +209,50 @@ with TestClient(A.app) as c:
     assert r["status"] == "closed" and r["approval"]["verdict"] == "reject" and "필요 없어짐" in r["events"][-1]["body"]
     assert dec(t, "approve", "", 2).status_code == 409   # 끝난 이슈
 
+    # 목록 Action 근거는 부모가 검색·상태·페이지 밖에 있어도 같으며 본문은 노출하지 않는다.
+    ap = ok(human("POST", "/api/issues", json={"project": "DOC", "title": "Action 부모", "status": "triage"}))
+    ac = ok(human("POST", "/api/issues", json={"project": "DOC", "title": "Action 자식", "parent": ap['ref']}))
+    def action_row(ref):
+        return next(x for x in issues.list_issues(project="DOC") if x['ref'] == ref)
+    base = action_row(ac['ref'])
+    assert 'body' not in base and base['approval'] is None
+    assert base['action_context'] == {'plan_version': None, 'approval': None, 'has_children': False,
+        'has_execution': False, 'has_active_job': False, 'parent': {'plan_version': None,
+        'approval': None, 'has_children': True, 'has_execution': False, 'has_active_job': False}}
+    assert issues.list_issues(project='MISSING') == []
+    ok(a('POST', f"/api/issues/{ap['ref']}/plans", json={'body': 'Action 계획'}))
+    assert action_row(ac['ref'])['action_context']['parent']['plan_version'] == 1
+    assert action_row(ac['ref'])['action_context']['parent']['approval'] is None
+    ok(dec(ap['ref'], 'approve_notes', '조건 유지', 1))
+    context = action_row(ac['ref'])['action_context']
+    assert context['parent']['approval'] == {'verdict': 'approve_notes', 'plan_version': 1, 'stale': False}
+    filtered = ok(a('GET', '/api/issues', params={'project': 'DOC', 'status': 'backlog', 'q': 'Action 자식', 'limit': 1}))
+    assert filtered['issues'][0]['action_context'] == context and not filtered['has_more']
+    all_rows = issues.list_issues(project='DOC')
+    index = next(i for i, row in enumerate(all_rows) if row['ref'] == ac['ref'])
+    assert issues.list_issues(project='DOC', limit=1, offset=index)[0]['action_context'] == context
+    ok(a('POST', f"/api/issues/{ap['ref']}/plans", json={'body': 'Action 새 판'}))
+    stale = action_row(ac['ref'])['action_context']['parent']
+    assert stale['plan_version'] == 2 and stale['approval']['stale']
+    assert dec(ap['ref'], 'approve', '', 1).status_code == 409
+    ok(dec(ap['ref'], 'approve', '', 2))
+    assert not action_row(ac['ref'])['action_context']['parent']['approval']['stale']
+    with db.connect() as cx:
+        # 검토 기록은 실행 이력이 아니며 실패한 실행도 재실행 버튼 대상에서 제외한다.
+        cx.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'review','ok','human:admin',?)", (ac['id'], db.now_iso()))
+    assert not action_row(ac['ref'])['action_context']['has_execution']
+    with db.connect() as cx:
+        cx.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'execute','failed','human:admin',?)", (ac['id'], db.now_iso()))
+        job = cx.execute("INSERT INTO jobs(issue_id,mode,status,actor,created_at) VALUES(?,'execute','queued','human:admin',?)", (ac['id'], db.now_iso())).lastrowid
+    assert action_row(ac['ref'])['action_context']['has_execution']
+    assert action_row(ac['ref'])['action_context']['has_active_job']
+    with db.connect() as cx:
+        cx.execute("UPDATE jobs SET status='started', run_id=(SELECT MAX(id) FROM runs WHERE issue_id=?) WHERE id=?", (ac['id'], job))
+    assert not action_row(ac['ref'])['action_context']['has_active_job']
+    with db.connect() as cx:
+        cx.execute("UPDATE jobs SET status='cancelled' WHERE id=?", (job,))
+    assert not action_row(ac['ref'])['action_context']['has_active_job']
+
     # 승인하면 계획서의 Tasks가 하위 이슈 + 선후관계로(DEV-20) — 한 번만, 메모는 Task에 실린다
     p = ok(human("POST", "/api/issues", json={"project": "DEV", "title": "쪼갤 일", "status": "triage"}))["ref"]
     plan = "## 방향\n가\n\n## Tasks\n1. 서버 | 파일: a.py | 확인: 테스트\n2. 화면 | 파일: b.js | 선행: 1\n3) 문서 | 선행: 1, 2\n\n## 정해야 할 것\n1. 이건 Task가 아님"
