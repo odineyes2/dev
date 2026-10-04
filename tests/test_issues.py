@@ -186,6 +186,9 @@ with TestClient(A.app) as c:
     ok(human("PATCH", f"/api/issues/{nt['ref']}", json={"body": "사람은 본문을 고칠 수 있다"}))   # 제목 없이 본문만
 
     # 계획서 결정(DEV-14) — 사람만, 메모 규칙, 보던 판이 최신일 때만, stale, 거절은 닫음
+    # 관리자 위임을 켜도 REST 에이전트의 설정·결정 권한은 늘어나지 않는다.
+    assert ok(human('PATCH', '/api/projects/DEV/auto-settings', json={'auto_approve': True}))['auto_approve']
+    assert a('PATCH', '/api/projects/DEV/auto-settings', json={'auto_approve': True}).status_code == 403
     dec = lambda ref, verdict, note="", v=None: human("POST", f"/api/issues/{ref}/decision", json={"verdict": verdict, "note": note, "plan_version": v})
     t = ok(human("POST", "/api/issues", json={"project": "DEV", "title": "결정 시험", "status": "triage"}))["ref"]
     assert dec(t, "approve", "", 1).status_code == 409   # 계획서 없음
@@ -208,6 +211,7 @@ with TestClient(A.app) as c:
     r = ok(dec(t, "reject", "필요 없어짐", 2))
     assert r["status"] == "closed" and r["approval"]["verdict"] == "reject" and "필요 없어짐" in r["events"][-1]["body"]
     assert dec(t, "approve", "", 2).status_code == 409   # 끝난 이슈
+    ok(human('PATCH', '/api/projects/DEV/auto-settings', json={'auto_approve': False}))
 
     # 목록 Action 근거는 부모가 검색·상태·페이지 밖에 있어도 같으며 본문은 노출하지 않는다.
     ap = ok(human("POST", "/api/issues", json={"project": "DOC", "title": "Action 부모", "status": "triage"}))

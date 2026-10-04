@@ -663,11 +663,15 @@ def complete_tree(actor, ref, note="") -> list[dict]:
 def post_plan(actor, ref, body) -> dict:
     body = _text(body, "계획서", required=True)
     with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
         row = _find(c, ref)
         version = c.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM plans WHERE issue_id=?", (row["id"],)).fetchone()[0]
         now = db.now_iso()
         pid = c.execute("INSERT INTO plans(issue_id, version, body, author, created_at) VALUES(?,?,?,?,?)",
                         (row["id"], version, body, actor_label(actor), now)).lastrowid
+        run = c.execute("SELECT id, mode, status FROM runs WHERE issue_id=? ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
+        if run and run["mode"] == "review" and run["status"] == "running":
+            c.execute("INSERT INTO review_plan_runs(plan_id,run_id) VALUES(?,?)", (pid, run["id"]))
         c.execute("UPDATE issues SET updated_at=? WHERE id=?", (now, row["id"]))
         _event(c, row["id"], actor, "plan", data={"version": version})
         return dict(c.execute("SELECT * FROM plans WHERE id=?", (pid,)).fetchone())
@@ -722,6 +726,20 @@ def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
     return len(tasks)
 
 
+def _record_plan_decision(c, row, latest, verdict, note, actor, provenance=None):
+    """직렬화된 호출자 트랜잭션에서 결정과 Task 생성을 함께 기록한다."""
+    c.execute("INSERT INTO decisions(issue_id, gate, plan_version, verdict, note, actor, created_at) VALUES(?,?,?,?,?,?,?)",
+              (row["id"], "plan", latest, verdict, note, actor_label(actor), db.now_iso()))
+    if verdict != "reject":   # 거절은 아래 상태 변경 이벤트가 사유를 담는다
+        plan_body = c.execute("SELECT body FROM plans WHERE issue_id=? AND version=?", (row["id"], latest)).fetchone()[0]
+        made = _spawn_tasks(c, row, plan_body, latest, actor, "" if provenance else note)
+        label = "Auto 계획 승인" if provenance else VERDICT_LABEL[verdict]
+        _event(c, row["id"], actor, "comment", f"**{label}** (계획서 v{latest})" + (f"\n\n{note}" if note.strip() else "")
+               + (f"\n\n하위 Task {made}개를 만들었어요." if made else ""),
+               {"decision": verdict, "plan_version": latest, **(provenance or {})})
+        c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), row["id"]))
+
+
 def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
     """계획서에 대한 사람의 결정(게이트 1). 보고 있던 판(plan_version)이 최신이 아니면 409 — 안 본 계획서를 승인하지 않게.
     거절은 이슈를 closed로 닫는다(사유 = 메모). 승인은 기록만 한다 — 착수는 에이전트가 approval을 읽고 한다."""
@@ -742,15 +760,7 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
             raise StoreError(f"보던 계획서(v{plan_version})가 최신(v{latest})이 아니에요 — 새로 고쳐서 다시 결정해 주세요.", 409)
         if row["status"] in HUMAN_ONLY_STATUSES:
             raise StoreError("끝난 이슈예요.", 409)
-        c.execute("INSERT INTO decisions(issue_id, gate, plan_version, verdict, note, actor, created_at) VALUES(?,?,?,?,?,?,?)",
-                  (row["id"], "plan", latest, verdict, note, actor_label(actor), db.now_iso()))
-        if verdict != "reject":   # 거절은 아래 상태 변경 이벤트가 사유를 담는다
-            plan_body = c.execute("SELECT body FROM plans WHERE issue_id=? AND version=?", (row["id"], latest)).fetchone()[0]
-            made = _spawn_tasks(c, row, plan_body, latest, actor, note)
-            _event(c, row["id"], actor, "comment", f"**{VERDICT_LABEL[verdict]}** (계획서 v{latest})" + (f"\n\n{note}" if note.strip() else "")
-                   + (f"\n\n하위 Task {made}개를 만들었어요." if made else ""),
-                   {"decision": verdict, "plan_version": latest})
-            c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), row["id"]))
+        _record_plan_decision(c, row, latest, verdict, note, actor)
         if verdict == "reject":
             _sync_terminal_status(c, actor, row, "closed", f"거절 (계획서 v{latest}): {note.strip()}")
     return get_issue(ref)

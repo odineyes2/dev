@@ -285,6 +285,48 @@ MIGRATIONS = [
         );
     END;
     """,
+    # 승인 위임을 허용하되 기존 이력과 실행 게이트를 보존한다.
+    """
+    DROP TRIGGER auto_run_gate;
+    CREATE TABLE project_auto_settings_new (
+        project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        auto_review INTEGER NOT NULL DEFAULT 0 CHECK(auto_review IN (0,1)),
+        auto_execute INTEGER NOT NULL DEFAULT 0 CHECK(auto_execute IN (0,1)),
+        auto_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_approve IN (0,1)),
+        provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]'
+            CHECK(provider_order_json IN ('["claude","codex"]','["codex","claude"]')),
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    INSERT INTO project_auto_settings_new SELECT * FROM project_auto_settings;
+    DROP TABLE project_auto_settings;
+    ALTER TABLE project_auto_settings_new RENAME TO project_auto_settings;
+    ALTER TABLE project_auto_settings_events ADD COLUMN plan_id_floor INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE review_plan_runs (
+        plan_id INTEGER PRIMARY KEY REFERENCES plans(id) ON DELETE CASCADE,
+        run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE
+    );
+    CREATE TRIGGER auto_run_gate BEFORE INSERT ON runs
+    WHEN EXISTS(SELECT 1 FROM jobs WHERE issue_id=NEW.issue_id AND mode=NEW.mode AND status='queued' AND source='auto')
+    BEGIN
+        SELECT RAISE(ABORT, '자동 위임 조건이 바뀌었어요') WHERE NOT EXISTS(
+            SELECT 1 FROM jobs j JOIN issues i ON i.id=j.issue_id
+            JOIN projects p ON p.id=i.project_id
+            JOIN project_auto_settings s ON s.project_id=p.id
+            WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto'
+            AND p.archived=0 AND i.status='waiting' AND i.claimed_by IS NULL
+            AND NOT EXISTS(SELECT 1 FROM json_each(i.labels_json) WHERE value='goal')
+            AND ((NEW.mode='review' AND s.auto_review=1 AND i.parent_id IS NULL
+                  AND i.reporter LIKE 'human:%'
+                  AND NOT EXISTS(SELECT 1 FROM plans WHERE issue_id=i.id))
+              OR (NEW.mode='execute' AND s.auto_execute=1
+                  AND j.approval_version=(SELECT MAX(version) FROM plans WHERE issue_id=i.parent_id)
+                  AND EXISTS(SELECT 1 FROM decisions d WHERE d.id=(SELECT MAX(id) FROM decisions WHERE issue_id=i.parent_id AND gate='plan')
+                      AND d.plan_version=j.approval_version AND d.verdict IN ('approve','approve_notes') AND d.actor LIKE 'human:%')
+                  AND NOT EXISTS(SELECT 1 FROM issue_deps dep JOIN issues b ON b.id=dep.blocked_by_id WHERE dep.issue_id=i.id AND b.status<>'done')))
+        );
+    END;
+    """,
 ]
 
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.

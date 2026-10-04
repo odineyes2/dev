@@ -32,7 +32,7 @@ with db.connect() as c:
 assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
-        added = ('manual', None, None) if table == 'jobs' else ()
+        added = (0,) if table == 'project_auto_settings_events' else ()
         assert [r + added for r in before[table]] == [tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=?', (legacy['id'],)).fetchone()
     assert job['source'] == 'manual' and job['provider'] == 'codex'
@@ -48,7 +48,7 @@ with TestClient(A.app) as c:
     defaults = call("GET").json()
     assert all(defaults[k] is False for k in ("auto_review", "auto_execute", "auto_approve"))
     assert defaults["provider_order"] == ["claude", "codex"]
-    assert not defaults["auto_approve_available"] and defaults["auto_approve_disabled_reason"]
+    assert defaults["auto_approve_available"] and not defaults["auto_approve_disabled_reason"]
     assert defaults["updated_by"] is None
     assert call("GET", "/api/projects/missing/auto-settings").status_code == 404
     assert call("PATCH", "/api/projects/missing/auto-settings", json={"auto_review": True}).status_code == 404
@@ -58,7 +58,7 @@ with TestClient(A.app) as c:
     assert saved["auto_review"] and not saved["auto_execute"] and saved["updated_by"] == "human:admin"
     assert auto_settings.get_settings("NS") == {**defaults, "project_key": "NS"}
     for bad in ({"auto_review": 1}, {"auto_execute": "true"}, {"auto_approve": None},
-                {"auto_approve": True, "auto_review": False}, {"unknown": True},
+                {"unknown": True},
                 *({"provider_order": v} for v in ([], ["claude"], ["claude", "claude"],
                     ["codex", "other"], "claude", None, [1, 2]))):
         assert call("PATCH", json=bad).status_code == 400, bad
@@ -178,3 +178,202 @@ assert not review.list_runs(late['ref'])
 assert issues.get_issue(late['ref'])['status'] == 'backlog'
 assert not jobs.list_jobs()
 print('OK — 착수 준비 중 OFF 경합 차단')
+
+# 자동 승인 자체는 provider 호출 없이 완료된 검토에만 적용한다.
+from unittest.mock import patch
+import threading
+jobs._threads = 1
+auto_settings.update_settings(admin, 'AUTO', {'auto_review': False, 'auto_execute': False})
+issues.create_project(admin, 'AP', '계획 승인', '', str(Path(os.environ['DEV_DATA_DIR'])))
+agent_actor = {'kind': 'agent', 'id': agent['id']}
+valid_plan = ('## Tasks\n'
+              '1. 먼저 | 파일: server/db.py | 확인: 임시 DB 검사 | 선행: 없음\n'
+              '2. 다음 | 파일: server/issues.py | 확인: 권한 검사 | 선행: 1')
+
+
+def reviewed(body=valid_plan, status='ok', labels=None, project='AP'):
+    issue = issues.create_issue(admin, project, '검토 계획', labels=labels or [])
+    with db.connect() as c:
+        rid = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'review','running','human:admin',?)",
+                        (issue['id'], db.now_iso())).lastrowid
+    issues.post_plan(agent_actor, issue['ref'], body)
+    issues.set_status(admin, issue['ref'], 'triage')
+    with db.connect() as c:
+        c.execute('UPDATE runs SET status=?,ended_at=? WHERE id=?', (status, db.now_iso() if status != 'running' else None, rid))
+    return issue
+
+
+old = reviewed()
+enabled = auto_settings.update_settings(admin, 'AP', {'auto_approve': True})
+assert enabled['auto_approve'] and not enabled['auto_review'] and not enabled['auto_execute']
+with db.connect() as c:
+    delegation = c.execute('SELECT * FROM project_auto_settings_events WHERE project_id=? ORDER BY id DESC LIMIT 1', (old['project_id'],)).fetchone()
+    assert delegation['plan_id_floor'] == issues.list_plans(old['ref'])[0]['id']
+new = reviewed()
+isolated = reviewed(project='NS')
+goal_plan = reviewed(labels=['goal'])
+failed = [reviewed(status=s) for s in ('failed', 'timeout', 'orphaned', 'running')]
+automation.sync()
+approved = issues.get_issue(new['ref'])
+assert approved['approval']['verdict'] == 'approve' and approved['approval']['actor'] == f"human:auto/delegation/{delegation['id']}"
+assert len(approved['children']) == 2
+assert all(t['status'] == 'backlog' for t in approved['children'])
+assert not [j for j in jobs.list_jobs() if j['ref'] in [t['ref'] for t in approved['children']]]
+event = next(e for e in approved['events'] if e['data'].get('decision'))
+assert 'Auto 계획 승인' in event['body']
+assert event['data']['delegated_by'] == 'human:admin' and event['data']['delegation_id'] == delegation['id']
+assert event['data']['plan_version'] == 1 and event['data']['run_id']
+assert not any('조건부 승인 메모' in issues.get_issue(t['ref'])['body'] for t in approved['children'])
+for item in (old, isolated, goal_plan, *failed):
+    assert issues.get_issue(item['ref'])['approval'] is None
+automation.sync()
+assert len(issues.get_issue(new['ref'])['children']) == 2
+with db.connect() as c:
+    assert c.execute("SELECT COUNT(*) FROM decisions WHERE issue_id=?", (new['id'],)).fetchone()[0] == 1
+
+# 새 판·사람의 기존 결정·OFF·재위임을 먼저 저장하면 이전 관측으로 승인하지 않는다.
+changed = reviewed()
+issues.post_plan(agent_actor, changed['ref'], valid_plan)
+human = reviewed()
+issues.decide(admin, human['ref'], 'approve_notes', '사람 조건', plan_version=1)
+issues.post_plan(agent_actor, human['ref'], valid_plan)
+rejected = reviewed()
+issues.decide(admin, rejected['ref'], 'reject', '사람 거절', plan_version=1)
+off = reviewed()
+auto_settings.update_settings(admin, 'AP', {'auto_approve': False})
+automation.sync()
+assert issues.get_issue(off['ref'])['approval'] is None
+auto_settings.update_settings(admin, 'AP', {'auto_approve': True})
+automation.sync()
+assert issues.get_issue(off['ref'])['approval'] is None
+assert issues.get_issue(changed['ref'])['approval'] is None
+assert issues.get_issue(human['ref'])['approval']['actor'] == 'human:admin'
+assert issues.get_issue(rejected['ref'])['approval']['verdict'] == 'reject'
+
+# 불완전한 구조는 이유를 한 번만 남기며 승인·Task 생성은 하지 않는다.
+bad_bodies = [
+    '작은 계획',
+    valid_plan.replace('2. 다음', '1. 중복'),
+    valid_plan.replace('선행: 1', '선행: 9'),
+    valid_plan.replace('선행: 없음', '선행: 2'),
+    valid_plan.replace('선행: 1', '선행: 2'),
+    valid_plan.replace('선행: 1', '선행: 1, 1'),
+    valid_plan.replace('선행: 1', '선행: 미정'),
+    valid_plan.replace('확인: 권한 검사', '확인:'),
+    valid_plan.replace(' | 선행: 1', ''),
+    valid_plan + '\n번호 없는 Task',
+    valid_plan + '\n## 정해야 할 것\n- 배포 여부',
+    *(valid_plan.replace('server/db.py', path) for path in ('../other.py', '/etc/passwd', 'C:\\other.py', '\\\\host\\share\\a.py', '~/.env')),
+]
+invalid = [reviewed(body=body) for body in bad_bodies]
+automation.sync(); automation.sync()
+for item in invalid:
+    issue = issues.get_issue(item['ref'])
+    assert issue['approval'] is None and issue['children'] == []
+    assert len([e for e in issue['events'] if e['data'].get('auto_approve_blocked')]) == 1
+
+# 결정 기록 후 Task 생성 실패도 같은 트랜잭션에서 되돌린다.
+rollback = reviewed()
+original_spawn = issues._spawn_tasks
+def fail_spawn(*args, **kwargs):
+    original_spawn(*args, **kwargs)
+    raise RuntimeError('Task 생성 중 실패')
+try:
+    with patch.object(issues, '_spawn_tasks', fail_spawn):
+        automation.sync()
+    raise AssertionError('실패 누락')
+except RuntimeError:
+    pass
+assert issues.get_issue(rollback['ref'])['approval'] is None
+assert issues.get_issue(rollback['ref'])['children'] == []
+
+# 두 sync가 겹쳐도 승인과 하위 Task는 한 번만 만든다.
+errors = []
+def run_sync():
+    try:
+        automation.sync()
+    except Exception as error:
+        errors.append(error)
+threads = [threading.Thread(target=run_sync) for _ in range(2)]
+for t in threads: t.start()
+for t in threads: t.join(10)
+assert not errors and all(not t.is_alive() for t in threads)
+assert len(issues.get_issue(rollback['ref'])['children']) == 2
+with db.connect() as c:
+    assert c.execute('SELECT COUNT(*) FROM decisions WHERE issue_id=?', (rollback['id'],)).fetchone()[0] == 1
+
+# Auto 실행 ON은 기존 선행 조건을 통과한 첫 Task만 등록한다.
+auto_settings.update_settings(admin, 'AP', {'auto_execute': True})
+automation.sync()
+ap_jobs = [j for j in jobs.list_jobs() if j['ref'].startswith('AP-')]
+assert ap_jobs and all(j['mode'] == 'execute' and j['approval_version'] == 1 for j in ap_jobs)
+assert approved['children'][0]['ref'] in [j['ref'] for j in ap_jobs]
+assert approved['children'][1]['ref'] not in [j['ref'] for j in ap_jobs]
+auto_settings.update_settings(admin, 'AP', {'auto_execute': False})
+automation.sync()
+assert not [j for j in jobs.list_jobs() if j['ref'].startswith('AP-')]
+assert issues.get_issue(new['ref'])['approval']['verdict'] == 'approve'
+print('OK — 완료 검토 연결·시점·프로젝트/Goal 격리·최신 판·사람 결정·OFF·구조 차단·감사·롤백·중복 경합·Auto 실행')
+
+# 실제 쓰기 잠금을 잡은 변경과 sync를 겹쳐 오래된 설정·판·결정으로 승인하지 않음을 검사한다.
+def race_before_sync(module, name, action):
+    locked, release = threading.Event(), threading.Event()
+    original = getattr(module, name)
+    errors = []
+    owner_id = []
+    def pause(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if threading.get_ident() == owner_id[0] and not locked.is_set():
+            locked.set()
+            if not release.wait(5):
+                raise AssertionError('경합 검사 해제 시간 초과')
+        return result
+    def change():
+        owner_id.append(threading.get_ident())
+        try:
+            action()
+        except Exception as error:
+            errors.append(error)
+    def sync():
+        try:
+            automation.sync()
+        except Exception as error:
+            errors.append(error)
+    with patch.object(module, name, pause):
+        writer = threading.Thread(target=change)
+        writer.start()
+        try:
+            assert locked.wait(5)
+            reader = threading.Thread(target=sync)
+            reader.start()
+        finally:
+            release.set()
+        writer.join(10); reader.join(10)
+        assert not errors and not writer.is_alive() and not reader.is_alive(), errors
+
+race_off = reviewed()
+race_before_sync(auto_settings, '_settings', lambda: auto_settings.update_settings(admin, 'AP', {'auto_approve': False}))
+assert issues.get_issue(race_off['ref'])['approval'] is None
+auto_settings.update_settings(admin, 'AP', {'auto_approve': True})
+race_plan = reviewed()
+race_before_sync(issues, '_event', lambda: issues.post_plan(agent_actor, race_plan['ref'], valid_plan))
+assert issues.get_issue(race_plan['ref'])['approval'] is None
+race_human = reviewed()
+race_before_sync(issues, '_record_plan_decision', lambda: issues.decide(admin, race_human['ref'], 'approve_notes', '먼저 저장한 사람 조건', plan_version=1))
+assert issues.get_issue(race_human['ref'])['approval']['actor'] == 'human:admin'
+assert len(issues.get_issue(race_human['ref'])['children']) == 2
+print('OK — OFF·새 판·사람 결정의 쓰기 트랜잭션과 sync 경합')
+
+# 이전 자동 결정이 있는 새 검토 판은 승인하되 기존 Task는 복제하지 않는다.
+again = reviewed()
+automation.sync()
+with db.connect() as c:
+    rid = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'review','running','human:admin',?)", (again['id'], db.now_iso())).lastrowid
+issues.post_plan(agent_actor, again['ref'], valid_plan)
+with db.connect() as c:
+    c.execute("UPDATE runs SET status='ok',ended_at=? WHERE id=?", (db.now_iso(), rid))
+automation.sync()
+latest = issues.get_issue(again['ref'])
+assert latest['approval']['plan_version'] == 2 and not latest['approval']['stale']
+assert len(latest['children']) == 2
+print('OK — 새 검토 판의 자동 결정과 기존 Task 중복 방지')
