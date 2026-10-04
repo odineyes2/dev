@@ -20,6 +20,7 @@ async def lifespan(app):
     db.init()
     import rollback
     rollback.start_recovery(startup=True)
+    orchestrate.take_over()
     jobs.start_timer()   # 남은 대기열을 이어서 돌리고 60초마다 펌프(DEV-43)
     async with mcp_app.lifespan(app):   # MCP(streamable HTTP)의 세션 관리자도 같이 띄운다
         yield
@@ -123,8 +124,9 @@ async def json_body(request: Request) -> dict:
 
 
 @app.get("/api/health")
-def health():
-    return {"ok": True}
+def health(execution_identity: bool = False):
+    import orchestrate
+    return {"ok": True, **({'process_id': orchestrate.PROCESS_ID, 'revision': orchestrate.BOOT_SHA} if execution_identity else {})}
 
 
 # ---- 로그인 — nightshift에 그대로 넘긴다 ----
@@ -333,6 +335,9 @@ def api_issues(project: str = "", status: str = "", assignee: int | None = None,
     limit = max(1, min(limit, 2000))
     items = issues.list_issues(project or None, status or None, assignee, parent or None, q or None, limit + 1, offset,
                                approved=approved)
+    for it in items[:limit]:
+        it['merge_state'] = orchestrate.merge_state(it)
+        it['job'] = jobs.job_for(it['id'])
     return {"issues": items[:limit], "has_more": len(items) > limit}
 
 @app.post("/api/issues")

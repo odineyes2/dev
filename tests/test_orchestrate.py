@@ -233,3 +233,143 @@ os.environ["NTFY_TOPIC"] = "should-not-leak"
 (repo / "tests" / "test_env.py").write_text("import os,sys; sys.exit(1 if os.environ.get('NTFY_TOPIC') else 0)\n")
 assert orchestrate.run_tests(str(repo)) is None
 print("ok env")
+
+# 구현 완료 이후의 영속 단계와 복구는 운영 서비스 없이 검사한다.
+import db, issues, execute, review, jobs, notify
+db.init()
+me = {'kind': 'human', 'name': 'admin'}
+issues.create_project(me, 'FLOW', 'flow', local_path=str(repo))
+parent = issues.create_issue(me, 'FLOW', 'parent')
+issues.post_plan(me, parent['ref'], 'approved')
+issues.decide(me, parent['ref'], 'approve', plan_version=1)
+
+
+def ready(provider='claude', auto=True, restart=False):
+    cfg = {'auto_merge': auto, 'pm2_app': 'dev' if restart else '',
+           'health_url': 'http://fake/health', 'health_seconds': 0}
+    orchestrate.SETTINGS.write_text(json.dumps({'FLOW': cfg}))
+    task = issues.create_issue(me, 'FLOW', 'task', parent=parent['ref'])
+    ref = task['ref']
+    wt = execute.prepare_worktree(str(repo), ref)
+    _, rid = review.begin(me, task, 'execute', provider)
+    start = execute._git(wt, 'rev-parse', 'HEAD')
+    with db.connect() as c:
+        c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (start, rid))
+    (wt / ('feature-' + str(rid) + ('.py' if restart else '.txt'))).write_text('feature')
+    execute._git(wt, 'add', '.')
+    execute._git(wt, '-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-qm', 'implemented')
+    sha = execute._git(wt, 'rev-parse', 'HEAD')
+    issues.link_commit(me, ref, sha)
+    if restart:
+        cfg['restart_when'] = ['feature-*']
+        orchestrate.SETTINGS.write_text(json.dumps({'FLOW': cfg}))
+    execute.register_completion(me, ref, wt, rid, 'check feature')
+    return ref, rid
+
+
+class Interrupted(BaseException):
+    pass
+
+
+with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(notify, 'send') as sent:
+    for provider in ('claude', 'codex'):
+        for auto in (True, False):
+            ref, rid = ready(provider, auto)
+            assert issues.get_issue(ref)['status'] == ('in_progress' if auto else 'in_review')
+            before_sent = sent.call_count
+            if auto:
+                def inspect(path):
+                    assert issues.get_issue(ref)['status'] == 'in_progress'
+                    assert orchestrate.completion(ref)['phase'] == 'checking'
+                    assert jobs.busy()
+                with patch.object(orchestrate, 'run_tests', side_effect=inspect):
+                    assert orchestrate.handle(me, ref) == 'merged'
+                assert orchestrate.completion(ref)['phase'] == 'complete'
+                assert issues.get_issue(ref)['status'] == 'in_review'
+                assert orchestrate.handle(me, ref) is None
+                orchestrate.recover()
+                assert sent.call_count == before_sent + 1
+            else:
+                assert orchestrate.handle(me, ref) is None
+
+    # 검사 실패·커밋 변경·사람의 상태 변경을 구분한다.
+    ref, _ = ready()
+    with patch.object(orchestrate, 'run_tests', return_value='failed regression'):
+        assert orchestrate.handle(me, ref) == 'changes_requested'
+    ref, _ = ready()
+    git('update-ref', 'refs/heads/relay/' + ref, git('rev-parse', 'main'))
+    assert orchestrate.handle(me, ref) == 'on_hold'
+    ref, _ = ready()
+    issues.set_status(me, ref, 'on_hold')
+    issues.set_status(me, ref, 'in_progress')
+    before = git('rev-parse', 'HEAD')
+    assert orchestrate.handle(me, ref) is None
+    assert git('rev-parse', 'HEAD') == before
+    assert orchestrate.completion(ref)['phase'] == 'abandoned'
+
+    # ff-only 반영 직후 종료되면 이미 반영한 SHA부터 이어간다.
+    ref, _ = ready()
+    save = orchestrate._save
+    def die_after_apply(record, phase, **values):
+        if phase == 'deployed':
+            raise Interrupted()
+        return save(record, phase, **values)
+    try:
+        with patch.object(orchestrate, '_save', side_effect=die_after_apply):
+            orchestrate.handle(me, ref)
+        raise AssertionError('expected interruption')
+    except Interrupted:
+        pass
+    assert orchestrate.completion(ref)['phase'] == 'applying'
+    db.init(); jobs.reconcile()
+    assert issues.get_issue(ref)['status'] == 'in_progress' and jobs.busy()
+    with patch.object(orchestrate, 'run_tests') as tests:
+        assert orchestrate.handle(me, ref) == 'merged'
+        tests.assert_not_called()
+
+    # 자기 재시작 이후 새 서버는 명령을 재실행하지 않고 반영 health를 확인한다.
+    ref, _ = ready(restart=True)
+    try:
+        with patch.object(orchestrate, '_restart', side_effect=Interrupted()):
+            orchestrate.handle(me, ref)
+        raise AssertionError('expected interruption')
+    except Interrupted:
+        pass
+    record = orchestrate.completion(ref)
+    assert record['phase'] == 'restart_requested'
+    assert issues.get_issue(ref)['status'] == 'in_progress'
+    db.init(); jobs.reconcile()
+    assert issues.get_issue(ref)['status'] == 'in_progress'
+    cfg = {**orchestrate.DEFAULTS, **json.loads(record['cfg_json'])}
+    with patch.object(orchestrate, '_get', return_value=(200, json.dumps({'process_id': record['process_id'], 'revision': record['merge_sha']}))):
+        assert not orchestrate._verified_health(cfg, record)
+    with patch.object(orchestrate, '_get', return_value=(200, json.dumps({'process_id': 'new', 'revision': 'old'}))):
+        assert not orchestrate._verified_health(cfg, record)
+    with patch.object(orchestrate, 'PROCESS_ID', 'new'), patch.object(orchestrate, '_restart') as restart, patch.object(orchestrate, '_get', return_value=(200, json.dumps({'process_id': 'new', 'revision': record['merge_sha']}))):
+        orchestrate.take_over()
+        orchestrate.recover(); orchestrate.recover()
+        restart.assert_not_called()
+        assert issues.get_issue(ref)['status'] == 'in_review'
+
+    # health 실패의 revert와 복구 재시작 정책을 유지한다.
+    ref, _ = ready(restart=True)
+    with patch.object(orchestrate, '_restart', return_value=None) as restart, patch.object(orchestrate, '_verified_health', side_effect=[False, True]):
+        assert orchestrate.handle(me, ref) == 'changes_requested'
+        assert restart.call_count == 2
+    assert git('log', '-1', '--format=%s').startswith('Revert')
+    assert not orchestrate.pending()
+
+    # 새 실행이 생기면 오래된 완료 기록이 대기열을 영구 차단하지 않는다.
+    ref, rid = ready()
+    record = orchestrate.completion(ref)
+    before = git('rev-parse', 'HEAD')
+    with db.connect() as c:
+        c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'execute','ok','human:admin',?)",
+                  (record['issue_id'], db.now_iso()))
+    orchestrate.recover()
+    assert not orchestrate.pending()
+    assert git('rev-parse', 'HEAD') == before
+    assert issues.get_issue(ref)['status'] == 'in_progress'
+    with db.connect() as c:
+        assert c.execute('SELECT phase FROM execution_completion WHERE run_id=?', (rid,)).fetchone()[0] == 'abandoned'
+print('OK persistent completion')

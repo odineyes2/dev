@@ -143,4 +143,22 @@ try:
         assert c.post('/api/issues/EX-1-2/execute', json={'provider': 'codex'}, headers={'Authorization': 'Bearer ' + base.key}).status_code == 403
 finally:
     orchestrate.handle = original_handle
+
+# Codex의 실제 결과 등록도 자동 병합을 거칠 때 조기 전환·알림을 하지 않는다.
+from unittest.mock import patch
+import notify
+orchestrate.SETTINGS.write_text('{"EX":{"auto_merge":true}}')
+os.environ['DEV_CODEX_AGENT_KEY'] = 'test-secret'
+auto_task = issues.create_issue(base.me, 'EX', 'codex auto', parent='EX-1')
+fake.write_text(output_script(result).replace('codex.txt', 'codex-auto.txt'), 'utf-8')
+def inspect_auto(path):
+    assert issues.get_issue(auto_task['ref'])['status'] == 'in_progress'
+    assert orchestrate.completion(auto_task['ref'])['phase'] == 'checking'
+with patch.object(orchestrate, 'run_tests', side_effect=inspect_auto) as checked, patch.object(notify, 'send') as sent:
+    execute.start(base.me, auto_task['ref'], 'codex')
+    base.wait_idle()
+    assert checked.call_count == 1
+    assert sent.call_count == 1
+assert issues.get_issue(auto_task['ref'])['status'] == 'in_review'
+assert orchestrate.completion(auto_task['ref'])['phase'] == 'complete'
 print('OK Codex execute')

@@ -154,6 +154,10 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude") -> tupl
         log_path = LOG_DIR / f"{issue['ref']}-{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}.log"
         with db.connect() as c:
             c.execute("BEGIN IMMEDIATE")
+            import orchestrate
+            pending = c.execute("SELECT ref FROM execution_completion WHERE phase IN (%s) LIMIT 1" % ','.join('?' for _ in orchestrate.ACTIVE_PHASES), orchestrate.ACTIVE_PHASES).fetchone()
+            if pending:
+                raise issues.StoreError(f"{pending['ref']}의 병합·운영 반영이 아직 진행 중이에요.", 409)
             row = issues._find(c, issue["ref"])
             if row["status"] != issue["status"]:
                 raise issues.StoreError("시작 전에 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
@@ -165,7 +169,7 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude") -> tupl
             waiting_owner = c.execute("SELECT 1 FROM jobs WHERE id=? AND issue_id=? AND status='queued'", (owner, row["id"])).fetchone()
             if queued and (row["status"] != "waiting" or not waiting_owner):
                 raise issues.StoreError("대기 중 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
-            if provider == "codex" or (row["status"] == "waiting" and queued and waiting_owner):
+            if mode == "execute" or provider == "codex" or (row["status"] == "waiting" and queued and waiting_owner):
                 restore = queued["previous_status"] if queued and row["status"] == "waiting" and waiting_owner else row["status"]
                 issues._set_status(c, actor, row, "in_progress", f"{provider.title()} 작업 착수", {"run_id": run_id, "restore_status": restore, "job_id": queued["id"] if queued else None})
             c.execute("UPDATE jobs SET status='started', started_at=?, run_id=? WHERE issue_id=? AND mode=? AND status='queued'", (db.now_iso(), run_id, row["id"], mode))
@@ -182,6 +186,8 @@ def owned_start(c, issue_id: int, run_id: int) -> dict | None:
 
 def finish_codex_status(c, actor, ref: str, run_id: int, status: str, label: str) -> None:
     row = issues._find(c, ref)
+    if c.execute("SELECT 1 FROM execution_completion WHERE run_id=? AND auto_merge=1 AND phase IN ('ready','checking','applying','deployed','restart_requested','rollback_requested','rollback_applied')", (run_id,)).fetchone():
+        return
     start = owned_start(c, row["id"], run_id)
     if row["status"] == "in_progress" and start:
         if status != "ok":
@@ -266,6 +272,13 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     if code:
         status = "failed"
     text, stats = _parse(out, provider)
+    if provider == 'claude' and label == '실행' and status == 'ok':
+        try:
+            result = json.loads(out)
+            if result.get('is_error') or str(result.get('subtype', '')).startswith('error'):
+                status, note = 'failed', 'Claude 실행 결과가 오류를 보고했어요.'
+        except (ValueError, AttributeError):
+            pass
     if provider == "codex" and status == "ok":
         for line in out.splitlines():
             try:
@@ -290,6 +303,12 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             execute.finalize_codex(actor, ref, cwd, out, run_id)
         except (issues.StoreError, ValueError, OSError) as e:
             status, note = "failed", f"Codex 실행을 완료하지 못했어요 — {e}"
+    if provider == 'claude' and label == '실행' and status == 'ok':
+        import execute
+        try:
+            execute.register_completion(actor, ref, cwd, run_id, text)
+        except (issues.StoreError, ValueError, OSError) as e:
+            status, note = 'failed', f'Claude 실행을 완료하지 못했어요 — {e}'
     log_path.write_text(text + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
@@ -303,5 +322,8 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     elif label == "검토":
         notify.send(ref, "📋 계획서가 나왔어요 — 승인해 주세요")
     else:
-        notify.send(ref, f"✅ {label} 완료 — 확인해 주세요")
+        with db.connect() as c:
+            pending = c.execute('SELECT 1 FROM execution_completion WHERE run_id=? AND auto_merge=1', (run_id,)).fetchone()
+        if not pending:
+            notify.send(ref, f"✅ {label} 완료 — 확인해 주세요")
     return status

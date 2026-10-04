@@ -224,3 +224,34 @@ except issues.StoreError as e:
     assert e.status == 409
 assert issues.get_issue(goal['ref'])['status'] == 'backlog' and not jobs.list_jobs()
 print("OK")
+
+# 실행 프로세스 종료 후에도 DB 후처리가 대기열을 막고, 완료 뒤 한 번만 착수한다.
+import orchestrate, notify
+pending_task = issues.create_issue(me, 'WT', 'postprocessing', parent=parent['ref'])
+_, rid = review.begin(me, pending_task, 'execute')
+with db.connect() as c:
+    owner = c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status'", (pending_task['id'],)).fetchone()[0]
+    c.execute("INSERT INTO execution_completion(run_id,issue_id,ref,actor,task_sha,auto_merge,phase,owner_event,cfg_json,worker_id,updated_at) VALUES(?,?,?,'human:admin','fake',1,'restart_requested',?,'{}',?,?)", (rid, pending_task['id'], pending_task['ref'], owner, orchestrate.PROCESS_ID, db.now_iso()))
+db.init(); jobs.reconcile()
+assert issues.get_issue(pending_task['ref'])['status'] == 'in_progress' and jobs.busy()
+next_issue = issues.create_issue(me, 'WT', 'next review', type_ids=[1])
+with patch.object(orchestrate, 'recover'), patch.object(review, 'start') as start:
+    result = jobs.enqueue(me, next_issue['ref'], 'review')
+    assert result['queued'] and '병합' in result['note']
+    jobs.pump(); start.assert_not_called()
+try:
+    review.begin(me, next_issue, 'review')
+    raise AssertionError('pending completion must block direct begin')
+except issues.StoreError as e:
+    assert e.status == 409
+record = orchestrate.completion(pending_task['ref'])
+with patch.object(notify, 'send') as sent, patch.object(orchestrate, 'promote_parent', return_value=False):
+    assert orchestrate._finish(me, record, 'merged', 'fake health verified') == 'merged'
+    assert orchestrate._finish(me, record, 'merged', 'duplicate') is None
+    assert sent.call_count == 1
+def next_start(actor, ref, provider):
+    review.begin(actor, issues.get_issue(ref), 'review', provider)
+with patch.object(review, 'start', side_effect=next_start) as start, patch.object(orchestrate, 'promote_parent', return_value=False):
+    jobs.pump(); jobs.pump()
+    assert start.call_count == 1 and not jobs.list_jobs()
+print('OK completion queue boundary')

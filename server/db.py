@@ -342,6 +342,28 @@ MIGRATIONS = [
     END;
     """,
 
+    # 구현 완료와 후처리의 경계를 영속화한다.
+    """
+    ALTER TABLE runs ADD COLUMN task_start_sha TEXT NOT NULL DEFAULT '';
+    CREATE TABLE execution_completion (
+        run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+        issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        ref TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        task_sha TEXT NOT NULL,
+        auto_merge INTEGER NOT NULL,
+        phase TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        merge_sha TEXT NOT NULL DEFAULT '',
+        process_id TEXT NOT NULL DEFAULT '',
+        worker_id TEXT NOT NULL DEFAULT '',
+        notified INTEGER NOT NULL DEFAULT 0,
+        owner_event INTEGER NOT NULL,
+        cfg_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX execution_completion_phase ON execution_completion(phase);
+    """,
 ]
 
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.

@@ -81,7 +81,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
         after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
-        added = {'jobs': (None, 'manual', None, None, None, None), 'projects': ('',)}.get(table, ())
+        added = {'jobs': (None, 'manual', None, None, None, None), 'projects': ('',), 'runs': ('',)}.get(table, ())
         assert after == [r + added for r in before[table]], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=2').fetchone()
     assert job['source'] == 'manual'

@@ -88,7 +88,7 @@ assert "T-1" in cmd[2] and "T-0" in cmd[2] and "relay/T-1" in cmd[2]
 import time  # noqa: E402
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-import app as A, auth, db, jobs, review  # noqa: E402
+import app as A, auth, db, jobs, review, orchestrate  # noqa: E402
 
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
     lambda req: httpx.Response(200, json={"user": {"id": 1, "username": "admin", "role": "admin"}})))
@@ -112,6 +112,14 @@ def wait_idle():
 
 
 db.init()
+orchestrate.SETTINGS.write_text('{"EX":{"auto_merge":false}}')
+# Fake agent commits and links its result like the authorized Claude path.
+original_register = execute.register_completion
+def linked_completion(actor, ref, cwd, run_id, note):
+    git(cwd, 'commit', '--allow-empty', '-qm', 'fake implementation ' + str(run_id))
+    issues.link_commit(actor, ref, git(cwd, 'rev-parse', 'HEAD').stdout.strip())
+    return original_register(actor, ref, cwd, run_id, note)
+execute.register_completion = linked_completion
 me = {"kind": "human", "name": "admin"}
 issues.create_project(me, "EX", "ex", "", str(repo))
 issues.create_issue(me, "EX", "부모", status="triage")
@@ -162,4 +170,20 @@ with TestClient(A.app) as c:
     assert "실행 작업이 끝나지 못했어요" in issues.get_issue("EX-1-2")["events"][-1]["body"]
     assert len(review.list_runs("EX-1-2")) == 2 and execute.worktree_path("EX-1-2").is_dir()   # 같은 worktree에서 이어서
     assert post("EX-1-1").status_code == 409                            # done인 Task는 다시 못 맡김
+# Claude 경로도 구현 종료 시에는 진행 중이며 병합 검사 후에만 검토 상태가 된다.
+from unittest.mock import patch
+orchestrate.SETTINGS.write_text('{"EX":{"auto_merge":true}}')
+auto_task = issues.create_issue(me, 'EX', 'automatic completion', parent='EX-1')
+behave.update(sleep='0.1', code='0')
+def inspect_merge(path):
+    assert issues.get_issue(auto_task['ref'])['status'] == 'in_progress'
+    assert orchestrate.completion(auto_task['ref'])['phase'] == 'checking'
+with patch.object(orchestrate, 'run_tests', side_effect=inspect_merge) as checked:
+    execute.start(me, auto_task['ref'])
+    wait_idle()
+    assert checked.call_count == 1
+assert issues.get_issue(auto_task['ref'])['status'] == 'in_review'
+assert orchestrate.completion(auto_task['ref'])['phase'] == 'complete'
+orchestrate.SETTINGS.write_text('{"EX":{"auto_merge":false}}')
+execute.register_completion = original_register
 print("OK")

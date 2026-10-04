@@ -27,6 +27,9 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
+
+import db
 import urllib.request
 from pathlib import Path
 
@@ -36,6 +39,9 @@ from execute import BASE_BRANCH, SECRET_ENV, _run_git, branch_name
 
 SETTINGS = config.DATA_DIR / "orchestrate.json"
 GIT_ID = ["-c", "user.name=dev orchestrator", "-c", "user.email=orchestrator@dev.local"]
+PROCESS_ID = uuid.uuid4().hex
+BOOT_SHA = _run_git(str(Path(__file__).resolve().parent.parent), "rev-parse", "HEAD").stdout.strip()
+ACTIVE_PHASES = ("ready", "checking", "applying", "deployed", "restart_requested", "rollback_requested", "rollback_applied")
 _lock = threading.RLock()   # 병합과 거절 롤백을 같은 순서로 직렬화한다.
 DEFAULTS = {"restart_when": ["server/*", "ecosystem.config.js"], "restart_cmd": "npx pm2 restart ecosystem.config.js --only {app} --update-env",
             "health_seconds": 60, "wait_minutes": 60, "poll_seconds": 30}
@@ -152,7 +158,7 @@ def merge(repo: str, ref: str, after: list[str] = ()) -> tuple[str, str]:
         return _merge(repo, ref, after)
 
 
-def _merge(repo: str, ref: str, after: list[str]) -> tuple[str, str]:
+def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task=None) -> tuple[str, str]:
     head = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if head != BASE_BRANCH:
         return "on_hold", f"저장소가 {BASE_BRANCH}가 아니라 {head}에 있어 병합 보류 — {BASE_BRANCH}로 돌려 놓은 뒤 재개해 주세요."
@@ -167,6 +173,8 @@ def _merge(repo: str, ref: str, after: list[str]) -> tuple[str, str]:
     if task.returncode:
         return 'on_hold', 'Task 브랜치를 읽을 수 없어 시험 병합을 보류했어요.'
     task_sha = task.stdout.strip()
+    if expected_task and task_sha != expected_task:
+        return "on_hold", "완료 등록 뒤 Task 커밋이 바뀌었어요."
     if not _git(repo, 'merge-base', '--is-ancestor', task_sha, before).returncode:
         return 'on_hold', '새로 병합할 Task 커밋이 없어요 — 이미 반영했거나 롤백한 작업을 확인해 주세요.'
     folder = config.DATA_DIR / 'merge-worktrees'
@@ -195,6 +203,8 @@ def _merge(repo: str, ref: str, after: list[str]) -> tuple[str, str]:
                 or _git(repo, 'rev-parse', branch).stdout.strip() != task_sha
                 or _git(repo, 'status', '--porcelain', '--untracked-files=no').stdout.strip()):
             return 'on_hold', '검사 중 기준 브랜치·Task·작업 폴더가 바뀌었어요 — 최신 상태로 다시 시험 병합해 주세요.'
+        if checkpoint:
+            checkpoint(sha)
         r = _git(repo, 'merge', '--ff-only', sha)
         if r.returncode:
             return 'on_hold', '검사한 커밋 반영에 실패했어요: ' + (r.stdout + r.stderr).strip()[-800:]
@@ -214,23 +224,186 @@ def _merge(repo: str, ref: str, after: list[str]) -> tuple[str, str]:
             print(f'시험 병합 사본 정리 실패: {worktree}: {error}')
 
 
-def handle(actor: dict, ref: str) -> str | None:
-    """실행이 끝난 Task를 병합한다. auto_merge가 꺼졌거나 Task가 in_review가 아니면 아무것도 안 한다(None)."""
-    issue = issues.get_issue(ref)
-    cfg = settings(issue["project_key"])
-    if issue["status"] != "in_review" or not cfg.get("auto_merge"):
+def completion(ref):
+    """최신 실행의 후처리만 반환한다."""
+    with db.connect() as c:
+        r = c.execute("SELECT e.* FROM execution_completion e WHERE ref=? AND run_id=(SELECT MAX(id) FROM runs WHERE issue_id=e.issue_id)", (ref,)).fetchone()
+        return dict(r) if r else None
+
+
+def pending():
+    with db.connect() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM execution_completion WHERE phase IN (%s) ORDER BY run_id" % ','.join('?' for _ in ACTIVE_PHASES), ACTIVE_PHASES)]
+
+
+def _owned(c, record):
+    worker = c.execute('SELECT worker_id FROM execution_completion WHERE run_id=?', (record['run_id'],)).fetchone()
+    if not worker or worker[0] != PROCESS_ID:
         return None
-    repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
-    with _lock:
-        status, note = merge(repo, ref, [b["ref"] for b in issue["blocked_by"]])
-        if status == "merged":
-            issues.add_comment(actor, ref, f"🔀 `{branch_name(ref)}`를 {BASE_BRANCH}에 병합했어요(`{note[:7]}`) — 임시 worktree 시험 병합 전체 검사 통과, 검사한 커밋을 그대로 반영했어요.")
-            status, note = deploy(repo, cfg, note, lambda msg: issues.add_comment(actor, ref, msg))
-    if status == "merged":
-        issues.add_comment(actor, ref, f"🔁 {note}")
-    else:
-        issues.set_status(actor, ref, status, f"🔀 자동 병합: {note}")
+    row = c.execute('SELECT * FROM issues WHERE id=?', (record['issue_id'],)).fetchone()
+    latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (record['issue_id'],)).fetchone()[0]
+    event = c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status'", (record['issue_id'],)).fetchone()[0]
+    return row if row and row['status'] == 'in_progress' and latest == record['run_id'] and event == record['owner_event'] and 'goal' not in json.loads(row['labels_json']) else None
+
+
+def _save(record, phase, **values):
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        if not _owned(c, record):
+            c.execute("UPDATE execution_completion SET phase='abandoned',updated_at=? WHERE run_id=? AND worker_id=?", (db.now_iso(), record['run_id'], PROCESS_ID))
+            raise issues.StoreError('후처리 소유권이 바뀌었어요 — 사람의 상태를 유지해요.', 409)
+        c.execute('UPDATE execution_completion SET phase=?,updated_at=?' + ''.join(',%s=?' % k for k in values) + ' WHERE run_id=?', (phase, db.now_iso(), *values.values(), record['run_id']))
+    record.update(phase=phase, **values)
+
+
+def _finish(actor, record, status, note):
+    """최종 상태와 완료 기록을 같은 트랜잭션에 한 번만 저장한다."""
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        current = c.execute('SELECT phase FROM execution_completion WHERE run_id=?', (record['run_id'],)).fetchone()
+        if not current or current[0] not in ACTIVE_PHASES:
+            return None
+        row = _owned(c, record)
+        if not row:
+            c.execute("UPDATE execution_completion SET phase='abandoned' WHERE run_id=? AND worker_id=?", (record['run_id'], PROCESS_ID))
+            return None
+        phase = 'complete' if status == 'merged' else 'held' if status == 'on_hold' else 'failed'
+        issues._set_status(c, actor, row, 'in_review' if status == 'merged' else status,
+                           record['note'] + '\n\n🔁 ' + note if status == 'merged' else '🔀 자동 병합: ' + note)
+        c.execute('UPDATE execution_completion SET phase=?,updated_at=? WHERE run_id=?', (phase, db.now_iso(), record['run_id']))
+    if status == 'merged':
+        _publish(actor, record)
     return status
+
+
+def _publish(actor, record):
+    with db.connect() as c:
+        send = c.execute("UPDATE execution_completion SET notified=1 WHERE run_id=? AND phase='complete' AND notified=0", (record['run_id'],)).rowcount
+    if send:
+        import notify
+        notify.send(record['ref'], '✅ 운영 반영 완료 — 확인해 주세요')
+    promote_parent(actor, record['ref'])
+
+
+def _verified_health(cfg, record):
+    """자기 재시작은 새 프로세스와 기동 시점의 반영 SHA를 함께 확인한다."""
+    if cfg.get('pm2_app') != 'dev':
+        return _healthy(cfg)
+    if not cfg.get('health_url'):
+        return False
+    deadline = time.monotonic() + cfg['health_seconds']
+    while True:
+        url = cfg['health_url'] + ('&' if '?' in cfg['health_url'] else '?') + 'execution_identity=true'
+        code, body = _get(url)
+        try:
+            data = json.loads(body)
+            if code == 200 and data.get('process_id') and data['process_id'] != record['process_id'] and data.get('revision') == record['merge_sha']:
+                return True
+        except (ValueError, TypeError):
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1)
+
+
+def _post_deploy(actor, repo, cfg, record):
+    sha = record['merge_sha']
+    files = _git(repo, 'diff', '--name-only', f'{sha}^1', sha).stdout.split()
+    hits = [f for f in files if any(fnmatch.fnmatch(f, p) for p in cfg['restart_when'])]
+    if record['phase'] == 'deployed':
+        if not hits or not cfg.get('pm2_app'):
+            return _finish(actor, record, 'merged', '재시작이 필요 없는 변경이라 재시작하지 않았어요.')
+        deadline = time.monotonic() + cfg['wait_minutes'] * 60
+        while _busy(cfg):
+            if time.monotonic() >= deadline:
+                return _finish(actor, record, 'on_hold', '작업 종료 대기 시간 제한을 넘었어요. 병합은 반영됐으며 재시작 확인이 필요해요.')
+            time.sleep(cfg['poll_seconds'])
+        _save(record, 'restart_requested', process_id=PROCESS_ID)
+        err = _restart(repo, cfg)
+        if err:
+            _save(record, 'rollback_requested')
+    if record['phase'] == 'restart_requested':
+        if _verified_health(cfg, record):
+            return _finish(actor, record, 'merged', '재시작과 반영 health 확인을 통과했어요.')
+        _save(record, 'rollback_requested')
+    if record['phase'] == 'rollback_requested':
+        # revert 직후 종료됐으면 이미 생긴 복구 커밋을 다시 만들지 않는다.
+        head = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
+        message = _git(repo, 'log', '-1', '--format=%B').stdout
+        if head != sha and f'This reverts commit {sha}' not in message:
+            return _finish(actor, record, 'on_hold', '복구 전에 운영 HEAD가 바뀌었어요 — 직접 확인해 주세요.')
+        if head == sha:
+            r = _git(repo, 'revert', '-m', '1', '--no-edit', sha)
+            if r.returncode:
+                return _finish(actor, record, 'changes_requested', '재시작/health 실패 후 revert도 실패했어요: ' + r.stderr.strip())
+        back = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
+        _save(record, 'rollback_applied', merge_sha=back, process_id=PROCESS_ID)
+        err = _restart(repo, cfg)
+        if err:
+            return _finish(actor, record, 'changes_requested', '병합을 revert했지만 복구 재시작 명령이 실패했어요: ' + err)
+    if record['phase'] == 'rollback_applied':
+        healthy = _verified_health(cfg, record)
+        return _finish(actor, record, 'changes_requested', '재시작/health 실패로 병합을 revert했어요. ' + ('복구 health를 확인했어요.' if healthy else '복구 health 확인도 실패했어요 — 직접 확인해 주세요.'))
+
+
+def handle(actor: dict, ref: str) -> str | None:
+    """검증된 구현 완료부터 반영 확인까지 진행하고 중단된 후처리를 복구한다."""
+    with _lock:
+        record = completion(ref)
+        if not record or not record['auto_merge'] or record['phase'] not in ACTIVE_PHASES:
+            return None
+        cfg = {**DEFAULTS, **json.loads(record['cfg_json'])}
+        issue = issues.get_issue(ref)
+        repo = next((p['local_path'] for p in issues.list_projects() if p['key'] == issue['project_key']), '')
+        try:
+            with db.connect() as c:
+                claimed = c.execute("UPDATE execution_completion SET worker_id=? WHERE run_id=? AND worker_id IN ('',?)", (PROCESS_ID, record['run_id'], PROCESS_ID)).rowcount
+            if not claimed:
+                return None
+            _save(record, record['phase'])
+            if record['phase'] in ('ready', 'checking'):
+                _save(record, 'checking')
+                def checkpoint(sha):
+                    _save(record, 'applying', merge_sha=sha)
+                status, note = _merge(repo, ref, [b['ref'] for b in issue['blocked_by']], checkpoint, record['task_sha'])
+                if status != 'merged':
+                    return _finish(actor, record, status, note)
+                _save(record, 'deployed', merge_sha=note)
+            elif record['phase'] == 'applying':
+                head = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
+                if head == record['merge_sha']:
+                    _save(record, 'deployed')
+                else:
+                    return _finish(actor, record, 'on_hold', '반영 경계에서 중단됐어요. 운영 HEAD와 검사한 병합 SHA를 확인한 뒤 재개해 주세요.')
+            head = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
+            if head != record['merge_sha'] and record['phase'] != 'rollback_requested':
+                return _finish(actor, record, 'on_hold', '후처리 중 운영 HEAD가 바뀌었어요 — 반영/롤백 상태를 확인해 주세요.')
+            return _post_deploy(actor, repo, cfg, record)
+        except Exception as error:
+            return _finish(actor, record, 'on_hold', '후처리 오류: ' + str(error))
+
+
+def take_over():
+    """새 서버의 기동에서만 이전 프로세스의 후처리 소유권을 회수한다."""
+    with db.connect() as c:
+        c.execute("UPDATE execution_completion SET worker_id=? WHERE phase IN (%s)" % ','.join('?' for _ in ACTIVE_PHASES), (PROCESS_ID, *ACTIVE_PHASES))
+
+
+def recover():
+    """대기열 착수보다 먼저 영속 후처리를 이어받는다."""
+    for record in pending():
+        # 새 실행에 밀린 기록은 handle()의 최신 실행 조회에서 빠지므로 직접 종료한다.
+        with db.connect() as c:
+            stale = c.execute("UPDATE execution_completion SET phase='abandoned',updated_at=? WHERE run_id=? AND run_id<>(SELECT MAX(id) FROM runs WHERE issue_id=?)",
+                              (db.now_iso(), record['run_id'], record['issue_id'])).rowcount
+        if stale:
+            continue
+        handle({'kind': 'human', 'name': record['actor'].split(':', 1)[1]}, record['ref'])
+    # 최종 전환 직후 종료돼도 부모 승격을 놓치지 않는다.
+    with db.connect() as c:
+        finished = [dict(r) for r in c.execute("SELECT * FROM execution_completion WHERE phase='complete' AND auto_merge=1")]
+    for record in finished:
+        _publish({'kind': 'human', 'name': record['actor'].split(':', 1)[1]}, record)
 
 
 def promote_parent(actor: dict, ref: str) -> bool:
@@ -240,13 +413,16 @@ def promote_parent(actor: dict, ref: str) -> bool:
     if not parent_ref:
         return False
     parent = issues.get_issue(parent_ref)
-    if parent["status"] in ("in_review", "done", "closed") or "goal" in parent["labels"]:   # goal은 사용자만 닫는다
+    if parent["status"] in ("in_progress", "waiting", "on_hold", "changes_requested", "in_review", "done", "closed") or "goal" in parent["labels"]:   # goal은 사용자만 닫는다
         return False
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == parent["project_key"]), "")
     lines, checks = [], []
     for ch in parent["children"]:
         finished = ch["status"] in ("done", "closed")
         if not finished and not (ch["status"] == "in_review" and _merged(repo, ch["ref"])):
+            return False
+        record = completion(ch['ref'])
+        if not finished and record and (not record['auto_merge'] or record['phase'] != 'complete'):
             return False
         full = issues.get_issue(ch["ref"])
         sha = _git(repo, "log", "-1", "--merges", "--fixed-strings", f"--grep=({ch['ref']})", "--format=%h", BASE_BRANCH).stdout.strip()
@@ -257,13 +433,30 @@ def promote_parent(actor: dict, ref: str) -> bool:
             checks.append(f"- **{ch['ref']}**: {how[:600]}")
     note = (f"🔀 하위 Task {len(lines)}개가 모두 {BASE_BRANCH}에 반영됐어요.\n\n" + "\n".join(lines)
             + ("\n\n**확인할 곳**\n" + "\n".join(checks) if checks else "") + "\n\n확인했으면 Done으로 바꿔 주세요.")
-    issues.set_status(actor, parent_ref, "in_review", note)
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        current = issues._find(c, parent_ref)
+        last_event = c.execute('SELECT MAX(id) FROM events WHERE issue_id=?', (current['id'],)).fetchone()[0]
+        if current['status'] != parent['status'] or last_event != max((e['id'] for e in parent['events']), default=None):
+            return False
+        if 'goal' in json.loads(current['labels_json']):
+            return False
+        for child in parent['children']:
+            row = c.execute('SELECT status FROM issues WHERE id=?', (child['id'],)).fetchone()
+            if not row or row[0] != child['status']:
+                return False
+        issues._set_status(c, actor, current, 'in_review', note)
     return True
 
 
 def merge_state(issue: dict, cfg: dict | None = None) -> str | None:
     """Task 줄의 상태 문구(DEV-40-3) — 오케스트레이터가 타임라인에 남긴 마지막 흔적으로 판단한다. 해당 없으면 None.
     cfg를 주면 settings()를 다시 읽지 않는다(Task 여러 개를 한 번에 볼 때)."""
+    record = completion(issue['ref']) if issue.get('ref') else None
+    if record and record['auto_merge']:
+        labels = {'ready': '병합 검사 중', 'checking': '병합 검사 중', 'applying': '운영 반영 중', 'deployed': '운영 반영 중', 'restart_requested': '재시작 확인 중', 'rollback_requested': '복구 중', 'rollback_applied': '복구 확인 중', 'complete': '병합됨'}
+        if record['phase'] in labels:
+            return labels[record['phase']]
     for e in reversed(issue.get("events", [])):
         b = e["body"] or ""
         if e['kind'] == 'comment' and b.startswith('↩'):

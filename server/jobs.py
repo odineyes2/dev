@@ -44,7 +44,8 @@ def job_for(issue_id: int) -> dict | None:
 
 def busy() -> bool:
     import review
-    return _threads > 0 or review.running_ref() is not None
+    import orchestrate
+    return _threads > 0 or review.running_ref() is not None or bool(orchestrate.pending())
 
 
 def _latest(c, issue_id):
@@ -54,6 +55,8 @@ def _latest(c, issue_id):
 
 def _waiting(c, j):
     row = c.execute("SELECT * FROM issues WHERE id=?", (j["issue_id"],)).fetchone()
+    if c.execute("SELECT 1 FROM execution_completion WHERE issue_id=? AND phase IN ('ready','checking','applying','deployed','restart_requested','rollback_requested','rollback_applied')", (j['issue_id'],)).fetchone():
+        return
     if j["previous_status"] is not None or row["status"] in ("done", "closed") or "goal" in json.loads(row["labels_json"]):
         return
     prior = row["status"]
@@ -82,6 +85,8 @@ def reconcile():
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         for r in c.execute("SELECT r.* FROM runs r JOIN issues i ON i.id=r.issue_id WHERE r.status='orphaned' AND i.status='in_progress'").fetchall():
+            if c.execute('SELECT 1 FROM execution_completion WHERE run_id=?', (r['id'],)).fetchone():
+                continue
             row = c.execute("SELECT * FROM issues WHERE id=?", (r["issue_id"],)).fetchone()
             start = review.owned_start(c, r["issue_id"], r["id"])
             if row and start:
@@ -89,6 +94,8 @@ def reconcile():
                 # 복구한 상태를 남은 대기의 원래 상태로 보존하고 소유권을 넘긴다.
                 c.execute("UPDATE jobs SET previous_status=NULL WHERE issue_id=? AND status='queued'", (r["issue_id"],))
         for j in _rows(c):
+            if c.execute("SELECT 1 FROM execution_completion WHERE issue_id=? AND phase IN ('ready','checking','applying','deployed','restart_requested','rollback_requested','rollback_applied')", (j['issue_id'],)).fetchone():
+                continue
             _waiting(c, j)
 
 
@@ -172,9 +179,16 @@ def pump() -> None:
     import execute, review
     with _lock:
         import automation
+        import orchestrate
+        if _threads == 0:
+            orchestrate.recover()
         automation.sync()
         reconcile()
         if busy():
+            pending = orchestrate.pending()
+            if pending:
+                with db.connect() as c:
+                    c.execute("UPDATE jobs SET note=? WHERE status='queued'", (pending[0]['ref'] + '의 병합·운영 반영 완료를 기다려요.',))
             return
         with db.connect() as c:
             queued = _rows(c)
