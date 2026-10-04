@@ -914,31 +914,71 @@ async function renderAgents(newKey){
 }
 
 // ---- 프로젝트 ----
-// 위 폼 하나로 추가와 고치기를 같이 한다 — 줄의 Edit을 누르면 그 프로젝트 값으로 채우고 키는 잠근다(이슈 번호의 앞머리라 못 바꾼다).
+// 생성은 라이트박스, 수정은 기존 인라인 폼에서 한다.
 function renderProjects(editKey){
   const ed = projects.find(p => p.key === editKey);
   view.innerHTML = `
-    <form class="form panel" id="project-form">${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
+    <div class="projects-page">
+    <button class="primary project-create" id="project-create" type="button" aria-haspopup="dialog"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>프로젝트 추가</button>
+    ${ed ? '' : '<dialog class="project-dialog" id="project-dialog" aria-labelledby="project-dialog-title">'}
+    <form class="form panel" id="project-form">${ed ? '' : '<h2 id="project-dialog-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
       <label style="flex:0 0 90px">Key<input id="p-key" required placeholder="NS" maxlength="10" value="${esc(ed ? ed.key : '')}"${ed ? ' disabled' : ''}></label>
       <label>Name<input id="p-name" required placeholder="nightshift" value="${esc(ed ? ed.name : '')}"></label>
       <label>Repository<input id="p-repo" placeholder="https://github.com/…" value="${esc(ed ? ed.repo_url : '')}"></label>
       <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
       <label class="actions">${ed ? '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">저장</button>'
-        : '<button class="primary" type="submit">프로젝트 추가</button>'}</label></div></form>
+        : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">프로젝트 추가</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
+    ${ed ? '' : '</dialog>'}
     ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
         <td><button class="ghost" data-edit="${esc(p.key)}">고치기</button></td></tr>`).join('')}
-      </tbody></table>` : '<div class="empty">프로젝트가 없어요.</div>'}`;
+      </tbody></table>` : '<div class="empty">프로젝트가 없어요.</div>'}</div>`;
   const val = (s) => view.querySelector(s).value;
-  view.querySelector('#project-form').addEventListener('submit', (e) => { e.preventDefault(); whileBusy(submitBtn(e), async () => {
-    const fields = { name: val('#p-name'), repo_url: val('#p-repo'), local_path: val('#p-path') };
-    if(ed) await api('PATCH', `/api/projects/${ed.key}`, fields);
-    else await api('POST', '/api/projects', { key: val('#p-key'), ...fields });
-    await loadProjects(); renderProjects();
-    toast(ed ? '고쳤어요' : '만들었어요');
-  }); });
-  if(ed){ view.querySelector('#p-cancel').addEventListener('click', () => renderProjects()); view.querySelector('#p-name').focus(); }
+  const opener = view.querySelector('#project-create');
+  const dialog = view.querySelector('#project-dialog');
+  const form = view.querySelector('#project-form');
+  let saving = false;
+  opener.addEventListener('click', () => {
+    if(ed){ renderProjects(); view.querySelector('#project-create').click(); return; }
+    form.reset(); view.querySelector('#project-error').textContent = '';
+    dialog.showModal(); view.querySelector('#p-key').focus();
+  });
+  if(dialog){
+    dialog.addEventListener('close', () => opener.focus());
+    dialog.addEventListener('cancel', e => { if(saving) e.preventDefault(); });
+  }
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    if(saving) return;
+    saving = true;
+    const button = submitBtn(e), cancel = view.querySelector('#p-cancel');
+    const original = button.textContent;
+    button.disabled = cancel.disabled = true;
+    button.textContent = '저장 중…'; form.setAttribute('aria-busy', 'true');
+    view.querySelector('#project-error').textContent = '';
+    try{
+      const fields = { name: val('#p-name'), repo_url: val('#p-repo'), local_path: val('#p-path') };
+      if(ed) await api('PATCH', `/api/projects/${ed.key}`, fields);
+      else await api('POST', '/api/projects', { key: val('#p-key'), ...fields });
+      await loadProjects();
+      if(!form.isConnected) return;
+      if(dialog) dialog.close();
+      renderProjects(); view.querySelector('#project-create').focus();
+      toast(ed ? '고쳤어요' : '만들었어요');
+    }catch(error){
+      if(form.isConnected) view.querySelector('#project-error').textContent = `${error.message} 입력을 확인하고 다시 시도해 주세요.`;
+    }finally{
+      saving = false;
+      button.disabled = cancel.disabled = false; button.textContent = original;
+      form.removeAttribute('aria-busy');
+    }
+  });
+  view.querySelector('#p-cancel').addEventListener('click', () => {
+    if(ed){ renderProjects(); view.querySelector('#project-create').focus(); }
+    else dialog.close();
+  });
+  if(ed) view.querySelector('#p-name').focus();
   view.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { renderProjects(b.dataset.edit); window.scrollTo(0, 0); }));
   view.querySelectorAll('[data-archive]').forEach(cb => cb.addEventListener('change', async () => {
     await api('PATCH', `/api/projects/${cb.dataset.archive}`, { archived: cb.checked }).catch(() => {});

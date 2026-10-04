@@ -42,6 +42,71 @@ def wait_port(port):
     raise RuntimeError(f"port {port} not up")
 
 
+def check_project_dialog(page, shots):
+    """생성창의 키보드·오류 복구·경합과 네 화면을 브라우저에서 검사한다."""
+    opener = page.locator('#project-create')
+    dialog = page.locator('#project-dialog')
+    assert dialog.is_hidden()
+    for scheme in ('light', 'dark'):
+        page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            page.set_viewport_size({'width': width, 'height': 850})
+            box = opener.bounding_box()
+            assert box['width'] >= 40 and box['height'] >= 40 and box['x'] >= 0
+            page.screenshot(path=str(shots / f'project_button_{scheme}_{tag}.png'), full_page=True)
+            opener.click()
+            assert page.locator('#p-key').evaluate('e => e === document.activeElement')
+            box = dialog.bounding_box()
+            assert box['x'] >= 0 and box['x'] + box['width'] <= width
+            assert box['y'] >= 0 and box['y'] + box['height'] <= 850
+            assert dialog.evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.keyboard.press('Tab')
+            assert dialog.evaluate('e => e.contains(document.activeElement)')
+            page.screenshot(path=str(shots / f'project_dialog_{scheme}_{tag}.png'), full_page=True)
+            page.keyboard.press('Escape')
+            assert dialog.is_hidden() and opener.evaluate('e => e === document.activeElement')
+            opener.click(); page.click('#p-cancel')
+            assert dialog.is_hidden() and opener.evaluate('e => e === document.activeElement')
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+    page.emulate_media(color_scheme='light')
+    opener.click()
+    values = {'#p-key': 'BAD', '#p-name': '입력 보존', '#p-repo': 'https://example.com/repo.git', '#p-path': '/tmp/repo'}
+    for selector, value in values.items():
+        page.fill(selector, value)
+    pending = []
+    def hold(route):
+        if route.request.method == 'POST':
+            pending.append(route)
+        else:
+            route.continue_()
+    page.route('**/api/projects', hold)
+    page.click('#project-form button[type=submit]')
+    for _ in range(100):
+        if pending:
+            break
+        page.wait_for_timeout(20)
+    assert len(pending) == 1 and page.is_disabled('#p-cancel')
+    page.evaluate("document.querySelector('#project-form').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}))")
+    page.keyboard.press('Escape'); page.wait_for_timeout(100)
+    assert dialog.is_visible() and len(pending) == 1
+    pending.pop().fulfill(status=400, content_type='application/json', body=json.dumps({'detail': '검사 오류'}))
+    page.wait_for_selector('#project-error:text("검사 오류")')
+    assert all(page.input_value(selector) == value for selector, value in values.items())
+    assert page.is_enabled('#p-cancel') and page.is_enabled('#project-form button[type=submit]')
+    page.unroute('**/api/projects', hold)
+    page.click('#p-cancel')
+    assert opener.evaluate('e => e === document.activeElement')
+    opener.click()
+    assert page.input_value('#p-key') == ''
+    page.click('#p-cancel')
+    page.goto(BASE + '/#/new'); page.wait_for_selector('text=먼저')
+    assert page.locator('#project-create').count() == 0
+    page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+
+
 def check_account_menu(page, shots):
     """검증된 admin에게만 외부 링크를 보여 주고 로그인 전환 시 숨긴다."""
     link = page.locator('#open-jupyter')
@@ -239,7 +304,7 @@ def check_list_loading(page, shots):
         assert page.locator('.list-loading').count() == 0
 
     page.goto(BASE + '/#/projects')
-    page.wait_for_selector('#project-form')
+    page.wait_for_selector('#project-create')
     page.goto(BASE + '/#/')
     request_count(1)
     first = pending.pop(0)
@@ -329,7 +394,7 @@ def check_list_loading(page, shots):
     for status in (200, 500):
         old = reload_list()
         page.fill('#q', '나중 검색')
-        page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-form')
+        page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
         reply(old, [item(99)], more=True, status=status)
         page.wait_for_timeout(500)
         assert page.locator('#project-form').count() == 1
@@ -605,7 +670,9 @@ try:
         page.click("a[href=\"#/new\"]")
         page.wait_for_selector("text=먼저")
         page.goto(BASE + "/#/projects")
-        page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button")
+        check_project_dialog(page, shots)
+        page.click("#project-create")
+        page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button[type=submit]")
         page.wait_for_selector("td.ref:text('NS')")
         assert page.get_attribute("#p-path", "placeholder").startswith("C:\\Users\\")
         # 고치기 — 키는 잠기고, 이름·경로가 바뀐다
@@ -617,7 +684,12 @@ try:
                                arg=r"C:\Users\Simon Lomebrote\Projects\nightshift")
         assert not page.is_disabled("#p-key")   # 저장하면 추가 폼으로 돌아온다
         page.click('[data-edit="NS"]'); page.click("#p-cancel")
-        assert page.input_value("#p-name") == ""
+        page.check('[data-archive="NS"]')
+        page.wait_for_function("projects.find(p => p.key === 'NS').archived")
+        page.wait_for_selector('[data-archive="NS"]:checked')
+        page.uncheck('[data-archive="NS"]')
+        page.wait_for_function("!projects.find(p => p.key === 'NS').archived")
+        assert page.locator("#project-dialog").is_hidden()
 
         page.click("a[href=\"#/new\"]")
         page.fill("#n-title", "보드 카드 복사")
