@@ -198,6 +198,17 @@ MIGRATIONS = [
     """
     ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT '';
     """,
+    # 공식 문서 요청의 설명과 도구를 이슈 본문 변경과 독립적으로 보존한다.
+    """
+    CREATE TABLE project_doc_requests (
+        issue_id INTEGER PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE,
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        provider TEXT NOT NULL CHECK (provider IN ('claude','codex')),
+        description TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX project_doc_requests_project ON project_doc_requests(project_id, provider);
+    """,
 ]
 
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.

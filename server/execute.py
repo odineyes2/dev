@@ -262,11 +262,13 @@ def _run_then_merge(actor, ref, *args):
         issues.add_comment(actor, ref, f"⚠️ 자동 병합 중 오류: {e}")
 
 
-def start(actor: dict, ref: str, provider: str = "claude") -> dict:
+def start(actor: dict, ref: str, provider: str | None = None) -> dict:
     """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
     import review
+    import project_docs
     if actor["kind"] != "human":
         raise issues.StoreError("실행은 사람만 맡길 수 있어요.", 403)
+    provider = project_docs.resolve_provider(issues.get_issue(ref)['id'], provider)
     if provider not in ("claude", "codex"):
         raise issues.StoreError("지원하지 않는 실행 도구예요.", 400)
     if provider == "codex" and not os.environ.get("DEV_CODEX_AGENT_KEY"):

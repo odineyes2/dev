@@ -262,6 +262,13 @@ async def api_update_project(key: str, request: Request):
     return issues.update_project(actor(request), key.upper(), await json_body(request))
 
 
+@app.post("/api/projects/{key}/documents/request")
+async def api_request_project_documents(key: str, request: Request):
+    import project_docs
+    b = await json_body(request)
+    return project_docs.request_documents(actor(request), key, b.get('provider'))
+
+
 @app.get("/api/projects/{key}/delete-check")
 def api_project_delete_check(key: str, request: Request):
     return issues.check_project_deletion(actor(request), key)
@@ -387,14 +394,14 @@ import jobs  # noqa: E402
 async def api_execute(ref: str, request: Request):
     me = actor(request)
     b = await json_body(request) if await request.body() else {}
-    return jobs.enqueue(me, ref, "execute", b.get("provider", "claude"))
+    return jobs.enqueue(me, ref, "execute", b.get("provider"))
 
 
 @app.post("/api/issues/{ref}/review")
 async def api_review(ref: str, request: Request):
     me = actor(request)
     b = await json_body(request) if await request.body() else {}
-    return jobs.enqueue(me, ref, "review", b.get("provider", "claude"))
+    return jobs.enqueue(me, ref, "review", b.get("provider"))
 
 
 @app.get("/api/jobs")

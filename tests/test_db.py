@@ -58,7 +58,9 @@ with db.connect() as c:
 original_path = db.config.DB_PATH
 db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'legacy.db'
 with sqlite3.connect(db.config.DB_PATH) as c:
-    for version, sql in enumerate(db.MIGRATIONS[:-2], 1):
+    # Waiting·프로젝트 설명 도입 전 스키마를 고정한다(새 마이그레이션 추가와 독립적).
+    legacy_version = next(i for i, sql in enumerate(db.MIGRATIONS) if 'CREATE TABLE issues_new' in sql)
+    for version, sql in enumerate(db.MIGRATIONS[:legacy_version], 1):
         c.executescript(sql + f'PRAGMA user_version={version};')
     c.execute("INSERT INTO projects VALUES(1,'OLD','old','','',3,0,?)", (now,))
     c.execute("INSERT INTO agents VALUES(1,'a','','','hash','prefix',1,?,NULL)", (now,))
