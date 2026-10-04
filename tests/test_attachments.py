@@ -196,5 +196,118 @@ class AttachmentsTest(unittest.TestCase):
                 attachments.file_path(a['storage_key'])
 
 
+class AttachmentAPITest(unittest.TestCase):
+    setUp = AttachmentsTest.setUp
+
+    def client(self):
+        import app, auth
+        from fastapi.testclient import TestClient
+        from unittest.mock import AsyncMock
+        self.addCleanup(patch.stopall)
+        patch.object(auth, 'nightshift_user', AsyncMock(return_value={'id': 1, 'username': 'admin', 'role': 'admin'})).start()
+        return TestClient(app.app)
+
+    def test_api_lifecycle_and_atomic_publish(self):
+        import app, auth
+        client = self.client()
+        headers = {'X-Requested-With': 'dev'}
+        self.assertEqual(client.post('/api/attachments', files={'file': ('x.md', b'hello')}).status_code, 403)
+        r = client.post('/api/attachments', headers=headers, files={'file': ('한글.md', b'hello world')})
+        self.assertEqual(r.status_code, 200, r.text)
+        a = r.json()
+        self.assertNotIn('storage_key', a)
+        url = client.post('/api/attachments/url', headers=headers, json={'url': 'https://example.com'}).json()
+        body = {'project': 'DEV', 'title': 'with files', 'attachment_ids': [a['id'], 'missing']}
+        self.assertEqual(client.post('/api/issues', headers=headers, json=body).status_code, 404)
+        self.assertIsNone(attachments.get(H, a['id'])['issue_id'])
+        original = attachments.link
+        def inspect(c, actor, iid, ids):
+            # Auto가 쓰는 별도 연결에서는 미완성 이슈를 볼 수 없다.
+            with db.connect() as observer:
+                self.assertIsNone(observer.execute('SELECT id FROM issues WHERE id=?', (iid,)).fetchone())
+            return original(c, actor, iid, ids)
+        body['attachment_ids'] = [a['id'], url['id']]
+        with patch.object(attachments, 'link', side_effect=inspect):
+            r = client.post('/api/issues', headers=headers, json=body)
+        self.assertEqual(r.status_code, 200, r.text)
+        full = issues.get_issue(r.json()['ref'])
+        self.assertEqual(len(full['attachments']), 2)
+        body['title'] = 'duplicate connection'
+        self.assertEqual(client.post('/api/issues', headers=headers, json=body).status_code, 403)
+        r = client.get(a['download_url'])
+        self.assertEqual(r.content, b'hello world')
+        self.assertEqual(r.headers['x-content-type-options'], 'nosniff')
+        self.assertIn('filename*=UTF-8', r.headers['content-disposition'])
+        for value, expected in [('bytes=1-3', b'ell'), ('bytes=-5', b'world'), ('bytes=6-', b'world'), ('bytes=0-999', b'hello world')]:
+            r = client.get(a['download_url'], headers={'Range': value})
+            self.assertEqual(r.status_code, 206)
+            self.assertEqual(r.content, expected)
+            self.assertEqual(int(r.headers['content-length']), len(expected))
+        for value in ('bytes=99-', 'bytes=3-1', 'bytes=-0', 'bytes=0-1,3-4', 'nonsense'):
+            self.assertEqual(client.get(a['download_url'], headers={'Range': value}).status_code, 416)
+        agent, key = auth.create_agent('reader', '', '')
+        bearer = {'Authorization': 'Bearer ' + key}
+        self.assertEqual(client.get(a['download_url'], headers=bearer).status_code, 200)
+        self.assertEqual(client.post('/api/attachments', headers=bearer, files={'file': ('x.md', b'x')}).status_code, 403)
+        self.assertEqual(client.delete('/api/attachments/' + a['id'], headers=bearer).status_code, 403)
+        with patch.object(auth, 'nightshift_user', return_value=None):
+            self.assertEqual(client.get(a['download_url']).status_code, 401)
+        self.assertEqual(client.delete('/api/attachments/' + a['id'], headers=headers).status_code, 204)
+        self.assertEqual(client.get(a['download_url']).status_code, 404)
+
+    def test_auto_registration_sees_all_attachments(self):
+        import auto_settings, automation
+        client = self.client()
+        headers = {'X-Requested-With': 'dev'}
+        auto_settings.update_settings(H, 'DEV', {'auto_review': True})
+        with patch.object(automation, 'provider_available', return_value=True):
+            automation.sync()
+            with db.connect() as c:
+                before = c.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]
+            a = client.post('/api/attachments', headers=headers, files={'file': ('x.md', b'data')}).json()
+            automation.sync()
+            with db.connect() as c:
+                self.assertEqual(c.execute('SELECT COUNT(*) FROM jobs').fetchone()[0], before)
+            result = client.post('/api/issues', headers=headers, json={'project': 'DEV', 'title': 'auto', 'attachment_ids': [a['id']]}).json()
+            original = automation.eligible
+            def inspect(c, issue, mode, job=None):
+                if issue['id'] == result['id']:
+                    self.assertEqual([x['id'] for x in issue['attachments']], [a['id']])
+                return original(c, issue, mode, job)
+            with patch.object(automation, 'eligible', side_effect=inspect):
+                automation.sync()
+            automation.sync()
+            with db.connect() as c:
+                rows = c.execute('SELECT * FROM jobs WHERE issue_id=?', (result['id'],)).fetchall()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]['source'], 'auto')
+
+    def test_limits_formats_and_temporary_visibility(self):
+        import auth
+        client = self.client()
+        headers = {'X-Requested-With': 'dev'}
+        for name, data in [('x.svg', b'<svg/>'), ('x.json', b'{bad'), ('x.png', b'fake')]:
+            self.assertEqual(client.post('/api/attachments', headers=headers, files={'file': (name, data)}).status_code, 400)
+        with patch.object(config, 'ATTACHMENT_MAX_BYTES', 3):
+            self.assertEqual(client.post('/api/attachments', headers=headers, files={'file': ('x.md', b'abcd')}).status_code, 413)
+            self.assertEqual(client.post('/api/attachments', headers=headers, files={'file': ('x.md', b'a' * 70000)}).status_code, 413)
+            # 길이 헤더 없는 스트림도 실제 수신 바이트를 기준으로 거부한다.
+            stream_headers = {**headers, 'Content-Type': 'multipart/form-data; boundary=abc'}
+            def stream():
+                yield b'--abc\r\nContent-Disposition: form-data; name="file"; filename="x.md"\r\n\r\n'
+                yield b'a' * 70000
+                yield b'\r\n--abc--\r\n'
+            self.assertEqual(client.post('/api/attachments', headers=stream_headers, content=stream()).status_code, 413)
+        self.assertEqual(client.post('/api/attachments', headers=headers, files=[('file', ('x.md', b'x')), ('file', ('y.md', b'y'))]).status_code, 400)
+        self.assertEqual(client.post('/api/attachments', headers=headers, content=b'bad').status_code, 400)
+        self.assertEqual(client.post('/api/attachments', headers={**headers, 'Content-Type': 'multipart/form-data; boundary=abc'}, content=b'wrong').status_code, 400)
+        a = client.post('/api/attachments', headers=headers, files={'file': ('x.md', b'x')}).json()
+        _, key = auth.create_agent('reader', '', '')
+        self.assertEqual(client.get(a['download_url'], headers={'Authorization': 'Bearer ' + key}).status_code, 403)
+        with db.connect() as c:
+            c.execute("UPDATE attachments SET expires_at='2000' WHERE id=?", (a['id'],))
+        self.assertEqual(client.get(a['download_url']).status_code, 410)
+
+
 if __name__ == '__main__':
     unittest.main()

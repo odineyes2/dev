@@ -23,7 +23,8 @@ if os.name == 'nt':
     assert 'windows.sandbox="elevated"' in cmd
 assert 'test-secret' not in ' '.join(cmd)
 mcp = tomllib.loads(next(v for v in cmd if v.startswith('mcp_servers=')))['mcp_servers']['dev']
-assert set(mcp['enabled_tools']) == {'whoami', 'get_issue', 'list_projects'}
+assert 'mcp__dev__read_attachment' in execute.ALLOWED_TOOLS
+assert set(mcp['enabled_tools']) == {'whoami', 'get_issue', 'list_projects', 'read_attachment'}
 assert all(v['approval_mode'] == 'approve' for v in mcp['tools'].values())
 
 fake = base.tmp / 'fake_codex.py'

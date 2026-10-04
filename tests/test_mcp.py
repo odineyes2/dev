@@ -12,13 +12,20 @@ ROOT = Path(__file__).resolve().parent.parent
 tmp = Path(tempfile.mkdtemp())
 os.environ["DEV_DATA_DIR"] = str(tmp / "data")
 sys.path.insert(0, str(ROOT / "server"))
-import auth, db, issues  # noqa: E402
+import auth, db, issues, attachments  # noqa: E402
 
 # 서버를 띄우기 전에 데이터를 넣어 둔다(같은 DB 파일).
 db.init()
 HUMAN = {"kind": "human", "id": 1, "name": "admin", "model": None}
 issues.create_project(HUMAN, "NS", "nightshift")
 issues.create_issue(HUMAN, "NS", "보드 복사", "사람이 쓴 지시")
+samples = {}
+for name, data in [('x.md', b'a' * (attachments.TEXT_PREVIEW_BYTES + 10)), ('x.json', b'{"ok":true}'), ('x.png', b'\x89PNG\r\n\x1a\n' + b'x'), ('large.png', b'\x89PNG\r\n\x1a\n' + b'x' * attachments.IMAGE_CONTENT_BYTES), ('x.wav', b'RIFF0000WAVEdata')]:
+    samples[name] = attachments.upload(HUMAN, name, [data])
+samples['url'] = attachments.add_url(HUMAN, 'https://example.com')
+with db.connect() as conn:
+    attachments.link(conn, HUMAN, issues.get_issue('NS-1')['id'], [a['id'] for a in samples.values()])
+temporary = attachments.upload(HUMAN, 'temp.md', [b'temp'])
 agent, key = auth.create_agent("claude", "anthropic", "claude-opus-5-5")
 off, off_key = auth.create_agent("old", "", "")
 with db.connect() as c:
@@ -85,6 +92,28 @@ async def main():
         assert 'NS-1' in [i['ref'] for i in lst] and "body" not in lst[0]
         it = (await call("get_issue", ref="NS-1")).data
         assert it["body"] == "사람이 쓴 지시"
+        assert len(it['attachments']) == len(samples)
+        assert all('storage_key' not in a and 'owner' not in a for a in it['attachments'])
+        import json, base64
+        for name in ('x.md', 'x.json', 'x.wav', 'url', 'large.png'):
+            result = await call('read_attachment', ref='NS-1', attachment_id=samples[name]['id'])
+            info = json.loads(result.content[0].text)
+            assert info['id'] == samples[name]['id'] and 'notice' in info
+            if name == 'x.md':
+                assert info['truncated'] and len(info['text']) == attachments.TEXT_PREVIEW_BYTES
+            elif name == 'x.json':
+                assert info['text'] == '{"ok":true}' and not info['truncated']
+            else:
+                assert 'content_omitted' in info and len(result.content) == 1
+        result = await call('read_attachment', ref='NS-1', attachment_id=samples['x.png']['id'])
+        assert result.content[1].type == 'image' and result.content[1].mimeType == 'image/png'
+        assert base64.b64decode(result.content[1].data).startswith(b'\x89PNG')
+        for ref, aid in [('NS-1', temporary['id']), ('NS-99', samples['x.png']['id']), ('NS-1', 'missing')]:
+            try:
+                await call('read_attachment', ref=ref, attachment_id=aid)
+                raise AssertionError('invalid attachment read allowed')
+            except ToolError:
+                pass
         await call("claim_issue", ref="NS-1")
         assert (await call("post_plan", ref="NS-1", body="1. 메뉴")).data["version"] == 1
         task = (await call("create_issue", project="NS", title="Task: 메뉴", parent="NS-1")).data

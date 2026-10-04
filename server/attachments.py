@@ -10,6 +10,44 @@ import config
 import db
 import issues
 
+# MCP 콘텐츠는 업로드 상한과 별도로 제한한다.
+TEXT_PREVIEW_BYTES = 64 * 1024
+IMAGE_CONTENT_BYTES = 4 * 1024 * 1024
+
+
+def metadata(a):
+    """저장 키·소유자를 제외한 공개 첨부 메타데이터를 만든다."""
+    return {**{k: a[k] for k in ('id', 'kind', 'name', 'media_type', 'size', 'url', 'created_at')},
+            'download_url': f"/api/attachments/{a['id']}/content" if a['storage_key'] else None}
+
+
+def get(actor, attachment_id, ref=None):
+    """연결된 첨부는 인증 사용자, 임시 첨부는 소유자만 읽는다."""
+    if not actor:
+        raise issues.StoreError('인증이 필요해요.', 401)
+    with db.connect() as c:
+        a = c.execute('SELECT * FROM attachments WHERE id=?', (attachment_id,)).fetchone()
+        if a is None:
+            raise issues._not_found('첨부')
+        a = dict(a)
+        if ref is not None and a['issue_id'] != issues._find(c, ref)['id']:
+            raise issues._not_found('첨부')
+        if a['issue_id'] is None:
+            if a['owner'] != issues.actor_label(actor):
+                raise issues.StoreError('자신의 임시 첨부만 읽을 수 있어요.', 403)
+            if a['expires_at'] <= db.now_iso():
+                raise issues.StoreError('임시 첨부가 만료됐어요.', 410)
+    return a
+
+
+def open_content(a):
+    if not a['storage_key']:
+        raise issues.StoreError('URL 첨부에는 저장 파일이 없어요.')
+    try:
+        return file_path(a['storage_key']).open('rb')
+    except FileNotFoundError as e:
+        raise issues._not_found('첨부 파일') from e
+
 
 FORMATS = {
     '.png': ('image', 'image/png'), '.jpg': ('image', 'image/jpeg'),

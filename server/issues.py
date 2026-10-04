@@ -433,6 +433,11 @@ def get_issue(ref) -> dict:
                          c.execute(_ISSUE_SELECT + " WHERE i.parent_id=? ORDER BY i.id", (row["id"],))]
         par = c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["parent_id"],)).fetchone() if row["parent_id"] else None
         d["parent_ref"] = _issue_dict(par)["ref"] if par else None
+        import attachments
+        # 마이그레이션 전 데이터 보존 검사에서도 기존 이슈를 읽을 수 있게 한다.
+        has_attachments = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='attachments'").fetchone()
+        d["attachments"] = [attachments.metadata(dict(a)) for a in c.execute(
+            'SELECT * FROM attachments WHERE issue_id=? ORDER BY created_at,id', (row['id'],))] if has_attachments else []
     return d
 
 

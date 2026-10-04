@@ -1,11 +1,16 @@
 """dev — 코딩 에이전트용 이슈 게시판(dev.lomebrote.com). 사람은 화면, 에이전트는 REST/MCP로 쓴다."""
 import sqlite3
 import time
+import re
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.datastructures import UploadFile
+from starlette.formparsers import MultiPartParser, MultiPartException
+from python_multipart.exceptions import MultipartParseError
 from starlette.concurrency import run_in_threadpool
 
 import auth
@@ -244,6 +249,105 @@ def rotate_agent_key(agent_id: int, request: Request):
 
 # ---- 프로젝트·이슈 (권한 판단은 issues 모듈이 한다) ----
 import issues  # noqa: E402
+import attachments  # noqa: E402
+
+
+@app.post('/api/attachments')
+async def api_upload_attachment(request: Request):
+    me = human_only(request)
+    if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'multipart/form-data':
+        raise HTTPException(400, 'multipart/form-data 파일 업로드가 필요해요.')
+    # Content-Length를 신뢰하지 않고 파서에 전달되는 실제 바이트를 제한한다.
+    async def limited_stream():
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > config.ATTACHMENT_MAX_BYTES + 64 * 1024:
+                raise MultiPartException('파일 용량 제한을 넘었어요.')
+            yield chunk
+    parser = MultiPartParser(request.headers, limited_stream(), max_files=1, max_fields=0)
+    try:
+        form = await parser.parse()
+    except MultiPartException as e:
+        raise HTTPException(413 if '용량 제한' in str(e) else 400, str(e))
+    except MultipartParseError:
+        for f in parser._files_to_close_on_error:
+            f.close()
+        raise HTTPException(400, 'multipart 파일 형식이 잘못됐어요.')
+    except BaseException:
+        # 연결 중단·잘못된 multipart에도 파서의 임시 파일을 닫는다.
+        for f in parser._files_to_close_on_error:
+            f.close()
+        raise
+    try:
+        items = form.multi_items()
+        if len(items) != 1 or items[0][0] != 'file' or not isinstance(items[0][1], UploadFile):
+            raise HTTPException(400, 'file 필드에 파일 하나가 필요해요.')
+        f = items[0][1]
+        result = await run_in_threadpool(attachments.upload, me, f.filename,
+                                       iter(lambda: f.file.read(64 * 1024), b''))
+        return attachments.metadata(result)
+    finally:
+        await form.close()
+
+
+@app.post('/api/attachments/url')
+async def api_url_attachment(request: Request):
+    me = human_only(request)
+    return attachments.metadata(attachments.add_url(me, (await json_body(request)).get('url')))
+
+
+@app.delete('/api/attachments/{attachment_id}', status_code=204)
+def api_delete_attachment(attachment_id: str, request: Request):
+    attachments.delete(human_only(request), attachment_id)
+
+
+@app.get('/api/attachments/{attachment_id}/content')
+def api_attachment_content(attachment_id: str, request: Request):
+    a = attachments.get(actor(request), attachment_id)
+    f = attachments.open_content(a)
+    import os
+    size = os.fstat(f.fileno()).st_size
+    headers = {'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store',
+               'Accept-Ranges': 'bytes',
+               'Content-Disposition': "attachment; filename*=UTF-8''" + quote(a['name'], safe='')}
+    start, end, status = 0, size - 1, 200
+    value = request.headers.get('range')
+    if value:
+        match = re.fullmatch(r'bytes=([0-9]*)-([0-9]*)', value)
+        try:
+            if not match or not any(match.groups()):
+                raise ValueError()
+            left, right = match.groups()
+            if left:
+                start = int(left)
+                end = min(int(right), size - 1) if right else size - 1
+            else:
+                length = int(right)
+                if length <= 0:
+                    raise ValueError()
+                start = max(0, size - length)
+            if start > end or start >= size:
+                raise ValueError()
+        except ValueError:
+            f.close()
+            return Response(status_code=416, headers={**headers, 'Content-Range': f'bytes */{size}'})
+        status = 206
+        headers['Content-Range'] = f'bytes {start}-{end}/{size}'
+    headers['Content-Length'] = str(end - start + 1)
+    def chunks():
+        try:
+            f.seek(start)
+            remaining = end - start + 1
+            while remaining:
+                data = f.read(min(64 * 1024, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+        finally:
+            f.close()
+    return StreamingResponse(chunks(), status_code=status, media_type=a['media_type'], headers=headers)
 
 
 @app.exception_handler(issues.StoreError)
@@ -345,7 +449,7 @@ async def api_create_issue(request: Request):
     b = await json_body(request)
     a = actor(request)
     it = issues.create_issue(a, b.get("project"), b.get("title"), b.get("body", ""), b.get("priority", "none"),
-                             b.get("labels"), b.get("parent"), b.get("status", "backlog"), b.get("type_ids"))
+                             b.get("labels"), b.get("parent"), b.get("status", "backlog"), b.get("type_ids"), b.get("attachment_ids"))
     return it
 
 
