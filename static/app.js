@@ -1290,18 +1290,18 @@ async function renderSettings(){
   if(!current()) return;
   body.innerHTML = `<h3>${esc(key)} · Auto</h3>
     ${[['auto_review','Auto 검토 맡기기','사람이 등록한 Plan 없는 최상위 Backlog Issue를 검토해요. Goal과 기존 작업이 있는 Issue는 제외해요.'],
-       ['auto_execute','Auto 실행맡기기','사람이 최신 부모 Plan을 승인하고 선행 조건을 충족한 Backlog Task를 실행해요.'],
-       ['auto_approve','Auto 태스크 승인',settings.auto_approve_disabled_reason || 'Auto 태스크 승인 대상이 확정되지 않아 켤 수 없어요.']].map(([field,label,help]) =>
-      `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false" ${field === 'auto_approve' ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}
+       ['auto_approve','Auto 계획 승인','기본은 OFF예요. ON 이후 등록된 검토가 완료되면 Goal이 아닌 최상위 Issue의 최신 Plan을 구조 검사 후 기계적으로 승인하고 Task를 만들어요. 수동으로 맡긴 검토도 포함해요. 과거 Plan과 실행 중·실패한 검토는 승인하지 않고, 기존 승인·조건부 승인·거절은 덮어쓰지 않아요. 미해결 결정이나 구조 오류는 사람 확인을 기다려요. 의미적·기술적 치명 오류 검출은 보장하지 않아요.'],
+       ['auto_execute','Auto 실행맡기기','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 계획 승인만 ON이면 승인과 Task 생성까지만 해요.']].map(([field,label,help]) =>
+      `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}
     <h3>Auto 에이전트 우선순위</h3><p class="dim">CLI 도구 Claude/Codex의 신규 자동 등록 순서예요. 사용할 수 없는 도구는 다음 도구를 선택하며, 착수 후 실패에는 유료 재시도를 하지 않아요. 수동 도구 지정은 유지해요.</p>
     <ol id="provider-order"></ol><p id="settings-status" role="status" aria-live="polite"></p>
-    <aside class="settings-policy dim"><p>Auto를 켜면 클릭 없이 유료 검토·실행이 발생해요. Claude의 기존 비용 상한과 Codex의 시간 제한을 유지해요. Codex에는 금액 상한이 없어요.</p><p>OFF로 바꾸면 자동 등록된 미착수 대기만 취소해요. 수동 대기와 실행 중 작업은 유지해요.</p><p>기존 auto_merge 정책은 별도로 적용돼요(기본 켜짐). 켜져 있는 프로젝트는 실행 후 병합·서버 재시작까지 이어질 수 있어요. 이 설정은 병합·배포 권한을 확대하지 않아요.</p></aside>`;
+    <aside class="settings-policy dim"><p>Auto를 켜면 클릭 없이 유료 검토·실행이 발생해요. Claude의 기존 비용 상한과 Codex의 시간 제한을 유지해요. Codex에는 금액 상한이 없어요.</p><p>Auto 계획 승인을 OFF로 바꾸면 이후 자동 승인만 중단해요. 완료된 승인·Task·실행은 되돌리지 않아요. Auto 검토·실행을 OFF로 바꾸면 해당 자동 등록된 미착수 대기만 취소해요. 수동 대기와 실행 중 작업은 유지해요.</p><p>기존 auto_merge 정책은 별도로 적용돼요(기본 켜짐). 켜져 있는 프로젝트는 실행 후 병합·서버 재시작까지 이어질 수 있어요. 이 설정은 병합·배포 권한을 확대하지 않아요.</p></aside>`;
   let busy = false;
   const status = body.querySelector('#settings-status');
   function paint(){
-    for(const field of ['auto_review','auto_execute','auto_approve']){
-      const b = body.querySelector(`#${field}`), on = field !== 'auto_approve' && settings[field];
-      b.setAttribute('aria-checked', String(!!on)); b.disabled = busy || field === 'auto_approve';
+    for(const field of ['auto_review','auto_approve','auto_execute']){
+      const b = body.querySelector(`#${field}`), on = settings[field];
+      b.setAttribute('aria-checked', String(!!on)); b.disabled = busy;
       b.querySelector('.switch-state').textContent = on ? '켜짐' : '꺼짐';
     }
     body.querySelector('#provider-order').innerHTML = settings.provider_order.map((provider,i) => `<li><span>${provider === 'claude' ? 'Claude' : 'Codex'}</span><div><button type="button" data-move="${i}" data-direction="-1" aria-label="${esc(provider)} 우선순위 올리기" ${busy || i === 0 ? 'disabled' : ''}>위로</button><button type="button" data-move="${i}" data-direction="1" aria-label="${esc(provider)} 우선순위 내리기" ${busy || i === settings.provider_order.length - 1 ? 'disabled' : ''}>아래로</button></div></li>`).join('');

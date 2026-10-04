@@ -218,8 +218,24 @@ def check_auto_settings(page, shots):
     review = page.locator('#auto_review')
     page.wait_for_selector('#auto_review')
     assert review.get_attribute('aria-checked') == 'false'
-    assert page.locator('#auto_approve').is_disabled()
-    assert '확정되지' in page.locator('#auto_approve-help').inner_text()
+    approve = page.locator('#auto_approve')
+    assert approve.is_enabled() and approve.get_attribute('aria-checked') == 'false'
+    assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto_review', 'auto_approve', 'auto_execute']
+    assert page.locator('#auto_approve-label').inner_text() == 'Auto 계획 승인'
+    assert approve.get_attribute('role') == 'switch'
+    assert approve.get_attribute('aria-labelledby') == 'auto_approve-label'
+    assert approve.get_attribute('aria-describedby') == 'auto_approve-help'
+    assert '보장하지 않아요' in page.locator('#auto_approve-help').inner_text()
+    approve.focus(); page.keyboard.press('Space')
+    page.wait_for_function("document.querySelector('#auto_approve').getAttribute('aria-checked') === 'true' && !document.querySelector('#auto_approve').disabled")
+    assert page.request.get(BASE + '/api/projects/AUTOA/auto-settings').json()['auto_approve'] is True
+    assert page.locator('#auto_execute').get_attribute('aria-checked') == 'false'
+    page.reload(); page.wait_for_selector('#auto_approve')
+    assert approve.get_attribute('aria-checked') == 'true'
+    approve.focus(); page.keyboard.press('Enter')
+    page.wait_for_function("document.querySelector('#auto_approve').getAttribute('aria-checked') === 'false' && !document.querySelector('#auto_approve').disabled")
+    approve.click()
+    page.wait_for_function("document.querySelector('#auto_approve').getAttribute('aria-checked') === 'true' && !document.querySelector('#auto_approve').disabled")
     review.focus(); page.keyboard.press('Space')
     page.wait_for_function("document.querySelector('#settings-status').textContent === '저장했어요.'")
     assert review.get_attribute('aria-checked') == 'true'
@@ -233,6 +249,10 @@ def check_auto_settings(page, shots):
         else:
             route.continue_()
     page.route('**/api/projects/AUTOA/auto-settings', fail)
+    approve.click()
+    page.wait_for_function("document.querySelector('#settings-status').textContent.includes('복원')")
+    assert approve.get_attribute('aria-checked') == 'true' and approve.is_enabled()
+    assert approve.evaluate('e => e === document.activeElement')
     review.click()
     page.wait_for_function("document.querySelector('#settings-status').textContent.includes('복원')")
     assert review.get_attribute('aria-checked') == 'true' and review.is_enabled()
@@ -241,21 +261,43 @@ def check_auto_settings(page, shots):
     page.unroute('**/api/projects/AUTOA/auto-settings', fail)
     page.select_option('#project-filter', 'AUTOB')
     page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'false'")
+    assert approve.get_attribute('aria-checked') == 'false'
     page.select_option('#project-filter', 'AUTOA')
     page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'true'")
+    assert approve.get_attribute('aria-checked') == 'true'
     held = []
     def hold(route):
         held.append(route)
     page.route('**/api/projects/AUTOA/auto-settings', hold)
-    review.click()
+    approve.click()
     page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'true'")
-    assert review.is_disabled() and page.locator('#auto_execute').is_disabled()
+    assert review.is_disabled() and approve.is_disabled() and page.locator('#auto_execute').is_disabled()
     page.select_option('#project-filter', 'AUTOB')
     page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'false'")
     assert len(held) == 1
     held.pop().fulfill(status=500, content_type='application/json', body='{"detail":"late error"}')
     page.wait_for_timeout(100)
     assert page.locator('#settings-status').inner_text() == ''
+    assert approve.get_attribute('aria-checked') == 'false' and approve.is_enabled()
+    # 성공 응답도 프로젝트를 떠난 뒤에는 새 화면의 상태·포커스를 바꾸지 않는다.
+    page.route('**/api/projects/AUTOB/auto-settings', hold)
+    approve.click()
+    page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'true'")
+    assert len(held) == 1
+    assert held[0].request.post_data_json == {'auto_approve': True}
+    page.select_option('#project-filter', 'AUTOA')
+    page.wait_for_selector('.settings-skeleton')
+    assert len(held) == 2
+    held.pop().fulfill(json=page.request.get(BASE + '/api/projects/AUTOA/auto-settings').json())
+    page.wait_for_selector('#auto_approve')
+    held.pop().fulfill(json={'auto_review': False, 'auto_execute': False, 'auto_approve': True, 'provider_order': ['claude', 'codex']})
+    page.wait_for_timeout(100)
+    assert approve.get_attribute('aria-checked') == 'true'
+    assert review.get_attribute('aria-checked') == 'true'
+    assert page.locator('#settings-status').inner_text() == ''
+    page.unroute('**/api/projects/AUTOB/auto-settings', hold)
+    page.select_option('#project-filter', 'AUTOB')
+    page.wait_for_function("document.querySelector('#auto_approve')?.getAttribute('aria-checked') === 'false'")
     page.select_option('#project-filter', 'AUTOA')
     page.wait_for_selector('.settings-skeleton')
     page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
@@ -265,18 +307,22 @@ def check_auto_settings(page, shots):
     assert page.locator('#project-create').is_visible()
     page.unroute('**/api/projects/AUTOA/auto-settings', hold)
     page.goto(BASE + '/#/settings'); page.wait_for_selector('#auto_review')
+    page.wait_for_timeout(3200)  # 실패 토스트가 캡처의 도움말을 가리지 않도록 기다린다.
     for scheme in ('light', 'dark'):
         page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
         for width, tag in ((1300, 'desktop'), (390, 'mobile')):
             page.set_viewport_size({'width': width, 'height': 850})
             assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
             assert page.locator('.auto-settings').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+            for row in page.locator('.setting-row').all():
+                assert row.evaluate('e => { const text=e.firstElementChild.getBoundingClientRect(), button=e.lastElementChild.getBoundingClientRect(), box=e.getBoundingClientRect(); return text.right <= button.left && button.right <= box.right + 1 && e.scrollWidth <= e.clientWidth + 1; }')
             page.screenshot(path=str(shots / f'auto_settings_{scheme}_{tag}.png'), full_page=True)
     page.emulate_media(reduced_motion='reduce')
     assert review.locator('.switch-track').evaluate("e => getComputedStyle(e, '::before').transitionDuration") == '0s'
     page.emulate_media(reduced_motion='no-preference')
     page.reload(); page.wait_for_selector('#auto_review')
     assert review.get_attribute('aria-checked') == 'true'
+    assert approve.get_attribute('aria-checked') == 'true'
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
     for key in ('AUTOA', 'AUTOB'):
