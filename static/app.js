@@ -203,6 +203,8 @@ function perfReport(name, t0){
 
 // ---- 라우팅 ----
 async function route(){
+  stopLiveRefresh();
+  issueRenderSeq++;
   settingsSession = null;
   actionSession = null;
   disposeList();
@@ -232,6 +234,25 @@ async function route(){
   perfReport(name || 'issues', t0);
 }
 window.addEventListener('hashchange', route);
+// 화면 갱신을 직렬화하고 페이지 이동 후 타이머를 무효화한다.
+let liveTimer = null, liveEpoch = 0, issueRenderSeq = 0;
+function stopLiveRefresh(){ clearTimeout(liveTimer); liveEpoch++; }
+function followProgress(refresh, current){
+  stopLiveRefresh();
+  const epoch = liveEpoch;
+  const tick = async () => {
+    if(epoch !== liveEpoch || !current() || document.getElementById('shell').hidden) return;
+    try{ await refresh(); }catch(e){ /* 다음 갱신에서 재연결한다. */ }
+    if(epoch === liveEpoch && current()) liveTimer = setTimeout(tick, 5000);
+  };
+  liveTimer = setTimeout(tick, 5000);
+}
+const LIVE_MERGE = new Set(['병합 검사 중', '운영 반영 중', '재시작 확인 중', '복구 중', '복구 확인 중']);
+function activeProgress(i){ return i.review_running || i.job || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
+function progressHtml(i){
+  const text = i.job?.note || i.merge_state || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
+  return text ? `<div class="progress-note">${esc(text)}</div>` : '';
+}
 
 // ---- 목록 ----
 
@@ -334,7 +355,7 @@ function disposeList(){
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
     <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${typesHtml(i)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
-    <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
+    <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
     <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
 // Task는 부모 바로 아래에 들여써서 붙이고(부모가 아직 안 왔으면 오는 순간 끌어온다) 접고 펼 수 있다. 접힘은 부모 ref별로 기억한다.
@@ -378,7 +399,7 @@ async function renderList(){
       <label class="dim"><input type="checkbox" id="only-approved" ${st.approved ? 'checked' : ''}> 승인된 것만</label></span>
     </div>
     <div id="jobs-box"></div><div id="list-body"></div><div id="list-more" class="list-more"></div>`;
-  loadJobs();
+  loadJobs().catch(() => {});
   const save = (patch) => { localStorage.setItem('dev.list', JSON.stringify({ ...listState(), ...patch })); loadList(); };
   view.querySelector('#q').addEventListener('input', (e) => {
     clearTimeout(listSearchTimer);
@@ -414,6 +435,25 @@ async function renderList(){
   }, { rootMargin: '400px' });
   listObserver.observe(sentinel);
   await loadList();
+  const body = view.querySelector('#list-body');
+  followProgress(async () => {
+    const L = listLoad;
+    if(!L || L.busy || pendingActions.size) return;
+    const data = await api('GET', '/api/issues?' + new URLSearchParams({...L.qs, limit: Math.max(L.offset, LIST_PAGE), offset: 0}));
+    if(L !== listLoad || body !== view.querySelector('#list-body')) return;
+    await loadActionSettings(L.actions, data.issues);
+    if(L !== listLoad) return;
+    const tbody = body.querySelector('tbody');
+    if(tbody){
+      tbody.innerHTML = '';
+      data.issues.forEach(i => placeRow(tbody, i));
+      L.seen = new Set(data.issues.map(i => i.ref));
+      L.offset = data.issues.length; L.done = !data.has_more;
+    }else if(data.issues.length) await loadList();
+    await loadJobs();
+    if(L !== listLoad || body !== view.querySelector('#list-body')) return;
+    if(!data.issues.some(activeProgress) && !view.querySelector('.jobs')) stopLiveRefresh();
+  }, () => body === view.querySelector('#list-body'));
 }
 async function loadList(){
   const body = view.querySelector('#list-body'), more = view.querySelector('#list-more');
@@ -597,8 +637,10 @@ function queuedMsg(r, started){ return r && r.queued ? `대기열에 넣었어�
 async function loadJobs(){   // 목록 화면 위의 "Claude 대기 n건" — 펼치면 대기 목록과 취소
   const box = view.querySelector('#jobs-box');
   if(!box) return;
-  const { jobs } = await api('GET', '/api/jobs').catch(() => ({ jobs: [] }));
-  box.innerHTML = jobs.length ? `<details class="jobs"><summary><span class="status" style="--sc:var(--s-waiting)">Agent 대기 ${jobs.length}건</span></summary>
+  const { jobs } = await api('GET', '/api/jobs');
+  if(box !== view.querySelector('#jobs-box')) return;
+  const open = !!box.querySelector('details[open]');
+  box.innerHTML = jobs.length ? `<details class="jobs"${open ? ' open' : ''}><summary><span class="status" style="--sc:var(--s-waiting)">Agent 대기 ${jobs.length}건</span></summary>
     <ul>${jobs.map(j => `<li><span class="ref">${j.position}</span> <a href="#/issue/${esc(j.ref)}">${esc(j.ref)}</a> ${PROVIDER_NAME[j.provider] || 'Claude'} ${RUN_MODE[j.mode] || esc(j.mode)}
       ${j.note ? `<span class="dim">${esc(j.note)}</span>` : ''}<button class="ghost cancel-job" data-job="${j.id}">취소</button></li>`).join('')}</ul></details>` : '';
 }
@@ -617,7 +659,7 @@ function executeHtml(it, liveMode, liveProvider){
   const job = it.job && it.job.mode === 'execute' ? it.job : null;
   const provider = pendingExecutions.get(it.ref) || (running ? liveProvider || 'claude' : null);
   const off = !!provider || (x.blocked && !waitOnly(x.blocked));
-  const hint = running ? '구현하는 중이에요 — 끝나면 in_review로 올라와요.'
+  const hint = LIVE_MERGE.has(it.merge_state) ? `${esc(it.merge_state)} — 운영 반영 확인 후 In Review로 올라와요.` : running ? '구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.'
     : x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
     : it.review_busy ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : `격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}.`;
   const b = x.branch;
@@ -662,8 +704,9 @@ function stageHtml(it, liveMode, liveProvider){
   const a = it.approval, x = it.execute, ok = a && !a.stale && a.verdict !== 'reject';
   let msg = '';
   if(['done', 'closed'].includes(it.status)) return '';
-  if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 끝나면 결과 확인 단계로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
-  else if(it.job) msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — 앞의 일이 끝나면 차례로 시작해요.`;
+  if(LIVE_MERGE.has(it.merge_state)) msg = `${esc(it.merge_state)} — 운영 반영 확인이 끝나면 결과를 확인할 수 있어요.`;
+  else if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
+  else if(it.job) msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — ${esc(it.job.note || '앞의 일이 끝나면 차례로 시작해요.')}`;
   else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
   else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
   else if(!it.plan) msg = '계획서가 없어요 → Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
@@ -693,8 +736,18 @@ function taskActionsHtml(it, ch){
 }
 // 갱신 중에도 아직 응답하지 않은 검토 요청의 provider를 유지한다.
 const pendingReviews = new Map();
-async function renderIssue(ref){
+async function renderIssue(ref, background = false){
+  const seq = ++issueRenderSeq, hash = location.hash;
   const [it, { runs }, catalog] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), api('GET', '/api/issue-types?include_inactive=true'), agentsById.size ? null : loadAgents()]);
+  if(seq !== issueRenderSeq || hash !== location.hash) return;
+  if(background && (pendingActions.size || pendingTasks.size || pendingExecutions.size || pendingReviews.size || document.activeElement?.matches('input, select'))) return;
+  if(background && [...view.querySelectorAll('textarea, .edit-title')].some(el => el.id !== 'comment' && el.offsetParent)) return;
+  if(background && [...view.querySelectorAll('#labels, #issue-type-editor input')].some(el => el.type === 'checkbox' ? el.checked !== el.defaultChecked : el.value !== el.defaultValue)) return;
+  const previousEditor = view.querySelector('#issue-type-editor');
+  if(background && previousEditor && JSON.stringify(selectedTypes(previousEditor)) !== previousEditor.dataset.initialTypes) return;
+  const comment = background ? view.querySelector('#comment')?.value : null;
+  const focused = background && document.activeElement?.id === 'comment';
+  const selection = focused ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   const agentOpts = ['<option value="">(없음)</option>'].concat([...agentsById.values()].map(a =>
     `<option value="${a.id}"${a.id === it.assignee_agent_id ? ' selected' : ''}>${esc(a.name)}</option>`)).join('');
   const liveRun = runs.find(r => r.status === 'running') || {};
@@ -718,7 +771,7 @@ async function renderIssue(ref){
         ${it.parent_ref ? '' : resultHtml(it)}
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues tasks">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
-            <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}</td><td>${statusHtml(ch.status)}${ch.merge_state ? ` <span class="dim hide-m">${esc(ch.merge_state)}</span>` : ''}${ch.claimed_by ? ` <span class="dim hide-m">${esc(actorName(ch.claimed_by))}</span>` : ''}</td>
+            <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}</td><td>${statusHtml(ch.status)}${progressHtml(ch)}${ch.claimed_by ? ` <span class="dim hide-m">${esc(actorName(ch.claimed_by))}</span>` : ''}</td>
             <td>${taskActionsHtml(it, ch)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
@@ -744,6 +797,7 @@ async function renderIssue(ref){
     </div>`;
   const editor = view.querySelector('#issue-type-editor');
   bindTypePicker(editor);
+  editor.dataset.initialTypes = JSON.stringify(selectedTypes(editor));
   editor.querySelector('#save-types').onclick = async () => {
     const controls = [...editor.querySelectorAll('button')];
     if(controls.some(b => b.disabled)) return;
@@ -905,7 +959,10 @@ ${QUEUE_LINE}`)) return;
       }
     });
   }
-  if(it.review_running || it.job) setTimeout(() => { if(location.hash === `#/issue/${it.ref}`) reload(); }, 15000);
+  if(comment != null && $('comment')) $('comment').value = comment;
+  if(focused && $('comment')){ $('comment').focus({preventScroll:true}); $('comment').setSelectionRange(...selection); }
+  if(activeProgress(it) || it.children.some(activeProgress)) followProgress(() => renderIssue(ref, true), () => location.hash === hash);
+  else stopLiveRefresh();
   $('delete').addEventListener('click', async () => {
     if(!confirm(`${it.ref}을(를) 지울까요? 계획서·활동 기록도 같이 지워져요.`)) return;
     await api('DELETE', `/api/issues/${R}`); location.hash = '#/';

@@ -427,3 +427,5 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
   #list-body table.issues .ref{ white-space:normal; }
   #list-body table.issues tr.child td.ref{ padding-left:var(--sp-2); }
 }
+/* 진행 단계와 대기 사유는 모바일에서도 텍스트로 표시한다. */
+.progress-note { color: var(--dim); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; white-space: normal; margin-top: 4px; }
