@@ -98,4 +98,35 @@ with db.connect() as c:
     assert c.execute('SELECT parent_id FROM issues WHERE id=2').fetchone()[0] is None
     assert not c.execute('SELECT * FROM issue_deps').fetchall()
 db.config.DB_PATH = original_path
+
+# Auto 계획 승인 직전 판에서 실제 설정·위임·참조와 실행 게이트를 보존한다.
+db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'auto-legacy.db'
+with sqlite3.connect(db.config.DB_PATH) as c:
+    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+        c.executescript(sql + f'PRAGMA user_version={version};')
+    c.execute("INSERT INTO projects(key,name,created_at) VALUES('AUTO','자동',?)", (now,))
+    c.execute("INSERT INTO issues(project_id,number,title,reporter,created_at,updated_at) VALUES(1,1,'이슈','human:admin',?,?)", (now, now))
+    c.execute("INSERT INTO project_auto_settings VALUES(1,1,1,0,'[\"codex\",\"claude\"]','human:admin',?)", (now,))
+    c.execute("INSERT INTO project_auto_settings_events VALUES(7,1,'human:admin','{}','{}',?)", (now,))
+    c.execute("INSERT INTO jobs(issue_id,mode,status,actor,created_at,source,delegation_id) VALUES(1,'review','cancelled','human:auto/delegation/7',?,'auto',7)", (now,))
+    settings_before = c.execute('SELECT * FROM project_auto_settings').fetchall()
+    event_before = c.execute('SELECT * FROM project_auto_settings_events').fetchall()
+    job_before = c.execute('SELECT * FROM jobs').fetchall()
+    trigger_before = c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='auto_run_gate'").fetchone()[0]
+assert db.init() == len(db.MIGRATIONS)
+assert db.init() == len(db.MIGRATIONS)
+with db.connect() as c:
+    assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings')] == settings_before
+    assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings_events')] == [r + (0,) for r in event_before]
+    assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == job_before
+    assert c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='auto_run_gate'").fetchone()[0] == trigger_before
+    assert c.execute('PRAGMA foreign_key_check').fetchall() == []
+    c.execute('UPDATE project_auto_settings SET auto_approve=1 WHERE project_id=1')
+assert rejected('UPDATE project_auto_settings SET auto_approve=2 WHERE project_id=1')
+with db.connect() as c:
+    c.execute('DELETE FROM jobs WHERE issue_id=1')
+    c.execute('DELETE FROM issues WHERE id=1')
+    c.execute('DELETE FROM projects WHERE id=1')
+    assert not c.execute('SELECT * FROM project_auto_settings_events').fetchall()
+db.config.DB_PATH = original_path
 print("OK")
