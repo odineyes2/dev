@@ -229,6 +229,27 @@ MIGRATIONS = [
     CREATE INDEX issue_type_links_type ON issue_type_links(type_id,issue_id);
     """,
 
+    # 프로젝트별 자동화 위임을 저장하고 변경 이력을 별도로 보존한다.
+    """
+    CREATE TABLE project_auto_settings (
+        project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        auto_review INTEGER NOT NULL DEFAULT 0 CHECK(auto_review IN (0,1)),
+        auto_execute INTEGER NOT NULL DEFAULT 0 CHECK(auto_execute IN (0,1)),
+        auto_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_approve=0),
+        provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]'
+            CHECK(provider_order_json IN ('["claude","codex"]','["codex","claude"]')),
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE project_auto_settings_events (
+        id INTEGER PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        actor TEXT NOT NULL,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    """,
 ]
 
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.
