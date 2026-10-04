@@ -214,12 +214,6 @@ async function route(){
   }
   const [name, arg] = h.split('/');
   const settingsTab = name === 'settings' ? (arg || 'auto') : null;
-  document.getElementById('settings-nav').hidden = !settingsTab;
-  document.querySelectorAll('[data-settings]').forEach(a => {
-    const active = a.dataset.settings === settingsTab;
-    a.classList.toggle('active', active);
-    if(active) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
-  });
   const t0 = performance.now();
   perf.fetchMs = 0; perf.server = '';
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === (name || 'issues')));
@@ -1155,12 +1149,22 @@ boot();
 
 // ---- 프로젝트별 자동화 설정 — 이전 화면의 응답은 새 화면에 반영하지 않는다. ----
 let settingsSession = null;
+// 공통 제목과 서브탭을 설정 카드 안에 함께 그린다.
+function settingsHeader(tab){
+  const header = document.getElementById('settings-header').content.cloneNode(true);
+  header.querySelectorAll('[data-settings]').forEach(a => {
+    if(a.dataset.settings === tab){ a.classList.add('active'); a.setAttribute('aria-current', 'page'); }
+  });
+  const container = document.createElement('div');
+  container.append(header);
+  return container.innerHTML;
+}
 async function renderSettings(){
   const session = {};
   settingsSession = session;
   const key = projectSel.value;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = `<section class="panel auto-settings"><h2>Auto 위임 설정</h2><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
+  view.innerHTML = `<section class="panel auto-settings">${settingsHeader('auto')}<h3>Auto 위임 설정</h3><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
   const body = view.querySelector('#settings-body');
   if(!key){ body.innerHTML = '<div class="empty">위의 프로젝트 필터에서 설정할 프로젝트를 선택해 주세요.</div>'; return; }
   body.innerHTML = '<div class="settings-skeleton" aria-label="설정을 불러오는 중" aria-busy="true"></div>';
@@ -1223,18 +1227,18 @@ async function renderTypes(){
   const session = {};
   settingsSession = session;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = '<section class="panel type-management"><h2>이슈 종류 관리</h2><p class="dim">모든 프로젝트에서 함께 사용해요.</p><div class="settings-skeleton" aria-label="종류를 불러오는 중" aria-busy="true"></div></section>';
+  view.innerHTML = `<section class="panel type-management">${settingsHeader('types')}<h3>이슈 종류 관리</h3><p class="dim">모든 프로젝트에서 함께 사용해요.</p><div class="settings-skeleton" aria-label="종류를 불러오는 중" aria-busy="true"></div></section>`;
   let types;
   try{ ({types} = await api('GET', '/api/issue-types?include_inactive=true', undefined, current)); }
   catch(e){
     if(current()){
-      view.innerHTML = `<section class="panel type-management"><h2>이슈 종류 관리</h2><p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="types-retry" type="button">다시 불러오기</button></section>`;
+      view.innerHTML = `<section class="panel type-management">${settingsHeader('types')}<h3>이슈 종류 관리</h3><p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="types-retry" type="button">다시 불러오기</button></section>`;
       view.querySelector('#types-retry').onclick = renderTypes;
     }
     return;
   }
   if(!current()) return;
-  view.innerHTML = `<section class="panel type-management"><h2>이슈 종류 관리</h2><p class="dim">모든 프로젝트에서 함께 사용해요. 비활성화해도 기존 Issue의 연결은 보존돼요.</p><form id="type-create"><label>새 종류 이름<input name="name" maxlength="100" required></label><button type="submit">추가</button></form><div>${types.map(t => `<form class="type-row" data-id="${t.id}"><label>종류 이름<input name="name" aria-label="${esc(t.name)} 이름" maxlength="100" required value="${esc(t.name)}"></label><button type="submit">이름 저장</button><button type="button" class="type-active auto-switch" role="switch" aria-label="${esc(t.name)} 활성" aria-checked="${t.active}"><span class="switch-track" aria-hidden="true"></span><span>${t.active ? '활성' : '비활성'}</span></button></form>`).join('')}</div><p id="type-status" role="status"></p></section>`;
+  view.innerHTML = `<section class="panel type-management">${settingsHeader('types')}<h3>이슈 종류 관리</h3><p class="dim">모든 프로젝트에서 함께 사용해요. 비활성화해도 기존 Issue의 연결은 보존돼요.</p><form id="type-create"><label>새 종류 이름<input name="name" maxlength="100" required></label><button type="submit">추가</button></form><div>${types.map(t => `<form class="type-row" data-id="${t.id}"><label>종류 이름<input name="name" aria-label="${esc(t.name)} 이름" maxlength="100" required value="${esc(t.name)}"></label><button type="submit">이름 저장</button><button type="button" class="type-active auto-switch" role="switch" aria-label="${esc(t.name)} 활성" aria-checked="${t.active}"><span class="switch-track" aria-hidden="true"></span><span>${t.active ? '활성' : '비활성'}</span></button></form>`).join('')}</div><p id="type-status" role="status"></p></section>`;
   const root = view.querySelector('.type-management');
   async function save(form, method, url, data){
     const controls = [...form.querySelectorAll('input,button')];
