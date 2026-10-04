@@ -250,6 +250,14 @@ MIGRATIONS = [
         created_at TEXT NOT NULL
     );
     """,
+    # 기존 공식 문서 요청만 문서 생성 종류에 연결한다. 기존 선택과 스냅샷은 보존한다.
+    """
+    INSERT OR IGNORE INTO issue_type_links(issue_id,type_id,source,actor,created_at)
+        SELECT r.issue_id,2,
+            CASE WHEN i.reporter LIKE 'human:%' THEN 'human' ELSE 'agent' END,
+            i.reporter,r.created_at
+        FROM project_doc_requests r JOIN issues i ON i.id=r.issue_id;
+    """,
 ]
 
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.
