@@ -271,6 +271,7 @@ def _finish(actor, record, status, note):
         issues._set_status(c, actor, row, 'in_review' if status == 'merged' else status,
                            record['note'] + '\n\n🔁 ' + note if status == 'merged' else '🔀 자동 병합: ' + note)
         c.execute('UPDATE execution_completion SET phase=?,updated_at=? WHERE run_id=?', (phase, db.now_iso(), record['run_id']))
+        c.execute("UPDATE task_execution_results SET state=?,commit_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='commit'),status_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status') WHERE run_id=?", ('merged' if status == 'merged' else 'blocked',row['id'],row['id'],record['run_id']))
     if status == 'merged':
         _publish(actor, record)
     return status

@@ -106,7 +106,7 @@ def wait_idle():
     idle = 0
     for _ in range(120):
         time.sleep(0.2)
-        idle = idle + 1 if not jobs.busy() else 0
+        idle = idle + 1 if not jobs.busy() and not any(not j['note'] for j in jobs.list_jobs()) else 0
         if idle >= 2:
             break
 

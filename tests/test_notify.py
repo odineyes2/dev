@@ -2,12 +2,13 @@
 - 토픽이 없으면 보내지 않는다. 검토 끝(계획서)·실행 끝·실패는 run_headless에서, on_hold·in_review는 에이전트가 바꿀 때만.
 - 헤드리스 실행 중의 in_review는 건너뛴다(실행 끝 알림과 겹침). ntfy가 예외를 던져도 본 작업은 정상 끝난다."""
 import os, sys, tempfile, threading, time
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ["DEV_DATA_DIR"] = tempfile.mkdtemp()
 os.environ["NTFY_TOPIC"] = "test-topic"
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
-import config, db, issues, notify, review  # noqa: E402
+import config, db, issues, notify, review, execute  # noqa: E402
 
 sent = []
 notify._post = sent.append
@@ -33,7 +34,9 @@ def wait(n):
 
 def run(ref, label, code):
     log_path, run_id = review.begin(human, issues.get_issue(ref), "review" if label == "검토" else "execute")
-    review.run_headless(human, ref, log_path, run_id, [sys.executable, "-c", f"import sys; sys.exit({code})"], None, None, 30, label)
+    # 알림 단위 검사는 Git 완료 검증과 분리한다. 실제 완료 경계는 test_orchestrate에서 검사한다.
+    with patch.object(execute, "register_completion"):
+        review.run_headless(human, ref, log_path, run_id, [sys.executable, "-c", f"import sys; sys.exit({code})"], None, None, 30, label)
 
 
 run("NS-1", "검토", 0)

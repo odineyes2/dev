@@ -203,6 +203,7 @@ def register_completion(actor, ref, cwd, run_id, note):
         c.execute("UPDATE runs SET status='ok',ended_at=? WHERE id=?", (db.now_iso(), run_id))
         if not cfg.get('auto_merge'):
             issues._set_status(c, actor, row, 'in_review', note)
+            c.execute("UPDATE task_execution_results SET state='unmerged',commit_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='commit'),status_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status') WHERE run_id=?", (row['id'],row['id'],run_id))
 
 
 _branch_cache = {}   # (repo, branch) → ((브랜치 끝, base 끝), 정보) — 끝 커밋이 같으면 커밋 수·변경 요약도 같다(DEV-42-3)
@@ -325,6 +326,8 @@ def start(actor: dict, ref: str, provider: str | None = None) -> dict:
     log_path, run_id = review.begin(actor, issue, "execute", provider)
     with db.connect() as c:
         c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (_git(worktree, 'rev-parse', 'HEAD'), run_id))
+        c.execute('INSERT INTO task_execution_results(run_id,plan_version) SELECT id,? FROM runs WHERE id=? AND issue_id=?',
+                  (parent['approval']['plan_version'], run_id, issue['id']))
     name = "Codex" if provider == "codex" else "Claude"
     limit = f"시간 제한 {int(TIMEOUT_SEC // 60)}분, 비용 상한 없음" if provider == "codex" else f"비용 상한 ${BUDGET_USD:g}"
     review.launch(actor, ref, run_id, provider,

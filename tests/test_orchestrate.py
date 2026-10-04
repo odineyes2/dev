@@ -263,6 +263,8 @@ def ready(provider='claude', auto=True, restart=False):
     if restart:
         cfg['restart_when'] = ['feature-*']
         orchestrate.SETTINGS.write_text(json.dumps({'FLOW': cfg}))
+    with db.connect() as c:
+        c.execute('INSERT INTO task_execution_results(run_id,plan_version) VALUES(?,1)', (rid,))
     execute.register_completion(me, ref, wt, rid, 'check feature')
     return ref, rid
 
@@ -286,6 +288,10 @@ with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(not
                     assert orchestrate.handle(me, ref) == 'merged'
                 assert orchestrate.completion(ref)['phase'] == 'complete'
                 assert issues.get_issue(ref)['status'] == 'in_review'
+                with db.connect() as c:
+                    receipt = c.execute('SELECT * FROM task_execution_results WHERE run_id=?', (rid,)).fetchone()
+                    assert receipt['state'] == 'merged'
+                    assert receipt['status_event_id'] == c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status'", (issues.get_issue(ref)['id'],)).fetchone()[0]
                 assert orchestrate.handle(me, ref) is None
                 orchestrate.recover()
                 assert sent.call_count == before_sent + 1

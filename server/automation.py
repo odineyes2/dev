@@ -63,11 +63,11 @@ def plan_structure_error(body, root):
 
 def _approve_plans(c, setting):
     """sync의 쓰기 잠금에서 위임·최신 판·검토 결과를 다시 확인한다."""
-    if not setting['auto_approve']:
+    if not setting['auto_plan_approve']:
         return
     delegation = c.execute("""SELECT * FROM project_auto_settings_events WHERE project_id=?
-        AND json_extract(before_json,'$.auto_approve')=0
-        AND json_extract(after_json,'$.auto_approve')=1 ORDER BY id DESC LIMIT 1""",
+        AND json_extract(before_json,'$.auto_plan_approve')=0
+        AND json_extract(after_json,'$.auto_plan_approve')=1 ORDER BY id DESC LIMIT 1""",
         (setting['project_id'],)).fetchone()
     if not delegation or not delegation['actor'].startswith('human:') or delegation['actor'].startswith('human:auto/'):
         return
@@ -94,14 +94,74 @@ def _approve_plans(c, setting):
         error = plan_structure_error(plan['body'], project['local_path'])
         if error:
             if not c.execute("""SELECT 1 FROM events WHERE issue_id=? AND kind='comment'
-                AND json_extract(data_json,'$.auto_approve_blocked')=1
+                AND json_extract(data_json,'$.auto_plan_approve_blocked')=1
                 AND json_extract(data_json,'$.plan_version')=?
                 AND json_extract(data_json,'$.delegation_id')=?""", (row['id'], plan['version'], delegation['id'])).fetchone():
                 issues._event(c, row['id'], actor, 'comment', 'Auto 계획 승인을 보류했어요 — ' + error,
-                              {**provenance, 'auto_approve_blocked': True})
+                              {**provenance, 'auto_plan_approve_blocked': True})
             continue
         issues._record_plan_decision(c, row, plan['version'], 'approve',
             'Auto 계획 승인: 구조 검사 후 기계적으로 승인했어요. 의미적·기술적 오류 검출은 보장하지 않아요.', actor, provenance)
+
+
+def _approve_tasks(c, setting):
+    """쓰기 잠금 안에서 관리자 위임과 단일 Task 결과를 재검증한다."""
+    import orchestrate
+    if not setting['auto_approve']:
+        return
+    delegation = c.execute("""SELECT * FROM project_auto_settings_events WHERE project_id=?
+        AND json_extract(before_json,'$.auto_approve')=0
+        AND json_extract(after_json,'$.auto_approve')=1 ORDER BY id DESC LIMIT 1""",
+        (setting['project_id'],)).fetchone()
+    if not delegation or not delegation['actor'].startswith('human:') or delegation['actor'].startswith('human:auto/'):
+        return
+    rows = c.execute("SELECT id FROM issues WHERE project_id=? AND parent_id IS NOT NULL AND status='in_review'", (setting['project_id'],)).fetchall()
+    for item in rows:
+        row = issues._find(c, item['id'])
+        if 'goal' in json.loads(row['labels_json']) or row['claimed_by']:
+            continue
+        parent = issues._find(c, row['parent_id'])
+        if parent['project_id'] != row['project_id']:
+            continue
+        plan = c.execute('SELECT * FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1', (parent['id'],)).fetchone()
+        decision = c.execute("SELECT * FROM decisions WHERE issue_id=? AND gate='plan' ORDER BY id DESC LIMIT 1", (parent['id'],)).fetchone()
+        if (not plan or not decision or decision['plan_version'] != plan['version']
+            or decision['verdict'] not in ('approve','approve_notes')
+            or not decision['actor'].startswith('human:') or (decision['actor'].startswith('human:auto/') and not decision['actor'].startswith('human:auto/delegation/'))):
+            continue
+        run = c.execute('SELECT * FROM runs WHERE issue_id=? ORDER BY id DESC LIMIT 1', (row['id'],)).fetchone()
+        if not run or run['mode'] != 'execute' or run['status'] != 'ok' or not run['ended_at']:
+            continue
+        result = c.execute('SELECT * FROM task_execution_results WHERE run_id=?', (run['id'],)).fetchone()
+        status = c.execute("SELECT * FROM events WHERE issue_id=? AND kind='status' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
+        commit = c.execute("SELECT id FROM events WHERE issue_id=? AND kind='commit' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
+        start = c.execute("SELECT * FROM events WHERE issue_id=? AND kind='status' AND json_extract(data_json,'$.run_id')=? ORDER BY id DESC LIMIT 1", (row['id'], run['id'])).fetchone()
+        if not start or not status or status['id'] <= start['id'] or json.loads(status['data_json']).get('to') != 'in_review':
+            continue
+        if c.execute("SELECT 1 FROM events WHERE issue_id=? AND kind='status' AND id>? AND id<?", (row['id'], start['id'], status['id'])).fetchone():
+            continue
+        if c.execute("SELECT 1 FROM events WHERE issue_id=? AND id>? AND (kind='plan' OR json_extract(data_json,'$.decision') IS NOT NULL)", (parent['id'], start['id'])).fetchone():
+            continue
+        if result:
+            if (result['state'] not in ('merged','unmerged') or result['plan_version'] != plan['version']
+                or not status or result['status_event_id'] != status['id']
+                or (commit['id'] if commit else None) != result['commit_event_id']):
+                continue
+        else:
+            # 이전 실행도 같은 실행 구간의 상태·승인·배포 성공 기록이 필요하다.
+            if decision['created_at'] > run['started_at']:
+                continue
+            if orchestrate.settings(row['project_key']).get('auto_merge'):
+                deployed = c.execute("SELECT * FROM events WHERE issue_id=? AND kind='comment' AND id>? ORDER BY id DESC LIMIT 1", (row['id'], status['id'])).fetchone()
+                if (not commit or commit['id'] <= start['id'] or not deployed
+                    or deployed['actor'] != run['actor'] or not deployed['body'].startswith('🔁')
+                    or deployed['created_at'] < run['ended_at']):
+                    continue
+        if orchestrate.settings(row['project_key']).get('auto_merge') and result and (result['state'] != 'merged' or not commit):
+            continue
+        provenance = {'source':'auto','delegation_id':delegation['id'],'delegated_by':delegation['actor'],
+                      'run_id':run['id'],'plan_version':plan['version'], 'commit_event_id':commit['id'] if commit else None}
+        issues._complete_auto_task(c, row, provenance)
 
 
 def provider_available(provider):
@@ -173,12 +233,13 @@ def sync():
     """jobs의 잠금 아래 등록·OFF 취소를 직렬화하고 재시작에도 중복을 막는다."""
     import jobs
     import project_docs
-    # Task를 확정한 뒤 기존 대기열 경로가 별도 연결에서도 승인과 Task를 읽게 한다.
+    # 결과 승인을 커밋한 뒤 기존 대기열 경로가 선행 Task 완료를 읽게 한다.
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         settings = c.execute('SELECT s.* FROM project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE p.archived=0 ORDER BY p.id').fetchall()
         for setting in settings:
             _approve_plans(c, setting)
+            _approve_tasks(c, setting)
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         for job in jobs._rows(c, "j.status='queued' AND j.source='auto'"):

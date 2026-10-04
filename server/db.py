@@ -341,6 +341,28 @@ MIGRATIONS = [
         );
     END;
     """,
+    # 기존 Plan 승인 위임을 Task 결과 승인으로 묵시 전환하지 않는다.
+    """
+    INSERT INTO project_auto_settings_events(project_id,actor,before_json,after_json,created_at)
+    SELECT project_id,'system:migration/task-result-approval',
+      json_object('auto_approve',json('true'),'auto_review',auto_review,'auto_execute',auto_execute,'provider_order',json(provider_order_json)),
+      json_object('auto_approve',json('false'),'auto_review',auto_review,'auto_execute',auto_execute,'provider_order',json(provider_order_json),'reason','Plan approval delegation reset for Task result approval'),
+      strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    FROM project_auto_settings WHERE auto_approve=1;
+    UPDATE project_auto_settings SET auto_approve=0 WHERE auto_approve=1;
+    CREATE TABLE task_execution_results (
+      run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+      plan_version INTEGER NOT NULL,
+      state TEXT NOT NULL DEFAULT 'processing',
+      commit_event_id INTEGER REFERENCES events(id) ON DELETE SET NULL,
+      status_event_id INTEGER REFERENCES events(id) ON DELETE SET NULL
+    );
+    """,
+
+    # 계획 승인과 Task 결과 승인은 각각 별도 관리자 위임으로 저장한다.
+    """
+    ALTER TABLE project_auto_settings ADD COLUMN auto_plan_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_plan_approve IN (0,1));
+    """,
 
     # 구현 완료와 후처리의 경계를 영속화한다.
     """

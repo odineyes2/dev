@@ -632,6 +632,21 @@ def set_status(actor, ref, status, note="") -> dict:
         return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
 
 
+def _complete_auto_task(c, row, provenance):
+    """서버 내부 전용: 후손은 확인만 하고 선택 Task 하나만 완료한다."""
+    if row['status'] != 'in_review' or not row['parent_id'] or 'goal' in json.loads(row['labels_json']):
+        return False
+    pending = c.execute("""WITH RECURSIVE t(id,status) AS (
+        SELECT id,status FROM issues WHERE parent_id=?
+        UNION SELECT i.id,i.status FROM issues i JOIN t ON i.parent_id=t.id)
+        SELECT 1 FROM t WHERE status NOT IN ('done','closed') LIMIT 1""", (row['id'],)).fetchone()
+    if pending:
+        return False
+    actor = {'kind':'human','name':'auto/delegation/' + str(provenance['delegation_id'])}
+    _set_status(c, actor, row, 'done', 'Auto Task 결과를 승인하여 완료했어요.', provenance)
+    return True
+
+
 def complete_tree(actor, ref, note="") -> list[dict]:
     """묶음 전체 완료(DEV-44) — ref의 최상위 이슈와 그 아래 모든 이슈를 한 트랜잭션으로 done.
     이미 done/closed인 것은 그대로 둔다(거절해서 닫은 Task를 덮지 않게). Claude 실행 중인 이슈가 있으면 아무것도 바꾸지 않는다.

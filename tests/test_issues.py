@@ -537,4 +537,24 @@ async def check_classification_mcp():
             except ToolError:
                 pass
 asyncio.run(check_classification_mcp())
+
+# 내부 결과 승인은 선택 Task 하나만 완료하며 미완료 후손은 차단한다.
+admin_actor = {'kind':'human','name':'admin'}
+root = issues.create_issue(admin_actor, 'DEV', '단일 결과 승인 부모')
+selected = issues.create_issue(admin_actor, 'DEV', '단일 결과 Task', parent=root['ref'])
+sibling = issues.create_issue(admin_actor, 'DEV', '보존하는 형제', parent=root['ref'])
+child = issues.create_issue(admin_actor, 'DEV', '미완료 후손', parent=selected['ref'])
+issues.set_status(admin_actor, selected['ref'], 'in_review')
+provenance = {'source':'auto','delegation_id':1,'delegated_by':'human:admin','run_id':1,'plan_version':1}
+with db.connect() as conn:
+    conn.execute('BEGIN IMMEDIATE')
+    assert not issues._complete_auto_task(conn, issues._find(conn,selected['id']), provenance)
+issues.set_status(admin_actor, child['ref'], 'done')
+with db.connect() as conn:
+    conn.execute('BEGIN IMMEDIATE')
+    assert issues._complete_auto_task(conn, issues._find(conn,selected['id']), provenance)
+    assert not issues._complete_auto_task(conn, issues._find(conn,selected['id']), provenance)
+assert issues.get_issue(selected['ref'])['status'] == 'done'
+assert issues.get_issue(root['ref'])['status'] == 'backlog'
+assert issues.get_issue(sibling['ref'])['status'] == 'backlog'
 print("OK")

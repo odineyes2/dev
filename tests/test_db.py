@@ -117,7 +117,7 @@ with sqlite3.connect(db.config.DB_PATH) as c:
 assert db.init() == len(db.MIGRATIONS)
 assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
-    assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings')] == settings_before
+    assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings')] == [r + (0,) for r in settings_before]
     assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings_events')] == [r + (0,) for r in event_before]
     assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == [r + (None, None) for r in job_before]
     assert c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='auto_run_gate'").fetchone()[0] == trigger_before
