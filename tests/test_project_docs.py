@@ -113,7 +113,11 @@ with db.connect() as c:
 import sqlite3
 with patch.object(db.config, 'DB_PATH', Path(tempfile.mkdtemp()) / 'legacy.db'):
     with sqlite3.connect(db.config.DB_PATH) as c:
-        for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+        # 문서 요청 이관 직전 스키마를 구성한다. 이후 추가된 마이그레이션과 독립적이다.
+        legacy_version = next(i for i, sql in enumerate(db.MIGRATIONS)
+                              if 'INSERT OR IGNORE INTO issue_type_links' in sql
+                              and 'FROM project_doc_requests' in sql)
+        for version, sql in enumerate(db.MIGRATIONS[:legacy_version], 1):
             c.executescript(sql + f'PRAGMA user_version={version};')
     issues.create_project(me, 'OLD', '기존', '', '/old', '현재 설명')
     old = issues.create_issue(me, 'OLD', '기존 요청', type_ids=[1])
