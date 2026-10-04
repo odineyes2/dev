@@ -1092,6 +1092,70 @@ def check_review_buttons(page, ref, shots):
     page.reload(); page.wait_for_selector('#ask-review')
 
 
+def check_progress_refresh(page, shots):
+    """가짜 단계 응답으로 후처리 갱신과 초안 보존을 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    page.request.post(BASE + '/api/projects', data={'key': 'LIVE', 'name': '진행 검사'}, headers=headers)
+    parent = page.request.post(BASE + '/api/issues', data={'project': 'LIVE', 'title': '진행 부모'}, headers=headers).json()['ref']
+    ref = page.request.post(BASE + '/api/issues', data={'project': 'LIVE', 'title': '진행 Task', 'parent': parent}, headers=headers).json()['ref']
+    state = {'phase': '병합 검사 중', 'status': 'in_progress', 'queued': True}
+    def mock(route):
+        url = route.request.url
+        response = page.request.get(url).json()
+        def patch(i):
+            if i['ref'] == ref:
+                i.update(status=state['status'], merge_state=state['phase'])
+            return i
+        if '/api/jobs' in url:
+            response = {'jobs': [{'id': 99999, 'ref': ref, 'position': 1, 'mode': 'execute', 'provider': 'codex', 'note': '앞 Task의 병합·운영 반영 완료를 기다려요.'}] if state['queued'] else []}
+        elif 'issues?' in url:
+            response['issues'] = [patch(i) for i in response['issues']]
+        else:
+            patch(response)
+            response['children'] = [patch(i) for i in response['children']]
+        route.fulfill(json=response)
+    patterns = [f'**/api/issues/{ref}', f'**/api/issues/{parent}', '**/api/issues?*', '**/api/jobs']
+    for pattern in patterns:
+        page.route(pattern, mock)
+    try:
+        for scheme in ('light', 'dark'):
+            for width in (1300, 390):
+                state.update(phase='병합 검사 중', status='in_progress')
+                page.set_viewport_size({'width': width, 'height': 850})
+                page.emulate_media(color_scheme=scheme, reduced_motion='reduce')
+                page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
+                page.goto(BASE + f'/#/issue/{ref}')
+                page.reload()
+                page.wait_for_selector('#stage')
+                page.fill('#comment', '갱신 중인 댓글 초안')
+                state['phase'] = '재시작 확인 중'
+                page.wait_for_function("document.querySelector('#stage')?.textContent.includes('재시작 확인 중')", timeout=12000)
+                assert page.input_value('#comment') == '갱신 중인 댓글 초안'
+                assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+                page.screenshot(path=str(shots / f'progress_{scheme}_{width}.png'), full_page=True)
+                state.update(phase='병합됨', status='in_review')
+                page.wait_for_selector('#result-actions', timeout=12000)
+        state.update(phase='운영 반영 중', status='in_progress')
+        page.goto(BASE + f'/#/issue/{parent}')
+        page.wait_for_function("document.querySelector('.progress-note')?.textContent.includes('운영 반영 중')")
+        state.update(phase='병합됨', status='in_review')
+        page.wait_for_function("document.querySelector('.progress-note')?.textContent.includes('병합됨')", timeout=12000)
+        state.update(phase='병합 검사 중', status='in_progress')
+        page.evaluate("() => {localStorage.setItem('dev.project','LIVE');projectSel.value='LIVE';localStorage.setItem('dev.list',JSON.stringify({statuses:[],closed:false,q:''}))}")
+        page.goto(BASE + '/#/')
+        page.wait_for_selector('.jobs summary'); page.click('.jobs summary')
+        assert '병합·운영 반영 완료' in page.inner_text('.jobs')
+        state.update(phase='병합됨', status='in_review', queued=False)
+        page.wait_for_function("!document.querySelector('.jobs') && [...document.querySelectorAll('.progress-note')].some(el => el.textContent.includes('병합됨'))", timeout=12000)
+    finally:
+        for pattern in patterns:
+            page.unroute(pattern, mock)
+        page.goto(BASE + '/#/agents')
+        page.wait_for_selector('#a-name')
+        page.request.delete(BASE + f'/api/issues/{ref}', headers=headers)
+        page.request.delete(BASE + f'/api/issues/{parent}', headers=headers)
+
+
 def check_rollback_waiting(page, shots):
     """거절 요청이 On Hold를 반환하면 상세와 보류 상태를 유지한다."""
     for scheme in ('light', 'dark'):
@@ -1459,6 +1523,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--progress-only' in sys.argv:
+            check_progress_refresh(page, shots)
+            assert not errs, errs
+            print('OK: progress refresh'); sys.exit(0)
         if '--board-actions-only' in sys.argv:
             check_board_actions(page, shots, answers, asked)
             assert not errs, errs
@@ -2010,6 +2078,7 @@ try:
 
         check_issue_types(page, shots)
 
+        check_progress_refresh(page, shots)
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert page.locator('#open-jupyter').get_attribute('hidden') is not None
