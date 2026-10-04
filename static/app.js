@@ -601,7 +601,7 @@ async function renderIssue(ref){
   const liveMode = liveRun.mode;
   const reviewProvider = pendingReviews.get(ref) || (it.review_running && liveMode === 'review' ? liveRun.provider : null);
   const reviewBusy = it.review_running || pendingReviews.has(ref);
-  const reviewButton = (provider, id) => `<button id="${id}"${reviewBusy ? ' disabled' : ''}${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${reviewProvider === provider ? '검토 중…' : `${PROVIDER_NAME[provider]}에게 검토 맡기기`}</button>`;
+  const reviewButton = (provider, id) => `<button id="${id}"${reviewBusy ? ' disabled' : ''}${it.execute ? ' hidden' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${reviewProvider === provider ? '검토 중…' : `${PROVIDER_NAME[provider]}에게 검토 맡기기`}</button>`;
   view.innerHTML = `
     <div class="detail">
       <div>
@@ -636,7 +636,7 @@ async function renderIssue(ref){
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Agent</span>
           ${it.job && it.job.mode === 'review' ? jobHtml(it.job) : `${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}
-          <div class="dim hint"${it.execute || (it.approval && !it.approval.stale && it.approval.verdict !== 'reject') ? ' hidden' : ''}>${it.review_busy && !it.review_running ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>`}
+          <div class="dim hint"${it.execute ? ' hidden' : ''}>${it.review_busy && !it.review_running ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>`}
           ${it.execute ? executeHtml(it, liveMode, liveRun.provider) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>

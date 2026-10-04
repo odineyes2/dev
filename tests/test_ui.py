@@ -1165,6 +1165,17 @@ try:
         page.request.post(f"{BASE}/api/issues/{pr}/plans", data={"body": "## Tasks\n1. 먼저\n2. 나중 | 선행: 1"}, headers=H)
         page.request.post(f"{BASE}/api/issues/{pr}/decision", data={"verdict": "approve", "plan_version": 1}, headers=H)
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
+        # 승인된 부모도 변경된 요구사항으로 새 계획서 검토를 요청할 수 있다.
+        for scheme in ('light', 'dark'):
+            for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+                page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+                page.set_viewport_size({'width': width, 'height': 850})
+                for selector in ('#ask-review', '#ask-codex-review'):
+                    assert page.locator(selector).is_visible() and page.locator(selector).is_enabled()
+                assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+                page.screenshot(path=str(shots / f'approved_review_{scheme}_{tag}.png'), full_page=True)
+        page.set_viewport_size({'width': 1300, 'height': 850})
+        page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
         row2 = page.locator("tr.row", has_text="나중")
         assert "대기 · 선행:" in row2.inner_text()
         page.screenshot(path=str(shots / "tasks_deps.png"), full_page=True)
