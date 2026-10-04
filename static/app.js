@@ -914,6 +914,24 @@ async function renderAgents(newKey){
 }
 
 // ---- 프로젝트 ----
+function projectSuggestion(name){
+  const latest = [...projects].sort((a, b) => (Date.parse(b.created_at) - Date.parse(a.created_at)) || b.id - a.id)[0];
+  if(!latest || (!latest.repo_url?.trim() && !latest.local_path?.trim())) return null;
+  if(!name.trim() || /[\\/<>:"|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(\.|\.\.|con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(name))
+    throw new Error('이 이름은 마지막 경로 요소로 쓸 수 없어요. Repository와 Local path를 직접 입력해 주세요.');
+  const replace = (value, repo) => {
+    if(!value?.trim()) return '';
+    const match = value.trim().match(/^(.*[\\/])?([^\\/]+)([\\/]*)$/);
+    if(!match) return '';
+    // URL의 호스트나 드라이브만 있는 값에서는 경로를 추정하지 않는다.
+    if(repo && (!match[1] || /^\w+:\/\/$/.test(match[1]))) return '';
+    if(!repo && /^[A-Za-z]:$/.test(match[2])) return '';
+    return (match[1] || '') + name + (repo && match[2].endsWith('.git') ? '.git' : '') + match[3];
+  };
+  const fields = {repo_url: replace(latest.repo_url, true), local_path: replace(latest.local_path, false)};
+  return fields.repo_url || fields.local_path ? fields : null;
+}
+
 // 생성은 라이트박스, 수정은 기존 인라인 폼에서 한다.
 function renderProjects(editKey){
   const ed = projects.find(p => p.key === editKey);
@@ -932,16 +950,19 @@ function renderProjects(editKey){
     ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
-        <td><button class="ghost" data-edit="${esc(p.key)}">고치기</button></td></tr>`).join('')}
+        <td><button class="ghost" data-edit="${esc(p.key)}">고치기</button><button class="danger" data-delete-project="${esc(p.key)}" title="프로젝트 삭제" aria-label="${esc(p.name)} 프로젝트 삭제"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg></button></td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">프로젝트가 없어요.</div>'}</div>`;
   const val = (s) => view.querySelector(s).value;
   const opener = view.querySelector('#project-create');
   const dialog = view.querySelector('#project-dialog');
   const form = view.querySelector('#project-form');
   let saving = false;
+  let suggestion = null;
+  const clearSuggestion = () => { suggestion = null; form.querySelector('#project-suggestion')?.remove(); };
+  form.addEventListener('input', clearSuggestion);
   opener.addEventListener('click', () => {
     if(ed){ renderProjects(); view.querySelector('#project-create').click(); return; }
-    form.reset(); view.querySelector('#project-error').textContent = '';
+    form.reset(); clearSuggestion(); view.querySelector('#project-error').textContent = '';
     dialog.showModal(); view.querySelector('#p-key').focus();
   });
   if(dialog){
@@ -958,7 +979,26 @@ function renderProjects(editKey){
     button.textContent = '저장 중…'; form.setAttribute('aria-busy', 'true');
     view.querySelector('#project-error').textContent = '';
     try{
-      const fields = { name: val('#p-name'), repo_url: val('#p-repo'), local_path: val('#p-path') };
+      let fields = { name: val('#p-name'), repo_url: val('#p-repo'), local_path: val('#p-path') };
+      if(!ed && !fields.repo_url.trim() && !fields.local_path.trim()){
+        if(suggestion){
+          if(e.submitter?.id !== 'suggest-accept') return;
+          fields = {...fields, ...suggestion};
+        }
+        else {
+          const proposed = projectSuggestion(fields.name);
+          if(proposed){
+            suggestion = proposed;
+            const panel = document.createElement('section'); panel.id = 'project-suggestion';
+            panel.style.overflowWrap = 'anywhere';
+            panel.innerHTML = `<p>최근 생성한 프로젝트를 참고한 값이에요.</p><p>Repository: <span>${esc(proposed.repo_url || '(비어 있어요)')}</span></p><p>Local path: <span>${esc(proposed.local_path || '(비어 있어요)')}</span></p><div class="line"><button type="submit" id="suggest-accept">이 값으로 생성</button><button type="button" id="suggest-reject">직접 입력</button></div>`;
+            form.append(panel);
+            panel.querySelector('#suggest-reject').onclick = () => { clearSuggestion(); view.querySelector('#p-repo').focus(); };
+            panel.querySelector('#suggest-accept').focus();
+            return;
+          }
+        }
+      }
       if(ed) await api('PATCH', `/api/projects/${ed.key}`, fields);
       else await api('POST', '/api/projects', { key: val('#p-key'), ...fields });
       await loadProjects();
@@ -980,6 +1020,18 @@ function renderProjects(editKey){
   });
   if(ed) view.querySelector('#p-name').focus();
   view.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { renderProjects(b.dataset.edit); window.scrollTo(0, 0); }));
+  view.querySelectorAll('[data-delete-project]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
+    const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;
+    const state = await api('GET', `${url}/delete-check`);
+    if(!state.can_delete){ toast(state.blockers.join(' ')); return; }
+    if(state.confirmation_required && !confirm(`${state.project.name} (${state.project.key})를 삭제할까요?\nIssue·Task ${state.issue_count}개\n${state.warning}\n다른 프로젝트의 의존 연결 ${state.external_dependency_count}개도 제거돼요. 복구할 수 없어요.`)) return;
+    // 409 응답에서는 자동 재시도하지 않는다. 다시 눌러 새 내용을 확인한다.
+    await api('DELETE', url, {confirmation_token: state.confirmation_required ? state.confirmation_token : null});
+    if(currentProject() === b.dataset.deleteProject) localStorage.removeItem('dev.project');
+    await loadProjects();
+    if(b.isConnected) renderProjects();
+    toast('프로젝트를 삭제했어요');
+  })));
   view.querySelectorAll('[data-archive]').forEach(cb => cb.addEventListener('change', async () => {
     await api('PATCH', `/api/projects/${cb.dataset.archive}`, { archived: cb.checked }).catch(() => {});
     await loadProjects(); renderProjects();
