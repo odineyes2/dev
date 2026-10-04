@@ -413,7 +413,7 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 
 /* Action은 행 이동과 분리된 최소 40px 터치 영역을 제공한다. */
 .issue-actions{ display:flex; flex-wrap:wrap; gap:var(--sp-1); }
-.issue-actions button{ min-width:40px; min-height:40px; padding:var(--sp-2); font-size:13px; }
+.issue-actions button{ min-width:40px; min-height:40px; padding:var(--sp-2); font-size:13px; justify-content:center; }
 .issue-actions button[aria-disabled="true"]{ color:var(--dim); background:var(--panel-2); cursor:help; }
 .issue-actions button:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
 .action-cell{ width:128px; }
