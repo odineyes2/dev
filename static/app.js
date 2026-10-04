@@ -203,6 +203,7 @@ function perfReport(name, t0){
 
 // ---- 라우팅 ----
 async function route(){
+  cleanupQuickActions();
   disposeList();
   cleanupBoard();
   const h = location.hash.replace(/^#\/?/, '').split('?')[0];
@@ -244,7 +245,7 @@ function disposeList(){
 }
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
-    <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
+    <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${i.parent_id ? '<div class="sub">Task</div>' : ''}${quickHtml(i)}</td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
     <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td></tr>`;
 }
@@ -307,6 +308,7 @@ async function renderList(){
     localStorage.setItem('dev.project', e.target.value); projectSel.value = e.target.value; loadList();
   });
   view.querySelector('#list-body').addEventListener('click', (e) => {
+    if(e.target.closest('.quick-actions')) return;
     const tog = e.target.closest('.tog');
     if(tog){
       const tr = tog.closest('tr.row'), set = collapsedSet();
@@ -328,6 +330,7 @@ async function renderList(){
 async function loadList(){
   const body = view.querySelector('#list-body'), more = view.querySelector('#list-more');
   if(!body || !more || location.hash.replace(/^#\/?/, '').split('?')[0]) return;
+  cleanupQuickActions();
   if(listLoad){ clearTimeout(listLoad.timer); listLoad.loading?.remove(); }
   const st = listState();
   const statuses = st.statuses.length ? st.statuses : (st.closed ? [] : OPEN_STATUSES);
@@ -375,6 +378,7 @@ async function loadMoreIssues(){
   }
   const tbody = body.querySelector('tbody');
   if(tbody) items.forEach(i => placeRow(tbody, i));
+  bindQuickActions(body);
   more.textContent = '';
   // 한 화면이 다 안 찼으면 바로 다음 묶음
   if(!L.done && more.getBoundingClientRect().top < window.innerHeight + 400) loadMoreIssues();
@@ -426,13 +430,16 @@ async function renderBoard(){
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
         <div class="t">${titleHtml(i)}</div><div class="meta">${prioHtml(i.priority)}${approvalHtml(i.approval)}${labelsHtml(i.labels)}
-        ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div></div>`).join('')}
+        ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div>${quickHtml(i)}</div>`).join('')}
     </div></div>`;
   }).join('')}</div>`;
   enableBoardPan(view.querySelector('.kanban'));
+  bindQuickActions(view);
   view.querySelectorAll('.card').forEach(card => {
-    card.addEventListener('click', () => { location.hash = `#/issue/${card.dataset.ref}`; });
-    card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', card.dataset.ref); });
+    let fromQuick = false;
+    card.addEventListener('pointerdown', e => { fromQuick = !!e.target.closest('.quick-actions'); });
+    card.addEventListener('click', (e) => { if(!e.target.closest('.quick-actions')) location.hash = `#/issue/${card.dataset.ref}`; });
+    card.addEventListener('dragstart', (e) => { if(fromQuick || e.target.closest('.quick-actions')) { e.preventDefault(); return; } e.dataTransfer.setData('text/plain', card.dataset.ref); });
   });
   view.querySelectorAll('.col').forEach(col => {
     col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drop'); });
@@ -516,7 +523,7 @@ function executeHtml(it, liveMode, liveProvider){
   const x = it.execute, running = it.review_running && liveMode === 'execute';
   const job = it.job && it.job.mode === 'execute' ? it.job : null;
   const provider = pendingExecutions.get(it.ref) || (running ? liveProvider || 'claude' : null);
-  const off = !!provider || (x.blocked && !waitOnly(x.blocked));
+  const off = !!provider || pendingQuick.has(it.ref) || (x.blocked && !waitOnly(x.blocked));
   const hint = running ? '구현하는 중이에요 — 끝나면 in_review로 올라와요.'
     : x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
     : it.review_busy ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : `격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}.`;
@@ -532,7 +539,7 @@ function decisionHtml(it){
   const state = !a ? '<span class="dim">아직 결정하지 않았어요.</span>'
     : a.stale ? `<span class="status" style="--sc:var(--s-in_progress)">v${a.plan_version} 결정은 무효</span> <span class="dim">— 새 계획서(v${it.plan.version})가 올라왔어요. 다시 결정해 주세요.</span>`
     : `<span class="status" style="--sc:var(--s-${VERDICT_COLOR[a.verdict]})">${VERDICT_LABEL[a.verdict]} · v${a.plan_version}</span> <span class="dim">${esc(actorName(a.actor))} · ${fmtTime(a.created_at)}</span>${a.note ? md(a.note) : ''}`;
-  const busy = it.review_running;
+  const busy = it.review_running || pendingQuick.has(it.ref);
   return `<div class="decision" id="decision"><div class="decision-state">${state}</div>
     ${busy ? '<div class="dim hint">검토가 도는 중이라 끝나면 결정할 수 있어요.</div>' : (a && !a.stale) ? '' : `
     <div id="decision-form" hidden><textarea id="decision-note"></textarea>
@@ -593,6 +600,120 @@ function taskActionsHtml(it, ch){
 }
 // 갱신 중에도 아직 응답하지 않은 검토 요청의 provider를 유지한다.
 const pendingReviews = new Map();
+// 게시판은 펼친 Issue만 조회한다. 패널과 요청 세대가 일치할 때만 응답을 반영한다.
+const quickTimers = new Set();
+const pendingQuick = new Set();
+function cleanupQuickActions(){ quickTimers.forEach(clearTimeout); quickTimers.clear(); }
+function quickHtml(it){
+  return `<details class="quick-actions" data-quick-ref="${esc(it.ref)}" draggable="false"><summary>빠른 동작<span class="dim"> · 검토 / Plan / 실행</span></summary><div class="quick-body" role="region" aria-label="${esc(it.ref)} 빠른 동작"></div></details>`;
+}
+function reviewActionsHtml(it, liveRun = {}){
+  const busy = it.review_running || pendingReviews.has(it.ref);
+  const active = pendingReviews.get(it.ref) || liveRun.provider;
+  return it.job?.mode === 'review' ? jobHtml(it.job) : `${['claude', 'codex'].map(provider => `<button id="ask-${provider}-review"${busy ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${busy && active === provider ? `${PROVIDER_NAME[provider]} 검토 중…` : `${PROVIDER_NAME[provider]}에게 검토 맡기기`}</button>`).join('')}<p class="dim hint">홈서버에서 유료 검토해요 — Plan을 남겨요. ${QUEUE_LINE}</p>`;
+}
+function bindQuickActions(root){
+  root.querySelectorAll('.quick-actions:not([data-bound])').forEach(panel => {
+    panel.dataset.bound = 'true';
+    const body = panel.querySelector('.quick-body'), ref = panel.dataset.quickRef;
+    const url = `/api/issues/${encodeURIComponent(ref)}`;
+    let generation = 0, timer = null, item = null;
+    const current = () => panel.isConnected && panel.open;
+    const $ = id => body.querySelector(`[data-quick-id="${id}"]`);
+    function cancelTimer(){ clearTimeout(timer); quickTimers.delete(timer); }
+    function schedule(){
+      cancelTimer();
+      if(current() && (item?.review_running || item?.job)){
+        timer = setTimeout(() => { quickTimers.delete(timer); load(false); }, 15000);
+        quickTimers.add(timer);
+      }
+    }
+    function paint(it, liveRun = {}){
+      item = it;
+      const row = panel.closest('tr.row');
+      if(row) row.children[2].innerHTML = `${statusHtml(it.status)} ${approvalHtml(it.approval)}`;
+      const card = panel.closest('.card');
+      if(card){
+        card.querySelector('.meta').innerHTML = `${prioHtml(it.priority)}${approvalHtml(it.approval)}${labelsHtml(it.labels)}${it.claimed_by ? `<span>${esc(actorName(it.claimed_by))}</span>` : ''}`;
+        const col = view.querySelector(`[data-col="${it.status}"] .cards`);
+        if(col && card.parentElement !== col) col.append(card);
+        view.querySelectorAll('.col').forEach(c => { c.querySelector('h3 .ref').textContent = c.querySelectorAll('.card').length; });
+      }
+      const ended = ['done', 'closed'].includes(it.status);
+      body.innerHTML = `<div class="quick-state" role="status">${statusHtml(it.status)} ${approvalHtml(it.approval)}</div>
+        ${ended ? '<p class="dim">종결된 Issue예요.</p>' : it.execute ? executeHtml(it, liveRun.mode, liveRun.provider) : reviewActionsHtml(it, liveRun)}
+        <h3>Plan${it.plan ? ` · v${esc(it.plan.version)}` : ''}</h3>
+        ${it.plan ? `<div class="quick-plan" tabindex="0" aria-label="Plan 원문">${md(it.plan.body)}</div>${ended ? '' : decisionHtml(it)}` : '<p class="dim">아직 Plan이 없어요.</p>'}
+        ${!it.execute && it.approval && !it.approval.stale && it.approval.verdict !== 'reject' ? '<p class="dim">계획 승인 후 하위 Task의 빠른 동작에서 실행을 맡겨 주세요. 계획 승인은 결과 완료와 달라요.</p>' : ''}
+        <p class="quick-message" role="status" aria-live="polite"></p><button data-refresh>새로고침</button>`;
+      // 공통 상세 컴포넌트를 패널 안에서만 찾도록 ID를 지역 키로 바꾼다.
+      body.querySelectorAll('[id]').forEach(el => { el.dataset.quickId = el.id; el.removeAttribute('id'); });
+      body.querySelector('[data-verdict="reject"]')?.remove();
+      body.querySelectorAll('.primary').forEach(el => el.classList.remove('primary'));
+      body.querySelectorAll('.cancel-job').forEach(el => { el.classList.remove('cancel-job'); el.onclick = () => request('DELETE', `/api/jobs/${el.dataset.job}`); });
+      for(const provider of ['claude', 'codex']){
+        const review = $(`ask-${provider}-review`);
+        if(review) review.onclick = () => request('POST', url + '/review', {provider});
+        const execute = $(provider === 'claude' ? 'ask-execute' : 'ask-codex-execute');
+        if(execute) execute.onclick = () => request('POST', url + '/execute', {provider});
+      }
+      const send = verdict => request('POST', url + '/decision', {verdict, note: verdict === 'approve_notes' ? $('decision-note').value : '', plan_version: it.plan.version});
+      body.querySelector('[data-verdict="approve"]')?.addEventListener('click', () => send('approve'));
+      body.querySelector('[data-verdict="approve_notes"]')?.addEventListener('click', () => {
+        $('decision-actions').hidden = true; $('decision-form').hidden = false;
+        $('decision-note').value = decisionQuestions(it.plan.body);
+        $('decision-note').setAttribute('aria-label', '계획 승인 메모');
+        $('decision-send').textContent = '메모 붙여 승인'; $('decision-note').focus();
+      });
+      if($('decision-cancel')) $('decision-cancel').onclick = () => { $('decision-form').hidden = true; $('decision-actions').hidden = false; };
+      if($('decision-send')) $('decision-send').onclick = () => send('approve_notes');
+      body.querySelector('[data-refresh]').onclick = () => load();
+      if(pendingQuick.has(ref)) body.querySelectorAll('button, textarea').forEach(el => el.disabled = true);
+      schedule();
+    }
+    async function load(showLoading = true){
+      cancelTimer();
+      const token = ++generation;
+      if(showLoading) body.innerHTML = '<p class="skeleton" role="status">빠른 동작을 불러오는 중이에요…</p>';
+      try{
+        const it = await api('GET', url, undefined, current);
+        if(!current() || token !== generation) return;
+        const records = it.review_running ? await api('GET', url + '/runs', undefined, current) : null;
+        if(!current() || token !== generation) return;
+        paint(it, records?.runs.find(r => r.status === 'running') || {});
+      }catch(e){
+        if(!current() || token !== generation) return;
+        body.innerHTML = `<p role="alert">${esc(e.message)} 다시 시도해 주세요.</p><button data-retry>다시 시도</button>`;
+        body.querySelector('[data-retry]').onclick = () => load();
+      }
+    }
+    async function request(method, path, data){
+      if(!current() || pendingQuick.has(ref)) return;
+      pendingQuick.add(ref); cancelTimer(); ++generation;
+      const pending = path.endsWith('/review') ? pendingReviews : path.endsWith('/execute') ? pendingExecutions : null;
+      pending?.set(ref, data.provider);
+      body.querySelectorAll('button, textarea').forEach(el => el.disabled = true);
+      body.setAttribute('aria-busy', 'true');
+      body.querySelector('.quick-message').textContent = '요청 중…';
+      let message;
+      try{
+        const result = await api(method, path, data, current);
+        message = path.endsWith('/decision') ? '계획을 승인했어요 — 하위 Task 상태를 확인해 주세요.' : queuedMsg(result, '요청을 등록했어요.');
+      }catch(e){ message = `${e.message} 최신 Plan과 상태를 확인하고 다시 눌러 주세요.`; }
+      finally{ pendingQuick.delete(ref); pending?.delete(ref); body.removeAttribute('aria-busy'); }
+      if(location.hash === `#/issue/${ref}`){ renderIssue(ref); return; }
+      if(!current()) return;
+      await load();
+      if(current() && body.querySelector('.quick-message')) body.querySelector('.quick-message').textContent = message;
+      if(current()){
+        loadJobs();
+      }
+    }
+    panel.addEventListener('click', e => e.stopPropagation());
+    panel.addEventListener('dragstart', e => { e.preventDefault(); e.stopPropagation(); });
+    panel.addEventListener('toggle', () => { ++generation; cancelTimer(); if(panel.open) load(); });
+  });
+}
 async function renderIssue(ref){
   const [it, { runs }] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), agentsById.size ? null : loadAgents()]);
   const agentOpts = ['<option value="">(없음)</option>'].concat([...agentsById.values()].map(a =>
@@ -600,7 +721,7 @@ async function renderIssue(ref){
   const liveRun = runs.find(r => r.status === 'running') || {};
   const liveMode = liveRun.mode;
   const reviewProvider = pendingReviews.get(ref) || (it.review_running && liveMode === 'review' ? liveRun.provider : null);
-  const reviewBusy = it.review_running || pendingReviews.has(ref);
+  const reviewBusy = it.review_running || pendingReviews.has(ref) || pendingQuick.has(ref);
   const reviewButton = (provider, id) => `<button id="${id}"${reviewBusy ? ' disabled' : ''}${it.execute ? ' hidden' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${reviewProvider === provider ? '검토 중…' : `${PROVIDER_NAME[provider]}에게 검토 맡기기`}</button>`;
   view.innerHTML = `
     <div class="detail">
