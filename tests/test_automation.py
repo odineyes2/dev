@@ -21,7 +21,8 @@ admin = {"kind": "human", "name": "admin"}
 
 # 이전 판 DB의 실제 데이터를 남긴 뒤 새 migration만 적용한다.
 with sqlite3.connect(config.DB_PATH) as c:
-    for i, sql in enumerate(db.MIGRATIONS[:-1], 1):
+    legacy_version = next(i for i, sql in enumerate(db.MIGRATIONS) if "ALTER TABLE jobs ADD COLUMN cancellation_reason" in sql)
+    for i, sql in enumerate(db.MIGRATIONS[:legacy_version], 1):
         c.executescript("BEGIN;" + sql + f"PRAGMA user_version={i};COMMIT;")
 issues.create_project(admin, "DEV", "기존 프로젝트", description="제품 설명")
 legacy = issues.create_issue(admin, "DEV", "기존 이슈")
@@ -32,7 +33,7 @@ with db.connect() as c:
 assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
-        added = ()
+        added = (None, None) if table == 'jobs' else ()
         assert [r + added for r in before[table]] == [tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=?', (legacy['id'],)).fetchone()
     assert job['source'] == 'manual' and job['provider'] == 'codex'
@@ -393,3 +394,176 @@ with patch.object(config, 'DB_PATH', old_path):
         assert c.execute('PRAGMA foreign_key_check').fetchall() == []
     assert auto_settings.get_settings('MIG')['auto_approve'] is False
 print('OK — 기존 ON 초기화·전환 감사·다른 설정/승인/Task/이력 보존·migration 재실행')
+
+agent_actor = {"kind": "agent", "id": agent["id"]}
+def run_sync():
+    try: automation.sync()
+    except Exception as error: errors.append(error)
+
+# DEV-82: 실행 OFF 이력만 제외하고 매 등록 시 현재 조건을 다시 검사한다.
+issues.create_project(admin, 'REC', '재등록', '', '/fake')
+p = issues.create_issue(admin, 'REC', 'parent')
+issues.post_plan(admin, p['ref'], 'plan')
+issues.decide(admin, p['ref'], 'approve', plan_version=1)
+auto_settings.update_settings(admin, 'REC', {'auto_execute': True})
+
+def rec_task():
+    return issues.create_issue(admin, 'REC', 'task', parent=p['ref'])
+
+def rec_job(task):
+    return next(j for j in jobs.list_jobs() if j['issue_id'] == task['id'])
+
+def toggle_off():
+    auto_settings.update_settings(admin, 'REC', {'auto_execute': False})
+    automation.sync()
+
+def toggle_on():
+    auto_settings.update_settings(admin, 'REC', {'auto_execute': True})
+    automation.sync()
+
+t = rec_task()
+automation.sync()
+a = rec_job(t)
+toggle_off()
+with db.connect() as c:
+    old = dict(c.execute('SELECT * FROM jobs WHERE id=?', (a['id'],)).fetchone())
+assert old['cancellation_reason'] == 'auto_execute_off' and old['cancellation_event_id']
+assert old['started_at'] is None and old['run_id'] is None
+toggle_on()
+b = rec_job(t)
+assert b['id'] != a['id'] and b['delegation_id'] != a['delegation_id']
+for _ in range(3):
+    toggle_off(); toggle_on(); db.init(); jobs.reconcile(); automation.sync()
+assert len([j for j in jobs.list_jobs() if j['issue_id'] == t['id']]) == 1
+errors = []
+threads = [threading.Thread(target=run_sync) for _ in range(3)]
+for thread in threads: thread.start()
+for thread in threads: thread.join(10)
+assert not errors and all(not thread.is_alive() for thread in threads)
+assert len([j for j in jobs.list_jobs() if j['issue_id'] == t['id']]) == 1
+jobs.cancel(admin, rec_job(t)['id'])
+toggle_off(); toggle_on()
+assert not any(j['issue_id'] == t['id'] for j in jobs.list_jobs())
+with db.connect() as c:
+    assert c.execute('SELECT cancellation_reason FROM jobs WHERE issue_id=? ORDER BY id DESC', (t['id'],)).fetchone()[0] == 'human_cancel'
+
+# OFF와 상태/claim/goal/승인/선행 변경이 함께 있으면 재등록 가능한 사유로 기록하지 않는다.
+for change in ('claim', 'goal', 'status', 'dependency', 'approval'):
+    t = rec_task(); automation.sync(); a = rec_job(t)
+    if change == 'claim':
+        issues.claim(agent_actor, t['ref'])
+    elif change == 'goal':
+        with db.connect() as c: c.execute("UPDATE issues SET labels_json='[\"goal\"]' WHERE id=?", (t['id'],))
+    elif change == 'status':
+        issues.set_status(admin, t['ref'], 'on_hold')
+    elif change == 'dependency':
+        dep = rec_task()
+        with db.connect() as c: c.execute('INSERT INTO issue_deps VALUES(?,?)', (t['id'], dep['id']))
+    else:
+        issues.post_plan(admin, p['ref'], 'new plan')
+    toggle_off()
+    with db.connect() as c:
+        assert c.execute('SELECT cancellation_reason FROM jobs WHERE id=?', (a['id'],)).fetchone()[0] == 'conditions_changed', change
+    toggle_on()
+    assert not any(j['issue_id'] == t['id'] for j in jobs.list_jobs())
+
+issues.decide(admin, p['ref'], 'approve', plan_version=2)
+# 착수 직전 OFF 경합: DB gate가 차단하고 실행 이력 없이 재등록한다.
+t = rec_task(); automation.sync(); a = rec_job(t)
+def execute_off(actor, ref, provider):
+    auto_settings.update_settings(admin, 'REC', {'auto_execute': False})
+    review.begin(actor, issues.get_issue(ref), 'execute', provider)
+with patch.object(execute, 'start', side_effect=execute_off):
+    jobs._threads = 0; jobs.pump(); jobs._threads = 1
+with db.connect() as c:
+    assert not c.execute('SELECT 1 FROM runs WHERE issue_id=?', (t['id'],)).fetchone()
+    assert c.execute('SELECT cancellation_reason FROM jobs WHERE id=?', (a['id'],)).fetchone()[0] == 'auto_execute_off'
+toggle_on()
+assert rec_job(t)['id'] != a['id']
+
+# 준비 중 sync가 취소까지 마친 경우에도 오래된 위임은 실행 gate를 우회하지 않는다.
+t = rec_task(); automation.sync(); a = rec_job(t)
+def sync_off_before_begin(actor, ref, provider):
+    toggle_off()
+    review.begin(actor, issues.get_issue(ref), 'execute', provider)
+with patch.object(execute, 'start', side_effect=sync_off_before_begin):
+    jobs._threads = 0; jobs.pump(); jobs._threads = 1
+with db.connect() as c:
+    assert not c.execute('SELECT 1 FROM runs WHERE issue_id=?', (t['id'],)).fetchone()
+    assert c.execute('SELECT cancellation_reason FROM jobs WHERE id=?', (a['id'],)).fetchone()[0] == 'auto_execute_off'
+toggle_on()
+assert rec_job(t)['id'] != a['id']
+
+# 다양한 차단 이력과 OFF 이력이 섞여도 자동 재시도하지 않는다.
+for status in ('skipped', 'started', 'cancelled'):
+    t = rec_task(); automation.sync(); a = rec_job(t); toggle_off()
+    with db.connect() as c:
+        c.execute('INSERT INTO jobs(issue_id,mode,actor,status,created_at) VALUES(?,?,?,?,?)', (t['id'], 'execute', 'human:admin', status, db.now_iso()))
+    toggle_on()
+    assert not any(j['issue_id'] == t['id'] for j in jobs.list_jobs())
+for status in ('failed', 'orphaned'):
+    t = rec_task(); automation.sync(); toggle_off()
+    with db.connect() as c:
+        c.execute('INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,?,?,?,?)', (t['id'], 'execute', status, 'human:admin', db.now_iso()))
+    toggle_on()
+    assert not any(j['issue_id'] == t['id'] for j in jobs.list_jobs())
+
+# legacy 복구는 명시한 대상과 OFF/복구 증거만 허용하고 dry-run은 쓰지 않는다.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
+from recover_auto_off_jobs import recover
+with patch.object(db, 'now_iso', return_value='2030-01-01T00:00:00+00:00'):
+    t = rec_task(); automation.sync(); a = rec_job(t)
+with patch.object(db, 'now_iso', return_value='2030-01-01T00:00:01+00:00'):
+    toggle_off()
+with db.connect() as c:
+    c.execute('UPDATE jobs SET cancellation_reason=NULL,cancellation_event_id=NULL WHERE id=?', (a['id'],))
+with db.connect() as c:
+    before = [tuple(r) for r in c.execute('SELECT * FROM jobs')]
+    assert recover(c, [a['id']])[0]['applied'] is False
+    assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == before
+with db.connect() as c: result = recover(c, [a['id']], True)
+with db.connect() as c: assert recover(c, [a['id']], True) == result
+for field, value in [('source', 'manual'), ('started_at', '2030'), ('note', 'manual'), ('cancellation_reason', 'human_cancel')]:
+    with db.connect() as c:
+        original = c.execute(f'SELECT {field} FROM jobs WHERE id=?', (a['id'],)).fetchone()[0]
+        c.execute(f'UPDATE jobs SET {field}=? WHERE id=?', (value, a['id']))
+    try:
+        with db.connect() as c: recover(c, [a['id']], True)
+        raise AssertionError(field)
+    except ValueError: pass
+    with db.connect() as c: c.execute(f'UPDATE jobs SET {field}=? WHERE id=?', (original, a['id']))
+toggle_on()
+assert rec_job(t)['id'] != a['id']
+print('OK — DEV-82 OFF→ON·반복·재시작·동시 등록·혼합 이력·조건 변경·실행 gate·legacy dry-run/반복/거부')
+
+# 복구 증거가 없거나 여러 OFF 이벤트가 겹치면 적용하지 않고 전체 요청을 롤백한다.
+with db.connect() as c:
+    c.execute('UPDATE jobs SET cancellation_reason=NULL,cancellation_event_id=NULL WHERE id=?', (a['id'],))
+    event_id = result[0]['event_id']
+    event = dict(c.execute('SELECT * FROM project_auto_settings_events WHERE id=?', (event_id,)).fetchone())
+    c.execute("UPDATE project_auto_settings_events SET before_json='{}' WHERE id=?", (event_id,))
+try:
+    with db.connect() as c: recover(c, [a['id']], True)
+    raise AssertionError('OFF 증거 누락')
+except ValueError: pass
+with db.connect() as c:
+    c.execute('UPDATE project_auto_settings_events SET before_json=? WHERE id=?', (event['before_json'], event_id))
+    duplicate = c.execute('INSERT INTO project_auto_settings_events(project_id,actor,before_json,after_json,created_at,plan_id_floor) VALUES(?,?,?,?,?,?)',
+                          tuple(event[k] for k in ('project_id', 'actor', 'before_json', 'after_json', 'created_at', 'plan_id_floor'))).lastrowid
+try:
+    with db.connect() as c: recover(c, [a['id']], True)
+    raise AssertionError('모호한 OFF 증거')
+except ValueError: pass
+with db.connect() as c: c.execute('DELETE FROM project_auto_settings_events WHERE id=?', (duplicate,))
+try:
+    with db.connect() as c: recover(c, [a['id'], -999], True)
+    raise AssertionError('부분 적용 금지')
+except ValueError: pass
+with db.connect() as c:
+    assert c.execute('SELECT cancellation_reason FROM jobs WHERE id=?', (a['id'],)).fetchone()[0] is None
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'execute','failed','human:admin',?)", (a['issue_id'], db.now_iso()))
+try:
+    with db.connect() as c: recover(c, [a['id']], True)
+    raise AssertionError('실행 이력 복구 금지')
+except ValueError: pass
+print('OK — legacy 증거 부족·모호함·부분 적용·실행 이력 거부')

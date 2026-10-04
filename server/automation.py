@@ -138,7 +138,11 @@ def eligible(c, issue, mode, job=None):
         return False
     if c.execute('SELECT 1 FROM runs WHERE issue_id=?', (issue['id'],)).fetchone():
         return False
-    if not job and c.execute('SELECT 1 FROM jobs WHERE issue_id=?', (issue['id'],)).fetchone():
+    if not job and c.execute("""SELECT 1 FROM jobs WHERE issue_id=? AND NOT (
+        source='auto' AND mode='execute' AND status='cancelled'
+        AND COALESCE(cancellation_reason,'')='auto_execute_off'
+        AND cancellation_event_id IS NOT NULL AND started_at IS NULL AND run_id IS NULL)
+        """, (issue['id'],)).fetchone():
         return False
     if mode == 'review':
         return (not issue['parent_ref'] and issue['reporter'].startswith('human:') and not issue['plan'])
@@ -158,6 +162,30 @@ def valid_job(c, job):
     return eligible(c, issue, job['mode'], job)
 
 
+def cancel_invalid(c, job, start_error=False):
+    """동일 잠금에서 OFF와 다른 무효 조건을 구별하고 대기 소유권을 복구한다."""
+    import jobs
+    current = c.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
+    if not current or current['status'] != 'queued':
+        return
+    issue = issues.get_issue(job['ref'])
+    setting = c.execute('SELECT s.*,p.archived FROM project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE s.project_id=?', (issue['project_id'],)).fetchone()
+    reason, event_id = ('start_error' if start_error else 'conditions_changed'), None
+    if (not start_error and setting and not setting['archived'] and not setting['auto_execute']
+            and job['source'] == 'auto' and job['mode'] == 'execute'
+            and current['started_at'] is None and current['run_id'] is None
+            and jobs._latest(c, issue['id']).get('job_id') == job['id']
+            and eligible(c, issue, 'execute', job)):
+        event = c.execute("""SELECT * FROM project_auto_settings_events WHERE project_id=?
+            AND id>? AND json_extract(before_json,'$.auto_execute')=1
+            AND json_extract(after_json,'$.auto_execute')=0 ORDER BY id DESC LIMIT 1""",
+            (issue['project_id'], job['delegation_id'] or 0)).fetchone()
+        if event:
+            reason, event_id = 'auto_execute_off', event['id']
+    c.execute("UPDATE jobs SET status='cancelled',note='자동 위임 조건이 바뀌었어요',cancellation_reason=?,cancellation_event_id=? WHERE id=?", (reason, event_id, job['id']))
+    jobs._restore(c, job)
+
+
 def sync():
     """jobs의 잠금 아래 등록·OFF 취소를 직렬화하고 재시작에도 중복을 막는다."""
     import jobs
@@ -172,8 +200,7 @@ def sync():
         c.execute('BEGIN IMMEDIATE')
         for job in jobs._rows(c, "j.status='queued' AND j.source='auto'"):
             if not valid_job(c, job):
-                c.execute("UPDATE jobs SET status='cancelled',note='자동 위임 조건이 바뀌었어요' WHERE id=?", (job['id'],))
-                jobs._restore(c, job)
+                cancel_invalid(c, job)
         settings = c.execute('SELECT s.*,p.key FROM project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE p.archived=0 ORDER BY p.id').fetchall()
         for setting in settings:
             delegation = c.execute('SELECT id FROM project_auto_settings_events WHERE project_id=? ORDER BY id DESC LIMIT 1', (setting['project_id'],)).fetchone()

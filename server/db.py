@@ -327,6 +327,20 @@ MIGRATIONS = [
         );
     END;
     """,
+    # 취소 이력은 보존하고 명확한 실행 OFF만 재등록 대상으로 구분한다.
+    """
+    ALTER TABLE jobs ADD COLUMN cancellation_reason TEXT;
+    ALTER TABLE jobs ADD COLUMN cancellation_event_id INTEGER REFERENCES project_auto_settings_events(id);
+    -- 착수 준비 도중 sync가 대기를 취소해도 기존 auto_run_gate를 우회하지 않는다.
+    CREATE TRIGGER auto_job_owner_gate BEFORE INSERT ON runs
+    WHEN NEW.actor LIKE 'human:auto/delegation/%'
+    BEGIN
+        SELECT RAISE(ABORT, '자동 위임 조건이 바뀌었어요') WHERE NOT EXISTS(
+            SELECT 1 FROM jobs WHERE issue_id=NEW.issue_id AND mode=NEW.mode
+            AND actor=NEW.actor AND source='auto' AND status='queued'
+        );
+    END;
+    """,
     # 기존 Plan 승인 위임을 Task 결과 승인으로 묵시 전환하지 않는다.
     """
     INSERT INTO project_auto_settings_events(project_id,actor,before_json,after_json,created_at)
