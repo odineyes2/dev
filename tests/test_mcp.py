@@ -51,8 +51,17 @@ async def main():
     async with client(key) as c:
         names = {t.name for t in await c.list_tools()}
         assert {"whoami", "list_issues", "get_issue", "claim_issue", "post_plan", "set_status", "add_comment",
-                "link_commit", "create_issue", "update_issue", "release_issue", "list_projects"} <= names, names
+                "link_commit", "create_issue", "update_issue", "release_issue", "list_projects", "list_project_documents", "read_project_document"} <= names, names
         call = lambda name, **kw: c.call_tool(name, kw)
+        docs = (await call("list_project_documents", project="NS")).data
+        assert len(docs["documents"]) == 7
+        projects = (await call("list_projects")).structured_content["result"]
+        assert "description" in projects[0]
+        try:
+            await call("read_project_document", project="NS", path="../secret")
+            raise AssertionError("path escape allowed")
+        except ToolError:
+            pass
         assert (await call("whoami")).data["model"] == "claude-opus-5-5"
         lst = (await call("list_issues", status="backlog")).structured_content["result"]
         assert [i["ref"] for i in lst] == ["NS-1"] and "body" not in lst[0]

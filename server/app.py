@@ -262,6 +262,18 @@ async def api_update_project(key: str, request: Request):
     return issues.update_project(actor(request), key.upper(), await json_body(request))
 
 
+@app.get("/api/projects/{key}/documents")
+def api_project_documents(key: str):
+    import project_docs
+    return project_docs.list_documents(key)
+
+
+@app.get("/api/projects/{key}/documents/content")
+def api_project_document(key: str, path: str):
+    import project_docs
+    return project_docs.read_document(key, path)
+
+
 @app.post("/api/projects/{key}/documents/request")
 async def api_request_project_documents(key: str, request: Request):
     import project_docs

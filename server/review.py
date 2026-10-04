@@ -26,6 +26,7 @@ import config
 import db
 import issues
 import notify
+import project_docs
 
 PROJECTS_DIR = Path(os.environ.get("DEV_REVIEW_CWD") or config.REPO_ROOT.parent)
 MCP_CONFIG = Path(os.environ.get("DEV_REVIEW_MCP_CONFIG") or PROJECTS_DIR / ".mcp.json")
@@ -33,7 +34,7 @@ TIMEOUT_SEC = float(os.environ.get("DEV_REVIEW_TIMEOUT_SEC") or 1200)
 LOG_DIR = config.DATA_DIR / "reviews"
 ALLOWED_TOOLS = ["Read", "Grep", "Glob"] + [f"mcp__dev__{t}" for t in (
     "whoami", "list_projects", "list_issues", "get_issue", "post_plan", "add_comment", "set_status", "update_issue",
-    "claim_issue", "release_issue")]
+    "claim_issue", "release_issue", "list_project_documents", "read_project_document")]
 BLOCKED_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]
 
 _lock = threading.Lock()
@@ -75,7 +76,7 @@ def codex_command_for(ref: str) -> list[str]:
 
 
 def prompt_for(ref: str) -> str:
-    return f"""dev 이슈 {ref}를 **검토만** 한다. 코드를 고치거나 명령을 실행하지 않는다(그런 도구도 없다).
+    return project_docs.reference_instructions() + f"""dev 이슈 {ref}를 **검토만** 한다. 코드를 고치거나 명령을 실행하지 않는다(그런 도구도 없다).
 
 1. mcp__dev__claim_issue로 {ref}를 잡고, mcp__dev__get_issue로 본문·계획서·타임라인을 읽는다.
    제목이 비었으면(title_missing) 본문을 보고 짧은 제목을 지어 mcp__dev__update_issue로 채운다.

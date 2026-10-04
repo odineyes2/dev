@@ -21,6 +21,7 @@ from pathlib import Path
 import config
 import db
 import issues
+import project_docs
 
 BASE_BRANCH = os.environ.get("DEV_EXEC_BASE") or "main"
 BUDGET_USD = float(os.environ.get("DEV_EXEC_BUDGET_USD") or 2)
@@ -93,7 +94,7 @@ def safe_env(repo: str) -> dict:
 
 
 def prompt_for(ref: str, parent_ref: str | None) -> str:
-    return f"""dev Task {ref}를 **구현**한다. 지금 작업 폴더는 이 Task 전용 git worktree({branch_name(ref)} 브랜치)다.
+    return project_docs.reference_instructions(execution=True) + f"""dev Task {ref}를 **구현**한다. 지금 작업 폴더는 이 Task 전용 git worktree({branch_name(ref)} 브랜치)다.
 
 1. mcp__dev__claim_issue로 {ref}를 잡고, mcp__dev__get_issue로 본문(바꿀 파일·확인 방법·사람의 메모)을 읽는다.
    {f'부모 {parent_ref}도 get_issue로 읽어 계획서를 확인한다(계획서보다 사람의 조건부 승인 메모가 우선).' if parent_ref else ''}
@@ -116,7 +117,7 @@ def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
 def codex_command_for(ref: str, parent_ref: str | None) -> list[str]:
     """코드 수정·검사는 worktree 안에서, 커밋과 결과 등록은 서버가 수행한다."""
     import review
-    prompt = f"""dev Task {ref}를 승인된 범위 안에서 구현한다. 현재 폴더는 전용 worktree({branch_name(ref)})다.
+    prompt = project_docs.reference_instructions(execution=True) + f"""dev Task {ref}를 승인된 범위 안에서 구현한다. 현재 폴더는 전용 worktree({branch_name(ref)})다.
 1. dev MCP get_issue로 Task와 부모 {parent_ref}의 본문·계획서·승인 메모를 읽는다. 사람의 조건부 승인 메모를 우선한다.
 2. AGENTS.md와 CLAUDE.md를 읽고 따른다. UI 작업이면 docs/DESIGN.md를 읽는다.
 3. 현재 worktree에서만 파일을 수정하고 적절한 테스트를 실행한다. Git 커밋·브랜치 변경·push·서버 재시작은 하지 않는다.
