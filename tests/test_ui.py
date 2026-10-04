@@ -131,6 +131,8 @@ def check_project_documents(page, shots):
         calls.append(route.request.post_data_json['provider'])
         if len(calls) == 1:
             pending.append(route)
+        elif len(calls) == 4:
+            pending.append(route)
         else:
             route.fulfill(json={'ref':'DOC-1','reused':True})
     page.route('**/api/projects/DOC/documents', listing)
@@ -142,6 +144,16 @@ def check_project_documents(page, shots):
     assert page.evaluate('window.docAttack || 0') == 0
     assert page.locator('#doc-content script, #doc-content img').count() == 0
     assert '병합 대기' in page.inner_text('#docs-requests')
+    def check_document_buttons(active=None):
+        for provider, name, symbol in (('codex', 'Codex 문서 생성', '#i-openai'),
+                                       ('claude', 'Claude 문서 생성', '#i-claude')):
+            button = page.locator(f'[data-doc-provider="{provider}"]')
+            assert button.inner_text() == ('등록 중…' if provider == active else name)
+            assert button.locator('svg.ico.brand-icon').count() == 1
+            assert button.locator('svg').get_attribute('aria-hidden') == 'true'
+            assert button.locator('svg use').get_attribute('href') == symbol
+            assert button.is_disabled() == (active is not None)
+    check_document_buttons()
     for scheme in ('light','dark'):
         page.evaluate("s => {localStorage.setItem('dev.theme',s); document.documentElement.dataset.theme=s}", scheme)
         page.emulate_media(color_scheme=scheme)
@@ -149,6 +161,10 @@ def check_project_documents(page, shots):
             page.set_viewport_size({'width':width,'height':850})
             page.wait_for_timeout(200)
             assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            check_document_buttons()
+            page.focus('[data-doc-provider="codex"]')
+            page.keyboard.press('Tab')
+            assert page.locator('[data-doc-provider="claude"]').evaluate('e => e === document.activeElement')
             page.screenshot(path=str(shots / f'project_docs_{scheme}_{tag}.png'), full_page=True)
             page.click('[data-project-tab="manage"]')
             assert page.input_value('#p-description') == '수정한 설명'
@@ -161,16 +177,29 @@ def check_project_documents(page, shots):
     page.click('[data-doc-provider="codex"]')
     page.wait_for_function("document.querySelector('[data-doc-provider=codex]').disabled")
     assert page.is_disabled('[data-doc-provider="claude"]')
+    check_document_buttons('codex')
     page.evaluate("document.querySelector('[data-doc-provider=codex]').click()")
     assert calls == ['codex'] and len(pending) == 1
     pending.pop().fulfill(json={'ref':'DOC-1','queue_error':'연결 실패','retryable':True})
     page.wait_for_selector('#docs-message:text("연결에 실패")')
     assert page.locator('#docs-message a').get_attribute('href') == '#/issue/DOC-1'
+    page.wait_for_function("!document.querySelector('[data-doc-provider=codex]').disabled")
+    check_document_buttons()
     page.click('[data-doc-provider="codex"]')
     page.wait_for_selector('#docs-message:text("기존 생성 요청")')
+    page.wait_for_function("!document.querySelector('[data-doc-provider=codex]').disabled")
+    check_document_buttons()
     page.click('[data-doc-provider="claude"]')
     page.wait_for_function("!document.querySelector('[data-doc-provider=claude]').disabled")
-    assert calls == ['codex','codex','claude']
+    check_document_buttons()
+    page.click('[data-doc-provider="claude"]')
+    page.wait_for_function("document.querySelector('[data-doc-provider=claude]').disabled")
+    check_document_buttons('claude')
+    pending.pop().fulfill(status=500, json={'detail':'검사 실패'})
+    page.wait_for_selector('#docs-message:text("검사 실패")')
+    page.wait_for_function("!document.querySelector('[data-doc-provider=claude]').disabled")
+    check_document_buttons()
+    assert calls == ['codex','codex','claude','claude']
     docs.clear(); page.click('#docs-refresh')
     page.wait_for_selector('#docs-body .empty')
     assert '아직 문서가 없어요' in page.inner_text('#docs-body')
