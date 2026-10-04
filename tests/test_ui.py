@@ -380,6 +380,8 @@ def check_execute_buttons(page, shots, answers):
 
 def check_list_loading(page, shots):
     """응답을 보류하여 요청 수명·경합·시각 상태를 검사한다."""
+    # 로그인은 shell 표시 뒤에도 초기 조회와 route가 이어진다. 이전 요청을 가로채지 않는다.
+    page.wait_for_selector('#list-body[aria-busy="false"]')
     pending = []
     page.route("**/api/issues?*", lambda route: pending.append(route))
     def request_count(n):
