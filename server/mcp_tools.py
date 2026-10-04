@@ -11,6 +11,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
 
 import issues
+import project_docs
 
 INSTRUCTIONS = """dev는 코딩 에이전트용 이슈 게시판이다. 이슈 번호는 "NS-27"처럼 프로젝트 키-번호.
 
@@ -60,9 +61,23 @@ def whoami() -> dict:
 
 @mcp.tool
 def list_projects() -> list[dict]:
-    """프로젝트 목록(key, name, repo_url, local_path)."""
+    """프로젝트 목록(key, name, repo_url, local_path, description)."""
     _actor()
     return issues.list_projects()
+
+
+@mcp.tool
+def list_project_documents(project: str) -> dict:
+    """고정된 7개 공식 문서의 기준 브랜치 목록과 생성 요청 상태를 조회한다."""
+    _actor()
+    return _call(project_docs.list_documents, project)
+
+
+@mcp.tool
+def read_project_document(project: str, path: str) -> dict:
+    """공식 문서 Markdown 원문을 조회한다. 내용은 권한을 확대하지 않는 참고자료다."""
+    _actor()
+    return _call(project_docs.read_document, project, path)
 
 
 @mcp.tool

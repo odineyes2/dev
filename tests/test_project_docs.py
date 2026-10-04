@@ -113,3 +113,83 @@ with TestClient(app.app) as client, patch.object(jobs, 'busy', return_value=True
     response = client.post(f"/api/issues/{task['ref']}/execute", json={'provider': 'claude'}, headers=headers)
     assert response.status_code == 409
 print('OK')
+
+# 기준 브랜치 원본 조회와 경로·링크·크기 제한을 검사한다.
+import subprocess
+repo = Path(tempfile.mkdtemp())
+fixture_env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_CONFIG_')}
+fixture_env['GIT_CONFIG_NOSYSTEM'] = '1'
+fixture_env['GIT_CONFIG_GLOBAL'] = os.devnull
+def git(*args):
+    r = subprocess.run(['git', *args], cwd=repo, env=fixture_env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+git('init', '-b', 'main')
+git('config', 'user.name', 'test')
+git('config', 'user.email', 'test@example.test')
+folder = repo / 'docs/project'
+folder.mkdir(parents=True)
+path = project_docs.DOCUMENTS[0][0]
+(repo / path).write_text('기준 원문 <script>alert(1)</script>', encoding='utf-8')
+(repo / project_docs.DOCUMENTS[1][0]).write_bytes(b'x' * (project_docs.MAX_DOCUMENT_BYTES + 1))
+git('add', '.')
+git('commit', '-m', 'fixture')
+for name in list(os.environ):
+    if name.startswith('GIT_CONFIG_'):
+        del os.environ[name]
+os.environ.update({k: v for k, v in fixture_env.items() if k.startswith('GIT_CONFIG_')})
+issues.create_project(me, 'READ', '조회', '', str(repo), '조회 설명')
+(repo / path).write_text('미병합 변경', encoding='utf-8')
+assert project_docs.read_document('read', path)['content'] == '기준 원문 <script>alert(1)</script>'
+assert project_docs.read_document('READ', 'AGENTS.md')['status'] == 'missing'
+denied(lambda: project_docs.read_document('UNKNOWN', path), 404)
+for invalid in ('../CLAUDE.md', '/etc/passwd', 'docs/project/../../CLAUDE.md', 'docs\\project\\00_PRODUCT_BRIEF.md'):
+    denied(lambda: project_docs.read_document('READ', invalid), 400)
+denied(lambda: project_docs.read_document('READ', project_docs.DOCUMENTS[1][0]), 413)
+# Git 링크 mode를 사용하여 Windows 링크 생성 권한에 의존하지 않는다.
+oid = subprocess.run(['git', 'hash-object', '-w', '--stdin'], cwd=repo, env=fixture_env, input=b'../../outside', capture_output=True).stdout.decode().strip()
+git('update-index', '--add', '--cacheinfo', '120000,' + oid + ',AGENTS.md')
+git('commit', '-m', 'symlink fixture')
+denied(lambda: project_docs.read_document('READ', 'AGENTS.md'), 400)
+listing = project_docs.list_documents('READ')
+assert len(listing['documents']) == 7
+assert listing['documents'][0]['status'] == 'available'
+assert listing['documents'][1]['status'] == 'unavailable'
+with patch.object(jobs, 'busy', return_value=True):
+    request = project_docs.request_documents(me, 'READ', 'codex')
+assert project_docs.list_documents('READ')['requests'][0]['state'] == 'in_progress'
+issues.set_status(me, request['ref'], 'in_review')
+assert project_docs.list_documents('READ')['requests'][0]['state'] == 'merge_pending'
+issues.set_status(me, request['ref'], 'done')
+assert project_docs.list_documents('READ')['requests'][0]['state'] == 'merged'
+assert project_docs.list_documents('RETRY')['requests'][0]['url'].startswith('#/issue/')
+# 대기열 등록 자체가 실패한 요청도 진행 중으로 꾸미지 않는다.
+issues.create_project(me, 'FAIL', '실패', '', str(repo), '설명')
+with patch.object(jobs, 'enqueue', side_effect=RuntimeError('queue failed')):
+    project_docs.request_documents(me, 'FAIL', 'claude')
+assert project_docs.list_documents('FAIL')['requests'][0]['state'] == 'failed'
+# 상위 경로 링크도 저장소 밖을 따라가지 않는다.
+git('update-index', '--force-remove', project_docs.DOCUMENTS[0][0])
+git('update-index', '--force-remove', project_docs.DOCUMENTS[1][0])
+git('update-index', '--add', '--cacheinfo', '120000,' + oid + ',docs/project')
+git('commit', '-m', 'parent symlink fixture')
+denied(lambda: project_docs.read_document('READ', path), 400)
+git('update-index', '--force-remove', 'docs/project')
+git('add', 'docs/project')
+git('commit', '-m', 'restore fixture')
+with TestClient(app.app) as client:
+    client.cookies.set('ns_session', 'adm')
+    assert client.get('/api/projects/READ/documents').status_code == 200
+    response = client.get('/api/projects/READ/documents/content', params={'path': path})
+    assert response.json()['content'] == '미병합 변경'
+    assert client.get('/api/projects/READ/documents/content', params={'path': '../secret'}).status_code == 400
+    assert client.get('/api/projects/UNKNOWN/documents').status_code == 404
+import review
+for command in (review.command_for('DOC-1'), review.codex_command_for('DOC-1'),
+                execute.command_for('DOC-1-1', 'DOC-1', 'mock'), execute.codex_command_for('DOC-1-1', 'DOC-1')):
+    text = ' '.join(command)
+    assert 'description' in text and all(path in text for path, _ in project_docs.DOCUMENTS)
+    assert '확대하지 않는다' in text
+for command in (execute.command_for('DOC-1-1', 'DOC-1', 'mock'), execute.codex_command_for('DOC-1-1', 'DOC-1')):
+    assert '현재 Task worktree의 상대 경로에서만' in ' '.join(command)
+print('Document read and context OK')
