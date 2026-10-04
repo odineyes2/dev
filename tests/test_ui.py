@@ -579,6 +579,8 @@ def check_edit_saving(page, shots):
     ref = page.request.post(f'{BASE}/api/issues', data={
         'project': 'NS', 'title': '저장 시험', 'body': '원래 본문'}, headers=H).json()['ref']
     page.goto(BASE + f'/#/issue/{ref}')
+    # 해시 이동 뒤에도 이전 Issue의 편집 버튼이 남아 있으므로 대상 번호까지 확인한다.
+    page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim() === ref", arg=ref)
     page.wait_for_selector('#edit-body')
     for box, method, suffix in (('body', 'PATCH', ''), ('plan', 'POST', '/plans')):
         pending = []
@@ -756,6 +758,17 @@ try:
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
         check_account_menu(page, shots)
+        if '--edit-saving-only' in sys.argv:
+            H = {'X-Requested-With': 'dev'}
+            page.wait_for_selector('#list-body[aria-busy="false"]')
+            assert page.request.post(BASE + '/api/projects', data={'key': 'NS', 'name': '저장 검사'}, headers=H).ok
+            previous = page.request.post(BASE + '/api/issues', data={'project': 'NS', 'title': '이전 화면'}, headers=H).json()['ref']
+            page.goto(BASE + f'/#/issue/{previous}')
+            page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim() === ref", arg=previous)
+            check_edit_saving(page, shots)
+            assert not errs, errs
+            print('OK: edit saving')
+            sys.exit(0)
         if '--account-menu-only' in sys.argv:
             assert not errs, errs
             print('OK: account menu')
