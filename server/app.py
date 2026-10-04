@@ -262,6 +262,18 @@ async def api_update_project(key: str, request: Request):
     return issues.update_project(actor(request), key.upper(), await json_body(request))
 
 
+@app.get("/api/projects/{key}/delete-check")
+def api_project_delete_check(key: str, request: Request):
+    return issues.check_project_deletion(actor(request), key)
+
+
+@app.delete("/api/projects/{key}")
+async def api_delete_project(key: str, request: Request):
+    b = await json_body(request) if await request.body() else {}
+    issues.delete_project(actor(request), key, b.get("confirmation_token"))
+    return Response(status_code=204)
+
+
 @app.get("/api/issues")
 def api_issues(project: str = "", status: str = "", assignee: int | None = None, parent: str = "", q: str = "",
                limit: int = 500, offset: int = 0, approved: bool = False):

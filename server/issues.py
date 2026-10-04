@@ -14,6 +14,7 @@ actor는 app이 만든 dict: {"kind": "human"|"agent", "id", "name", "model"}.
 같은 actor가 다시 잡으면 연장(heartbeat). in_review/done/closed로 가면 저절로 놓는다.
 """
 import json
+import hashlib
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -119,6 +120,62 @@ def update_project(actor, key, fields: dict) -> dict:
         if not n:
             raise _not_found("프로젝트")
         return _project_row(c.execute("SELECT * FROM projects WHERE key=?", (key,)).fetchone())
+
+
+def _project_deletion(c, key):
+    """같은 트랜잭션에서 삭제 범위와 확인용 지문을 구한다."""
+    project = c.execute("SELECT * FROM projects WHERE key=?", (key,)).fetchone()
+    if project is None:
+        raise _not_found("프로젝트")
+    rows = c.execute("SELECT * FROM issues WHERE project_id=? ORDER BY id", (project["id"],)).fetchall()
+    target = "SELECT id FROM issues WHERE project_id=?"
+    snapshot = {"project": dict(project), "issues": [dict(r) for r in rows]}
+    for table in ("plans", "events", "decisions", "runs", "jobs"):
+        snapshot[table] = [dict(r) for r in c.execute(
+            f"SELECT * FROM {table} WHERE issue_id IN ({target}) ORDER BY id", (project["id"],))]
+    deps = [dict(r) for r in c.execute(
+        f"SELECT * FROM issue_deps WHERE issue_id IN ({target}) OR blocked_by_id IN ({target}) ORDER BY issue_id, blocked_by_id",
+        (project["id"], project["id"]))]
+    snapshot["dependencies"] = deps
+    ids = {r["id"] for r in rows}
+    blockers = []
+    if any(_lease_active(r) for r in rows):
+        blockers.append("유효한 작업 점유가 있어요.")
+    if any(r["status"] == "running" for r in snapshot["runs"]):
+        blockers.append("실행 중인 작업이 있어요.")
+    runs = {r["id"]: r for r in snapshot["runs"]}
+    if any(j["status"] == "started" and j["run_id"] not in runs for j in snapshot["jobs"]):
+        blockers.append("시작된 대기열 작업의 실행 기록을 확인할 수 없어요.")
+    token = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return {"project": _project_row(project), "issue_count": len(rows),
+            "external_dependency_count": sum(d["issue_id"] not in ids for d in deps),
+            "confirmation_required": bool(rows), "confirmation_token": token,
+            "can_delete": not blockers, "blockers": blockers,
+            "warning": "모든 Issue·Task와 계획서·댓글·결정·실행·대기열 기록 및 다른 프로젝트의 의존 연결도 함께 삭제돼요." if rows else ""}
+
+
+def check_project_deletion(actor, key):
+    if not _is_human(actor):
+        raise _forbidden("프로젝트 삭제는 사람만 할 수 있어요.")
+    with db.connect() as c:
+        c.execute("BEGIN")
+        return _project_deletion(c, str(key).upper())
+
+
+def delete_project(actor, key, confirmation_token=None):
+    if not _is_human(actor):
+        raise _forbidden("프로젝트 삭제는 사람만 할 수 있어요.")
+    with db.connect() as c:
+        # 작업 시작과 내용 추가를 직렬화하여 확인 뒤 생긴 데이터를 지우지 않는다.
+        c.execute("BEGIN IMMEDIATE")
+        state = _project_deletion(c, str(key).upper())
+        if not state["can_delete"]:
+            raise StoreError(" ".join(state["blockers"]), 409)
+        if state["confirmation_required"] and confirmation_token != state["confirmation_token"]:
+            raise StoreError("프로젝트 내용이 있어요. 삭제 사전 확인을 다시 하고 동의해 주세요.", 409)
+        pid = state["project"]["id"]
+        c.execute("DELETE FROM issues WHERE project_id=?", (pid,))
+        c.execute("DELETE FROM projects WHERE id=?", (pid,))
 
 
 # ---- 이슈 ----
