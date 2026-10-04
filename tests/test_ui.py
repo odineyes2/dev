@@ -221,11 +221,11 @@ def check_auto_settings(page, shots):
     approve = page.locator('#auto_approve')
     assert approve.is_enabled() and approve.get_attribute('aria-checked') == 'false'
     assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto_review', 'auto_approve', 'auto_execute']
-    assert page.locator('#auto_approve-label').inner_text() == 'Auto 계획 승인'
+    assert page.locator('#auto_approve-label').inner_text() == 'Auto 태스크 승인'
     assert approve.get_attribute('role') == 'switch'
     assert approve.get_attribute('aria-labelledby') == 'auto_approve-label'
     assert approve.get_attribute('aria-describedby') == 'auto_approve-help'
-    assert '보장하지 않아요' in page.locator('#auto_approve-help').inner_text()
+    assert '결과를 자동 승인' in page.locator('#auto_approve-help').inner_text()
     approve.focus(); page.keyboard.press('Space')
     page.wait_for_function("document.querySelector('#auto_approve').getAttribute('aria-checked') === 'true' && !document.querySelector('#auto_approve').disabled")
     assert page.request.get(BASE + '/api/projects/AUTOA/auto-settings').json()['auto_approve'] is True

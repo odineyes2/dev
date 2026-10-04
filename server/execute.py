@@ -262,7 +262,18 @@ def _run_then_merge(actor, ref, *args):
     if review.run_headless(actor, ref, *args) != "ok":
         return
     try:
-        if orchestrate.handle(actor, ref) == "merged":
+        # 병합 전에 실행 결과의 상태와 커밋을 고정한다. 수동 변경은 승인하지 않는다.
+        with db.connect() as c:
+            row = issues._find(c, ref)
+            commit = c.execute("SELECT id FROM events WHERE issue_id=? AND kind='commit' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
+            status = c.execute("SELECT id FROM events WHERE issue_id=? AND kind='status' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
+            c.execute('UPDATE task_execution_results SET commit_event_id=?,status_event_id=? WHERE run_id=?',
+                      (commit['id'] if commit else None, status['id'] if status else None, args[1]))
+        outcome = orchestrate.handle(actor, ref)
+        with db.connect() as c:
+            state = 'merged' if outcome == 'merged' else 'unmerged' if not orchestrate.settings(row['project_key']).get('auto_merge') else 'blocked'
+            c.execute('UPDATE task_execution_results SET state=? WHERE run_id=?', (state, args[1]))
+        if outcome == "merged":
             orchestrate.promote_parent(actor, ref)
     except Exception as e:   # 병합 오류가 스레드를 조용히 죽이지 않게 이슈에 남긴다
         issues.add_comment(actor, ref, f"⚠️ 자동 병합 중 오류: {e}")
@@ -293,6 +304,9 @@ def start(actor: dict, ref: str, provider: str | None = None) -> dict:
     cmd = codex_command_for(ref, issue["parent_ref"]) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
     env = safe_env(repo)
     log_path, run_id = review.begin(actor, issue, "execute", provider)
+    with db.connect() as c:
+        c.execute('INSERT INTO task_execution_results(run_id,plan_version) SELECT id,? FROM runs WHERE id=? AND issue_id=?',
+                  (parent['approval']['plan_version'], run_id, issue['id']))
     name = "Codex" if provider == "codex" else "Claude"
     limit = f"시간 제한 {int(TIMEOUT_SEC // 60)}분, 비용 상한 없음" if provider == "codex" else f"비용 상한 ${BUDGET_USD:g}"
     review.launch(actor, ref, run_id, provider,

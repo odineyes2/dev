@@ -102,7 +102,10 @@ db.config.DB_PATH = original_path
 # Auto 계획 승인 직전 판에서 실제 설정·위임·참조와 실행 게이트를 보존한다.
 db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'auto-legacy.db'
 with sqlite3.connect(db.config.DB_PATH) as c:
-    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+    # Auto 계획 승인 도입 직전으로 고정하여 이후 마이그레이션 추가에도 보존 검사를 유지한다.
+    auto_legacy_version = next(i for i, sql in enumerate(db.MIGRATIONS)
+                               if 'CREATE TABLE review_plan_runs' in sql)
+    for version, sql in enumerate(db.MIGRATIONS[:auto_legacy_version], 1):
         c.executescript(sql + f'PRAGMA user_version={version};')
     c.execute("INSERT INTO projects(key,name,created_at) VALUES('AUTO','자동',?)", (now,))
     c.execute("INSERT INTO issues(project_id,number,title,reporter,created_at,updated_at) VALUES(1,1,'이슈','human:admin',?,?)", (now, now))
