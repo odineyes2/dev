@@ -281,9 +281,7 @@ def api_auto_settings(key: str):
 async def api_update_auto_settings(key: str, request: Request):
     import auto_settings
     a = human_only(request)
-    result = auto_settings.update_settings(a, key, await json_body(request))
-    await run_in_threadpool(jobs.pump)
-    return result
+    return auto_settings.update_settings(a, key, await json_body(request))
 
 
 @app.get("/api/projects/{key}/documents/content")
