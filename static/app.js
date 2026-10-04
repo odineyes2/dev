@@ -203,6 +203,7 @@ function perfReport(name, t0){
 
 // ---- 라우팅 ----
 async function route(){
+  settingsSession = null;
   disposeList();
   cleanupBoard();
   const h = location.hash.replace(/^#\/?/, '').split('?')[0];
@@ -217,6 +218,7 @@ async function route(){
     else if(name === 'new') renderNew(new URLSearchParams(location.hash.split('?')[1] || ''));
     else if(name === 'agents') await renderAgents();
     else if(name === 'projects') renderProjects();
+    else if(name === 'settings') await renderSettings();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
   }catch(e){ if(!view.innerHTML) view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   perfReport(name || 'issues', t0);
@@ -1120,3 +1122,58 @@ async function boot(){
   route();
 }
 boot();
+
+
+// ---- 프로젝트별 자동화 설정 — 이전 화면의 응답은 새 화면에 반영하지 않는다. ----
+let settingsSession = null;
+async function renderSettings(){
+  const session = {};
+  settingsSession = session;
+  const key = projectSel.value;
+  const current = () => settingsSession === session && !document.getElementById('shell').hidden;
+  view.innerHTML = `<section class="panel auto-settings"><h2>설정</h2><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
+  const body = view.querySelector('#settings-body');
+  if(!key){ body.innerHTML = '<div class="empty">위의 프로젝트 필터에서 설정할 프로젝트를 선택해 주세요.</div>'; return; }
+  body.innerHTML = '<div class="settings-skeleton" aria-label="설정을 불러오는 중" aria-busy="true"></div>';
+  let settings;
+  const url = `/api/projects/${encodeURIComponent(key)}/auto-settings`;
+  try { settings = await api('GET', url, undefined, current); }
+  catch(e){ if(current()) body.innerHTML = `<p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="settings-retry" type="button">다시 불러오기</button>`;
+    body.querySelector('#settings-retry')?.addEventListener('click', renderSettings); return; }
+  if(!current()) return;
+  body.innerHTML = `<h3>${esc(key)} · Auto</h3>
+    ${[['auto_review','Auto 검토 맡기기','사람이 등록한 Plan 없는 최상위 Backlog Issue를 검토해요. Goal과 기존 작업이 있는 Issue는 제외해요.'],
+       ['auto_execute','Auto 실행맡기기','사람이 최신 부모 Plan을 승인하고 선행 조건을 충족한 Backlog Task를 실행해요.'],
+       ['auto_approve','Auto 태스크 승인',settings.auto_approve_disabled_reason || 'Auto 태스크 승인 대상이 확정되지 않아 켤 수 없어요.']].map(([field,label,help]) =>
+      `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false" ${field === 'auto_approve' ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}
+    <h3>Auto 에이전트 우선순위</h3><p class="dim">CLI 도구 Claude/Codex의 신규 자동 등록 순서예요. 사용할 수 없는 도구는 다음 도구를 선택하며, 착수 후 실패에는 유료 재시도를 하지 않아요. 수동 도구 지정은 유지해요.</p>
+    <ol id="provider-order"></ol><p id="settings-status" role="status" aria-live="polite"></p>
+    <aside class="settings-policy dim"><p>Auto를 켜면 클릭 없이 유료 검토·실행이 발생해요. Claude의 기존 비용 상한과 Codex의 시간 제한을 유지해요. Codex에는 금액 상한이 없어요.</p><p>OFF로 바꾸면 자동 등록된 미착수 대기만 취소해요. 수동 대기와 실행 중 작업은 유지해요.</p><p>기존 auto_merge 정책은 별도로 적용돼요(기본 켜짐). 켜져 있는 프로젝트는 실행 후 병합·서버 재시작까지 이어질 수 있어요. 이 설정은 병합·배포 권한을 확대하지 않아요.</p></aside>`;
+  let busy = false;
+  const status = body.querySelector('#settings-status');
+  function paint(){
+    for(const field of ['auto_review','auto_execute','auto_approve']){
+      const b = body.querySelector(`#${field}`), on = field !== 'auto_approve' && settings[field];
+      b.setAttribute('aria-checked', String(!!on)); b.disabled = busy || field === 'auto_approve';
+      b.querySelector('.switch-state').textContent = on ? '켜짐' : '꺼짐';
+    }
+    body.querySelector('#provider-order').innerHTML = settings.provider_order.map((provider,i) => `<li><span>${provider === 'claude' ? 'Claude' : 'Codex'}</span><div><button type="button" data-move="${i}" data-direction="-1" aria-label="${esc(provider)} 우선순위 올리기" ${busy || i === 0 ? 'disabled' : ''}>위로</button><button type="button" data-move="${i}" data-direction="1" aria-label="${esc(provider)} 우선순위 내리기" ${busy || i === settings.provider_order.length - 1 ? 'disabled' : ''}>아래로</button></div></li>`).join('');
+    body.setAttribute('aria-busy', String(busy));
+  }
+  async function save(changes, focus){
+    if(busy || !current()) return;
+    const before = settings;
+    settings = {...settings, ...changes}; busy = true; paint(); status.textContent = '저장 중…';
+    try{ const result = await api('PATCH', url, changes, current); if(!current()) return; settings = result; status.textContent = '저장했어요.'; }
+    catch(e){ if(!current()) return; settings = before; status.textContent = `${e.message} 이전 설정으로 복원했어요. 다시 시도해 주세요.`; }
+    finally{ if(current()){ busy = false; paint(); body.querySelector(focus)?.focus(); } }
+  }
+  body.querySelectorAll('.auto-switch:not(:disabled)').forEach(b => b.onclick = () => save({[b.id]: !settings[b.id]}, `#${b.id}`));
+  body.querySelector('#provider-order').onclick = e => {
+    const b = e.target.closest('[data-move]'); if(!b || b.disabled) return;
+    const i = Number(b.dataset.move), j = i + Number(b.dataset.direction), order = [...settings.provider_order];
+    [order[i], order[j]] = [order[j], order[i]];
+    save({provider_order: order}, `[data-move="${j}"][data-direction="${-Number(b.dataset.direction)}"]`);
+  };
+  paint();
+}
