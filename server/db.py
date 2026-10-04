@@ -388,6 +388,32 @@ MIGRATIONS = [
     """,
 ]
 
+# 첨부 삭제 큐는 DB 커밋 뒤 파일 정리에 실패해도 재시도할 수 있게 보존한다.
+MIGRATIONS.append("""
+CREATE TABLE attachments (
+    id TEXT PRIMARY KEY,
+    issue_id INTEGER REFERENCES issues(id) ON DELETE CASCADE,
+    owner TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('image','video','audio','markdown','json','url')),
+    name TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    size INTEGER NOT NULL CHECK(size >= 0),
+    storage_key TEXT UNIQUE,
+    url TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    CHECK((kind='url' AND storage_key IS NULL AND url IS NOT NULL AND size=0)
+       OR (kind<>'url' AND storage_key IS NOT NULL AND url IS NULL))
+);
+CREATE INDEX attachments_issue ON attachments(issue_id);
+CREATE INDEX attachments_expiry ON attachments(expires_at) WHERE issue_id IS NULL;
+CREATE TABLE attachment_gc (storage_key TEXT PRIMARY KEY);
+CREATE TRIGGER attachment_delete AFTER DELETE ON attachments
+WHEN OLD.storage_key IS NOT NULL BEGIN
+    INSERT OR IGNORE INTO attachment_gc VALUES(OLD.storage_key);
+END;
+""")
+
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.
 STATUSES += ("waiting",)
 

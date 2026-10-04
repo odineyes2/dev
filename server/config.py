@@ -14,3 +14,9 @@ PUBLIC_URL = (os.environ.get("DEV_PUBLIC_URL") or "https://dev.lomebrote.com").r
 NTFY_URL = (os.environ.get("NTFY_URL") or "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC") or ""
 NTFY_TOKEN = os.environ.get("NTFY_TOKEN") or ""
+
+# 첨부 제한은 바이트·개수·초 단위로 설정한다.
+ATTACHMENT_MAX_BYTES = int(os.environ.get("DEV_ATTACHMENT_MAX_BYTES") or 25 * 1024 * 1024)
+ATTACHMENT_MAX_COUNT = int(os.environ.get("DEV_ATTACHMENT_MAX_COUNT") or 10)
+ATTACHMENT_TOTAL_BYTES = int(os.environ.get("DEV_ATTACHMENT_TOTAL_BYTES") or 100 * 1024 * 1024)
+ATTACHMENT_TTL_SECONDS = int(os.environ.get("DEV_ATTACHMENT_TTL_SECONDS") or 86400)
