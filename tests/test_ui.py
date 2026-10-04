@@ -42,6 +42,91 @@ def wait_port(port):
     raise RuntimeError(f"port {port} not up")
 
 
+def check_issue_types(page, shots):
+    """복수 선택·관리·실패 재시도와 네 화면의 배치를 확인한다."""
+    H = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=H, data={'key':'TYPES', 'name':'종류 검사'}).ok
+    page.reload(); page.wait_for_selector('#project-filter'); page.select_option('#project-filter', 'TYPES')
+    catalog = page.request.get(BASE + '/api/issue-types').json()['types']
+    a, b = catalog[:2]
+    page.goto(BASE + '/#/new'); page.wait_for_selector('[data-type]')
+    page.fill('#n-title', '복수 종류 UI 검사')
+    page.locator(f'[data-type="{a["id"]}"]').focus(); page.keyboard.press('Space')
+    page.locator(f'[data-type="{b["id"]}"]').focus(); page.keyboard.press('Enter')
+    assert page.locator('[data-type][aria-pressed="true"]').count() == 2
+    page.click('#new-form [type=submit]'); page.wait_for_selector('#save-types')
+    ref = page.locator('.detail > div > .ref').inner_text().strip()
+    get = lambda: page.request.get(BASE + '/api/issues/' + ref).json()
+    assert get()['type_ids'] == [a['id'], b['id']]
+    page.click(f'[data-type="{b["id"]}"]'); page.click('#save-types')
+    page.wait_for_function("document.querySelectorAll('[data-type][aria-pressed=true]').length === 1 && !document.querySelector('#save-types').disabled")
+    assert get()['type_ids'] == [a['id']]
+    def fail(route):
+        route.fulfill(status=500, content_type='application/json', body='{"detail":"저장 실패"}')
+    page.route('**/api/issues/' + ref, fail)
+    page.click(f'[data-type="{b["id"]}"]'); page.click('#save-types')
+    page.wait_for_selector('#types-status:text("다시 시도")')
+    assert page.locator(f'[data-type="{b["id"]}"]').get_attribute('aria-pressed') == 'true'
+    assert page.locator('#save-types').is_enabled()
+    page.unroute('**/api/issues/' + ref, fail)
+    page.click('#save-types'); page.wait_for_function("document.querySelector('#types-status').textContent === ''")
+    assert len(get()['types']) == 2
+    # 유료 검토 없이 자동 분류된 API 응답을 모의한다.
+    automatic = get()
+    for t in automatic['types']: t['source'] = 'agent'
+    page.route('**/api/issues/' + ref, lambda route: route.fulfill(json=automatic))
+    page.reload(); page.wait_for_selector('text=자동 분류 결과예요.')
+    page.unroute('**/api/issues/' + ref)
+    page.goto(BASE + '/#/new'); page.wait_for_selector('#new-form')
+    page.fill('#n-title', '빈 종류 검사'); page.click('#new-form [type=submit]'); page.wait_for_selector('#save-types')
+    empty_ref = page.locator('.detail > div > .ref').inner_text().strip()
+    empty = page.request.get(BASE + '/api/issues/' + empty_ref).json()
+    assert empty['type_ids'] == [] and empty['plan'] is None and not empty['job']
+    assert '미분류' in page.locator('.byline').inner_text()
+    page.goto(BASE + '/#/settings'); page.wait_for_selector('a[href="#/types"]'); page.click('a[href="#/types"]')
+    page.wait_for_selector('#type-create'); page.fill('#type-create input', '추가 종류 <검사>'); page.click('#type-create button')
+    page.wait_for_selector('.type-row input[value="추가 종류 <검사>"]')
+    added = page.request.get(BASE + '/api/issue-types').json()['types'][-1]
+    row = page.locator(f'.type-row[data-id="{added["id"]}"]')
+    row.locator('input').fill('긴 종류 이름 ' + '테스트 ' * 12); row.locator('[type=submit]').click()
+    page.wait_for_selector('#type-status:text("저장했어요")')
+    row = page.locator(f'.type-row[data-id="{a["id"]}"]'); row.locator('input').fill('이름 수정 확인'); row.locator('[type=submit]').click()
+    page.wait_for_function("document.querySelector('.type-row input').value === '이름 수정 확인' && document.querySelector('.type-row').getAttribute('aria-busy') !== 'true'")
+    row = page.locator(f'.type-row[data-id="{a["id"]}"]'); row.locator('[role=switch]').focus(); page.keyboard.press('Space')
+    page.wait_for_selector(f'.type-row[data-id="{a["id"]}"] [aria-checked=false]')
+    assert get()['type_ids'] == [a['id'], b['id']] and get()['types'][0]['active'] is False
+    # 중복 이름 실패 후 입력과 재시도 동작을 보존한다.
+    page.fill('#type-create input', '이름 수정 확인'); page.click('#type-create button')
+    page.wait_for_selector('#type-status:text("다시 시도")')
+    assert page.input_value('#type-create input') == '이름 수정 확인'
+    assert page.locator('#type-create button').is_enabled()
+    page.fill('#type-create input', '')
+    for scheme in ('light','dark'):
+        page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width in (1300,390):
+            page.set_viewport_size({'width':width,'height':850})
+            for name, url, selector in [('manage','types','.type-row'), ('new','new','#new-form'), ('detail','issue/'+ref,'#save-types'), ('list','','tr.row'), ('board','board','.card')]:
+                page.goto(BASE + '/#/' + url); page.wait_for_selector(selector)
+                assert page.evaluate('document.documentElement.scrollWidth') <= width + 1, (name,scheme,width)
+                if name == 'new': assert page.locator(f'[data-type="{a["id"]}"]').count() == 0
+                if name == 'detail':
+                    assert page.locator(f'[data-type="{a["id"]}"]').get_attribute('aria-pressed') == 'true'
+                    assert '비활성' in page.locator('.byline').inner_text()
+                if name in ('list','board'):
+                    assert '이름 수정 확인' in page.locator('#view').inner_text()
+                page.locator('#toast').evaluate('e => e.hidden = true')
+                page.screenshot(path=str(shots / f'types_{name}_{scheme}_{width}.png'), full_page=True)
+    page.goto(BASE + '/#/issue/' + ref); page.wait_for_selector('#save-types')
+    page.click(f'[data-type="{a["id"]}"]'); page.click(f'[data-type="{b["id"]}"]'); page.click('#save-types')
+    page.wait_for_function("document.querySelector('#types-status').textContent === '' && document.querySelectorAll('[data-type][aria-pressed=true]').length === 0")
+    assert get()['type_ids'] == []
+    assert page.locator(f'[data-type="{a["id"]}"]').count() == 0
+    page.set_viewport_size({'width':1300,'height':850})
+    page.evaluate("localStorage.setItem('dev.theme','light');document.documentElement.dataset.theme='light'")
+    page.emulate_media(color_scheme='light')
+
+
 def check_auto_settings(page, shots):
     """프로젝트 격리·실패 복원·키보드와 네 화면을 확인한다."""
     H = {'X-Requested-With': 'dev'}
@@ -974,6 +1059,11 @@ try:
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
         check_account_menu(page, shots)
+        if '--issue-types-only' in sys.argv:
+            check_issue_types(page, shots)
+            assert not errs, errs
+            print('OK: issue types')
+            sys.exit(0)
         if '--edit-saving-only' in sys.argv or '--rollback-only' in sys.argv:
             H = {'X-Requested-With': 'dev'}
             page.wait_for_selector('#list-body[aria-busy="false"]')
@@ -1508,6 +1598,8 @@ try:
         asked.clear(); page.click(".side .complete-tree"); page.wait_for_function("location.hash === '#/'")
         assert top in asked[0] and ta in asked[0] and tb in asked[0] and "주의" in asked[0] and f"{tb} — Backlog" in asked[0], asked
         assert all(page.request.get(f"{BASE}/api/issues/{r}").json()["status"] == "done" for r in (top, ta, tb))
+
+        check_issue_types(page, shots)
 
         # 로그아웃(사용자 메뉴 안)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")

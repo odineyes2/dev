@@ -385,3 +385,20 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .settings-skeleton{ height:160px; border-radius:var(--r-md); background:var(--panel-2); }
 @media(max-width:800px){ .auto-settings{ padding:var(--sp-4); } .auto-switch{ flex-direction:column; } }
 @media(prefers-reduced-motion:reduce){ .switch-track::before{ transition:none; } }
+
+/* 종류 — DESIGN 2~4·7·8·11절의 칩과 터치·포커스 규칙을 따른다. */
+.issue-types{ display:inline-flex; flex-wrap:wrap; gap:var(--sp-1); max-width:100%; font-size:12px; }
+.type-badge{ border:1px solid var(--border); border-radius:999px; padding:var(--sp-1) var(--sp-2); overflow-wrap:anywhere; background:var(--panel-2); }
+.type-picker{ min-width:0; margin:0; padding:var(--sp-3); border:1px solid var(--border); border-radius:8px; }
+.type-picker legend{ font:600 12px var(--mono); }
+.type-picker > div{ display:flex; flex-wrap:wrap; gap:var(--sp-2); }
+.type-picker button{ min-height:40px; min-width:40px; border-radius:999px; white-space:normal; overflow-wrap:anywhere; max-width:100%; }
+.type-picker [aria-pressed="true"]{ color:var(--accent); border-color:var(--accent); background:var(--panel-2); }
+.type-picker p{ font-size:13px; margin-bottom:0; }
+.type-management{ max-width:800px; }
+.type-management form{ display:flex; flex-wrap:wrap; align-items:end; gap:var(--sp-2); padding:var(--sp-3) 0; border-bottom:1px solid var(--border); }
+.type-management label{ flex:1; min-width:0; }
+.type-management input{ width:100%; min-width:0; }
+.type-management button,.type-management input,#save-types{ min-height:40px; }
+.type-management [aria-checked="true"]{ color:var(--s-done); }
+.type-picker button:focus-visible,.type-management :focus-visible,#save-types:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
