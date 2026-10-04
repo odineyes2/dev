@@ -402,3 +402,11 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .type-management button,.type-management input,#save-types{ min-height:40px; }
 .type-management [aria-checked="true"]{ color:var(--s-done); }
 .type-picker button:focus-visible,.type-management :focus-visible,#save-types:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+/* 설정 범위 줄 — 전역 탭 아래에서 두 화면의 현재 위치를 유지한다. */
+.settings-nav{ background:var(--panel); border-bottom:1px solid var(--border); }
+.settings-nav-inner{ max-width:1320px; margin:0 auto; padding:0 28px; display:flex; gap:var(--sp-5); }
+.settings-nav a{ display:flex; align-items:center; min-height:44px; font-size:14px; font-weight:600; color:var(--dim); border-bottom:2px solid transparent; text-decoration:none; }
+.settings-nav a.active{ color:var(--accent); border-bottom-color:var(--accent); }
+.settings-nav a:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+@media(max-width:800px){ .settings-nav-inner{ padding:0 14px; gap:var(--sp-4); } }
