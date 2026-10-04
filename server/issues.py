@@ -271,6 +271,7 @@ def delete_project(actor, key, confirmation_token=None):
         pid = state["project"]["id"]
         c.execute("DELETE FROM issues WHERE project_id=?", (pid,))
         c.execute("DELETE FROM projects WHERE id=?", (pid,))
+    _cleanup_attachments()
 
 
 # ---- 이슈 ----
@@ -457,7 +458,7 @@ def _next_number(c, proj, parent=None) -> tuple:
     return number, None, None
 
 
-def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None) -> dict:
+def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None) -> dict:
     # 제목은 비워도 된다 — 본문만 쓰면 이슈를 처리하는 에이전트가 제목을 지어 채운다(DEV-8). 둘 다 비면 안 된다.
     title = _text(title, "제목", 300).strip()
     body = _text(body, "본문")
@@ -468,6 +469,7 @@ def create_issue(actor, project, title, body="", priority="none", labels=None, p
         raise StoreError("새 이슈는 backlog나 triage로만 만들어요.")
     now = db.now_iso()
     with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
         proj = c.execute("SELECT * FROM projects WHERE key=?", (str(project or "").upper(),)).fetchone()
         if proj is None:
             raise _not_found("프로젝트")
@@ -484,6 +486,9 @@ def create_issue(actor, project, title, body="", priority="none", labels=None, p
                         (proj["id"], number, sub_of, sub, parent_id, title, body, status, _priority(priority), _labels(labels),
                          actor_label(actor), now, now)).lastrowid
         _replace_types(c, iid, ids, actor)
+        if attachment_ids is not None:
+            import attachments
+            attachments.link(c, actor, iid, attachment_ids)
         return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (iid,)).fetchone())
 
 
@@ -552,6 +557,17 @@ def delete_issue(actor, ref) -> None:
         raise _forbidden("이슈는 사람만 지울 수 있어요.")
     with db.connect() as c:
         c.execute("DELETE FROM issues WHERE id=?", (_find(c, ref)["id"],))
+    _cleanup_attachments()
+
+
+def _cleanup_attachments():
+    # 삭제는 이미 커밋됐다. 파일/DB 실패는 영속 삭제 큐에서 재시도한다.
+    import attachments
+    import sqlite3
+    try:
+        attachments.cleanup()
+    except (OSError, sqlite3.Error):
+        pass
 
 
 def _guard_goal(row, actor, what):
