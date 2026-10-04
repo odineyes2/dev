@@ -365,7 +365,7 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .project-docs .skeleton::after{ content:""; display:block; height:32px; margin-top:var(--sp-3); border-radius:var(--r-sm); background:var(--panel-2); }
 
 /* 설정 — 디자인 2~5·7·8·11절의 토큰과 스위치 규칙을 따른다. */
-.auto-settings{ max-width:800px; padding:var(--sp-5); }
+.auto-settings{ padding:var(--sp-5); }
 .auto-settings h3,.type-management h3{ font:600 12px var(--mono); letter-spacing:var(--track-label); margin:var(--sp-5) 0 var(--sp-3); }
 .setting-row{ display:flex; align-items:center; justify-content:space-between; gap:var(--sp-4); padding:var(--sp-4) 0; border-bottom:1px solid var(--border); }
 .setting-row > div{ min-width:0; }
