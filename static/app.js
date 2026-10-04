@@ -933,20 +933,23 @@ function projectSuggestion(name){
 }
 
 // 생성은 라이트박스, 수정은 기존 인라인 폼에서 한다.
-function renderProjects(editKey){
+function renderProjects(editKey, projectTab = 'manage'){
   const ed = projects.find(p => p.key === editKey);
   view.innerHTML = `
     <div class="projects-page">
+    ${ed ? `<div class="project-scope"><h2>${esc(ed.name)} · ${esc(ed.key)}</h2><nav aria-label="프로젝트 화면"><button type="button" data-project-tab="manage" aria-current="${projectTab === 'manage' ? 'page' : 'false'}">관리</button><button type="button" data-project-tab="documents" aria-current="${projectTab === 'documents' ? 'page' : 'false'}">문서</button></nav></div>` : ''}
     <button class="primary project-create" id="project-create" type="button" aria-haspopup="dialog"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>프로젝트 추가</button>
     ${ed ? '' : '<dialog class="project-dialog" id="project-dialog" aria-labelledby="project-dialog-title">'}
-    <form class="form panel" id="project-form">${ed ? '' : '<h2 id="project-dialog-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
+    <form class="form panel" id="project-form" ${ed && projectTab === 'documents' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-dialog-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
       <label style="flex:0 0 90px">Key<input id="p-key" required placeholder="NS" maxlength="10" value="${esc(ed ? ed.key : '')}"${ed ? ' disabled' : ''}></label>
       <label>Name<input id="p-name" required placeholder="nightshift" value="${esc(ed ? ed.name : '')}"></label>
       <label>Repository<input id="p-repo" placeholder="https://github.com/…" value="${esc(ed ? ed.repo_url : '')}"></label>
       <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
+      <label class="project-description">프로젝트 설명<textarea id="p-description" maxlength="200000" placeholder="목적, 대상 사용자와 원하는 기능을 적어 주세요.">${esc(ed?.description || '')}</textarea></label>
       <label class="actions">${ed ? '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">저장</button>'
         : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">프로젝트 추가</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
     ${ed ? '' : '</dialog>'}
+    ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex">코덱스 공식문서 만들기</button><button type="button" data-doc-provider="claude">클로드 공식문서 만들기</button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
     ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
@@ -979,7 +982,7 @@ function renderProjects(editKey){
     button.textContent = '저장 중…'; form.setAttribute('aria-busy', 'true');
     view.querySelector('#project-error').textContent = '';
     try{
-      let fields = { name: val('#p-name'), repo_url: val('#p-repo'), local_path: val('#p-path') };
+      let fields = { name: val('#p-name'), repo_url: val('#p-repo'), local_path: val('#p-path'), description: val('#p-description') };
       if(!ed && !fields.repo_url.trim() && !fields.local_path.trim()){
         if(suggestion){
           if(e.submitter?.id !== 'suggest-accept') return;
@@ -1004,7 +1007,7 @@ function renderProjects(editKey){
       await loadProjects();
       if(!form.isConnected) return;
       if(dialog) dialog.close();
-      renderProjects(); view.querySelector('#project-create').focus();
+      renderProjects(ed?.key); view.querySelector(ed ? '#p-name' : '#project-create').focus();
       toast(ed ? '고쳤어요' : '만들었어요');
     }catch(error){
       if(form.isConnected) view.querySelector('#project-error').textContent = `${error.message} 입력을 확인하고 다시 시도해 주세요.`;
@@ -1018,7 +1021,12 @@ function renderProjects(editKey){
     if(ed){ renderProjects(); view.querySelector('#project-create').focus(); }
     else dialog.close();
   });
-  if(ed) view.querySelector('#p-name').focus();
+  if(ed && projectTab === 'manage') view.querySelector('#p-name').focus();
+  view.querySelectorAll('[data-project-tab]').forEach(b => b.onclick = () => {
+    renderProjects(ed.key, b.dataset.projectTab);
+    view.querySelector(`[data-project-tab="${b.dataset.projectTab}"]`).focus();
+  });
+  if(ed && projectTab === 'documents') bindProjectDocuments(ed);
   view.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { renderProjects(b.dataset.edit); window.scrollTo(0, 0); }));
   view.querySelectorAll('[data-delete-project]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
     const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;
@@ -1036,6 +1044,59 @@ function renderProjects(editKey){
     await api('PATCH', `/api/projects/${cb.dataset.archive}`, { archived: cb.checked }).catch(() => {});
     await loadProjects(); renderProjects();
   }));
+}
+
+// 응답이 늦게 도착해도 떠난 화면이나 다른 문서에 반영하지 않는다.
+function bindProjectDocuments(project){
+  const panel = view.querySelector('.project-docs');
+  const body = panel.querySelector('#docs-body'), requests = panel.querySelector('#docs-requests');
+  const message = panel.querySelector('#docs-message');
+  const url = `/api/projects/${encodeURIComponent(project.key)}/documents`;
+  const current = () => panel.isConnected;
+  const states = {failed:'실패 — Issue를 확인하고 다시 시도해 주세요', merged:'병합 완료', merge_pending:'병합 대기', in_progress:'진행 중'};
+  let selection = 0, requesting = false, loading = 0;
+  async function load(){
+    const generation = ++loading; ++selection;
+    body.innerHTML = '<div class="skeleton" role="status">문서 목록을 불러오는 중이에요…</div>';
+    try {
+      const data = await api('GET', url, undefined, current);
+      if(!current() || generation !== loading) return;
+      requests.innerHTML = data.requests.map(r => `<p><a href="#/issue/${encodeURIComponent(r.ref)}">${esc(r.ref)}</a> · ${esc(states[r.state] || r.state)}</p>`).join('');
+      body.innerHTML = data.documents.length ? `<label>문서 선택<select id="doc-select">${data.documents.map(d => `<option value="${esc(d.path)}">${esc(d.path)} · ${d.status === 'available' ? '조회 가능' : d.status === 'missing' ? '아직 없어요' : '조회 불가'}</option>`).join('')}</select></label><p class="dim" id="doc-purpose"></p><div id="doc-content"></div>` : '<div class="empty">아직 문서가 없어요. 설명을 저장하고 생성 Issue를 등록해 주세요.</div>';
+      const select = body.querySelector('#doc-select');
+      if(!select) return;
+      async function read(){
+        const token = ++selection, path = select.value;
+        const content = body.querySelector('#doc-content');
+        body.querySelector('#doc-purpose').textContent = data.documents.find(d => d.path === path)?.purpose || '';
+        content.innerHTML = '<div class="skeleton" role="status">문서를 불러오는 중이에요…</div>';
+        try {
+          const doc = await api('GET', `${url}/content?path=${encodeURIComponent(path)}`, undefined, current);
+          if(!current() || token !== selection) return;
+          content.innerHTML = doc.status === 'available' ? `<pre class="document-source" tabindex="0" aria-label="문서 원문">${esc(doc.content)}</pre>` : '<div class="empty">기준 브랜치에 아직 문서가 없어요. 생성 Issue의 진행 상태와 병합 여부를 확인해 주세요.</div>';
+        } catch(e){ if(current() && token === selection) content.innerHTML = `<div class="empty">${esc(e.message)} 새로고침으로 다시 시도해 주세요.</div>`; }
+      }
+      select.onchange = read; await read();
+    } catch(e){ if(current() && generation === loading) body.innerHTML = `<div class="empty">${esc(e.message)} 새로고침으로 다시 시도해 주세요.</div>`; }
+  }
+  panel.querySelector('#docs-refresh').onclick = load;
+  const buttons = [...panel.querySelectorAll('[data-doc-provider]')];
+  buttons.forEach(button => button.onclick = async () => {
+    if(requesting) return;
+    if(!project.description?.trim()) { message.textContent = '관리 탭에서 프로젝트 설명을 입력하고 저장해 주세요.'; return; }
+    if(project.archived) { message.textContent = '보관을 해제한 뒤 다시 시도해 주세요.'; return; }
+    if(!confirm('생성 Issue를 등록하고 유료 검토 대기열에 연결할까요? 문서 작성은 Plan 승인 후 별도 실행해요.')) return;
+    requesting = true; buttons.forEach(b => b.disabled = true);
+    const original = button.textContent; button.textContent = '등록 중…';
+    try {
+      const result = await api('POST', `${url}/request`, {provider:button.dataset.docProvider}, current);
+      if(!current()) return;
+      message.innerHTML = `<a href="#/issue/${encodeURIComponent(result.ref)}">${esc(result.ref)}</a> · ${result.queue_error ? `Issue는 등록됐지만 검토 연결에 실패했어요. 같은 버튼으로 다시 시도해 주세요. ${esc(result.queue_error)}` : result.reviewed ? '검토된 Issue예요. Plan과 승인 상태를 확인해 주세요.' : result.reused ? '기존 생성 요청에 연결했어요.' : '생성 요청을 등록했어요.'}`;
+      await load();
+    } catch(e){ if(current()) message.textContent = `${e.message} 같은 버튼으로 다시 시도해 주세요.`; }
+    finally { requesting = false; buttons.forEach(b => b.disabled = false); button.textContent = original; }
+  });
+  load();
 }
 
 // ---- 시작 ----

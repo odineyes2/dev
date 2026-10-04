@@ -107,6 +107,89 @@ def check_project_dialog(page, shots):
     page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
 
 
+def check_project_documents(page, shots):
+    """설명 저장과 문서 요청·재시도·원문 안전성·반응형 화면을 검사한다."""
+    page.click('#project-create')
+    page.fill('#p-key', 'DOC'); page.fill('#p-name', '문서 프로젝트')
+    page.fill('#p-path', '/mock/docs'); page.fill('#p-description', '제품 의도 <script>')
+    page.click('#project-form button[type=submit]')
+    page.wait_for_selector('[data-edit="DOC"]')
+    assert next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key'] == 'DOC')['description'] == '제품 의도 <script>'
+    page.click('[data-edit="DOC"]'); page.fill('#p-description', '수정한 설명')
+    page.click('#project-form button[type=submit]')
+    page.wait_for_selector('#p-description')
+    page.wait_for_function("document.querySelector('#p-description').value === '수정한 설명'")
+    docs = [{'path':'AGENTS.md','purpose':'작업 규칙','status':'available'},
+            {'path':'docs/project/01_PRD.md','purpose':'요구사항','status':'missing'}]
+    def listing(route):
+        route.fulfill(json={'documents':docs, 'requests':[{'ref':'DOC-1','state':'merge_pending'}]})
+    def content(route):
+        route.fulfill(json={'status':'missing'} if '01_PRD' in route.request.url else
+                      {'status':'available','content':'# 규칙\n<script>window.docAttack=1</script>\n<img src=x onerror="window.docAttack=2">'})
+    calls, pending = [], []
+    def request(route):
+        calls.append(route.request.post_data_json['provider'])
+        if len(calls) == 1:
+            pending.append(route)
+        else:
+            route.fulfill(json={'ref':'DOC-1','reused':True})
+    page.route('**/api/projects/DOC/documents', listing)
+    page.route('**/api/projects/DOC/documents/content?*', content)
+    page.route('**/api/projects/DOC/documents/request', request)
+    page.click('[data-project-tab="documents"]')
+    page.wait_for_selector('.document-source')
+    assert '<script>' in page.inner_text('.document-source')
+    assert page.evaluate('window.docAttack || 0') == 0
+    assert page.locator('#doc-content script, #doc-content img').count() == 0
+    assert '병합 대기' in page.inner_text('#docs-requests')
+    for scheme in ('light','dark'):
+        page.evaluate("s => {localStorage.setItem('dev.theme',s); document.documentElement.dataset.theme=s}", scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width, tag in ((1300,'desktop'),(390,'mobile')):
+            page.set_viewport_size({'width':width,'height':850})
+            page.wait_for_timeout(200)
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'project_docs_{scheme}_{tag}.png'), full_page=True)
+            page.click('[data-project-tab="manage"]')
+            assert page.input_value('#p-description') == '수정한 설명'
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'project_manage_{scheme}_{tag}.png'), full_page=True)
+            page.click('[data-project-tab="documents"]'); page.wait_for_selector('.document-source')
+    page.select_option('#doc-select', 'docs/project/01_PRD.md')
+    page.wait_for_selector('#doc-content .empty')
+    assert '기준 브랜치' in page.inner_text('#doc-content')
+    page.click('[data-doc-provider="codex"]')
+    page.wait_for_function("document.querySelector('[data-doc-provider=codex]').disabled")
+    assert page.is_disabled('[data-doc-provider="claude"]')
+    page.evaluate("document.querySelector('[data-doc-provider=codex]').click()")
+    assert calls == ['codex'] and len(pending) == 1
+    pending.pop().fulfill(json={'ref':'DOC-1','queue_error':'연결 실패','retryable':True})
+    page.wait_for_selector('#docs-message:text("연결에 실패")')
+    assert page.locator('#docs-message a').get_attribute('href') == '#/issue/DOC-1'
+    page.click('[data-doc-provider="codex"]')
+    page.wait_for_selector('#docs-message:text("기존 생성 요청")')
+    page.click('[data-doc-provider="claude"]')
+    page.wait_for_function("!document.querySelector('[data-doc-provider=claude]').disabled")
+    assert calls == ['codex','codex','claude']
+    docs.clear(); page.click('#docs-refresh')
+    page.wait_for_selector('#docs-body .empty')
+    assert '아직 문서가 없어요' in page.inner_text('#docs-body')
+    docs.append({'path':'AGENTS.md','purpose':'작업 규칙','status':'available'})
+    page.click('#docs-refresh'); page.wait_for_selector('.document-source')
+    # 키보드로 서브탭과 문서 선택에 접근한다.
+    page.focus('[data-project-tab="manage"]'); page.keyboard.press('Enter')
+    assert page.locator('#p-description').is_visible()
+    page.focus('[data-project-tab="documents"]'); page.keyboard.press('Enter')
+    page.wait_for_selector('#doc-select'); page.focus('#doc-select')
+    assert page.locator('#doc-select').evaluate('e => e === document.activeElement')
+    page.unroute('**/api/projects/DOC/documents', listing)
+    page.unroute('**/api/projects/DOC/documents/content?*', content)
+    page.unroute('**/api/projects/DOC/documents/request', request)
+    assert page.request.delete(BASE + '/api/projects/DOC', headers={'X-Requested-With':'dev'}).ok
+    page.set_viewport_size({'width':1300,'height':850})
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+
+
 def check_project_flows(page, shots, answers, asked):
     """문자열 제안과 임시 DB의 생성·삭제·재확인을 검사한다."""
     cases = [
@@ -786,6 +869,7 @@ try:
         page.goto(BASE + "/#/projects")
         check_project_dialog(page, shots)
         check_project_flows(page, shots, answers, asked)
+        check_project_documents(page, shots)
         if '--project-flows-only' in sys.argv:
             assert not errs, errs
             print('OK: project flows')
@@ -801,7 +885,7 @@ try:
         page.click("#project-form button[type=submit]")
         page.wait_for_function("p => [...document.querySelectorAll('td')].some(td => td.textContent === p)",
                                arg=r"C:\Users\Simon Lomebrote\Projects\nightshift")
-        assert not page.is_disabled("#p-key")   # 저장하면 추가 폼으로 돌아온다
+        assert page.is_disabled("#p-key")   # 저장 후에도 현재 프로젝트 관리 범위를 유지한다.
         page.click('[data-edit="NS"]'); page.click("#p-cancel")
         page.check('[data-archive="NS"]')
         page.wait_for_function("projects.find(p => p.key === 'NS').archived")
