@@ -949,7 +949,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       <label class="actions">${ed ? '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">저장</button>'
         : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">프로젝트 추가</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
     ${ed ? '' : '</dialog>'}
-    ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex">코덱스 공식문서 만들기</button><button type="button" data-doc-provider="claude">클로드 공식문서 만들기</button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
+    ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg><span>Codex 문서 생성</span></button><button type="button" data-doc-provider="claude"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg><span>Claude 문서 생성</span></button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
     ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
@@ -1087,14 +1087,15 @@ function bindProjectDocuments(project){
     if(project.archived) { message.textContent = '보관을 해제한 뒤 다시 시도해 주세요.'; return; }
     if(!confirm('생성 Issue를 등록하고 유료 검토 대기열에 연결할까요? 문서 작성은 Plan 승인 후 별도 실행해요.')) return;
     requesting = true; buttons.forEach(b => b.disabled = true);
-    const original = button.textContent; button.textContent = '등록 중…';
+    const label = button.querySelector('span');
+    const original = label.textContent; label.textContent = '등록 중…';
     try {
       const result = await api('POST', `${url}/request`, {provider:button.dataset.docProvider}, current);
       if(!current()) return;
       message.innerHTML = `<a href="#/issue/${encodeURIComponent(result.ref)}">${esc(result.ref)}</a> · ${result.queue_error ? `Issue는 등록됐지만 검토 연결에 실패했어요. 같은 버튼으로 다시 시도해 주세요. ${esc(result.queue_error)}` : result.reviewed ? '검토된 Issue예요. Plan과 승인 상태를 확인해 주세요.' : result.reused ? '기존 생성 요청에 연결했어요.' : '생성 요청을 등록했어요.'}`;
       await load();
     } catch(e){ if(current()) message.textContent = `${e.message} 같은 버튼으로 다시 시도해 주세요.`; }
-    finally { requesting = false; buttons.forEach(b => b.disabled = false); button.textContent = original; }
+    finally { requesting = false; buttons.forEach(b => b.disabled = false); label.textContent = original; }
   });
   load();
 }
