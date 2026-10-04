@@ -838,6 +838,30 @@ def check_review_buttons(page, ref, shots):
     page.reload(); page.wait_for_selector('#ask-review')
 
 
+def check_rollback_waiting(page, shots):
+    """거절 요청이 On Hold를 반환하면 상세와 보류 상태를 유지한다."""
+    for scheme in ('light', 'dark'):
+        for width, height, tag in ((1300, 850, 'desktop'), (390, 800, 'mobile')):
+            ref = page.request.post(BASE + '/api/issues', data={'project': 'NS', 'title': '롤백 운영 확인'}, headers=H).json()['ref']
+            page.request.post(f'{BASE}/api/issues/{ref}/status', data={'status': 'in_review'}, headers=H)
+            page.emulate_media(color_scheme=scheme); page.set_viewport_size({'width': width, 'height': height})
+            page.evaluate("scheme => {localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme}", scheme)
+            page.goto(BASE + f'/#/issue/{ref}')
+            page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim() === ref", arg=ref)
+            url = f'**/api/issues/{ref}/status'
+            def pending(route):
+                response = page.request.post(f'{BASE}/api/issues/{ref}/status', data={'status': 'on_hold', 'note': '운영 확인 대기'}, headers=H)
+                route.fulfill(status=200, json=response.json())
+            page.route(url, pending)
+            page.click('#result-actions [data-to=closed]')
+            page.fill('#result-note', '방향이 달라요'); page.click('#result-send')
+            page.wait_for_function("document.querySelector('#status')?.value === 'on_hold'")
+            assert page.evaluate('location.hash') == f'#/issue/{ref}'
+            assert '운영 반영' in page.locator('#toast').inner_text()
+            page.screenshot(path=str(shots / f'rollback_waiting_{scheme}_{tag}.png'), full_page=True)
+            page.unroute(url, pending)
+
+
 def check_edit_saving(page, shots):
     """본문과 Plan의 지연·실패·재시도 및 저장 값 스냅샷을 검사한다."""
     ref = page.request.post(f'{BASE}/api/issues', data={
@@ -1022,14 +1046,17 @@ try:
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
         check_account_menu(page, shots)
-        if '--edit-saving-only' in sys.argv:
+        if '--edit-saving-only' in sys.argv or '--rollback-only' in sys.argv:
             H = {'X-Requested-With': 'dev'}
             page.wait_for_selector('#list-body[aria-busy="false"]')
             assert page.request.post(BASE + '/api/projects', data={'key': 'NS', 'name': '저장 검사'}, headers=H).ok
             previous = page.request.post(BASE + '/api/issues', data={'project': 'NS', 'title': '이전 화면'}, headers=H).json()['ref']
             page.goto(BASE + f'/#/issue/{previous}')
             page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim() === ref", arg=previous)
-            check_edit_saving(page, shots)
+            if '--rollback-only' in sys.argv:
+                check_rollback_waiting(page, shots)
+            else:
+                check_edit_saving(page, shots)
             assert not errs, errs
             print('OK: edit saving')
             sys.exit(0)
@@ -1497,6 +1524,7 @@ try:
         assert page.is_enabled("#ask-codex-review")
         check_review_buttons(page, fresh, shots)
         check_edit_saving(page, shots)
+        check_rollback_waiting(page, shots)
         page.goto(BASE + f'/#/issue/{fresh}'); page.wait_for_selector('#ask-codex-review')
         for scheme in ("light", "dark"):
             page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)

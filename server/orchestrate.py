@@ -33,7 +33,7 @@ from execute import BASE_BRANCH, SECRET_ENV, _run_git, branch_name
 
 SETTINGS = config.DATA_DIR / "orchestrate.json"
 GIT_ID = ["-c", "user.name=dev orchestrator", "-c", "user.email=orchestrator@dev.local"]
-_lock = threading.Lock()   # ponytail: 프로세스 전체에 병합 하나씩 — 프로젝트별 잠금은 동시 병합이 필요해지면
+_lock = threading.RLock()   # 병합과 거절 롤백을 같은 순서로 직렬화한다.
 DEFAULTS = {"restart_when": ["server/*", "ecosystem.config.js"], "restart_cmd": "npx pm2 restart ecosystem.config.js --only {app} --update-env",
             "health_seconds": 60, "wait_minutes": 60, "poll_seconds": 30}
 
@@ -217,6 +217,8 @@ def merge_state(issue: dict, cfg: dict | None = None) -> str | None:
     cfg를 주면 settings()를 다시 읽지 않는다(Task 여러 개를 한 번에 볼 때)."""
     for e in reversed(issue.get("events", [])):
         b = e["body"] or ""
+        if e['kind'] == 'comment' and b.startswith('↩'):
+            return '롤백 확인 필요' if ('닫지' in b or '재시작 확인 전' in b) else '되돌림'
         if e["kind"] == "comment" and b.startswith("🛠"):   # 다시 실행을 맡겼으면 이전 병합 흔적은 지난 일
             break
         if e["kind"] == "comment" and b.startswith("⏳"):

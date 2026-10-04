@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 import auth
 import config
@@ -17,6 +18,8 @@ from mcp_tools import mcp_app
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    import rollback
+    rollback.start_recovery(startup=True)
     jobs.start_timer()   # 남은 대기열을 이어서 돌리고 60초마다 펌프(DEV-43)
     async with mcp_app.lifespan(app):   # MCP(streamable HTTP)의 세션 관리자도 같이 띄운다
         yield
@@ -380,7 +383,7 @@ def api_delete_issue(ref: str, request: Request):
 @app.post("/api/issues/{ref}/status")
 async def api_set_status(ref: str, request: Request):
     b = await json_body(request)
-    return issues.set_status(actor(request), ref, b.get("status"), b.get("note", ""))
+    return await run_in_threadpool(issues.set_status, actor(request), ref, b.get("status"), b.get("note", ""))
 
 
 @app.post("/api/issues/{ref}/complete-tree")
@@ -460,7 +463,7 @@ async def api_decision(ref: str, request: Request):
     running = review.running_ref()
     if running and issues.get_issue(ref)["ref"] == running:
         raise issues.StoreError("검토가 돌고 있어요 — 끝나면 결정해 주세요.", 409)
-    return issues.decide(actor(request), ref, b.get("verdict"), b.get("note", ""), b.get("plan_version"))
+    return await run_in_threadpool(issues.decide, actor(request), ref, b.get("verdict"), b.get("note", ""), b.get("plan_version"))
 
 
 # 화면 — API 라우트 뒤에 붙여야 /api가 가려지지 않는다(마운트는 반드시 마지막).

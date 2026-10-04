@@ -769,8 +769,12 @@ async function renderIssue(ref){
   view.querySelectorAll('tr.row').forEach(r => r.addEventListener('click', (e) => { if(!e.target.closest('a')) location.hash = `#/issue/${r.dataset.ref}`; }));
   // done/closed로 끝내면 목록으로 돌아간다(DEV-5) — 끝난 이슈 화면에 머물 일은 없다.
   const setStatus = async (status, note) => {
-    try{ await api('POST', `/api/issues/${R}/status`, note === undefined ? { status } : { status, note }); }
+    let updated;
+    try{ updated = await api('POST', `/api/issues/${R}/status`, note === undefined ? { status } : { status, note }); }
     catch(e){ reload(); return; }
+    if(status === 'closed' && updated.status !== 'closed'){
+      toast('롤백 후 운영 반영을 확인 중이에요 — 보류 상태로 남겨요.'); await reload(); return;
+    }
     if(status === 'done' || status === 'closed'){ toast(`${it.ref}을(를) 끝냈어요`); location.hash = '#/'; }
     else reload();
   };
@@ -824,7 +828,8 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
   }
   if($('decision-actions')){
     let verdict = null;
-    const send = async (v, note) => { await api('POST', `/api/issues/${R}/decision`, { verdict: v, note, plan_version: it.plan.version });
+    const send = async (v, note) => { const updated = await api('POST', `/api/issues/${R}/decision`, { verdict: v, note, plan_version: it.plan.version });
+      if(v === 'reject' && updated.status !== 'closed'){ toast('롤백 후 운영 반영을 확인 중이에요 — 보류 상태로 남겨요.'); await reload(); return; }
       toast(v === 'reject' ? `${it.ref}을(를) 거절해서 닫았어요` : '결정을 남겼어요'); if(v === 'reject') location.hash = '#/'; else reload(); };
     $('decision-actions').querySelectorAll('button').forEach(b => b.addEventListener('click', (e) => {
       verdict = b.dataset.verdict;
