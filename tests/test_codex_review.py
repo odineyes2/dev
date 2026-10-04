@@ -27,6 +27,7 @@ if os.name == 'nt':
     del os.environ['DEV_CODEX_WINDOWS_SANDBOX']
 assert 'test-secret' not in ' '.join(cmd)
 mcp = next(v for v in cmd if v.startswith('mcp_servers='))
+assert 'list_issue_types' in mcp and 'classify_issue' in mcp and 'create_issue_type' not in mcp
 assert 'required=true' in mcp and 'post_plan' in mcp and 'link_commit' not in mcp
 policy = tomllib.loads(mcp)['mcp_servers']['dev']
 assert policy['default_tools_approval_mode'] == 'prompt'
@@ -46,6 +47,10 @@ import db,issues
 time.sleep(.3)
 actor = {'kind': 'agent', 'id': 1, 'name': 'codex-test', 'model': 'test'}
 issues.post_plan(actor, sys.argv[1], 'Review plan')
+current = issues.get_issue(sys.argv[1])
+if not current['type_ids']:
+    catalog = issues.list_issue_types()
+    issues.classify_issue(actor, sys.argv[1], [t['id'] for t in catalog[:2]], current['type_revision'])
 issue = issues.get_issue(sys.argv[1])
 if issue['title_missing']:
     issues.update_issue(actor, sys.argv[1], {'title': 'Reviewed title'})
@@ -89,6 +94,7 @@ with TestClient(A.app) as c:
         assert run['provider'] == 'codex' and run['status'] == 'ok'
         assert run['input_tokens'] == 100 and run['output_tokens'] == 12 and run['cost_usd'] is None
         issue = issues.get_issue(ref)
+        assert issue['type_ids'] == [1, 2] and all(t['source'] == 'agent' for t in issue['types'])
         assert issue['status'] == 'triage'
         assert any(e['kind'] == 'status' and e['data']['to'] == 'in_progress' for e in issue['events'])
     c.post('/api/issues/CX-4/review', json={'provider': 'codex'}, headers=H)
@@ -159,6 +165,26 @@ with TestClient(A.app) as c:
     wait_idle()
     assert review.list_runs('CX-3')[0]['status'] == 'ok'
     assert issues.get_issue('CX-3')['status'] == 'on_hold'
+    # 계획서만 등록하고 분류를 생략하면 실패하고, 다음 검토에서 재시도한다.
+    retry_ref = c.post('/api/issues', json={'project': 'CX', 'title': 'Classification retry'}, headers=H).json()['ref']
+    no_classification = success_script.split("current = issues.get_issue")[0]
+    fake.write_text(no_classification + 'print(' + repr(events) + ')\n', 'utf-8')
+    c.post('/api/issues/' + retry_ref + '/review', json={'provider': 'codex'}, headers=H)
+    wait_idle()
+    assert review.list_runs(retry_ref)[0]['status'] == 'failed'
+    assert '자동 분류' in review.list_runs(retry_ref)[0]['note']
+    fake.write_text(success_script + 'print(' + repr(events) + ')\n', 'utf-8')
+    c.post('/api/issues/' + retry_ref + '/review', json={'provider': 'codex'}, headers=H)
+    wait_idle()
+    assert review.list_runs(retry_ref)[0]['status'] == 'ok'
+    assert len(review.list_runs(retry_ref)) == 2
+    # 사람이 정한 복수 종류는 재검토에서도 출처와 선택을 보존한다.
+    issues.update_issue(human, retry_ref, {'type_ids': [3, 4]})
+    c.post('/api/issues/' + retry_ref + '/review', json={'provider': 'codex'}, headers=H)
+    wait_idle()
+    selected = issues.get_issue(retry_ref)
+    assert selected['type_ids'] == [3, 4] and all(t['source'] == 'human' for t in selected['types'])
+    assert review.list_runs(retry_ref)[0]['status'] == 'ok'
     del os.environ['DEV_CODEX_AGENT_KEY']
     result = c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()
     assert result['queued'] and 'DEV_CODEX_AGENT_KEY' in result['note']

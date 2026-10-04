@@ -107,6 +107,12 @@ def list_issue_types(include_inactive: bool = False) -> list[dict]:
 
 
 @mcp.tool
+def classify_issue(ref: str, type_ids: list[int], expected_revision: int) -> dict:
+    """미분류 이슈만 자동 분류한다. get_issue의 type_revision을 전달한다. 기존 선택은 보존한다."""
+    return _call(issues.classify_issue, _actor(), ref, type_ids, expected_revision)
+
+
+@mcp.tool
 def create_issue_type(name: str) -> dict:
     """이슈 종류를 추가한다. 관리자만 허용한다."""
     return _call(issues.create_issue_type, _actor(), name)

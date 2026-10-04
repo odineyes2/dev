@@ -15,7 +15,8 @@ human = {"kind": "human", "id": 1, "name": "admin", "model": None}
 agent = {"kind": "agent", "id": 1, "name": "claude", "model": "m"}
 db.init()
 issues.create_project(human, "NS", "nightshift")
-issues.create_issue(human, "NS", "알림 받을 이슈")
+# 알림 성공 검사는 분류 호출이 없는 모의 검토이므로 사람이 종류를 선택한다.
+issues.create_issue(human, "NS", "알림 받을 이슈", type_ids=[1])
 issues.create_issue(human, "NS", "Task 부모")
 task = issues.create_issue(human, "NS", "Task 하나", parent="NS-2")["ref"]
 
