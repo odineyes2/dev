@@ -180,12 +180,17 @@ def inspect_merge(path):
         return None
     assert issues.get_issue(auto_task['ref'])['status'] == 'in_progress'
     assert orchestrate.completion(auto_task['ref'])['phase'] == 'checking'
+def with_scratch(actor, ref, cwd, run_id, note):   # 에이전트가 지우지 못한 미추적 임시 파일(NS-32-2)은 완료를 막지 않는다
+    (Path(cwd) / '_scratch.py').write_text('x')
+    return linked_completion(actor, ref, cwd, run_id, note)
+execute.register_completion = with_scratch
 with patch.object(orchestrate, 'run_tests', side_effect=inspect_merge) as checked:
     execute.start(me, auto_task['ref'])
     wait_idle()
     assert checked.call_count == 2   # Task worktree 검사 + 시험 병합 검사
 assert issues.get_issue(auto_task['ref'])['status'] == 'in_review'
 assert orchestrate.completion(auto_task['ref'])['phase'] == 'complete'
+assert '_scratch.py' in orchestrate.completion(auto_task['ref'])['note']
 orchestrate.SETTINGS.write_text('{"EX":{"auto_merge":false}}')
 execute.register_completion = original_register
 print("OK")

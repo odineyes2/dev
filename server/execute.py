@@ -28,7 +28,7 @@ BUDGET_USD = float(os.environ.get("DEV_EXEC_BUDGET_USD") or 2)
 TIMEOUT_SEC = float(os.environ.get("DEV_EXEC_TIMEOUT_SEC") or 1800)
 WORKTREE_DIR = config.DATA_DIR.resolve() / "worktrees"   # 8.3 짧은 경로면 Claude가 쓰기 권한을 못 알아본다
 ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(python tests/*)", "Bash(git status:*)", "Bash(git diff:*)",
-                 "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)"] + [f"mcp__dev__{t}" for t in (
+                 "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(node --check:*)"] + [f"mcp__dev__{t}" for t in (
     "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "add_comment", "set_status", "link_commit", "claim_issue", "release_issue")]
 BLOCKED_TOOLS = ["WebFetch", "WebSearch", "NotebookEdit"] + [f"Bash({c}:*)" for c in (
     "git push", "git checkout", "git switch", "git reset", "git rebase", "git merge", "git worktree", "git branch", "git remote",
@@ -185,13 +185,16 @@ def register_completion(actor, ref, cwd, run_id, note):
     sha = _git(cwd, 'rev-parse', 'HEAD')
     if (Path(cwd).resolve() != worktree_path(ref).resolve()
             or _git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD') != branch_name(ref)
-            or _git(cwd, 'status', '--porcelain')
+            or _git(cwd, 'status', '--porcelain', '--untracked-files=no')   # 미추적 찌꺼기는 커밋에 안 들어가 병합과 무관 — 에이전트는 rm도 못 한다(NS-32-2)
             or not _git(cwd, 'log', '--oneline', f'{BASE_BRANCH}..HEAD')
             or not any(e['kind'] == 'commit' and e['data'].get('sha') == sha for e in issue['events'])):
         raise issues.StoreError('현재 Task의 깨끗한 worktree와 연결된 새 커밋이 필요해요.', 409)
     cfg = orchestrate.settings(issue['project_key'])
     with db.connect() as c:
         start_sha = c.execute('SELECT task_start_sha FROM runs WHERE id=?', (run_id,)).fetchone()[0]
+    leftover = [line[3:] for line in _git(cwd, 'status', '--porcelain', '--untracked-files=all').splitlines() if line.startswith('??')]
+    if leftover:
+        note += '\n\n🧹 커밋되지 않은 파일이 worktree에 남아 있어요(병합에는 안 들어가요): ' + ', '.join(f'`{f}`' for f in leftover[:20])
     stray = out_of_scope(issue, _git(cwd, 'diff', '--name-only', f'{start_sha or BASE_BRANCH}..HEAD').splitlines())
     if stray:   # 막지는 않는다(새 검사 파일 등 정당한 추가가 있다) — 검토하는 사람이 보게 남긴다
         note += '\n\n⚠️ Task의 바꿀 파일 밖 변경: ' + ', '.join(f'`{f}`' for f in stray[:20]) + (' 외' if len(stray) > 20 else '')
