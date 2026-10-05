@@ -191,9 +191,13 @@ def register_completion(actor, ref, cwd, run_id, note):
         raise issues.StoreError('현재 Task의 깨끗한 worktree와 연결된 새 커밋이 필요해요.', 409)
     cfg = orchestrate.settings(issue['project_key'])
     with db.connect() as c:
+        start_sha = c.execute('SELECT task_start_sha FROM runs WHERE id=?', (run_id,)).fetchone()[0]
+    stray = out_of_scope(issue, _git(cwd, 'diff', '--name-only', f'{start_sha or BASE_BRANCH}..HEAD').splitlines())
+    if stray:   # 막지는 않는다(새 검사 파일 등 정당한 추가가 있다) — 검토하는 사람이 보게 남긴다
+        note += '\n\n⚠️ Task의 바꿀 파일 밖 변경: ' + ', '.join(f'`{f}`' for f in stray[:20]) + (' 외' if len(stray) > 20 else '')
+    with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         row = issues._find(c, ref)
-        start_sha = c.execute('SELECT task_start_sha FROM runs WHERE id=?', (run_id,)).fetchone()[0]
         if sha == start_sha:
             raise issues.StoreError('이번 실행에서 새 Task 커밋이 만들어지지 않았어요.', 409)
         latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (row['id'],)).fetchone()[0]
@@ -267,6 +271,18 @@ def _eligibility_reason(issue: dict, parent: dict | None, wait: bool = True) -> 
     if waiting and wait:
         return f"선행 Task({', '.join(waiting)})가 done이 되어야 해요."
     return None
+
+
+def out_of_scope(issue: dict, changed: list[str]) -> list[str]:
+    """Task 본문의 `바꿀 파일:` 목록에 없는 변경 파일(tests/ 아래 .py는 허용). 목록이 없으면 빈 목록.
+    Codex 경로는 `git add -A`라 검사가 만든 파일 같은 것도 그대로 커밋된다(NS-32-1의 캡처 PNG)."""
+    fields = re.findall(r"(?:\*\*)?(?:바꿀 파일|파일)(?:\*\*)?\s*:\s*([^\n|]+)", issue.get("body", ""))
+    allowed = {p.strip(" `*").replace("\\", "/").lstrip("./") for f in fields for p in re.split(r"[,、]", f)} - {""}
+    if not allowed:
+        return []
+    def ok(path):
+        return (path.startswith("tests/") and path.endswith(".py")) or any(path == a or path.startswith(a.rstrip("/") + "/") or path.rsplit("/", 1)[-1] == a for a in allowed)
+    return [p for p in changed if not ok(p)]
 
 
 def scope_reason(issue: dict, projects: list[dict] | None = None) -> str | None:

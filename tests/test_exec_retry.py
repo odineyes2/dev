@@ -43,3 +43,10 @@ assert status == "failed" and not registered and len(prompts) == 2
 status, prompts, registered = run([None])
 assert status == "ok" and registered and len(prompts) == 1
 print("ok")
+
+# 바꿀 파일 밖 변경 경고 — tests/ 아래 .py만 허용, 목록이 없으면 검사하지 않는다(NS-32-1 캡처 PNG).
+body = "**바꿀 파일**: server/app_parts/03-enhance.py, `server/model_registry.py`, static/\n\n**확인**: ..."
+changed = ["server/app_parts/03-enhance.py", "server/model_registry.py", "static/app.js", "tests/test_new.py", "tests/shots/a.png", "README.md", "server/other.py"]
+assert execute.out_of_scope({"body": body}, changed) == ["tests/shots/a.png", "README.md", "server/other.py"]
+assert execute.out_of_scope({"body": "파일 목록 없음"}, changed) == []
+print("ok scope")
