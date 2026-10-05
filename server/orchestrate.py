@@ -196,8 +196,10 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
         failed = run_tests(str(worktree))
         if failed:
             return 'changes_requested', f'시험 병합 전체 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
-        if _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip() != sha or _git(str(worktree), 'status', '--porcelain', '--untracked-files=no').stdout.strip():
-            return 'changes_requested', '검사 중 시험 병합 사본이 변경됐어요 — 검사 결과를 반영하지 않았어요.'
+        changed = _git(str(worktree), 'status', '--porcelain', '--untracked-files=no').stdout.strip()
+        if _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip() != sha or changed:
+            return 'changes_requested', ('검사 중 시험 병합 사본이 변경됐어요 — 검사 결과를 반영하지 않았어요. 검사가 커밋된 파일을 다시 쓰면 .gitignore에 넣거나 임시 폴더에 쓰게 고쳐 주세요.'
+                                         + (f'\n\n```\n{changed[:1500]}\n```' if changed else ''))
         if (_git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip() != BASE_BRANCH
                 or _git(repo, 'rev-parse', 'HEAD').stdout.strip() != before
                 or _git(repo, 'rev-parse', branch).stdout.strip() != task_sha
