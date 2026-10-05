@@ -1737,6 +1737,23 @@ try:
         page.wait_for_function("p => [...document.querySelectorAll('td')].some(td => td.textContent === p)",
                                arg=r"C:\Users\Simon Lomebrote\Projects\nightshift")
         assert page.is_disabled("#p-key")   # 저장 후에도 현재 프로젝트 관리 범위를 유지한다.
+        # Description 자동 작성 — POST 요청, 저장 안 한 변경이면 확인 창, 결과 문구·Issue 링크(모의 응답)
+        desc_posts, desc_dialogs = [], []
+        page.route("**/api/projects/NS/description/request", lambda route: (desc_posts.append(route.request.method), route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"ref": "NS-99", "provider": "codex", "reused": False}))))
+        page.click("#p-description-request")
+        page.wait_for_selector("#p-description-status a[href='#/issue/NS-99']")
+        assert desc_posts == ["POST"] and "선택된 에이전트: Codex" in page.inner_text("#p-description-status")
+        page.fill("#p-description", "저장 안 한 설명")
+        page.once("dialog", lambda d: (desc_dialogs.append(d.message), d.dismiss()))
+        page.click("#p-description-request")
+        page.wait_for_function("() => !document.querySelector('#p-description-request').disabled")
+        assert len(desc_dialogs) == 1 and "저장하지 않은 설명" in desc_dialogs[0] and desc_posts == ["POST"]
+        page.once("dialog", lambda d: (desc_dialogs.append(d.message), d.accept()))
+        with page.expect_response("**/api/projects/NS/description/request"):
+            page.click("#p-description-request")
+        assert len(desc_dialogs) == 2 and desc_posts == ["POST", "POST"]
+        page.unroute("**/api/projects/NS/description/request")
         page.click('[data-edit="NS"]'); page.click("#p-cancel")
         page.check('[data-archive="NS"]')
         page.wait_for_function("projects.find(p => p.key === 'NS').archived")
