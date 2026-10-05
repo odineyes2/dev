@@ -405,6 +405,12 @@ async def api_request_project_documents(key: str, request: Request):
     return project_docs.request_documents(actor(request), key, b.get('provider'))
 
 
+@app.post("/api/projects/{key}/description/request")
+async def api_request_project_description(key: str, request: Request):
+    import project_description
+    return await run_in_threadpool(project_description.request_description, human_only(request), key)
+
+
 @app.get("/api/projects/{key}/delete-check")
 def api_project_delete_check(key: str, request: Request):
     return issues.check_project_deletion(actor(request), key)

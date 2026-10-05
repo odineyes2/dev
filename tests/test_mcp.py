@@ -60,7 +60,11 @@ async def main():
         assert {"whoami", "list_issues", "get_issue", "claim_issue", "post_plan", "set_status", "add_comment",
                 "link_commit", "create_issue", "update_issue", "release_issue", "list_projects", "list_project_documents", "read_project_document"} <= names, names
         call = lambda tool_name, **kw: c.call_tool(tool_name, kw)
-        assert {'list_issue_types', 'create_issue_type', 'update_issue_type'} <= names
+        assert {'list_issue_types', 'create_issue_type', 'update_issue_type', 'write_project_description'} <= names
+        try:   # Description 요청 Issue가 아니면 쓰지 못한다
+            await c.call_tool("write_project_description", {"ref": "NS-1", "description": "x"}); raise AssertionError("write allowed")
+        except ToolError as e:
+            assert "Description 요청" in str(e)
         types = (await call('list_issue_types')).structured_content['result']
         assert len(types) == 4
         for name, args in [('create_issue_type', {'name': '금지'}), ('update_issue_type', {'type_id': 1, 'active': False})]:

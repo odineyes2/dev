@@ -470,6 +470,27 @@ ALTER TABLE project_auto_role_settings ADD COLUMN description_provider_order_jso
  CHECK(description_provider_order_json IN ('["claude","codex"]','["codex","claude"]'));
 """)
 
+# Description 자동 작성 요청(DEV-86) — 요청 Issue와 고른 provider, 에이전트가 바꾼 이전·새 설명을 남긴다.
+MIGRATIONS.append("""
+CREATE TABLE project_description_requests (
+    issue_id INTEGER PRIMARY KEY REFERENCES issues(id) ON DELETE CASCADE,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL CHECK (provider IN ('claude','codex')),
+    before_description TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX project_description_requests_project ON project_description_requests(project_id);
+CREATE TABLE project_description_events (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    issue_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+    actor TEXT NOT NULL,
+    before TEXT NOT NULL,
+    after TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+""")
+
 STATUSES += ("waiting",)
 
 
