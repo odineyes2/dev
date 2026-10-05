@@ -5,9 +5,9 @@ import db
 from issues import StoreError, actor_label
 
 PROVIDERS = ("claude", "codex")
-ORDER_FIELDS = ("provider_order", "orchestrator_provider_order", "troubleshooter_provider_order")
+ORDER_FIELDS = ("provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order")
 BOOL_FIELDS = ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "token_exhaustion_fallback")
-FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "token_exhaustion_fallback"}
+FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "token_exhaustion_fallback"}
 
 
 def _project(c, key):
@@ -28,6 +28,7 @@ def _settings(c, project):
         "provider_order": json.loads(row["provider_order_json"]) if row else list(PROVIDERS),
         "orchestrator_provider_order": json.loads(roles["orchestrator_provider_order_json"]) if roles else list(PROVIDERS),
         "troubleshooter_provider_order": json.loads(roles["troubleshooter_provider_order_json"]) if roles else list(PROVIDERS),
+        "description_provider_order": json.loads(roles["description_provider_order_json"]) if roles else list(PROVIDERS),
         "token_exhaustion_fallback": bool(roles["token_exhaustion_fallback"]) if roles else False,
         "auto_plan_approve": bool(row["auto_plan_approve"]) if row else False,
         "auto_plan_approve_available": True,
@@ -75,15 +76,18 @@ def update_settings(actor, key, changes):
             (project["id"], updated["auto_review"], updated["auto_execute"], updated["auto_approve"],
              json.dumps(updated["provider_order"], separators=(",", ":")), who, now, updated["auto_plan_approve"]))
         c.execute("""INSERT INTO project_auto_role_settings
-            (project_id,orchestrator_provider_order_json,troubleshooter_provider_order_json,token_exhaustion_fallback)
-            VALUES(?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+            (project_id,orchestrator_provider_order_json,troubleshooter_provider_order_json,token_exhaustion_fallback,
+             description_provider_order_json)
+            VALUES(?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
             orchestrator_provider_order_json=excluded.orchestrator_provider_order_json,
             troubleshooter_provider_order_json=excluded.troubleshooter_provider_order_json,
-            token_exhaustion_fallback=excluded.token_exhaustion_fallback""",
+            token_exhaustion_fallback=excluded.token_exhaustion_fallback,
+            description_provider_order_json=excluded.description_provider_order_json""",
             (project["id"],
              json.dumps(updated["orchestrator_provider_order"], separators=(",", ":")),
              json.dumps(updated["troubleshooter_provider_order"], separators=(",", ":")),
-             updated["token_exhaustion_fallback"]))
+             updated["token_exhaustion_fallback"],
+             json.dumps(updated["description_provider_order"], separators=(",", ":"))))
         after = _settings(c, project)
         c.execute("""INSERT INTO project_auto_settings_events
             (project_id,actor,before_json,after_json,created_at,plan_id_floor)

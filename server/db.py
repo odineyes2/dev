@@ -464,6 +464,12 @@ CREATE TRIGGER jobs_sort_key_last AFTER INSERT ON jobs WHEN NEW.sort_key IS NULL
 END;
 """)
 
+# Description 자동 작성 에이전트 우선순위(DEV-86) — 다른 역할과 같은 두 순서만 허용한다.
+MIGRATIONS.append("""
+ALTER TABLE project_auto_role_settings ADD COLUMN description_provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]'
+ CHECK(description_provider_order_json IN ('["claude","codex"]','["codex","claude"]'));
+""")
+
 STATUSES += ("waiting",)
 
 

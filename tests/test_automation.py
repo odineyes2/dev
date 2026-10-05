@@ -800,7 +800,8 @@ print('OK — 독립 Plan 승인과 Task 결과 승인 연속 동작')
 
 role_before = auto_settings.get_settings('NS')
 assert not role_before['token_exhaustion_fallback']
-for field in ('orchestrator_provider_order', 'troubleshooter_provider_order', 'provider_order'):
+assert role_before['description_provider_order'] == ['claude', 'codex']
+for field in ('orchestrator_provider_order', 'troubleshooter_provider_order', 'provider_order', 'description_provider_order'):
     before = auto_settings.get_settings('NS')
     after = auto_settings.update_settings(admin, 'NS', {field: ['codex', 'claude']})
     assert after[field] == ['codex', 'claude']
