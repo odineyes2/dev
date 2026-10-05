@@ -94,6 +94,9 @@ def prompt_for(ref: str) -> str:
    Task 하나로 끝날 일이면 한 줄만 쓴다(실행은 Task 단위라 승인 때 Task가 없으면 안 된다). 사람이 정해야 할 것은 마지막에 `## 정해야 할 것` 제목 아래 번호 목록(한 항목 한 줄, 추천 포함)으로
    쓴다 — 화면이 이 절을 사람의 답 칸에 인용한다. 없으면 절을 만들지 않는다.
    실행기는 해당 이슈 프로젝트의 전용 worktree 하나만 수정할 수 있다. 각 Task의 변경 파일은 그 저장소 안으로 한정한다.
+   실행기에는 외부 네트워크(웹 문서·외부 API·실제 계정)가 없고, Task는 반드시 파일 변경 커밋으로 끝나야 한다. 그러니 조사만 하는 Task,
+   외부 접속으로만 확인되는 Task(`파일: 없음`)는 만들지 않는다. 외부 계약은 이 검토에서 코드·저장소 근거로 정리하고, 모르는 부분은
+   모의 응답으로 구현·검사하는 Task로 쓰고 실제 확인은 사람의 후속 검사나 `## 정해야 할 것`으로 남긴다.
    다른 프로젝트 수정도 필요한 요구라면 해당 프로젝트에서 별도 이슈로 처리할 범위를 계획서에 명시한다.
    읽을 규칙 파일(AGENTS.md·CLAUDE.md 등)을 변경 파일 목록에 넣지 않는다. 파일 조회가 막히면 원인과 미확정 범위를 적고,
    코드 확인 없이 추측한 파일·실행 불가능한 선행 조건을 구현 Task로 확정하지 않는다.
@@ -283,7 +286,7 @@ def _kill_tree(proc) -> None:
 def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[str], cwd, env, timeout: float, label: str, provider: str = "claude", baseline_plan_id: int = 0) -> str:
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     name = "Codex" if provider == "codex" else "Claude Code"
-    spent, earlier = {}, ""
+    spent, earlier, held = {}, "", False
     for attempt in range(2 if label == "실행" else 1):
         code, note, status, out, err = None, "", "ok", "", ""
         try:
@@ -304,6 +307,13 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         for k, v in stats.items():   # 재시도까지 합친 토큰·비용
             spent[k] = (spent.get(k) or 0) + (v or 0)
         if status != "ok" or label != "실행":
+            break
+        now = issues.get_issue(ref)
+        last = next((e for e in reversed(now["events"]) if e["kind"] == "status"), {})
+        if now["status"] == "on_hold" and str(last.get("actor", "")).startswith("agent:"):   # 에이전트가 스스로 멈췄다(질문·외부 조건) — 실패가 아니라 사람 차례다
+            held = True
+            break
+        if provider == "codex" and re.search(r'"outcome"\s*:\s*"blocked"', text):   # 막혔다고 답했으면 검사할 것이 없다
             break
         # 병합 때 처음 실패를 알면 사람이 다시 실행해야 한다 — 완료 등록 전에 Task worktree에서 전체 검사를 돌려 한 번 스스로 고치게 한다.
         import orchestrate
@@ -347,13 +357,13 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         result = issues.get_issue(ref)
         if not result["type_ids"] and "goal" not in result.get("labels", []):
             status, note = "failed", "자동 분류가 저장되지 않았어요 — 종류 선택과 MCP 호출 결과를 확인하고 검토를 다시 맡겨 주세요."
-    if provider == "codex" and label == "실행" and status == "ok":
+    if provider == "codex" and label == "실행" and status == "ok" and not held:
         import execute
         try:
-            execute.finalize_codex(actor, ref, cwd, out, run_id)
+            held = execute.finalize_codex(actor, ref, cwd, out, run_id) == "held"
         except (issues.StoreError, ValueError, OSError) as e:
             status, note = "failed", f"Codex 실행을 완료하지 못했어요 — {e}"
-    if provider == 'claude' and label == '실행' and status == 'ok':
+    if provider == 'claude' and label == '실행' and status == 'ok' and not held:
         import execute
         try:
             execute.register_completion(actor, ref, cwd, run_id, text)
@@ -367,7 +377,10 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
         if exhausted and status != "ok":   # 이관 판단은 automation.sync가 이 기록을 보고 한 번만 한다
             c.execute("INSERT OR IGNORE INTO provider_run_failures(run_id,failure_reason) VALUES(?,'token_exhausted')", (run_id,))
-    if note or code:
+    if held:   # Claude는 on_hold 전환 때 이미 알림이 갔다
+        if provider == "codex":
+            notify.send(ref, "🚧 Codex가 진행할 수 없어 멈췄어요 — 확인해 주세요")
+    elif note or code:
         why = note or f"종료 코드 {code}"
         issues.add_comment(actor, ref, f"⚠️ {name} {label} 작업이 끝나지 못했어요 — {why}. 로그: `{log_path.name}`")
         notify.send(ref, f"⚠️ {label} 작업이 끝나지 못했어요", why, "high")
@@ -378,4 +391,4 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             pending = c.execute('SELECT 1 FROM execution_completion WHERE run_id=? AND auto_merge=1', (run_id,)).fetchone()
         if not pending:
             notify.send(ref, f"✅ {label} 완료 — 확인해 주세요")
-    return status
+    return "held" if held else status   # runs 행은 ok로 남는다(CHECK 제약) — 호출자는 병합하지 않는다

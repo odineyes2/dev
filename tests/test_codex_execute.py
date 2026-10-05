@@ -87,16 +87,19 @@ try:
         fake.write_text(output_script({'outcome': 'blocked', 'summary': 'Tests failed', 'tests': []}, False), 'utf-8')
         assert post('EX-1-2').json()['started']
         base.wait_idle()
-        assert review.list_runs('EX-1-2')[0]['status'] == 'failed'
-        assert issues.get_issue('EX-1-2')['status'] == 'changes_requested'
+        # 막힘(blocked)은 실패가 아니라 사람 차례 — on_hold로 두고 이유를 남긴다(backlog로 되돌려 같은 이유로 다시 돌지 않게, NS-31-1).
+        assert review.list_runs('EX-1-2')[0]['status'] == 'ok'
+        held = issues.get_issue('EX-1-2')
+        assert held['status'] == 'on_hold' and 'Tests failed' in held['events'][-1]['body']
         assert base.git(wt, 'rev-parse', 'HEAD').stdout == head and merged == ['EX-1-2']
+        issues.set_status(base.me, 'EX-1-2', 'changes_requested', 'retry')
         fake.write_text(output_script(result, False), 'utf-8')
         post('EX-1-2'); base.wait_idle()
         assert review.list_runs('EX-1-2')[0]['status'] == 'failed'
         assert '코드 변경' in review.list_runs('EX-1-2')[0]['note']
         assert merged == ['EX-1-2']
         # 대기 후 착수와 실패 복구, 시간 초과 후 재시도를 확인한다.
-        fake.write_text(output_script({'outcome': 'blocked', 'summary': 'retry', 'tests': []}, False), 'utf-8')
+        fake.write_text('import sys\nsys.exit(1)\n', 'utf-8')   # 진짜 실패는 착수 전 상태로 복구
         post('EX-1-2')
         queued = post(task['ref']).json()
         assert queued['queued'] and issues.get_issue(task['ref'])['status'] == 'waiting'

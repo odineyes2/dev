@@ -50,3 +50,25 @@ changed = ["server/app_parts/03-enhance.py", "server/model_registry.py", "static
 assert execute.out_of_scope({"body": body}, changed) == ["tests/shots/a.png", "README.md", "server/other.py"]
 assert execute.out_of_scope({"body": "파일 목록 없음"}, changed) == []
 print("ok scope")
+
+# 에이전트가 스스로 on_hold로 돌리면(외부 조건·질문) 실패가 아니다 — 검사·완료 등록을 하지 않고 on_hold를 둔다(NS-31-1).
+agent = {"kind": "agent", "id": 1, "name": "claude", "model": "m"}
+log_path, run_id = review.begin(human, issues.get_issue(task), "execute")
+seen = len(issues.get_issue(task)["events"])
+real = review.subprocess.Popen
+def ask_human(c, **kw):
+    issues.set_status(agent, task, "on_hold", "공식 문서를 볼 수 없어요")
+    return real(cmd, **kw)
+with patch.object(orchestrate, "run_tests", side_effect=AssertionError("held면 검사하지 않는다")), \
+     patch.object(review.subprocess, "Popen", side_effect=ask_human), patch.object(execute, "register_completion") as reg:
+    status = review.run_headless(human, task, log_path, run_id, [cmd[0], "-p", "지시"], None, None, 30, "실행")
+current = issues.get_issue(task)
+assert status == "held" and not reg.called and current["status"] == "on_hold", (status, current["status"])
+assert not any("끝나지 못했어요" in (e["body"] or "") for e in current["events"][seen:])
+assert review.list_runs(task)[0]["status"] == "ok"
+print("ok held")
+
+# 바꿀 파일이 없는(조사 전용) Task는 실행을 맡기지 않는다 — 커밋이 없어 매번 실패한다(NS-31-1).
+assert "바꿀 파일이 없어" in execute.scope_reason({"body": "**바꿀 파일**: 없음(읽기 전용 조사, 결과는 NS-31 댓글)", "project_key": "NS"}, [])
+assert execute.scope_reason({"body": "**바꿀 파일**: server/a.py", "project_key": "NS"}, []) is None
+print("ok no-file task")

@@ -158,7 +158,7 @@ ready나 in_review는 병합 성공을 뜻하지 않는다. 이슈 본문은 작
                        "-c", "sandbox_workspace_write.network_access=false", cmd[-1]]
 
 
-def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> None:
+def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> str | None:
     """마지막 구조화 응답을 확인한 뒤 서버가 worktree 변경만 커밋하고 결과를 등록한다."""
     messages = []
     for line in out.splitlines():
@@ -169,6 +169,10 @@ def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> None:
         except (ValueError, AttributeError, KeyError, TypeError):
             continue
     result = json.loads(messages[-1]) if messages else {}
+    if isinstance(result, dict) and result.get("outcome") == "blocked" and str(result.get("summary") or "").strip():
+        # 막힘은 실패가 아니라 사람의 결정·조건이 필요한 상태다. backlog로 되돌리면 같은 이유로 다시 돌게 된다(NS-31-1).
+        issues.set_status(actor, ref, "on_hold", "🚧 Codex가 진행할 수 없어요 — " + result["summary"].strip()[:3000])
+        return "held"
     if not isinstance(result, dict) or result.get("outcome") != "ready":
         why = result.get("summary", "완료 결과가 없어요.") if isinstance(result, dict) else "완료 결과가 없어요."
         raise issues.StoreError(str(why), 409)
@@ -263,7 +267,7 @@ def completion_blocked_reason(issue: dict, run_id: int) -> str | None:
                         (run_id, issue["id"])).fetchone()
         latest = c.execute("SELECT id FROM runs WHERE issue_id=? ORDER BY id DESC LIMIT 1", (issue["id"],)).fetchone()
         if not run or not latest or latest["id"] != run_id or issue["status"] != "in_progress" or not review.owned_start(c, issue["id"], run_id):
-            return "현재 Codex 실행의 착수 상태가 아니에요 — 완료 등록을 중단해요."
+            return "현재 실행의 착수 상태가 아니에요(이슈가 in_progress가 아니거나 다른 실행이 소유) — 완료 등록을 중단해요."
     parent = issues.get_issue(issue["parent_ref"]) if issue.get("parent_ref") else None
     return _eligibility_reason(issue, parent)
 
@@ -310,6 +314,9 @@ def scope_reason(issue: dict, projects: list[dict] | None = None) -> str | None:
     fields = re.findall(r"(?:\*\*)?(?:바꿀 파일|파일)(?:\*\*)?\s*:\s*([^\n|]+)", issue.get("body", ""))
     if not fields or not issue.get("project_key"):
         return None
+    if all(f.strip(" `*").startswith("없음") for f in fields):   # 실행은 커밋으로만 끝난다 — 조사 Task는 매번 실패한다(NS-31-1)
+        return ("이 Task는 바꿀 파일이 없어(조사·확인 전용) 실행을 맡길 수 없어요. 실행기는 외부 네트워크 없이 파일을 고쳐 커밋하는 일만 해요. "
+                "조사 결과는 사람이 확인해 댓글로 남기고 Done으로 바꿔 주세요.")
     files = "\n".join(fields).replace("\\", "/").casefold()
     others = []
     for project in projects if projects is not None else issues.list_projects():
