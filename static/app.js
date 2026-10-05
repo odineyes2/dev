@@ -657,7 +657,25 @@ function runsHtml(runs){
 const QUEUE_LINE = '다른 일이 돌고 있으면 끝난 뒤 차례로 시작해요.';
 function jobHtml(j){   // 이 이슈가 줄에 있으면 버튼 자리에 "대기 n번째 · 취소"
   return `<div class="queued"><span class="status" style="--sc:var(--s-waiting)">Waiting · ${PROVIDER_NAME[j.provider] || 'Claude'} 대기 ${j.position}번째</span>
-    <button class="ghost cancel-job" data-job="${j.id}">취소</button></div>${j.note ? `<div class="dim hint">${esc(j.note)}</div>` : ''}`;
+    ${moveJobHtml(j)}<button class="ghost cancel-job" data-job="${j.id}">취소</button></div>${j.note ? `<div class="dim hint">${esc(j.note)}</div>` : ''}`;
+}
+// 취소 옆 위·아래(DEV-85) — 화면에서 본 이웃을 같이 보내 그 사이 줄이 바뀌었으면 서버가 409로 거절한다
+function moveJobHtml(j){
+  return [['up', j.prev_id, 'arrow-up', '앞으로'], ['down', j.next_id, 'arrow-down', '뒤로']].map(([dir, nb, ic, word]) =>
+    `<button class="ghost move-job" data-job="${j.id}" data-dir="${dir}" data-neighbor="${nb ?? ''}"${nb == null ? ' disabled' : ''} title="${esc(j.ref)} ${word} 한 칸" aria-label="${esc(j.ref)} 대기 순서 ${word} 한 칸"><svg class="ico" aria-hidden="true"><use href="#i-${ic}"/></svg></button>`).join('');
+}
+let movingJob = false;
+async function moveJob(b){
+  if(movingJob) return;   // 요청 중 다른 화살표도 막는다 — 응답 전 순서로 또 옮기면 409만 난다
+  movingJob = true;
+  const { job, dir, neighbor } = b.dataset, inList = !!b.closest('#jobs-box');
+  view.querySelectorAll('.move-job').forEach(x => x.disabled = true);
+  try{ await api('POST', `/api/jobs/${job}/move`, { direction: dir, neighbor_id: neighbor ? +neighbor : null }); }
+  catch(e){ /* api()가 알림을 띄웠다 — 최신 순서를 다시 그린다 */ }
+  finally{ movingJob = false; }
+  await (inList ? loadJobs() : route()).catch(() => {});
+  const q = d => view.querySelector(`.move-job[data-job="${job}"][data-dir="${d}"]:not([disabled])`);
+  (q(dir) || q(dir === 'up' ? 'down' : 'up'))?.focus();
 }
 function queuedMsg(r, started){ return r && r.queued ? `대기열에 넣었어요 — ${r.position}번째` : started; }
 async function loadJobs(){   // 목록 화면 위의 "Claude 대기 n건" — 펼치면 대기 목록과 취소
@@ -668,9 +686,11 @@ async function loadJobs(){   // 목록 화면 위의 "Claude 대기 n건" — �
   const open = !!box.querySelector('details[open]');
   box.innerHTML = jobs.length ? `<details class="jobs"${open ? ' open' : ''}><summary><span class="status" style="--sc:var(--s-waiting)">Agent 대기 ${jobs.length}건</span></summary>
     <ul>${jobs.map(j => `<li><span class="ref">${j.position}</span> <a href="#/issue/${esc(j.ref)}">${esc(j.ref)}</a> ${PROVIDER_NAME[j.provider] || 'Claude'} ${RUN_MODE[j.mode] || esc(j.mode)}
-      ${j.note ? `<span class="dim">${esc(j.note)}</span>` : ''}<button class="ghost cancel-job" data-job="${j.id}">취소</button></li>`).join('')}</ul></details>` : '';
+      ${j.note ? `<span class="dim">${esc(j.note)}</span>` : ''}<span class="job-btns">${moveJobHtml(j)}<button class="ghost cancel-job" data-job="${j.id}">취소</button></span></li>`).join('')}</ul></details>` : '';
 }
 view.addEventListener('click', (e) => {
+  const m = e.target.closest('.move-job');
+  if(m){ e.stopPropagation(); moveJob(m); return; }
   const b = e.target.closest('.cancel-job');
   if(!b) return;
   e.stopPropagation();

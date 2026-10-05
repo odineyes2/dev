@@ -327,7 +327,10 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .jobs summary{ cursor:pointer; }
 .jobs ul{ list-style:none; margin:var(--sp-2) 0 0; padding:0; }
 .jobs li{ display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; padding:6px 0; font-size:13px; border-top:1px solid var(--border); }
-.jobs li .ghost{ margin-left:auto; }
+.jobs li .job-btns{ margin-left:auto; display:flex; align-items:center; gap:var(--sp-1); }
+.move-job{ padding:var(--sp-1); line-height:1; }
+.move-job:disabled{ opacity:.35; }
+@media (max-width: 800px){ .move-job, .queued .cancel-job, .jobs .cancel-job{ min-width:40px; min-height:40px; justify-content:center; } }
 
 .stage{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel)}
 

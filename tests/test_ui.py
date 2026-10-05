@@ -2102,6 +2102,12 @@ try:
                 assert 'Waiting' in page.inner_text('#stage')
                 assert "대기 2번째" in page.inner_text(".exec") and "선행 Task" in page.inner_text(".exec") and page.locator("#ask-execute").count() == 0
                 assert "대기 2번째" in page.inner_text("#stage")
+                # 위·아래(DEV-85) — 맨 끝이라 아래는 꺼지고 위만 켜진다
+                assert page.locator('.exec .move-job[data-dir="up"]').is_enabled() and page.locator('.exec .move-job[data-dir="down"]').is_disabled()
+                assert page.locator('.exec .move-job[data-dir="up"]').get_attribute("aria-label") == "DEV-4-2 대기 순서 앞으로 한 칸"
+                if tag == "mobile":
+                    box = page.locator('.exec .move-job[data-dir="up"]').bounding_box()
+                    assert box["width"] >= 40 and box["height"] >= 40, box
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_issue_{scheme}_{tag}.png"), full_page=True)
                 # 부모 Tasks 표(DEV-45) — 줄에 선 Task는 비활성 "실행 대기 중"
@@ -2132,6 +2138,24 @@ try:
                 page.goto(BASE + '/#/'); page.wait_for_selector('.jobs summary'); page.click('.jobs summary')
         assert page.request.get(f"{BASE}/api/issues/{pr}").json()["children"][0]["job"]["mode"] == "execute"
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
+        # 목록에서 위·아래(DEV-85) — 첫 항목의 위·끝 항목의 아래는 꺼짐, 옮긴 뒤에도 펼침과 포커스 유지
+        order = lambda: [j["issue_id"] for j in page.request.get(f"{BASE}/api/jobs").json()["jobs"]]
+        assert page.locator('.jobs li:first-child .move-job[data-dir="up"]').is_disabled()
+        assert page.locator('.jobs li:last-child .move-job[data-dir="down"]').is_disabled()
+        page.click('.jobs li:first-child .move-job[data-dir="down"]')
+        page.wait_for_function("document.querySelector('.jobs li:first-child a').textContent === 'DEV-4-2'")
+        assert order() == [i42, i41] and page.locator('.jobs details[open]').count() == 1
+        assert page.evaluate("document.activeElement.matches('.jobs li:last-child .move-job[data-dir=\"up\"]')")
+        # 다른 탭이 먼저 바꿨으면 409 — 화면은 최신 순서로 다시 그린다
+        j42, j41 = (j["id"] for j in page.request.get(f"{BASE}/api/jobs").json()["jobs"])
+        stale = page.request.post(f"{BASE}/api/jobs/{j41}/move", headers=H, data={"direction": "up", "neighbor_id": j41 + 999})
+        assert stale.status == 409 and order() == [i42, i41]
+        assert page.request.post(f"{BASE}/api/jobs/{j41}/move", headers=H, data={"direction": "up", "neighbor_id": j42}).ok   # 다른 탭
+        page.click('.jobs li:last-child .move-job[data-dir="up"]')   # 화면이 본 이웃(j42)이 낡아 409
+        page.wait_for_function("document.getElementById('toast').innerText.includes('바뀌었어요')")
+        page.wait_for_function("document.querySelector('.jobs li:first-child a').textContent === 'DEV-4-1'")
+        assert order() == [i41, i42] and page.locator('.jobs details[open]').count() == 1
+        page.screenshot(path=str(shots / "queue_move_light_desktop.png"), full_page=True)
         page.click(".jobs li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")
         page.wait_for_function("() => document.querySelector('.jobs summary') && document.querySelector('.jobs summary').innerText.includes('1건')")
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
@@ -2140,6 +2164,7 @@ try:
         assert b1.is_enabled() and "Claude" in b1.inner_text() and b2.is_disabled() and "실행 대기 중" in b2.inner_text()
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
         assert "대기 1번째" in page.inner_text(".exec")
+        assert page.locator(".exec .move-job:disabled").count() == 2   # 하나뿐이면 둘 다 꺼짐
         page.click(".exec .cancel-job"); page.wait_for_selector("#ask-execute")
         assert page.request.get(f"{BASE}/api/jobs").json()["jobs"] == []
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
