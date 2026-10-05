@@ -485,5 +485,7 @@ def merge_state(issue: dict, cfg: dict | None = None) -> str | None:
         if e["kind"] == "status" and b.startswith("🔀 자동 병합"):
             return "되돌림" if "revert" in b else "병합 대기" if e["data"].get("to") == "on_hold" else None
     if issue.get("status") == "in_review" and issue.get("parent_ref") and (cfg or settings(issue["project_key"])).get("auto_merge"):
-        return "병합 대기"
+        # 타임라인 흔적이 없어도(수동 병합·완료 기록 실패 뒤 병합, NS-32-2) 실제로 base에 들어갔으면 병합됨이다.
+        repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
+        return "병합됨" if repo and issue.get("ref") and _merged(repo, issue["ref"]) else "병합 대기"
     return None

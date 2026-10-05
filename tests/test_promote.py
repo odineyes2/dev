@@ -74,6 +74,8 @@ assert st(ev("status", "🔀 자동 병합: 병합 뒤 테스트가 실패해 re
 assert st(ev("status", "🔀 자동 병합: 선행 Task가 아직 병합되지 않아 병합 보류.", "on_hold")) == "병합 대기"
 assert st(ev("comment", "🔀 병합했어요"), ev("comment", "🛠 실행을 맡겼어요")) is None
 assert st(status="in_review", parent_ref=p, project_key="TP") == "병합 대기"   # 기본 켜짐
+assert st(status="in_review", parent_ref=p, project_key="TP", ref="TP-99-9") == "병합 대기"   # 브랜치가 base에 없음
+assert st(status="in_review", parent_ref=p, project_key="TP", ref=t1) == "병합됨"   # 흔적이 없어도 실제로 병합됐으면(NS-32-2)
 orchestrate.SETTINGS.write_text(json.dumps({"TP": {"auto_merge": False}}))
 assert st(status="in_review", parent_ref=p, project_key="TP") is None
 
