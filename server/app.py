@@ -568,6 +568,13 @@ def api_cancel_job(job_id: int, request: Request):
     return jobs.cancel(actor(request), job_id)
 
 
+@app.post("/api/jobs/{job_id}/move")
+async def api_move_job(job_id: int, request: Request):
+    me = human_only(request)
+    b = await json_body(request)
+    return jobs.move(me, job_id, b.get("direction"), b.get("neighbor_id"))
+
+
 @app.post("/api/issues/{ref}/decision")
 async def api_decision(ref: str, request: Request):
     b = await json_body(request)

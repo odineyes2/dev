@@ -21,7 +21,8 @@ print('OK')
 
 config.DB_PATH = Path(os.environ['DEV_DATA_DIR']) / 'legacy-role.db'
 with sqlite3.connect(config.DB_PATH) as c:
-    for i, sql in enumerate(db.MIGRATIONS[:-1], 1):
+    role_version = next(i for i, sql in enumerate(db.MIGRATIONS) if 'CREATE TABLE project_auto_role_settings' in sql)
+    for i, sql in enumerate(db.MIGRATIONS[:role_version], 1):
         c.executescript('BEGIN;' + sql + f'PRAGMA user_version={i};COMMIT;')
     c.execute("INSERT INTO projects(id,key,name,created_at) VALUES(1,'DEV','dev','old')")
     c.execute("INSERT INTO issues(id,project_id,number,title,reporter,created_at,updated_at) VALUES(1,1,1,'old','human:admin','old','old')")

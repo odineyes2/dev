@@ -4,7 +4,7 @@ Claude 맡기기 대기열(DEV-43) — 검토·실행을 여러 개 눌러 두�
 
 - enqueue: 사람만. 같은 이슈·같은 mode가 이미 줄에 있거나 도는 중이면 새로 넣지 않는다. 실행은 기다려도 풀리지 않는
   조건(Task 아님·계획서 미승인 등)만 거절하고, 선행 Task 미완료·저장소가 깨끗하지 않음은 줄에서 기다린다.
-- pump: 도는 것이 없으면 queued를 오래된 순으로 훑어 지금 시작할 수 있는 첫 항목을 기존 review.start/execute.start로 돌린다.
+- pump: 도는 것이 없으면 queued를 대기열 순서(sort_key — 기본은 넣은 순, 사람이 move로 바꿈)로 훑어 지금 시작할 수 있는 첫 항목을 기존 review.start/execute.start로 돌린다.
   막힌 실행 항목은 건너뛰고(note에 이유), 영영 못 도는 항목은 skipped + 댓글.
 - 펌프 시점: 넣을 때, 각 실행 스레드가 끝난 뒤(실행은 병합까지), 서버가 뜰 때, 그리고 60초 주기(선행 done 등을 놓치지 않게).
 """
@@ -28,13 +28,15 @@ def _actor(label: str) -> dict:
 def _rows(c, where: str = "j.status='queued'", args=()) -> list[dict]:
     return [dict(r) for r in c.execute(
         f"SELECT j.*, {issues.ref_sql('i', 'p')} AS ref FROM jobs j JOIN issues i ON i.id=j.issue_id JOIN projects p ON p.id=i.project_id "
-        f"WHERE {where} ORDER BY j.id", args)]
+        f"WHERE {where} ORDER BY j.sort_key, j.id", args)]
 
 
 def list_jobs() -> list[dict]:
-    """대기 중인 항목, 오래된 것이 먼저(position은 1부터)."""
+    """대기 중인 항목, 사람이 정한 순서(기본은 넣은 순서). position은 1부터, prev_id/next_id는 이동 버튼용 이웃."""
     with db.connect() as c:
-        return [{**j, "position": n} for n, j in enumerate(_rows(c), 1)]
+        rows = _rows(c)
+    ids = [None] + [j["id"] for j in rows] + [None]
+    return [{**j, "position": n, "prev_id": ids[n - 1], "next_id": ids[n + 1]} for n, j in enumerate(rows, 1)]
 
 
 def job_for(issue_id: int) -> dict | None:
@@ -153,6 +155,31 @@ def cancel(actor: dict, job_id: int) -> dict:
             raise issues.StoreError("대기 중인 항목이 아니에요.", 404)
         _restore(c, j)
     return {"cancelled": job_id}
+
+
+def move(actor: dict, job_id: int, direction: str, neighbor_id: int | None) -> dict:
+    """queued 항목을 이웃과 한 칸 바꾼다(사람만). neighbor_id는 화면에서 본 이웃 — 그 사이 바뀌었으면 409.
+    끝에서 더 미는 요청(이웃 없음)은 순서를 바꾸지 않는다."""
+    if actor["kind"] != "human":
+        raise issues.StoreError("대기열은 사람만 고칠 수 있어요.", 403)
+    if direction not in ("up", "down"):
+        raise issues.StoreError("방향은 up 또는 down이에요.", 400)
+    if neighbor_id is not None and type(neighbor_id) is not int:
+        raise issues.StoreError("이웃 항목 번호가 올바르지 않아요.", 400)
+    with _lock, db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        rows = c.execute("SELECT id, sort_key FROM jobs WHERE status='queued' ORDER BY sort_key, id").fetchall()
+        at = next((n for n, r in enumerate(rows) if r["id"] == job_id), None)
+        if at is None:
+            raise issues.StoreError("대기 중인 항목이 아니에요.", 404)
+        n = at - 1 if direction == "up" else at + 1
+        other = rows[n] if 0 <= n < len(rows) else None
+        if (other["id"] if other else None) != neighbor_id:
+            raise issues.StoreError("대기열이 그 사이 바뀌었어요 — 새로 고친 순서를 보고 다시 옮겨 주세요.", 409)
+        if other:
+            c.execute("UPDATE jobs SET sort_key=? WHERE id=?", (other["sort_key"], job_id))
+            c.execute("UPDATE jobs SET sort_key=? WHERE id=?", (rows[at]["sort_key"], other["id"]))
+    return {"moved": bool(other), "jobs": list_jobs()}
 
 
 def _set(job_id: int, status: str, note: str = "") -> None:

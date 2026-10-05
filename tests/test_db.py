@@ -81,7 +81,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
         after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
-        added = {'jobs': (None, 'manual', None, None, None, None), 'projects': ('',), 'runs': ('',)}.get(table, ())
+        added = {'jobs': (None, 'manual', None, None, None, None, 1), 'projects': ('',), 'runs': ('',)}.get(table, ())
         assert after == [r + added for r in before[table]], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=2').fetchone()
     assert job['source'] == 'manual'
@@ -119,7 +119,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings')] == [r + (0,) for r in settings_before]
     assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings_events')] == [r + (0,) for r in event_before]
-    assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == [r + (None, None) for r in job_before]
+    assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == [r + (None, None, r[0]) for r in job_before]
     assert c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='auto_run_gate'").fetchone()[0] == trigger_before
     assert c.execute('PRAGMA foreign_key_check').fetchall() == []
     c.execute('UPDATE project_auto_settings SET auto_approve=1 WHERE project_id=1')
@@ -129,5 +129,27 @@ with db.connect() as c:
     c.execute('DELETE FROM issues WHERE id=1')
     c.execute('DELETE FROM projects WHERE id=1')
     assert not c.execute('SELECT * FROM project_auto_settings_events').fetchall()
+db.config.DB_PATH = original_path
+
+# 대기열 순서(DEV-85) 도입 직전 판 — 기존 순서는 ID 순으로 보존하고, 정렬 키 없이 넣은 새 항목은 맨 뒤다.
+db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'order-legacy.db'
+with sqlite3.connect(db.config.DB_PATH) as c:
+    order_version = next(i for i, sql in enumerate(db.MIGRATIONS) if 'jobs_sort_key_last' in sql)
+    for version, sql in enumerate(db.MIGRATIONS[:order_version], 1):
+        c.executescript(sql + f'PRAGMA user_version={version};')
+    c.execute("INSERT INTO projects(key,name,created_at) VALUES('ORD','순서',?)", (now,))
+    c.execute("INSERT INTO issues(project_id,number,title,reporter,created_at,updated_at) VALUES(1,1,'이슈','human:admin',?,?)", (now, now))
+    for jid, status in ((3, 'queued'), (5, 'cancelled'), (9, 'queued')):
+        c.execute("INSERT INTO jobs(id,issue_id,mode,status,actor,created_at) VALUES(?,1,'review',?,'human:admin',?)", (jid, status, now))
+    jobs_before = c.execute('SELECT * FROM jobs ORDER BY id').fetchall()
+assert db.init() == len(db.MIGRATIONS) and db.init() == len(db.MIGRATIONS)
+with db.connect() as c:
+    assert [tuple(r) for r in c.execute('SELECT * FROM jobs ORDER BY id')] == [r + (r[0],) for r in jobs_before]
+    c.execute("UPDATE jobs SET sort_key=100 WHERE id=3")   # 사람이 옮긴 뒤에도 새 항목은 가장 큰 키 뒤로
+    new = c.execute("INSERT INTO jobs(issue_id,mode,status,actor,created_at) VALUES(1,'execute','queued','human:admin',?)", (now,)).lastrowid
+    assert c.execute('SELECT sort_key FROM jobs WHERE id=?', (new,)).fetchone()[0] == 101
+    kept = c.execute("INSERT INTO jobs(issue_id,mode,status,actor,created_at,sort_key) VALUES(1,'review','cancelled','human:admin',?,7)", (now,)).lastrowid
+    assert c.execute('SELECT sort_key FROM jobs WHERE id=?', (kept,)).fetchone()[0] == 7   # 명시한 키는 덮지 않는다
+    assert 'jobs_queue_order' in {r[1] for r in c.execute('PRAGMA index_list(jobs)')}
 db.config.DB_PATH = original_path
 print("OK")

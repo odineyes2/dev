@@ -260,3 +260,75 @@ with patch.object(orchestrate, 'recover', side_effect=lambda: sequence.append('r
     assert start.call_count == 1 and not jobs.list_jobs()
     assert sequence == ['recover', 'start', 'recover']
 print('OK completion queue boundary')
+
+# 대기열 순서 이동(DEV-85) — 사람만, 화면에서 본 이웃과 한 칸 교환, 재시작 후 유지, 펌프도 같은 순서.
+with db.connect() as c:
+    c.execute("UPDATE runs SET status='ok' WHERE status='running'")
+patch.object(orchestrate, 'recover').start()   # 앞 블록의 가짜 병합 기록이 실제 git을 부르지 않게
+issues.create_project(me, 'MV', 'move', '', '/unused')
+mv = [issues.create_issue(me, 'MV', t, type_ids=[1])['ref'] for t in ('a', 'b', 'c', 'd')]
+with patch.object(jobs, 'busy', return_value=True):
+    ja, jb, jc = (jobs.enqueue(me, r, 'review')['job_id'] for r in mv[:3])
+order = lambda: [j['id'] for j in jobs.list_jobs()]
+assert order() == [ja, jb, jc]
+assert [(j['prev_id'], j['next_id']) for j in jobs.list_jobs()] == [(None, jb), (ja, jc), (jb, None)]
+for args, status in ((({'kind': 'agent', 'id': 1}, jb, 'up', ja), 403), ((me, jb, 'left', ja), 400), ((me, jb, 'up', '1'), 400),
+                     ((me, 999999, 'up', None), 404), ((me, jb, 'up', jc), 409), ((me, jb, 'down', None), 409), ((me, jc, 'up', None), 409)):
+    try:
+        jobs.move(*args); raise AssertionError(args)
+    except issues.StoreError as e:
+        assert e.status == status, (args, e.status)
+assert order() == [ja, jb, jc]
+assert jobs.move(me, ja, 'up', None)['moved'] is False and jobs.move(me, jc, 'down', None)['moved'] is False   # 끝은 그대로
+assert order() == [ja, jb, jc]
+r = jobs.move(me, jc, 'up', jb)
+assert r['moved'] and [j['id'] for j in r['jobs']] == [ja, jc, jb]
+jobs.move(me, jc, 'up', ja)
+assert order() == [jc, ja, jb] and jobs.job_for(issues.get_issue(mv[2])['id'])['position'] == 1
+db.init(); jobs.reconcile()
+assert order() == [jc, ja, jb]   # 재시작 후에도 유지
+with patch.object(jobs, 'busy', return_value=True):
+    jd = jobs.enqueue(me, mv[3], 'review')['job_id']
+assert order() == [jc, ja, jb, jd]   # 새 등록은 맨 뒤
+jobs.cancel(me, ja)
+try:
+    jobs.move(me, ja, 'down', jb); raise AssertionError('취소한 항목은 못 옮겨요')
+except issues.StoreError as e:
+    assert e.status == 404
+jobs.move(me, jb, 'up', jc)
+assert order() == [jb, jc, jd]
+
+# 선행이 막힌 실행을 맨 앞으로 옮겨도 건너뛰고 뒤 항목부터, 나머지는 바뀐 순서대로 돈다.
+blocker = issues.create_issue(me, 'WT', 'blocker', parent=parent['ref'])
+blocked = issues.create_issue(me, 'WT', 'blocked', parent=parent['ref'])
+with db.connect() as c:
+    c.execute('INSERT INTO issue_deps VALUES(?,?)', (blocked['id'], blocker['id']))
+with patch.object(jobs, 'busy', return_value=True):
+    jx = jobs.enqueue(me, blocked['ref'], 'execute')['job_id']
+for neighbor in (jd, jc, jb):
+    jobs.move(me, jx, 'up', neighbor)
+assert order() == [jx, jb, jc, jd]
+started = []
+with patch.object(execute, 'start') as ex, patch.object(review, 'start', side_effect=lambda actor, ref, provider: started.append(ref)):
+    for _ in range(3):
+        jobs.pump()
+    ex.assert_not_called()
+assert started == [mv[1], mv[2], mv[3]], started
+assert order() == [jx] and jobs.list_jobs()[0]['note']
+jobs.cancel(me, jx)
+
+# REST — 사람만, 잘못된 본문은 400.
+with TestClient(A.app) as c:
+    with patch.object(jobs, 'busy', return_value=True):
+        ids = [jobs.enqueue(me, r, 'review')['job_id'] for r in mv[:2]]
+    c.cookies.set('ns_session', 'adm')
+    assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'up', 'neighbor_id': ids[0]}, headers=H).json()['moved']
+    assert order() == [ids[1], ids[0]]
+    assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'down', 'neighbor_id': ids[1]}, headers=H).status_code == 409
+    assert c.post(f'/api/jobs/{ids[1]}/move', json=[1], headers=H).status_code == 400
+    c.cookies.clear()
+    assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'down', 'neighbor_id': ids[0]}, headers={'Authorization': f'Bearer {key}'}).status_code == 403
+    assert order() == [ids[1], ids[0]]
+    for i in ids:
+        jobs.cancel(me, i)
+print('OK move')

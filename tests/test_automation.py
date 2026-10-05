@@ -34,7 +34,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
         added = (None, None) if table == 'jobs' else (0,) if table == 'project_auto_settings' else ('',) if table == 'runs' else ()
-        assert [r + added for r in before[table]] == [tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
+        assert [r + added + ((r[0],) if table == 'jobs' else ()) for r in before[table]] == [tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=?', (legacy['id'],)).fetchone()
     assert job['source'] == 'manual' and job['provider'] == 'codex'
     assert job['delegation_id'] is None and job['approval_version'] is None
@@ -932,3 +932,20 @@ assert execute.resume_reason('TOK-99', rid)
 assert execute.resume_reason('TOK-77', rid)
 automation.provider_available = real_available
 print('OK — 토큰 소진만 이관·도구별 1회·중복/OFF/수동 변경 차단·worktree 이어받기 검사')
+
+# DEV-85: 사람이 순서를 바꾼 뒤에도 Auto 등록은 대기열 맨 뒤에 선다.
+jobs._threads = 1   # 등록만 보고 펌프가 착수하지 않게
+issues.create_project(admin, 'ORD', '순서', '', '/fake')
+op = issues.create_issue(admin, 'ORD', 'parent')
+issues.post_plan(admin, op['ref'], 'plan')
+issues.decide(admin, op['ref'], 'approve', plan_version=1)
+auto_settings.update_settings(admin, 'ORD', {'auto_execute': True})
+first, second = (issues.create_issue(admin, 'ORD', t, parent=op['ref']) for t in ('first', 'second'))
+automation.sync()
+q = jobs.list_jobs()
+assert [j['issue_id'] for j in q[-2:]] == [first['id'], second['id']] and all(j['source'] == 'auto' for j in q[-2:])
+jobs.move(admin, q[-1]['id'], 'up', q[-2]['id'])
+third = issues.create_issue(admin, 'ORD', 'third', parent=op['ref'])
+automation.sync()
+assert [j['issue_id'] for j in jobs.list_jobs()[-3:]] == [second['id'], first['id'], third['id']]
+print('OK — 순서 이동 뒤 Auto 등록은 맨 뒤')
