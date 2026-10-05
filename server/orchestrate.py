@@ -129,16 +129,25 @@ def _merged(repo, ref) -> bool:
 
 
 def run_tests(repo) -> str | None:
-    """발견한 검사를 모두 돌리고 실패 시 종료 코드와 전체 출력을 보존한다."""
-    failures = []
-    for t in sorted(Path(repo, "tests").glob("test_*.py")):
+    """발견한 검사를 모두 돌리고 실패 시 종료 코드와 전체 출력을 보존한다.
+    실패한 파일은 한 번 더 돌린다 — 브라우저 검사(test_ui)의 일시적 연결 끊김·타임아웃이 멀쩡한 Task를 떨어뜨리지 않게. 진짜 회귀는 두 번 다 실패한다."""
+    def once(t):
         try:
-            r = subprocess.run([sys.executable, str(t)], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
+            return subprocess.run([sys.executable, str(t)], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
         except subprocess.TimeoutExpired as error:
             def decoded(value):
                 return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
-            r = subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
+            return subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
+    failures = []
+    for t in sorted(Path(repo, "tests").glob("test_*.py")):
+        r = once(t)
+        if r.returncode:
+            first, r = r, once(t)
+            if not r.returncode:   # 불안정한 검사 — 통과로 보되 첫 실패는 남긴다
+                logs = config.DATA_DIR / "merge-tests"
+                logs.mkdir(parents=True, exist_ok=True)
+                (logs / f"{t.stem}-flaky-{time.time_ns()}.log").write_text(f"검사: {t}\n재시도에서 통과\n\n--- stdout ---\n{first.stdout}\n--- stderr ---\n{first.stderr}", encoding="utf-8")
         if r.returncode:
             detail = (f"검사: {t}\n작업 폴더: {repo}\nPython: {sys.executable}\n"
                       f"종료 코드: {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n"

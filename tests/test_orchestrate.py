@@ -146,11 +146,18 @@ assert git('rev-parse', 'HEAD') == before and (repo / 'collision.txt').read_text
 
 # 첫 실패 뒤 나머지 검사도 실행하고, 시간 제한도 실패 로그로 남긴다.
 with patch.object(orchestrate.subprocess, 'run', side_effect=[
-        subprocess.TimeoutExpired(['python'], 600, output=b'partial'),
-        subprocess.CompletedProcess(['python'], 2, 'second failure', '')]) as run:
+        subprocess.TimeoutExpired(['python'], 600, output=b'partial'), subprocess.TimeoutExpired(['python'], 600, output=b'partial'),
+        subprocess.CompletedProcess(['python'], 2, 'second failure', ''), subprocess.CompletedProcess(['python'], 2, 'second failure', '')]) as run:
     with patch.object(orchestrate.Path, 'glob', return_value=[Path('tests/test_one.py'), Path('tests/test_two.py')]):
         note = orchestrate.run_tests(str(repo))
-assert run.call_count == 2 and '600초' in note and 'partial' in note and 'second failure' in note
+assert run.call_count == 4 and '600초' in note and 'partial' in note and 'second failure' in note
+
+# 한 번 실패하고 재시도에서 통과한 불안정한 검사는 통과로 보고 첫 실패를 flaky 로그로 남긴다.
+with patch.object(orchestrate.subprocess, 'run', side_effect=[
+        subprocess.CompletedProcess(['python'], 1, '', 'ECONNRESET'), subprocess.CompletedProcess(['python'], 0, 'ok', '')]) as run:
+    with patch.object(orchestrate.Path, 'glob', return_value=[Path('tests/test_flaky.py')]):
+        assert orchestrate.run_tests(str(repo)) is None
+assert run.call_count == 2 and 'ECONNRESET' in next((orchestrate.config.DATA_DIR / 'merge-tests').glob('test_flaky-flaky-*.log')).read_text('utf-8')
 
 # 같은 Task의 새 커밋이 없으면 다른 main 커밋을 배포·revert 대상으로 오인하지 않는다.
 assert orchestrate.merge(str(repo), 'C-2')[0] == 'on_hold'
