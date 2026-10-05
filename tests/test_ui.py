@@ -1951,6 +1951,9 @@ try:
 
         # 제목 없이 본문만(DEV-8) — 만들어지고 "(제목 없음…)"으로 보인다
         page.goto(BASE + "/#/new"); page.wait_for_selector("#n-body")
+        # 첫 커서는 Description, 제출 버튼은 [발행](DEV-87)
+        page.wait_for_function("document.activeElement && document.activeElement.id === 'n-body'")
+        assert page.inner_text("#new-form button[type=submit]").strip() == "발행"
         page.fill("#n-body", "제목 없이 쓴 요구")
         page.click("#new-form button[type=submit]")
         page.wait_for_function("location.hash.startsWith('#/issue/NS-')")
