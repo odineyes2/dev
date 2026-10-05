@@ -38,7 +38,8 @@ ALLOWED_TOOLS = ["Read", "Grep", "Glob"] + [f"mcp__dev__{t}" for t in (
     "claim_issue", "release_issue", "list_project_documents", "read_project_document", "list_issue_types", "classify_issue")]
 # 웹 정책: 인터넷은 검토(읽기 전용)에만, 읽기는 이 도메인만 허용한다. 실행 에이전트는 오프라인(execute.BLOCKED_TOOLS, Codex network_access=false).
 # 실행기는 파일을 쓰고 작업 폴더 밖도 읽을 수 있어 웹이 열리면 비밀값(.env·에이전트 키)이 새는 길이 된다.
-WEB_DOMAINS = ("docs.runpod.io", "graphql-spec.runpod.io", "api.runpod.io", "docs.comfy.org", "huggingface.co", "civitai.com")
+WEB_DOMAINS = ("docs.runpod.io", "graphql-spec.runpod.io", "api.runpod.io", "docs.comfy.org", "huggingface.co", "civitai.com",
+               "github.com", "raw.githubusercontent.com")   # 노드팩 README·설치 방법
 ALLOWED_TOOLS += ["WebSearch"] + [f"WebFetch(domain:{d})" for d in WEB_DOMAINS]   # 목록 밖 주소는 헤드리스라 물어볼 수 없어 거절된다
 # 검토의 작업 폴더는 ~/Projects라 비밀 파일도 그 안에 있다 — 웹이 열린 만큼 읽기부터 막는다.
 BLOCKED_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit", "Read(**/.env)", "Read(**/.env.*)", "Read(**/.mcp.json)", "Read(**/*.key)", "Read(**/*.pem)"]

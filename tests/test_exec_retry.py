@@ -75,7 +75,7 @@ print("ok no-file task")
 
 # 웹 정책 — 검토만 웹(허용 도메인), 실행은 오프라인. 검토는 비밀 파일 읽기 금지.
 rc = review.command_for("NS-1")
-assert "WebSearch" in rc and "WebFetch(domain:docs.runpod.io)" in rc and "WebFetch" not in rc[rc.index("--disallowedTools"):]
+assert "WebSearch" in rc and "WebFetch(domain:docs.runpod.io)" in rc and "WebFetch(domain:github.com)" in rc and "WebFetch" not in rc[rc.index("--disallowedTools"):]
 assert rc[rc.index("--tools") + 1] == "Read,Grep,Glob,WebSearch,WebFetch" and "Read(**/.env)" in rc and "Read(**/.mcp.json)" in rc
 assert 'web_search="cached"' in review.codex_command_for("NS-1")
 ec = execute.command_for("NS-1-1", "NS-1", "mock")
