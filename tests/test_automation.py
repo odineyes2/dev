@@ -831,3 +831,104 @@ with db.connect() as c:
     assert json.loads(event['after_json']) == fallback
     assert json.loads(event['before_json'])['token_exhaustion_fallback'] is False
 print('OK — 세 역할 독립 저장·유효성·이관 기본 OFF·감사·영속성')
+
+# DEV-84-2: 토큰 소진만 다음 작업 에이전트로, 체인당 도구별 한 번만 이관한다.
+import review, execute, subprocess
+assert review.token_exhausted(json.dumps({'is_error': True, 'result': 'Claude AI usage limit reached|1760000000'}), '')
+assert review.token_exhausted('{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit."}}', '', 'codex')
+assert review.token_exhausted('', 'Error: insufficient_quota', 'codex')
+for out, err, provider in ((json.dumps({'is_error': True, 'result': 'API Error: 429 rate limit exceeded'}), '', 'claude'),
+                           (json.dumps({'is_error': True, 'result': 'Prompt is too long'}), '', 'claude'),
+                           (json.dumps({'is_error': False, 'result': 'usage limit reached 문구를 설명했어요'}), '', 'claude'),
+                           ('{"type":"item.completed","item":{"type":"agent_message","text":"usage_limit_exceeded"}}', '', 'codex'),
+                           ('{"type":"error","message":"401 Unauthorized"}', '', 'codex')):
+    assert not review.token_exhausted(out, err, provider), out
+real_available = automation.provider_available
+automation.provider_available = lambda provider: True
+issues.create_project(admin, 'TOK', '이관')
+auto_settings.update_settings(admin, 'TOK', {'auto_review': True, 'token_exhaustion_fallback': True})
+
+def fake_run(ref, provider, payload):
+    job = next(j for j in jobs.list_jobs() if j['ref'] == ref)
+    actor = jobs._actor(job['actor'])
+    log, rid = review.begin(actor, issues.get_issue(ref), 'review', provider)
+    review.run_headless(actor, ref, log, rid, [sys.executable, '-c', 'import sys;sys.stdout.write(sys.argv[1])', payload],
+                        '.', None, 30, '검토', provider, 0)
+    return rid
+
+claude_out = json.dumps({'is_error': True, 'result': 'Claude AI usage limit reached'})
+codex_out = '{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit."}}'
+tok = issues.create_issue(admin, 'TOK', '소진')
+automation.sync()
+first = fake_run(tok['ref'], 'claude', claude_out)
+automation.sync(); automation.sync()   # 중복 펌프에도 한 번만
+with db.connect() as c:
+    js = c.execute('SELECT * FROM jobs WHERE issue_id=? ORDER BY id', (tok['id'],)).fetchall()
+    assert [j['provider'] for j in js] == ['claude', 'codex'] and js[1]['status'] == 'queued' and js[1]['source'] == 'auto'
+    assert c.execute('SELECT failure_reason FROM provider_run_failures WHERE run_id=?', (first,)).fetchone()[0] == 'token_exhausted/migrated'
+    assert c.execute('SELECT previous_run_id FROM provider_migration_attempts WHERE job_id=?', (js[1]['id'],)).fetchone()[0] == first
+assert issues.get_issue(tok['ref'])['status'] == 'waiting'
+with db.connect() as c:
+    assert automation.valid_job(c, next(j for j in jobs.list_jobs() if j['ref'] == tok['ref']))
+second = fake_run(tok['ref'], 'codex', codex_out)
+automation.sync()
+with db.connect() as c:   # 두 도구 모두 한 번씩 썼으면 역방향 반복 없이 멈춘다
+    assert c.execute('SELECT COUNT(*) FROM jobs WHERE issue_id=?', (tok['id'],)).fetchone()[0] == 2
+    assert c.execute('SELECT failure_reason FROM provider_run_failures WHERE run_id=?', (second,)).fetchone()[0] == 'token_exhausted/stopped'
+assert issues.get_issue(tok['ref'])['status'] == 'backlog'
+
+# 소진이 아닌 실패는 이관 기록이 없다.
+plain = issues.create_issue(admin, 'TOK', '일반 실패')
+automation.sync()
+rid = fake_run(plain['ref'], 'claude', json.dumps({'is_error': True, 'result': 'API Error: 429 rate limit exceeded'}))
+automation.sync()
+with db.connect() as c:
+    assert not c.execute('SELECT 1 FROM provider_run_failures WHERE run_id=?', (rid,)).fetchone()
+    assert c.execute('SELECT COUNT(*) FROM jobs WHERE issue_id=?', (plain['id'],)).fetchone()[0] == 1
+
+# 이관 대기 중 OFF로 바꾸면 착수하지 않는다.
+off = issues.create_issue(admin, 'TOK', 'OFF')
+automation.sync()
+fake_run(off['ref'], 'claude', claude_out)
+automation.sync()
+auto_settings.update_settings(admin, 'TOK', {'token_exhaustion_fallback': False})
+automation.sync()
+assert not [j for j in jobs.list_jobs() if j['ref'] == off['ref']]
+assert issues.get_issue(off['ref'])['status'] == 'backlog'
+# OFF 상태의 소진은 조용히 종결되고 나중에 ON으로 바꿔도 되살아나지 않는다.
+late = issues.create_issue(admin, 'TOK', '늦은 ON')
+automation.sync()
+rid = fake_run(late['ref'], 'claude', claude_out)
+automation.sync()
+auto_settings.update_settings(admin, 'TOK', {'token_exhaustion_fallback': True})
+automation.sync()
+with db.connect() as c:
+    assert c.execute('SELECT failure_reason FROM provider_run_failures WHERE run_id=?', (rid,)).fetchone()[0] == 'token_exhausted/stopped'
+    assert c.execute('SELECT COUNT(*) FROM jobs WHERE issue_id=?', (late['id'],)).fetchone()[0] == 1
+
+# 실패 뒤 사람이 상태를 바꿨으면 이관하지 않는다.
+moved = issues.create_issue(admin, 'TOK', '수동 변경')
+automation.sync()
+rid = fake_run(moved['ref'], 'claude', claude_out)
+issues.set_status(admin, moved['ref'], 'triage')
+automation.sync()
+with db.connect() as c:
+    assert c.execute('SELECT COUNT(*) FROM jobs WHERE issue_id=?', (moved['id'],)).fetchone()[0] == 1
+    assert c.execute('SELECT failure_reason FROM provider_run_failures WHERE run_id=?', (rid,)).fetchone()[0] == 'token_exhausted/stopped'
+
+# 같은 Task worktree의 이어받기: 시작점에서 이어진 브랜치만 허용하고 불명확하면 중단한다.
+wt = execute.worktree_path('TOK-99')
+wt.mkdir(parents=True)
+git = lambda *a: subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', *a], cwd=wt, capture_output=True, text=True).stdout.strip()
+git('init', '-q', '-b', 'relay/TOK-99'); git('commit', '-q', '--allow-empty', '-m', 'a')
+start_sha = git('rev-parse', 'HEAD')
+with db.connect() as c:
+    rid = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,provider,task_start_sha) VALUES(?,'execute','failed','human:admin',?,'claude',?)",
+                    (tok['id'], db.now_iso(), start_sha)).lastrowid
+git('commit', '-q', '--allow-empty', '-m', 'partial'); (wt / 'wip.txt').write_text('부분 변경')
+assert execute.resume_reason('TOK-99', rid) is None and (wt / 'wip.txt').exists()
+git('checkout', '-q', '--orphan', 'other'); git('commit', '-q', '--allow-empty', '-m', 'x')
+assert execute.resume_reason('TOK-99', rid)
+assert execute.resume_reason('TOK-77', rid)
+automation.provider_available = real_available
+print('OK — 토큰 소진만 이관·도구별 1회·중복/OFF/수동 변경 차단·worktree 이어받기 검사')

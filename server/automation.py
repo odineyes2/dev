@@ -179,7 +179,15 @@ def eligible(c, issue, mode, job=None):
     expected = 'waiting' if job else 'backlog'
     if issue['status'] != expected or (job and job['previous_status'] != 'backlog'):
         return False
-    if c.execute('SELECT 1 FROM runs WHERE issue_id=?', (issue['id'],)).fetchone():
+    attempt = c.execute('SELECT * FROM provider_migration_attempts WHERE job_id=?', (job['id'],)).fetchone() if job else None
+    if attempt:
+        # 이관 작업은 소진된 직전 실행 뒤에 다른 실행이 없을 때만 착수한다.
+        latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (issue['id'],)).fetchone()[0]
+        if latest != attempt['previous_run_id']:
+            return False
+        if mode == 'execute' and execute.resume_reason(issue['ref'], latest):
+            return False
+    elif c.execute('SELECT 1 FROM runs WHERE issue_id=?', (issue['id'],)).fetchone():
         return False
     if not job and c.execute("""SELECT 1 FROM jobs WHERE issue_id=? AND NOT (
         source='auto' AND mode='execute' AND status='cancelled'
@@ -202,7 +210,86 @@ def valid_job(c, job):
     settings = c.execute('SELECT s.*,p.archived FROM project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE s.project_id=?', (issue['project_id'],)).fetchone()
     if not settings or settings['archived'] or not settings['auto_' + job['mode']]:
         return False
+    if c.execute('SELECT 1 FROM provider_migration_attempts WHERE job_id=?', (job['id'],)).fetchone() and not c.execute(
+            'SELECT token_exhaustion_fallback FROM project_auto_role_settings WHERE project_id=?', (issue['project_id'],)).fetchone()[0]:
+        return False
     return eligible(c, issue, job['mode'], job)
+
+
+def _migration_stop(c, run_id, issue_id, actor, why):
+    c.execute("UPDATE provider_run_failures SET failure_reason='token_exhausted/stopped' WHERE run_id=?", (run_id,))
+    if issue_id:
+        issues._event(c, issue_id, actor, 'comment', '토큰 소진 이관을 하지 않았어요 — ' + why, {'source': 'auto', 'migration_run_id': run_id})
+
+
+def _migrate(c, run_id):
+    """토큰 소진으로 끝난 Auto 작업을 같은 체인에서 아직 시도하지 않은 다음 작업 에이전트로 한 번만 넘긴다."""
+    import jobs
+    run = c.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+    job = c.execute("SELECT * FROM jobs WHERE run_id=? AND source='auto'", (run_id,)).fetchone()
+    if not run or not job:   # 수동 요청은 이관하지 않는다
+        return _migration_stop(c, run_id, None, None, '')
+    actor = jobs._actor(job['actor'])
+    stop = lambda why: _migration_stop(c, run_id, run['issue_id'], actor, why)
+    setting = c.execute("""SELECT s.*,p.archived,r.token_exhaustion_fallback FROM project_auto_settings s JOIN projects p ON p.id=s.project_id
+        LEFT JOIN project_auto_role_settings r ON r.project_id=s.project_id
+        WHERE s.project_id=(SELECT project_id FROM issues WHERE id=?)""", (run['issue_id'],)).fetchone()
+    if not setting or not setting['token_exhaustion_fallback']:
+        return _migration_stop(c, run_id, None, None, '')   # OFF면 이관하지 않고 조용히 끝낸다
+    if setting['archived'] or not setting['auto_' + job['mode']]:
+        return stop('Auto 위임 설정이 꺼졌어요.')
+    import project_docs
+    if project_docs.provider_for(run['issue_id']):
+        return stop('수동으로 지정한 도구는 바꾸지 않아요.')
+    prior = c.execute('SELECT * FROM provider_migration_attempts WHERE job_id=?', (job['id'],)).fetchone()
+    chain = prior['chain_id'] if prior else None
+    if not chain:
+        c.execute('INSERT OR IGNORE INTO provider_migration_chains(origin_job_id,delegation_id,created_at) VALUES(?,?,?)',
+                  (job['id'], job['delegation_id'], db.now_iso()))
+        chain = c.execute('SELECT id FROM provider_migration_chains WHERE origin_job_id=?', (job['id'],)).fetchone()[0]
+    origin = c.execute('SELECT j.provider FROM provider_migration_chains ch JOIN jobs j ON j.id=ch.origin_job_id WHERE ch.id=?', (chain,)).fetchone()[0]
+    tried = {origin, run['provider']} | {r[0] for r in c.execute('SELECT provider FROM provider_migration_attempts WHERE chain_id=?', (chain,))}
+    nxt = next((p for p in json.loads(setting['provider_order_json']) if p not in tried and provider_available(p)), None)
+    if not nxt:
+        return stop('이관할 수 있는 다음 작업 에이전트가 없어요.')
+    row = issues._find(c, run['issue_id'])
+    latest = jobs._latest(c, row['id'])
+    if (row['status'] != 'backlog' or latest.get('to') != 'backlog' or latest.get('job_id') != job['id']
+            or c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (row['id'],)).fetchone()[0] != run_id
+            or c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND status='queued'", (row['id'],)).fetchone()):
+        return stop('실패 뒤 이슈 상태나 대기열이 바뀌었어요.')
+    issue = issues.get_issue(_ref(c, row['id']))
+    if issue['claimed_by']:
+        # 소진된 실행의 에이전트가 잡은 것만 풀어 준다. 그 밖의 점유는 그대로 둔다.
+        start = c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status' AND json_extract(data_json,'$.run_id')=?", (row['id'], run_id)).fetchone()[0]
+        claim = c.execute("SELECT * FROM events WHERE issue_id=? AND kind='claim' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
+        if (not start or not claim or claim['id'] < start or claim['actor'] != row['claimed_by']
+                or json.loads(claim['data_json']).get('action') != 'claim'):
+            return stop('다른 작업자가 이슈를 잡고 있어요.')
+        c.execute('UPDATE issues SET claimed_by=NULL, lease_until=NULL WHERE id=?', (row['id'],))
+    if job['mode'] == 'review' and issue['plan']:
+        return stop('이미 새 계획서가 등록돼 있어요.')
+    if job['mode'] == 'execute':
+        import execute
+        parent = issues.get_issue(issue['parent_ref']) if issue['parent_ref'] else None
+        why = execute.blocked_reason(issue, parent) or execute.resume_reason(issue['ref'], run_id)
+        if why:
+            return stop(why)
+        if parent['approval']['plan_version'] != job['approval_version'] or not parent['approval']['actor'].startswith('human:'):
+            return stop('부모 계획서의 승인이 바뀌었어요.')
+    jid = c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,provider,source,delegation_id,approval_version) VALUES(?,?,?,'queued',?,?,'auto',?,?)",
+                    (row['id'], job['mode'], job['actor'], db.now_iso(), nxt, job['delegation_id'], job['approval_version'])).lastrowid
+    c.execute('INSERT INTO provider_migration_attempts(chain_id,provider,previous_run_id,job_id,created_at) VALUES(?,?,?,?,?)',
+              (chain, nxt, run_id, jid, db.now_iso()))
+    c.execute("UPDATE provider_run_failures SET failure_reason='token_exhausted/migrated' WHERE run_id=?", (run_id,))
+    keep = ' 이전 실행의 worktree 변경·커밋은 그대로 이어받아요.' if job['mode'] == 'execute' else ''
+    issues._event(c, row['id'], actor, 'comment', f"{run['provider'].title()} 사용 한도가 소진돼 {nxt.title()}로 이관했어요.{keep}",
+                  {'source': 'auto', 'migration_run_id': run_id, 'job_id': jid, 'chain_id': chain})
+    jobs._waiting(c, c.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
+
+
+def _ref(c, issue_id):
+    return c.execute(f"SELECT {issues.ref_sql('i','p')} FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id=?", (issue_id,)).fetchone()[0]
 
 
 def cancel_invalid(c, job, start_error=False):
@@ -240,6 +327,12 @@ def sync():
         for setting in settings:
             _approve_plans(c, setting)
             _approve_tasks(c, setting)
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        # 소진 기록은 판단 뒤 migrated/stopped로 바뀌어 재시작·동시 펌프에도 한 번만 처리된다.
+        for (run_id,) in c.execute("SELECT f.run_id FROM provider_run_failures f JOIN runs r ON r.id=f.run_id WHERE f.failure_reason='token_exhausted' AND r.status<>'running' ORDER BY f.run_id").fetchall():
+            _migrate(c, run_id)
+    # 아래 검사는 다른 연결로 이슈를 읽으므로 이관을 먼저 커밋한다.
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         for job in jobs._rows(c, "j.status='queued' AND j.source='auto'"):
