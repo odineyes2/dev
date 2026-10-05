@@ -797,3 +797,37 @@ with patch.object(orchestrate, 'settings', return_value={'auto_merge':False}):
 assert issues.get_issue(flow_task)['status'] == 'done'
 assert issues.get_issue(flow['ref'])['status'] != 'done'
 print('OK — 독립 Plan 승인과 Task 결과 승인 연속 동작')
+
+role_before = auto_settings.get_settings('NS')
+assert not role_before['token_exhaustion_fallback']
+for field in ('orchestrator_provider_order', 'troubleshooter_provider_order', 'provider_order'):
+    before = auto_settings.get_settings('NS')
+    after = auto_settings.update_settings(admin, 'NS', {field: ['codex', 'claude']})
+    assert after[field] == ['codex', 'claude']
+    for other in auto_settings.ORDER_FIELDS:
+        if other != field:
+            assert after[other] == before[other]
+    assert not after['auto_review'] and not after['auto_execute']
+    for value in ([], ['claude'], ['claude', 'claude'], ['codex', 'other'], None, 'codex'):
+        try:
+            auto_settings.update_settings(admin, 'NS', {field: value})
+            raise AssertionError((field, value))
+        except issues.StoreError as error:
+            assert error.status == 400
+    assert auto_settings.get_settings('NS') == after
+for value in (1, 0, 'true', None):
+    try:
+        auto_settings.update_settings(admin, 'NS', {'token_exhaustion_fallback': value})
+        raise AssertionError(value)
+    except issues.StoreError as error:
+        assert error.status == 400
+fallback = auto_settings.update_settings(admin, 'NS', {'token_exhaustion_fallback': True})
+assert fallback['token_exhaustion_fallback'] and not fallback['auto_execute']
+db.init()
+assert auto_settings.get_settings('NS') == fallback
+with db.connect() as c:
+    event = c.execute(
+        "SELECT e.* FROM project_auto_settings_events e JOIN projects p ON p.id=e.project_id WHERE p.key='NS' ORDER BY e.id DESC LIMIT 1").fetchone()
+    assert json.loads(event['after_json']) == fallback
+    assert json.loads(event['before_json'])['token_exhaustion_fallback'] is False
+print('OK — 세 역할 독립 저장·유효성·이관 기본 OFF·감사·영속성')
