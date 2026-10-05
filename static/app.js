@@ -1111,7 +1111,7 @@ async function renderNew(params){
       <div id="n-attachments" aria-live="polite"></div><p id="attachment-status" role="status"></p>
     </fieldset>
     ${typePicker(types)}<label>Labels (쉼표로)<input id="n-labels"></label>
-    <div class="row-end"><a class="button" id="cancel-new" href="#/">취소</a><button class="primary" type="submit">만들기</button></div>
+    <div class="row-end"><a class="button" id="cancel-new" href="#/">취소</a><button class="primary" type="submit">발행</button></div>
   </form>`;
   const form = view.querySelector('#new-form'), entries = [];
   let departed = false, published = false, saving = false;
@@ -1157,7 +1157,7 @@ async function renderNew(params){
     add(input.value.trim()); input.value = ''; status.textContent = '';
   };
   bindTypePicker(form);
-  view.querySelector('#n-title').focus();
+  view.querySelector('#n-body').focus();
   view.querySelector('#new-form').addEventListener('submit', (e) => { e.preventDefault(); if(saving || entries.some(e => e.busy || e.error)) return; whileBusy(submitBtn(e), async () => {
     saving = true; draw(); status.textContent = '발행 중…';
     form.querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = true);
