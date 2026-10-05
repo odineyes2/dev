@@ -454,6 +454,16 @@ CREATE TABLE provider_migration_attempts (
 );
 """)
 
+# 대기열 순서(DEV-85) — 기존 항목은 ID 순서를 그대로 두고, 정렬 키 없이 들어온 새 항목은 맨 뒤에 붙인다.
+MIGRATIONS.append("""
+ALTER TABLE jobs ADD COLUMN sort_key INTEGER;
+UPDATE jobs SET sort_key=id;
+CREATE INDEX jobs_queue_order ON jobs(status, sort_key, id);
+CREATE TRIGGER jobs_sort_key_last AFTER INSERT ON jobs WHEN NEW.sort_key IS NULL BEGIN
+ UPDATE jobs SET sort_key=(SELECT COALESCE(MAX(sort_key), 0) + 1 FROM jobs) WHERE id=NEW.id;
+END;
+""")
+
 STATUSES += ("waiting",)
 
 
