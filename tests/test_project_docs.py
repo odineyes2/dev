@@ -243,8 +243,11 @@ import review
 for command in (review.command_for('DOC-1'), review.codex_command_for('DOC-1'),
                 execute.command_for('DOC-1-1', 'DOC-1', 'mock'), execute.codex_command_for('DOC-1-1', 'DOC-1')):
     text = ' '.join(command)
-    assert 'description' in text and all(path in text for path, _ in project_docs.DOCUMENTS)
+    assert 'description' in text and '제품 문서가 없으니 찾지 않는다' in text   # /target에는 문서가 없다 — 없는 경로를 알리지 않는다
+    assert not any(p in text for p, _ in project_docs.DOCUMENTS if p.startswith('docs/'))
     assert '확대하지 않는다' in text
-for command in (execute.command_for('DOC-1-1', 'DOC-1', 'mock'), execute.codex_command_for('DOC-1-1', 'DOC-1')):
-    assert '현재 Task worktree의 상대 경로에서만' in ' '.join(command)
+read_ref = issues.create_issue(me, 'READ', '문서 있는 저장소')['ref']   # 실제로 있는 문서만 알린다
+text = project_docs.reference_instructions(True, read_ref)
+assert path in text and '현재 Task worktree의 상대 경로에서만' in text
+assert all(p not in text for p, _ in project_docs.DOCUMENTS if p != path and not (repo / p).is_file())
 print('Document read and context OK')
