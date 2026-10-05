@@ -256,23 +256,43 @@ def _kill_tree(proc) -> None:
 
 def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[str], cwd, env, timeout: float, label: str, provider: str = "claude", baseline_plan_id: int = 0) -> str:
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
-    code, note, status, out, err = None, "", "ok", "", ""
     name = "Codex" if provider == "codex" else "Claude Code"
-    try:
-        proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                                stdin=subprocess.DEVNULL, env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"})
+    spent, earlier = {}, ""
+    for attempt in range(2 if label == "실행" else 1):
+        code, note, status, out, err = None, "", "ok", "", ""
         try:
-            out, err = proc.communicate(timeout=timeout)
-            code = proc.returncode
-        except subprocess.TimeoutExpired:
-            _kill_tree(proc)
-            out, err = proc.communicate()
-            status, note = "timeout", f"{int(timeout // 60)}분 안에 끝나지 않아 멈췄어요"
-    except OSError as e:
-        status, note = "failed", f"{name}를 실행하지 못했어요({e})"
-    if code:
-        status = "failed"
-    text, stats = _parse(out, provider)
+            proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                    stdin=subprocess.DEVNULL, env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"})
+            try:
+                out, err = proc.communicate(timeout=timeout)
+                code = proc.returncode
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                out, err = proc.communicate()
+                status, note = "timeout", f"{int(timeout // 60)}분 안에 끝나지 않아 멈췄어요"
+        except OSError as e:
+            status, note = "failed", f"{name}를 실행하지 못했어요({e})"
+        if code:
+            status = "failed"
+        text, stats = _parse(out, provider)
+        for k, v in stats.items():   # 재시도까지 합친 토큰·비용
+            spent[k] = (spent.get(k) or 0) + (v or 0)
+        if status != "ok" or label != "실행":
+            break
+        # 병합 때 처음 실패를 알면 사람이 다시 실행해야 한다 — 완료 등록 전에 Task worktree에서 전체 검사를 돌려 한 번 스스로 고치게 한다.
+        import orchestrate
+        failed = orchestrate.run_tests(str(cwd))
+        if not failed:
+            break
+        if attempt:
+            status, note = "failed", "고친 뒤에도 전체 검사가 실패했어요:\n" + failed[-1500:]
+            break
+        earlier = text + "\n\n--- 서버 전체 검사 실패 → 재시도 ---\n" + failed + "\n\n"
+        retry = ("\n\n이전 실행의 결과가 이 worktree에 그대로 남아 있다. 서버가 tests/test_*.py 전체 검사를 돌렸더니 아래가 실패했다. "
+                 "원인을 고쳐 전체 검사를 통과시킨 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 다시 마친다. "
+                 "검사가 만든 파일을 커밋하지 말고 Task 범위 밖은 고치지 않는다.\n```\n" + failed[-6000:] + "\n```")
+        cmd = cmd[:2] + [cmd[2] + retry] + cmd[3:] if provider == "claude" else cmd[:-1] + [cmd[-1] + retry]
+    stats = spent
     if provider == 'claude' and label == '실행' and status == 'ok':
         try:
             result = json.loads(out)
@@ -310,7 +330,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             execute.register_completion(actor, ref, cwd, run_id, text)
         except (issues.StoreError, ValueError, OSError) as e:
             status, note = 'failed', f'Claude 실행을 완료하지 못했어요 — {e}'
-    log_path.write_text(text + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
+    log_path.write_text(earlier + text + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         finish_codex_status(c, actor, ref, run_id, status, label)

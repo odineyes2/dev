@@ -153,12 +153,14 @@ os.environ['DEV_CODEX_AGENT_KEY'] = 'test-secret'
 auto_task = issues.create_issue(base.me, 'EX', 'codex auto', parent='EX-1')
 fake.write_text(output_script(result).replace('codex.txt', 'codex-auto.txt'), 'utf-8')
 def inspect_auto(path):
+    if 'merge-worktrees' not in str(path):   # 완료 등록 전 Task worktree 전체 검사
+        return None
     assert issues.get_issue(auto_task['ref'])['status'] == 'in_progress'
     assert orchestrate.completion(auto_task['ref'])['phase'] == 'checking'
 with patch.object(orchestrate, 'run_tests', side_effect=inspect_auto) as checked, patch.object(notify, 'send') as sent:
     execute.start(base.me, auto_task['ref'], 'codex')
     base.wait_idle()
-    assert checked.call_count == 1
+    assert checked.call_count == 2   # Task worktree 검사 + 시험 병합 검사
     assert sent.call_count == 1
 assert issues.get_issue(auto_task['ref'])['status'] == 'in_review'
 assert orchestrate.completion(auto_task['ref'])['phase'] == 'complete'
