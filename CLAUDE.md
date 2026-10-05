@@ -17,6 +17,7 @@
 - 기능마다 커밋 하나(커밋 메시지가 버전 기록). push·운영 재시작은 사용자에게 먼저 묻는다. 예외: `data/orchestrate.json`에서 `auto_merge`가 꺼지지 않은(기본 켜짐) 프로젝트는 오케스트레이터(`server/orchestrate.py`)가 통과한 Task를 병합·재시작하고, 하위가 다 들어가면 상위 이슈를 in_review로 올린다.
 - 운영 재시작: `npx pm2 restart ecosystem.config.js --only dev --update-env`
 - 남의 변경을 `git reset`/`checkout --`/`stash`/`rebase`/강제 push로 되돌리지 않는다.
+- 에이전트 웹 정책(2026-10-05 사용자 결정): 인터넷은 **검토 에이전트에만**. Claude 검토는 WebSearch + `review.WEB_DOMAINS`의 도메인만 WebFetch, 비밀 파일(.env·.mcp.json 등) 읽기 금지(`review.BLOCKED_TOOLS`). Codex 검토는 `web_search="cached"`. **실행 에이전트는 오프라인**(WebFetch·WebSearch·curl 금지, Codex `network_access=false`) — 파일을 쓰고 폴더 밖도 읽어 웹이 열리면 비밀값이 샐 수 있다. 외부 사실은 검토가 출처와 함께 계획서에 적어 실행에 넘긴다. 도메인 추가는 `WEB_DOMAINS`를 고친다. `tests/test_exec_retry.py`가 이 정책을 검사한다.
 - `.env` 내용을 출력하지 않는다. 비밀번호·키를 명령 인자나 채팅으로 다루지 않는다.
 - 사람 로그인은 nightshift가 맡는다(`ns_session` 쿠키 → nightshift `/api/auth/me`, admin만). dev는 nightshift DB를 열지 않는다.
 - 에이전트는 이슈를 `done`/`closed`로 바꾸거나 지울 수 없다 — 종결은 사람 몫.

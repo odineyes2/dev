@@ -72,3 +72,14 @@ print("ok held")
 assert "바꿀 파일이 없어" in execute.scope_reason({"body": "**바꿀 파일**: 없음(읽기 전용 조사, 결과는 NS-31 댓글)", "project_key": "NS"}, [])
 assert execute.scope_reason({"body": "**바꿀 파일**: server/a.py", "project_key": "NS"}, []) is None
 print("ok no-file task")
+
+# 웹 정책 — 검토만 웹(허용 도메인), 실행은 오프라인. 검토는 비밀 파일 읽기 금지.
+rc = review.command_for("NS-1")
+assert "WebSearch" in rc and "WebFetch(domain:docs.runpod.io)" in rc and "WebFetch" not in rc[rc.index("--disallowedTools"):]
+assert rc[rc.index("--tools") + 1] == "Read,Grep,Glob,WebSearch,WebFetch" and "Read(**/.env)" in rc and "Read(**/.mcp.json)" in rc
+assert 'web_search="cached"' in review.codex_command_for("NS-1")
+ec = execute.command_for("NS-1-1", "NS-1", "mock")
+assert not any(t.startswith(("WebFetch", "WebSearch")) for t in ec[ec.index("--allowedTools") + 1:ec.index("--disallowedTools")])
+assert {"WebFetch", "WebSearch"} <= set(ec[ec.index("--disallowedTools") + 1:])
+assert 'web_search="disabled"' in execute.codex_command_for("NS-1-1", "NS-1") and "sandbox_workspace_write.network_access=false" in execute.codex_command_for("NS-1-1", "NS-1")
+print("ok web policy")

@@ -25,7 +25,7 @@ assert "--restricted" in real and "--strict-mcp-config" in real and real[real.in
 blocked = real[real.index("--disallowedTools") + 1:real.index("--no-session-persistence")]
 assert {"Bash", "Edit", "Write"} <= set(blocked)
 allowed = real[real.index("--allowedTools") + 1:real.index("--disallowedTools")]
-assert all(t in ("Read", "Grep", "Glob") or t.startswith("mcp__dev__") for t in allowed) and "mcp__dev__post_plan" in allowed
+assert all(t in ("Read", "Grep", "Glob", "WebSearch") or t.startswith(("mcp__dev__", "WebFetch(domain:")) for t in allowed) and "mcp__dev__post_plan" in allowed   # 웹은 도메인 한정만(CLAUDE.md 웹 정책)
 assert "mcp__dev__list_issue_types" in allowed and "mcp__dev__classify_issue" in allowed
 assert "검토만" in review.prompt_for("NS-1") and "NS-1" in review.prompt_for("NS-1")
 review.command_for = lambda ref: [sys.executable, str(fake), ref, behave["sleep"], behave["code"], *(["json"] if behave.get("json") else [])]
