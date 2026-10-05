@@ -202,7 +202,10 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
         if r.returncode:
             return 'changes_requested', f'{BASE_BRANCH}와 시험 병합이 실패했어요 — 운영 코드는 유지했어요.\n' + (r.stdout + r.stderr).strip()[-1500:]
         sha = _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()
-        failed = run_tests(str(worktree))
+        # 완료 기록(expected_task)은 Task worktree 전체 검사를 통과해야 생긴다. 그 뒤 base가 안 움직였으면
+        # 시험 병합 트리가 검사한 Task 트리와 같으니 같은 검사를 또 돌리지 않는다(test_ui만 수 분).
+        same = expected_task and _git(repo, 'rev-parse', f'{sha}^{{tree}}').stdout.strip() == _git(repo, 'rev-parse', f'{task_sha}^{{tree}}').stdout.strip()
+        failed = None if same else run_tests(str(worktree))
         if failed:
             return 'changes_requested', f'시험 병합 전체 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
         changed = _git(str(worktree), 'status', '--porcelain', '--untracked-files=no').stdout.strip()

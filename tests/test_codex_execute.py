@@ -160,7 +160,7 @@ def inspect_auto(path):
 with patch.object(orchestrate, 'run_tests', side_effect=inspect_auto) as checked, patch.object(notify, 'send') as sent:
     execute.start(base.me, auto_task['ref'], 'codex')
     base.wait_idle()
-    assert checked.call_count == 2   # Task worktree 검사 + 시험 병합 검사
+    assert checked.call_count == 1   # Task worktree 검사만 — base가 그대로라 같은 트리의 시험 병합 검사는 생략
     assert sent.call_count == 1
 assert issues.get_issue(auto_task['ref'])['status'] == 'in_review'
 assert orchestrate.completion(auto_task['ref'])['phase'] == 'complete'

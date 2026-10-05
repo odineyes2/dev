@@ -187,7 +187,7 @@ execute.register_completion = with_scratch
 with patch.object(orchestrate, 'run_tests', side_effect=inspect_merge) as checked:
     execute.start(me, auto_task['ref'])
     wait_idle()
-    assert checked.call_count == 2   # Task worktree 검사 + 시험 병합 검사
+    assert checked.call_count == 1   # Task worktree 검사만 — base가 그대로라 같은 트리의 시험 병합 검사는 생략
 assert issues.get_issue(auto_task['ref'])['status'] == 'in_review'
 assert orchestrate.completion(auto_task['ref'])['phase'] == 'complete'
 assert '_scratch.py' in orchestrate.completion(auto_task['ref'])['note']

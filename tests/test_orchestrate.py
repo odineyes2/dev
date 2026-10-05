@@ -308,6 +308,11 @@ with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(not
 
     # 검사 실패·커밋 변경·사람의 상태 변경을 구분한다.
     ref, _ = ready()
+    with patch.object(orchestrate, 'run_tests', side_effect=AssertionError('base가 그대로면 같은 트리를 다시 검사하지 않는다')):
+        assert orchestrate.handle(me, ref) == 'merged'
+    ref, _ = ready()
+    (repo / 'main-moved.txt').write_text(ref)   # Task 뒤 base가 움직이면 시험 병합 트리를 다시 검사한다
+    git('add', 'main-moved.txt'); git('commit', '-qm', 'main moved')
     with patch.object(orchestrate, 'run_tests', return_value='failed regression'):
         assert orchestrate.handle(me, ref) == 'changes_requested'
     ref, _ = ready()
