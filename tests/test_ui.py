@@ -331,7 +331,7 @@ def check_auto_settings(page, shots):
     assert approve.is_enabled() and approve.get_attribute('aria-checked') == 'false'
     assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'token_exhaustion_fallback']
     # 세 역할 카드 — 준비 중 역할 표시, 지목된 안내문 삭제, 이관 스위치의 비용 안내
-    assert page.locator('.role-card h4').evaluate_all('(els) => els.map(e => e.textContent)') == ['오케스트레이터 준비 중', '작업 에이전트', '트러블슈터 준비 중']
+    assert page.locator('.role-card h4').evaluate_all('(els) => els.map(e => e.textContent)') == ['오케스트레이터 준비 중', '작업 에이전트', '트러블슈터 준비 중', 'Description 작성']
     assert '신규 자동 등록 순서' not in page.locator('#settings-body').inner_text()
     assert '아직 실행되지 않아요' in page.locator('.role-card').first.inner_text()
     assert '금액 상한' in page.locator('#token_exhaustion_fallback-help').inner_text()
@@ -349,6 +349,12 @@ def check_auto_settings(page, shots):
     page.reload(); page.wait_for_selector('#troubleshooter-order li')
     assert page.locator('#troubleshooter-order li span').first.inner_text() == 'Codex' and page.locator('#orchestrator-order li span').first.inner_text() == 'Claude'
     assert fallback.get_attribute('aria-checked') == 'true'
+    page.click('#description-order [data-move="0"][data-direction="1"]')
+    page.wait_for_function("document.querySelector('#description-order li span').textContent === 'Codex' && document.querySelector('#settings-body').getAttribute('aria-busy') === 'false'")
+    saved = page.request.get(BASE + '/api/projects/AUTOA/auto-settings').json()
+    assert saved['description_provider_order'] == ['codex', 'claude'] and saved['troubleshooter_provider_order'] == ['codex', 'claude']
+    page.reload(); page.wait_for_selector('#description-order li')
+    assert page.locator('#description-order li span').first.inner_text() == 'Codex'
     assert page.locator('#auto_approve-label').inner_text() == 'Auto 태스크 승인'
     assert approve.get_attribute('role') == 'switch'
     assert approve.get_attribute('aria-labelledby') == 'auto_approve-label'

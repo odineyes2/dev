@@ -1431,6 +1431,7 @@ const ROLE_CARDS = [
   ['orchestrator_provider_order','orchestrator-order','오케스트레이터','준비 중인 역할이에요. 순서는 저장되지만 아직 실행되지 않아요.',false],
   ['provider_order','provider-order','작업 에이전트','Auto 검토·실행을 이 순서로 맡겨요.',true],
   ['troubleshooter_provider_order','troubleshooter-order','트러블슈터','준비 중인 역할이에요. 순서는 저장되지만 아직 실행되지 않아요.',false],
+  ['description_provider_order','description-order','Description 작성','프로젝트 Description 자동 작성을 이 순서로 맡겨요.',true],
 ];
 // 공통 제목과 서브탭을 설정 카드 안에 함께 그린다.
 function settingsHeader(tab){
