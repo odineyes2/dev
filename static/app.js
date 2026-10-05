@@ -1406,6 +1406,12 @@ boot();
 
 // ---- 프로젝트별 자동화 설정 — 이전 화면의 응답은 새 화면에 반영하지 않는다. ----
 let settingsSession = null;
+// [설정 필드, 목록 id, 제목, 설명, 실행에 쓰이는지] — 오케스트레이터·트러블슈터는 저장만 하고 아직 실행에 쓰지 않는다.
+const ROLE_CARDS = [
+  ['orchestrator_provider_order','orchestrator-order','오케스트레이터','준비 중인 역할이에요. 순서는 저장되지만 아직 실행되지 않아요.',false],
+  ['provider_order','provider-order','작업 에이전트','Auto 검토·실행을 이 순서로 맡겨요.',true],
+  ['troubleshooter_provider_order','troubleshooter-order','트러블슈터','준비 중인 역할이에요. 순서는 저장되지만 아직 실행되지 않아요.',false],
+];
 // 공통 제목과 서브탭을 설정 카드 안에 함께 그린다.
 function settingsHeader(tab){
   const header = document.getElementById('settings-header').content.cloneNode(true);
@@ -1437,18 +1443,23 @@ async function renderSettings(){
        ['auto_execute','Auto 실행맡기기','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],
        ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.']].map(([field,label,help]) =>
       `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}
-    <h3>Auto 에이전트 우선순위</h3><p class="dim">CLI 도구 Claude/Codex의 신규 자동 등록 순서예요. 사용할 수 없는 도구는 다음 도구를 선택하며, 착수 후 실패에는 유료 재시도를 하지 않아요. 수동 도구 지정은 유지해요.</p>
-    <ol id="provider-order"></ol><p id="settings-status" role="status" aria-live="polite"></p>
+    <h3>Auto 에이전트 우선순위</h3>
+    <div class="role-cards">${ROLE_CARDS.map(([field,id,title,help,ready]) =>
+      `<section class="role-card" aria-labelledby="${id}-title"><h4 id="${id}-title">${title}${ready ? '' : ' <span class="role-pending">준비 중</span>'}</h4><p class="dim">${esc(help)}</p><ol class="provider-order" id="${id}" data-field="${field}" aria-label="${title} 우선순위"></ol>${field === 'provider_order' ? `<div class="setting-row"><div><b id="token_exhaustion_fallback-label">토큰 소진 시 다음 에이전트로 이관</b><p class="dim" id="token_exhaustion_fallback-help">높은 우선순위 에이전트가 토큰 소진으로 실패하면 Auto 작업을 다음 에이전트가 이어받아요. 다음 에이전트의 유료 호출이 추가로 발생하며, Codex에는 금액 상한이 없어요.</p></div><button type="button" class="auto-switch" id="token_exhaustion_fallback" role="switch" aria-labelledby="token_exhaustion_fallback-label" aria-describedby="token_exhaustion_fallback-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>` : ''}</section>`).join('')}</div>
+    <p id="settings-status" role="status" aria-live="polite"></p>
     <aside class="settings-policy dim"><p>Auto를 켜면 클릭 없이 유료 검토·실행이 발생해요. Claude의 기존 비용 상한과 Codex의 시간 제한을 유지해요. Codex에는 금액 상한이 없어요.</p><p>Auto 계획 승인을 OFF로 바꾸면 이후 계획 승인만 중단해요. Auto 태스크 승인을 OFF로 바꾸면 이후 결과 승인만 중단해요. 완료된 Task·실행은 되돌리지 않아요. Auto 검토·실행을 OFF로 바꾸면 해당 자동 등록된 미착수 대기만 취소해요. 수동 대기와 실행 중 작업은 유지해요.</p><p>기존 auto_merge 정책은 별도로 적용돼요(기본 켜짐). 켜져 있는 프로젝트는 실행 후 병합·서버 재시작까지 이어질 수 있어요. 이 설정은 병합·배포 권한을 확대하지 않아요.</p></aside>`;
   let busy = false;
   const status = body.querySelector('#settings-status');
   function paint(){
-    for(const field of ['auto_review','auto_plan_approve','auto_execute','auto_approve']){
+    for(const field of ['auto_review','auto_plan_approve','auto_execute','auto_approve','token_exhaustion_fallback']){
       const b = body.querySelector(`#${field}`), on = settings[field];
       b.setAttribute('aria-checked', String(!!on)); b.disabled = busy || (field === 'auto_approve' && settings.auto_approve_available === false);
       b.querySelector('.switch-state').textContent = on ? '켜짐' : '꺼짐';
     }
-    body.querySelector('#provider-order').innerHTML = settings.provider_order.map((provider,i) => `<li><span>${provider === 'claude' ? 'Claude' : 'Codex'}</span><div><button type="button" data-move="${i}" data-direction="-1" aria-label="${esc(provider)} 우선순위 올리기" ${busy || i === 0 ? 'disabled' : ''}>위로</button><button type="button" data-move="${i}" data-direction="1" aria-label="${esc(provider)} 우선순위 내리기" ${busy || i === settings.provider_order.length - 1 ? 'disabled' : ''}>아래로</button></div></li>`).join('');
+    for(const [field,id,title] of ROLE_CARDS){
+      const order = settings[field] || ['claude','codex'];
+      body.querySelector(`#${id}`).innerHTML = order.map((provider,i) => `<li><span>${provider === 'claude' ? 'Claude' : 'Codex'}</span><div><button type="button" data-move="${i}" data-direction="-1" aria-label="${title} ${esc(provider)} 우선순위 올리기" ${busy || i === 0 ? 'disabled' : ''}>위로</button><button type="button" data-move="${i}" data-direction="1" aria-label="${title} ${esc(provider)} 우선순위 내리기" ${busy || i === order.length - 1 ? 'disabled' : ''}>아래로</button></div></li>`).join('');
+    }
     body.setAttribute('aria-busy', String(busy));
   }
   async function save(changes, focus){
@@ -1460,11 +1471,12 @@ async function renderSettings(){
     finally{ if(current()){ busy = false; paint(); body.querySelector(focus)?.focus(); } }
   }
   body.querySelectorAll('.auto-switch:not(:disabled)').forEach(b => b.onclick = () => save({[b.id]: !settings[b.id]}, `#${b.id}`));
-  body.querySelector('#provider-order').onclick = e => {
+  body.querySelector('.role-cards').onclick = e => {
     const b = e.target.closest('[data-move]'); if(!b || b.disabled) return;
-    const i = Number(b.dataset.move), j = i + Number(b.dataset.direction), order = [...settings.provider_order];
+    const list = b.closest('ol'), field = list.dataset.field;
+    const i = Number(b.dataset.move), j = i + Number(b.dataset.direction), order = [...settings[field]];
     [order[i], order[j]] = [order[j], order[i]];
-    save({provider_order: order}, `[data-move="${j}"][data-direction="${-Number(b.dataset.direction)}"]`);
+    save({[field]: order}, `#${list.id} [data-move="${j}"][data-direction="${-Number(b.dataset.direction)}"]`);
   };
   paint();
 }
