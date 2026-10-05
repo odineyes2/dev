@@ -83,6 +83,23 @@ def prepare_worktree(repo: str, ref: str) -> Path:
     return path
 
 
+def resume_reason(ref: str, run_id: int) -> str | None:
+    """토큰 소진 이관 전에 같은 Task worktree를 버리지 않고 이어받을 수 있는지 본다. 불명확하면 이유를 돌려준다."""
+    with db.connect() as c:
+        run = c.execute('SELECT task_start_sha FROM runs WHERE id=?', (run_id,)).fetchone()
+        if c.execute('SELECT 1 FROM execution_completion WHERE run_id=?', (run_id,)).fetchone():
+            return '이전 실행의 완료·병합 기록이 있어요.'
+    path = worktree_path(ref)
+    if not path.exists():
+        return 'Task worktree가 없어 이전 실행 결과를 확인할 수 없어요.'
+    if _run_git(path, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip() != branch_name(ref):
+        return 'Task worktree가 다른 브랜치에 있어요.'
+    start = run['task_start_sha'] if run else None
+    if not start or _run_git(path, 'merge-base', '--is-ancestor', start, 'HEAD').returncode:
+        return 'Task worktree의 커밋이 이전 실행 시작점에서 이어지지 않아요.'
+    return None
+
+
 def safe_env(repo: str) -> dict:
     """자식 프로세스 환경 — 모든 remote의 pushurl을 죽은 주소로, 자격증명 도우미·토큰은 없앤다."""
     pairs = [(f"remote.{r}.pushurl", "disabled://no-push") for r in _git(repo, "remote").split()] + [("credential.helper", "")]

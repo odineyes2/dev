@@ -16,6 +16,7 @@ Projects 폴더), DEV_REVIEW_MCP_CONFIG(기본: <Projects>/.mcp.json), DEV_REVIE
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -246,6 +247,31 @@ def _parse(out: str, provider: str = "claude") -> tuple[str, dict]:
         return out, {}
 
 
+# 공급자 한도 소진의 명확한 신호만 본다. 일반 429·rate limit·문맥 길이·인증·예산·시간 초과는 해당하지 않는다.
+EXHAUSTED = re.compile(r"usage limit reached|hit your (?:usage )?limit|usage_limit_exceeded|insufficient_quota|credit balance is too low", re.I)
+
+
+def token_exhausted(out: str, err: str, provider: str = "claude") -> bool:
+    """에이전트가 쓴 글이 아니라 CLI의 오류 결과·오류 이벤트·stderr에서만 판별한다."""
+    errors = [(err or "")[-2000:]]
+    if provider == "codex":
+        for line in (out or "").splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("type") in ("error", "turn.failed"):
+                errors.append(json.dumps(event, ensure_ascii=False))
+    else:
+        try:
+            d = json.loads(out or "")
+            if isinstance(d, dict) and (d.get("is_error") or str(d.get("subtype", "")).startswith("error")):
+                errors.append(str(d.get("result") or "") + " " + str(d.get("error") or ""))
+        except ValueError:
+            pass
+    return any(EXHAUSTED.search(e) for e in errors)
+
+
 def _kill_tree(proc) -> None:
     """시간 초과 — claude가 띄운 자식(bash·python)까지 같이 끝낸다."""
     if os.name == "nt":
@@ -293,6 +319,9 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
                  "검사가 만든 파일을 커밋하지 말고 Task 범위 밖은 고치지 않는다.\n```\n" + failed[-6000:] + "\n```")
         cmd = cmd[:2] + [cmd[2] + retry] + cmd[3:] if provider == "claude" else cmd[:-1] + [cmd[-1] + retry]
     stats = spent
+    exhausted = status != "timeout" and token_exhausted(out, err, provider)
+    if exhausted:
+        status, note = "failed", f"{name}의 사용 한도(토큰)가 소진됐어요"
     if provider == 'claude' and label == '실행' and status == 'ok':
         try:
             result = json.loads(out)
@@ -336,6 +365,8 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         finish_codex_status(c, actor, ref, run_id, status, label)
         c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=?",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
+        if exhausted and status != "ok":   # 이관 판단은 automation.sync가 이 기록을 보고 한 번만 한다
+            c.execute("INSERT OR IGNORE INTO provider_run_failures(run_id,failure_reason) VALUES(?,'token_exhausted')", (run_id,))
     if note or code:
         why = note or f"종료 코드 {code}"
         issues.add_comment(actor, ref, f"⚠️ {name} {label} 작업이 끝나지 못했어요 — {why}. 로그: `{log_path.name}`")
