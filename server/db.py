@@ -415,6 +415,45 @@ END;
 """)
 
 # 앞의 마이그레이션 SQL은 기존 상태 목록으로 평가해 과거 결과를 유지한다.
+# 기존 작업 순서와 감사 기록을 보존하고 이관은 별도 동의로 저장한다.
+MIGRATIONS.append("""
+CREATE TABLE project_auto_role_settings (
+ project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+ orchestrator_provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]'
+ CHECK(orchestrator_provider_order_json IN ('["claude","codex"]','["codex","claude"]')),
+ troubleshooter_provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]'
+ CHECK(troubleshooter_provider_order_json IN ('["claude","codex"]','["codex","claude"]')),
+ token_exhaustion_fallback INTEGER NOT NULL DEFAULT 0 CHECK(token_exhaustion_fallback IN (0,1))
+);
+INSERT INTO project_auto_role_settings(project_id) SELECT project_id FROM project_auto_settings;
+CREATE TABLE provider_run_failures (
+ run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+ failure_reason TEXT NOT NULL
+);
+CREATE TABLE provider_migration_chains (
+ id INTEGER PRIMARY KEY,
+ origin_job_id INTEGER NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+ delegation_id INTEGER NOT NULL REFERENCES project_auto_settings_events(id),
+ created_at TEXT NOT NULL
+);
+CREATE TRIGGER provider_migration_auto_origin BEFORE INSERT ON provider_migration_chains
+BEGIN
+ SELECT RAISE(ABORT, 'Auto origin required') WHERE NOT EXISTS(
+  SELECT 1 FROM jobs WHERE id=NEW.origin_job_id AND source='auto' AND delegation_id=NEW.delegation_id
+ );
+END;
+CREATE TABLE provider_migration_attempts (
+ id INTEGER PRIMARY KEY,
+ chain_id INTEGER NOT NULL REFERENCES provider_migration_chains(id) ON DELETE CASCADE,
+ provider TEXT NOT NULL CHECK(provider IN ('claude','codex')),
+ previous_run_id INTEGER UNIQUE REFERENCES runs(id),
+ job_id INTEGER UNIQUE REFERENCES jobs(id),
+ run_id INTEGER UNIQUE REFERENCES runs(id),
+ created_at TEXT NOT NULL,
+ UNIQUE(chain_id,provider)
+);
+""")
+
 STATUSES += ("waiting",)
 
 
