@@ -1722,7 +1722,8 @@ try:
         page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button[type=submit]")
         page.wait_for_selector("td.ref:text('NS')")
         assert page.get_attribute("#p-path", "placeholder").startswith("C:\\Users\\")
-        # 고치기 — 키는 잠기고, 이름·경로가 바뀐다
+        # Modify — 키는 잠기고, 이름·경로가 바뀐다
+        assert page.inner_text('[data-edit="NS"]').strip() == "Modify"
         page.click('[data-edit="NS"]')
         assert page.is_disabled("#p-key") and page.input_value("#p-name") == "nightshift"
         page.fill("#p-path", r"C:\Users\Simon Lomebrote\Projects\nightshift")
