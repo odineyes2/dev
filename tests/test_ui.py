@@ -2144,7 +2144,7 @@ try:
         assert page.locator('.jobs li:last-child .move-job[data-dir="down"]').is_disabled()
         page.click('.jobs li:first-child .move-job[data-dir="down"]')
         page.wait_for_function("document.querySelector('.jobs li:first-child a').textContent === 'DEV-4-2'")
-        assert order() == [i42, i41] and page.locator('.jobs details[open]').count() == 1
+        assert order() == [i42, i41] and page.locator('details.jobs[open]').count() == 1
         assert page.evaluate("document.activeElement.matches('.jobs li:last-child .move-job[data-dir=\"up\"]')")
         # 다른 탭이 먼저 바꿨으면 409 — 화면은 최신 순서로 다시 그린다
         j42, j41 = (j["id"] for j in page.request.get(f"{BASE}/api/jobs").json()["jobs"])
@@ -2154,7 +2154,7 @@ try:
         page.click('.jobs li:last-child .move-job[data-dir="up"]')   # 화면이 본 이웃(j42)이 낡아 409
         page.wait_for_function("document.getElementById('toast').innerText.includes('바뀌었어요')")
         page.wait_for_function("document.querySelector('.jobs li:first-child a').textContent === 'DEV-4-1'")
-        assert order() == [i41, i42] and page.locator('.jobs details[open]').count() == 1
+        assert order() == [i41, i42] and page.locator('details.jobs[open]').count() == 1
         page.screenshot(path=str(shots / "queue_move_light_desktop.png"), full_page=True)
         page.click(".jobs li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")
         page.wait_for_function("() => document.querySelector('.jobs summary') && document.querySelector('.jobs summary').innerText.includes('1건')")
