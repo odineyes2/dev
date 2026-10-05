@@ -1253,6 +1253,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       <label>Repository<input id="p-repo" placeholder="https://github.com/…" value="${esc(ed ? ed.repo_url : '')}"></label>
       <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
       <label class="project-description">프로젝트 설명<textarea id="p-description" maxlength="200000" placeholder="목적, 대상 사용자와 원하는 기능을 적어 주세요.">${esc(ed?.description || '')}</textarea></label>
+      ${ed ? '<div class="project-description"><button type="button" id="p-description-request">현재 상태로 Description 작성</button><p id="p-description-status" role="status" aria-live="polite"></p></div>' : ''}
       <label class="actions">${ed ? '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">저장</button>'
         : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">프로젝트 추가</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
     ${ed ? '' : '</dialog>'}
@@ -1327,6 +1328,17 @@ function renderProjects(editKey, projectTab = 'manage'){
   view.querySelector('#p-cancel').addEventListener('click', () => {
     if(ed){ renderProjects(); view.querySelector('#project-create').focus(); }
     else dialog.close();
+  });
+  const descRequest = view.querySelector('#p-description-request');
+  if(descRequest) descRequest.addEventListener('click', () => {
+    // 저장하지 않은 설명은 에이전트가 쓴 값으로 덮어써질 수 있다.
+    if(val('#p-description') !== (ed.description || '') && !confirm('저장하지 않은 설명은 에이전트 결과로 바뀔 수 있어요. 계속할까요?')) return;
+    whileBusy(descRequest, async () => {
+      const r = await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/description/request`);
+      const status = view.querySelector('#p-description-status');
+      if(!status) return;
+      status.innerHTML = `<a href="#/issue/${esc(r.ref)}">${esc(r.ref)}</a>로 ${r.reused ? '이미 등록돼 있어요' : '등록했어요'} · 선택된 에이전트: ${PROVIDER_NAME[r.provider] || esc(r.provider)}${r.queue_error ? ` · ${esc(r.queue_error)}` : ''}`;
+    });
   });
   if(ed && projectTab === 'manage') view.querySelector('#p-name').focus();
   view.querySelectorAll('[data-project-tab]').forEach(b => b.onclick = () => {
