@@ -53,6 +53,7 @@ with patch.object(jobs, 'busy', return_value=True):
         denied(lambda: execute.start(me, task['ref'], other), 409)
         with patch.object(execute, 'prepare_worktree', return_value=Path('/target/worktree')) as prepare, \
              patch.object(execute, 'safe_env', return_value={}), \
+             patch.object(execute, 'refresh_worktree', return_value=('a' * 40, [])), \
              patch.object(execute, '_git', return_value='a' * 40), \
              patch.object(execute, 'blocked_reason', return_value=None), \
              patch('review.running_ref', return_value=None), \

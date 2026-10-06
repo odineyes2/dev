@@ -83,6 +83,73 @@ def prepare_worktree(repo: str, ref: str) -> Path:
     return path
 
 
+def _server_git(cwd, *args):
+    """서버 이름으로 커밋·병합한다(훅·서명 없이)."""
+    return _run_git(cwd, "-c", "user.name=dev orchestrator", "-c", "user.email=orchestrator@dev.local",
+                    "-c", "core.hooksPath=NUL" if os.name == "nt" else "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", *args)
+
+
+def refresh_worktree(path: Path, ref: str) -> tuple[str, list[str]]:
+    """이어 쓰는 worktree가 base보다 뒤처졌으면 서버가 최신 base를 병합한다(DEV-81-1·DEV-40-2 — 옛 worktree에서 다시 돌아 충돌).
+    커밋 안 된 추적 변경은 먼저 보존 커밋으로 남긴다. 돌려주는 것: (이번 실행 시작점, 충돌 파일 목록).
+    시작점은 보존·병합 전 HEAD라 병합 커밋도 이번 실행의 결과가 된다. 충돌이면 병합 중 상태를 그대로 두고 에이전트가 해결한다."""
+    wt = str(path)
+    start = _git(wt, "rev-parse", "HEAD")
+    if _run_git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0:   # 지난 실행이 충돌을 다 풀지 못하고 끝났다
+        return start, (_git(wt, "diff", "--name-only", "--diff-filter=U").splitlines()
+                       or _git(wt, "diff", "--name-only", "--cached").splitlines() or ["(병합 커밋만 남음)"])
+    if _run_git(wt, "merge-base", "--is-ancestor", BASE_BRANCH, "HEAD").returncode == 0:
+        return start, []
+    if _git(wt, "status", "--porcelain", "--untracked-files=no"):
+        r = _server_git(wt, "commit", "-qam", f"이전 실행의 커밋하지 않은 변경 보존 ({ref})")
+        if r.returncode:
+            raise issues.StoreError(f"Task worktree의 변경을 보존하지 못했어요: {r.stderr.strip() or r.stdout.strip()}", 409)
+    r = _server_git(wt, "merge", "--no-edit", BASE_BRANCH)
+    if r.returncode == 0:
+        return start, []
+    conflicts = _git(wt, "diff", "--name-only", "--diff-filter=U").splitlines()
+    if not conflicts:   # 미추적 파일과 겹침 등 — 병합 중 상태를 남기지 않는다
+        _run_git(wt, "merge", "--abort")
+        raise issues.StoreError(f"최신 {BASE_BRANCH}를 Task worktree에 합치지 못했어요: {r.stderr.strip() or r.stdout.strip()}", 409)
+    return start, conflicts
+
+
+def conflict_notice(conflicts: list[str]) -> str:
+    """충돌 해결을 실행 프롬프트 앞에 붙일 지시."""
+    files = ", ".join(f"`{f}`" for f in conflicts)
+    return (f"먼저 할 일: 서버가 최신 {BASE_BRANCH}를 이 worktree에 병합하다 충돌했다(병합 진행 중). 충돌 파일: {files}. "
+            f"충돌 표시(<<<<<<< ======= >>>>>>>)를 양쪽 의도를 모두 보존해 해결한다 — {BASE_BRANCH}에 먼저 들어간 다른 Task의 변경을 지우지 않는다. "
+            "해결한 파일도 Task 범위로 본다. 해결 뒤 아래 절차대로 구현·전체 검사를 마친다(커밋하면 병합이 완료된다).\n\n")
+
+
+def conflict_markers(diff: str) -> list[str]:
+    """diff에서 충돌 표시가 추가된 파일."""
+    found, path = [], None
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            path = line[6:] if line.startswith("+++ b/") else None
+        elif path and path not in found and re.match(r"\+(<{7}|>{7})( |$)|\+={7}$", line):
+            found.append(path)
+    return found
+
+
+def merge_unfinished(cwd) -> str | None:
+    """완료 전에 — 서버가 시작한 base 병합이 끝나지 않았거나 충돌 표시가 커밋에 남았으면 이유."""
+    if _run_git(cwd, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0:
+        return f"최신 {BASE_BRANCH} 병합이 끝나지 않았어요 — 충돌을 해결하고 커밋해야 해요."
+    markers = conflict_markers(_git(cwd, "diff", f"{BASE_BRANCH}...HEAD"))
+    if markers:
+        return "충돌 표시가 커밋에 남아 있어요: " + ", ".join(f"`{f}`" for f in markers[:20])
+    return None
+
+
+def with_notice(cmd: list[str], provider: str, notice: str) -> list[str]:
+    """프롬프트 앞에 지시를 붙인다 — Claude는 cmd[2], Codex는 마지막 인자가 프롬프트다."""
+    if not notice:
+        return cmd
+    return cmd[:2] + [notice + cmd[2]] + cmd[3:] if provider == "claude" else cmd[:-1] + [notice + cmd[-1]]
+
+
 def resume_reason(ref: str, run_id: int) -> str | None:
     """토큰 소진 이관 전에 같은 Task worktree를 버리지 않고 이어받을 수 있는지 본다. 불명확하면 이유를 돌려준다."""
     with db.connect() as c:
@@ -184,12 +251,16 @@ def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> str | N
     why = completion_blocked_reason(issue, run_id)
     if why:
         raise issues.StoreError(why, 409)
-    if not _git(cwd, "status", "--porcelain"):
-        raise issues.StoreError("커밋할 코드 변경이 없어요.", 409)
-    _git(cwd, "add", "-A", "--", ".")
     message = f"{result['summary'].splitlines()[0][:160]} ({ref})"
-    _git(cwd, "-c", "core.hooksPath=NUL" if os.name == "nt" else "core.hooksPath=/dev/null",
-         "-c", "commit.gpgsign=false", "-c", "user.name=Codex", "-c", "user.email=noreply@openai.com", "commit", "-m", message)
+    if _git(cwd, "status", "--porcelain"):
+        _git(cwd, "add", "-A", "--", ".")
+        _git(cwd, "-c", "core.hooksPath=NUL" if os.name == "nt" else "core.hooksPath=/dev/null",
+             "-c", "commit.gpgsign=false", "-c", "user.name=Codex", "-c", "user.email=noreply@openai.com", "commit", "-m", message)
+    else:   # 서버가 최신 base를 깨끗이 병합해 둔 재실행은 고칠 것이 없을 수 있다 — 이번 실행에 새 커밋이 있으면 그것으로 완료한다
+        with db.connect() as c:
+            start = c.execute("SELECT task_start_sha FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+        if _git(cwd, "rev-parse", "HEAD") == start:
+            raise issues.StoreError("커밋할 코드 변경이 없어요.", 409)
     sha = _git(cwd, "rev-parse", "HEAD")
     issues.link_commit(actor, ref, sha, message=message)
     note = result["summary"] + "\n\n검사:\n" + "\n".join(result["tests"])
@@ -210,13 +281,16 @@ def register_completion(actor, ref, cwd, run_id, note):
             or not _git(cwd, 'log', '--oneline', f'{BASE_BRANCH}..HEAD')
             or not any(e['kind'] == 'commit' and e['data'].get('sha') == sha for e in issue['events'])):
         raise issues.StoreError('현재 Task의 깨끗한 worktree와 연결된 새 커밋이 필요해요.', 409)
+    why = merge_unfinished(cwd)
+    if why:
+        raise issues.StoreError(why, 409)
     cfg = orchestrate.settings(issue['project_key'])
     with db.connect() as c:
         start_sha = c.execute('SELECT task_start_sha FROM runs WHERE id=?', (run_id,)).fetchone()[0]
     leftover = [line[3:] for line in _git(cwd, 'status', '--porcelain', '--untracked-files=all').splitlines() if line.startswith('??')]
     if leftover:
         note += '\n\n🧹 커밋되지 않은 파일이 worktree에 남아 있어요(병합에는 안 들어가요): ' + ', '.join(f'`{f}`' for f in leftover[:20])
-    stray = out_of_scope(issue, _git(cwd, 'diff', '--name-only', f'{start_sha or BASE_BRANCH}..HEAD').splitlines())
+    stray = out_of_scope(issue, _git(cwd, 'diff', '--name-only', f'{BASE_BRANCH}...HEAD').splitlines())   # 병합해 온 base 변경은 빼고 Task 변경만
     if stray:   # 막지는 않는다(새 검사 파일 등 정당한 추가가 있다) — 검토하는 사람이 보게 남긴다
         note += '\n\n⚠️ Task의 바꿀 파일 밖 변경: ' + ', '.join(f'`{f}`' for f in stray[:20]) + (' 외' if len(stray) > 20 else '')
     with db.connect() as c:
@@ -366,12 +440,13 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
         raise issues.StoreError(f"{busy} 실행이 아직 돌고 있어요 — 끝나면 다시 눌러 주세요.", 409)
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
     worktree = prepare_worktree(repo, ref)
+    start_sha, conflicts = refresh_worktree(worktree, ref)
     cmd = codex_command_for(ref, issue["parent_ref"]) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
-    cmd = review.with_model(cmd, provider, model)
+    cmd = review.with_model(with_notice(cmd, provider, conflict_notice(conflicts) if conflicts else ""), provider, model)
     env = safe_env(repo)
     log_path, run_id = review.begin(actor, issue, "execute", provider, model)
     with db.connect() as c:
-        c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (_git(worktree, 'rev-parse', 'HEAD'), run_id))
+        c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (start_sha, run_id))
         c.execute('INSERT INTO task_execution_results(run_id,plan_version) SELECT id,? FROM runs WHERE id=? AND issue_id=?',
                   (parent['approval']['plan_version'], run_id, issue['id']))
     name = "Codex" if provider == "codex" else "Claude"
