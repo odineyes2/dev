@@ -491,6 +491,16 @@ CREATE TABLE project_description_events (
 );
 """)
 
+# 역할별 Agent 우선순위(DEV-89) — 행이 없으면 provider 순서 → Agent id 순으로 만든다(기존 동작 그대로).
+MIGRATIONS.append("""
+CREATE TABLE project_agent_orders (
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    agent_ids_json TEXT NOT NULL,
+    PRIMARY KEY (project_id, role)
+);
+""")
+
 STATUSES += ("waiting",)
 
 

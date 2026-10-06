@@ -1507,15 +1507,22 @@ async function renderSettings(){
       b.querySelector('.switch-state').textContent = on ? '켜짐' : '꺼짐';
     }
     for(const [field,id,title] of ROLE_CARDS){
+      // 켜진 카탈로그 Agent가 있으면 "이름 · Vendor · Model" 줄로, 없으면 예전처럼 provider 두 줄로 그린다.
+      const agents = settings.agent_orders?.[field] || [], list = body.querySelector(`#${id}`);
+      list.dataset.agents = agents.length ? '1' : '';
+      if(agents.length){
+        list.innerHTML = agents.map((a,i) => `<li><span>${esc(a.name)} · ${esc(a.vendor)} · ${esc(a.model)}</span><div><button type="button" data-move="${i}" data-direction="-1" aria-label="${title} ${esc(a.name)} 우선순위 올리기" ${busy || i === 0 ? 'disabled' : ''}>위로</button><button type="button" data-move="${i}" data-direction="1" aria-label="${title} ${esc(a.name)} 우선순위 내리기" ${busy || i === agents.length - 1 ? 'disabled' : ''}>아래로</button></div></li>`).join('');
+        continue;
+      }
       const order = settings[field] || ['claude','codex'];
-      body.querySelector(`#${id}`).innerHTML = order.map((provider,i) => `<li><span>${provider === 'claude' ? 'Claude' : 'Codex'}</span><div><button type="button" data-move="${i}" data-direction="-1" aria-label="${title} ${esc(provider)} 우선순위 올리기" ${busy || i === 0 ? 'disabled' : ''}>위로</button><button type="button" data-move="${i}" data-direction="1" aria-label="${title} ${esc(provider)} 우선순위 내리기" ${busy || i === order.length - 1 ? 'disabled' : ''}>아래로</button></div></li>`).join('');
+      list.innerHTML = order.map((provider,i) => `<li><span>${provider === 'claude' ? 'Claude' : 'Codex'}</span><div><button type="button" data-move="${i}" data-direction="-1" aria-label="${title} ${esc(provider)} 우선순위 올리기" ${busy || i === 0 ? 'disabled' : ''}>위로</button><button type="button" data-move="${i}" data-direction="1" aria-label="${title} ${esc(provider)} 우선순위 내리기" ${busy || i === order.length - 1 ? 'disabled' : ''}>아래로</button></div></li>`).join('');
     }
     body.setAttribute('aria-busy', String(busy));
   }
-  async function save(changes, focus){
+  async function save(changes, focus, optimistic = changes){
     if(busy || !current()) return;
     const before = settings;
-    settings = {...settings, ...changes}; busy = true; paint(); status.textContent = '저장 중…';
+    settings = {...settings, ...optimistic}; busy = true; paint(); status.textContent = '저장 중…';
     try{ const result = await api('PATCH', url, changes, current); if(!current()) return; settings = result; status.textContent = '저장했어요.'; }
     catch(e){ if(!current()) return; settings = before; status.textContent = `${e.message} 이전 설정으로 복원했어요. 다시 시도해 주세요.`; }
     finally{ if(current()){ busy = false; paint(); body.querySelector(focus)?.focus(); } }
@@ -1524,9 +1531,16 @@ async function renderSettings(){
   body.querySelector('.role-cards').onclick = e => {
     const b = e.target.closest('[data-move]'); if(!b || b.disabled) return;
     const list = b.closest('ol'), field = list.dataset.field;
-    const i = Number(b.dataset.move), j = i + Number(b.dataset.direction), order = [...settings[field]];
+    const i = Number(b.dataset.move), j = i + Number(b.dataset.direction), focus = `#${list.id} [data-move="${j}"][data-direction="${-Number(b.dataset.direction)}"]`;
+    if(list.dataset.agents){
+      const agents = [...settings.agent_orders[field]];
+      [agents[i], agents[j]] = [agents[j], agents[i]];
+      save({agent_orders: {[field]: agents.map(a => a.id)}}, focus, {agent_orders: {...settings.agent_orders, [field]: agents}});
+      return;
+    }
+    const order = [...settings[field]];
     [order[i], order[j]] = [order[j], order[i]];
-    save({[field]: order}, `#${list.id} [data-move="${j}"][data-direction="${-Number(b.dataset.direction)}"]`);
+    save({[field]: order}, focus);
   };
   paint();
 }
