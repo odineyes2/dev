@@ -423,6 +423,12 @@ async def api_delete_project(key: str, request: Request):
     return Response(status_code=204)
 
 
+@app.get("/api/model-catalog")
+def api_model_catalog():
+    import model_catalog
+    return model_catalog.catalog()
+
+
 @app.get("/api/issue-types")
 def api_issue_types(include_inactive: bool = False):
     return {"types": issues.list_issue_types(include_inactive)}
