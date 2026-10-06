@@ -1872,11 +1872,9 @@ try:
         # 칸반 — 끌어서 상태 바꾸기
         page.click("[data-nav=board]")
         page.wait_for_selector('.card[data-ref="NS-1-1"]')
-        # 대기열 열(DEV-92)이 오른쪽을 차지하니 출발·도착 열이 한 화면에 들어오게 넓혀서 끈다
-        page.set_viewport_size({"width": 1700, "height": 850})
-        page.drag_and_drop('.card[data-ref="NS-1-1"]', '.col[data-col="in_progress"] .cards')
+        # 대기열 열(DEV-92)에 가려 in_progress 열은 왼쪽 끝만 보인다(main 최대 1320px) — 보이는 왼쪽 끝에 놓는다
+        page.drag_and_drop('.card[data-ref="NS-1-1"]', '.col[data-col="in_progress"] .cards', target_position={"x": 20, "y": 20})
         page.wait_for_selector('.col[data-col="in_progress"] .card[data-ref="NS-1-1"]')
-        page.set_viewport_size({"width": 1300, "height": 850})
         page.screenshot(path=str(shots / "board.png"))
         check_board_pan(page, shots)
 
@@ -2239,6 +2237,7 @@ try:
                 side_of = lambda main: page.evaluate("""m => { const j = document.querySelector('#jobs-box').getBoundingClientRect(),
                     b = document.querySelector(m).getBoundingClientRect();
                     return j.left >= b.right && j.top < b.bottom && b.top < j.bottom ? 'side' : j.bottom <= b.top ? 'above' : 'other'; }""", main)
+                page.wait_for_selector('#list-body tr.row')   # 목록이 아직 비어 있으면(높이 0) 자리를 잴 수 없다
                 assert side_of('#list-body') == ('side' if tag == 'desktop' else 'above'), (scheme, tag)
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
