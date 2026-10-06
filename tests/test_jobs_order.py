@@ -6,7 +6,7 @@ from pathlib import Path
 os.environ["DEV_DATA_DIR"] = tempfile.mkdtemp()
 os.environ.pop("NTFY_TOPIC", None)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
-import db, issues, jobs  # noqa: E402
+import db, issues, jobs, review  # noqa: E402
 
 me = {"kind": "human", "id": 1, "name": "admin", "model": None}
 db.init()
@@ -63,3 +63,14 @@ assert jobs._overlap({"static"}, {"static/x.js"}) == ["static"] and jobs._overla
 with db.connect() as c:
     assert jobs.schedule(c, []) == ([], {})
 print("ok")
+
+# 검토 프롬프트(Task 4) — 같은 프로젝트의 진행 중인 이슈와 남은 Task 파일을 알린다. 사람을 기다리는 이슈도 넣는다.
+assert "진행 중인 다른 이슈" not in review.prompt_for(r)          # A가 다 끝남
+status(a2, "changes_requested")
+prompt = review.prompt_for(r)
+assert f"{a} A — 남은 Task 파일: server/db.py, static/" in prompt, prompt[-600:]
+assert "진행 중인 다른 이슈" not in review.prompt_for(a)          # 자기 자신은 빼고
+issues.create_project(me, "OX", "other", "", "/nowhere2")
+assert "진행 중인 다른 이슈" not in review.prompt_for(issues.create_issue(me, "OX", "다른 프로젝트")["ref"])
+assert "진행 중인 다른 이슈" in review.codex_command_for(r)[-1]
+print("ok review")

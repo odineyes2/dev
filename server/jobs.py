@@ -215,18 +215,20 @@ def _set(job_id: int, status: str, note: str = "") -> None:
 STALLED = ("on_hold", "changes_requested")
 
 
-def _reservations(c) -> dict[int, tuple[str, set[str]]]:
+def _reservations(c, keep_stalled: bool = False) -> dict[int, tuple[str, set[str]]]:
     """진행 중인 부모(Task가 한 번이라도 실행됐고 남은 Task가 있는 부모)가 아직 쓸 파일 — {부모 id: (ref, 파일)}.
     남은 Task 중 사람을 기다리는 것(on_hold·changes_requested)이 있으면 예약을 푼다 — 사람이 없을 때 전체가 멈추지 않게.
-    그 부모가 다시 돌 때는 execute.refresh_worktree가 최신 base를 병합한다."""
+    그 부모가 다시 돌 때는 execute.refresh_worktree가 최신 base를 병합한다.
+    keep_stalled면 사람을 기다리는 부모도 남은 Task 파일 전부로 넣는다(검토 프롬프트용 — 언젠가 다시 돈다)."""
     import execute
     held = {}
     for p in c.execute(f"""SELECT DISTINCT q.id, {issues.ref_sql('q', 'k')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id
             JOIN issues q ON q.id=i.parent_id JOIN projects k ON k.id=q.project_id WHERE r.mode='execute'""").fetchall():
         kids = c.execute("SELECT status, body FROM issues WHERE parent_id=? AND status NOT IN ('done','closed')", (p["id"],)).fetchall()
-        if not kids or any(k["status"] in STALLED for k in kids):
+        if not kids or (not keep_stalled and any(k["status"] in STALLED for k in kids)):
             continue
-        files = set().union(*(execute.task_files({"body": k["body"]}) for k in kids if k["status"] in ("backlog", "waiting", "in_progress")))
+        todo = ("backlog", "waiting", "in_progress") + (STALLED if keep_stalled else ())
+        files = set().union(*(execute.task_files({"body": k["body"]}) for k in kids if k["status"] in todo))
         if files:
             held[p["id"]] = (p["ref"], files)
     return held
