@@ -212,6 +212,58 @@ def _set(job_id: int, status: str, note: str = "") -> None:
             _restore(c, j)
 
 
+STALLED = ("on_hold", "changes_requested")
+
+
+def _reservations(c) -> dict[int, tuple[str, set[str]]]:
+    """진행 중인 부모(Task가 한 번이라도 실행됐고 남은 Task가 있는 부모)가 아직 쓸 파일 — {부모 id: (ref, 파일)}.
+    남은 Task 중 사람을 기다리는 것(on_hold·changes_requested)이 있으면 예약을 푼다 — 사람이 없을 때 전체가 멈추지 않게.
+    그 부모가 다시 돌 때는 execute.refresh_worktree가 최신 base를 병합한다."""
+    import execute
+    held = {}
+    for p in c.execute(f"""SELECT DISTINCT q.id, {issues.ref_sql('q', 'k')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id
+            JOIN issues q ON q.id=i.parent_id JOIN projects k ON k.id=q.project_id WHERE r.mode='execute'""").fetchall():
+        kids = c.execute("SELECT status, body FROM issues WHERE parent_id=? AND status NOT IN ('done','closed')", (p["id"],)).fetchall()
+        if not kids or any(k["status"] in STALLED for k in kids):
+            continue
+        files = set().union(*(execute.task_files({"body": k["body"]}) for k in kids if k["status"] in ("backlog", "waiting", "in_progress")))
+        if files:
+            held[p["id"]] = (p["ref"], files)
+    return held
+
+
+def _overlap(a: set[str], b: set[str]) -> list[str]:
+    """같은 파일이거나 한쪽이 다른 쪽의 폴더."""
+    return sorted({x for x in a for y in b if x == y or x.startswith(y.rstrip("/") + "/") or y.startswith(x.rstrip("/") + "/")})
+
+
+def schedule(c, queued: list[dict]) -> tuple[list[dict], dict[int, str]]:
+    """꺼낼 순서와 파일 겹침으로 기다릴 항목의 메모 {job id: 메모}.
+    순서: 진행 중인 부모의 실행 → 그 밖의 실행 → 검토(같은 묶음 안은 대기열 순서). 시작한 부모를 먼저 끝내
+    다른 이슈의 Task가 사이에 끼어 같은 파일을 바꾸지 않게 한다(DEV-68·70, DEV-81·82). 진행 중인 부모끼리는 막지 않는다."""
+    import execute
+    held = _reservations(c)
+    info = {r["id"]: r for r in c.execute(
+        f"SELECT id, parent_id, body FROM issues WHERE id IN ({','.join('?' * len(queued))})", [j["issue_id"] for j in queued])} if queued else {}
+
+    def group(j):
+        if j["mode"] != "execute":
+            return 2
+        return 0 if info[j["issue_id"]]["parent_id"] in held else 1
+    ordered = sorted(queued, key=group)
+    notes = {}
+    for j in ordered:
+        if group(j) != 1:
+            continue
+        mine = execute.task_files({"body": info[j["issue_id"]]["body"]})
+        for ref, files in held.values():
+            hit = _overlap(mine, files)
+            if hit:
+                notes[j["id"]] = f"{ref} 작업이 끝날 때까지 기다려요 — 겹치는 파일: " + ", ".join(hit[:5]) + (" 외" if len(hit) > 5 else "")
+                break
+    return ordered, notes
+
+
 def pump() -> None:
     """도는 것이 없으면 시작할 수 있는 첫 항목을 돌린다."""
     import execute, review
@@ -229,7 +281,7 @@ def pump() -> None:
                     c.execute("UPDATE jobs SET note=? WHERE status='queued'", (pending[0]['ref'] + '의 병합·운영 반영 완료를 기다려요.',))
             return
         with db.connect() as c:
-            queued = _rows(c)
+            queued, waits = schedule(c, _rows(c))
         for j in queued:
             actor = _actor(j["actor"])
             try:
@@ -258,8 +310,8 @@ def pump() -> None:
                         _set(j["id"], "skipped", never)
                         issues.add_comment(actor, j["ref"], f"⏭ 대기열의 실행을 건너뛰었어요 — {never}")
                         continue
-                    why = execute.blocked_reason(issue, parent)
-                    if why:   # 선행 대기 — 뒤 항목을 먼저 본다
+                    why = waits.get(j["id"]) or execute.blocked_reason(issue, parent)
+                    if why:   # 선행·겹치는 파일 대기 — 뒤 항목을 먼저 본다
                         _set(j["id"], "queued", why)
                         continue
                     execute.start(actor, j["ref"], j["provider"], j["model"])
