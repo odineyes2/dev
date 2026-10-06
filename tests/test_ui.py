@@ -1872,8 +1872,11 @@ try:
         # 칸반 — 끌어서 상태 바꾸기
         page.click("[data-nav=board]")
         page.wait_for_selector('.card[data-ref="NS-1-1"]')
+        # 대기열 열(DEV-92)이 오른쪽을 차지하니 출발·도착 열이 한 화면에 들어오게 넓혀서 끈다
+        page.set_viewport_size({"width": 1700, "height": 850})
         page.drag_and_drop('.card[data-ref="NS-1-1"]', '.col[data-col="in_progress"] .cards')
         page.wait_for_selector('.col[data-col="in_progress"] .card[data-ref="NS-1-1"]')
+        page.set_viewport_size({"width": 1300, "height": 850})
         page.screenshot(path=str(shots / "board.png"))
         check_board_pan(page, shots)
 
