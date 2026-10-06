@@ -593,7 +593,7 @@ async def api_review(ref: str, request: Request):
 
 @app.get("/api/jobs")
 def api_jobs():
-    return {"jobs": jobs.list_jobs()}
+    return {"jobs": jobs.list_jobs(), "in_progress": jobs.list_in_progress()}
 
 
 @app.delete("/api/jobs/{job_id}")

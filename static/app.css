@@ -326,8 +326,11 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 /* 대기열(DEV-43) — 대기는 회청 점(DESIGN §3 대기·예정) */
 .queued{ display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; }
 .jobs{ margin:0 0 var(--sp-3); padding:var(--sp-2) var(--sp-3); border:1px solid var(--border); border-radius:8px; background:var(--panel); }
-.jobs summary{ cursor:pointer; }
-.jobs ul{ list-style:none; margin:var(--sp-2) 0 0; padding:0; }
+.jobs-head{ font-size:13px; font-weight:600; }
+.jobs-empty{ font-size:13px; margin-top:var(--sp-1); }
+.jobs-list{ max-height:240px; overflow-y:auto; margin-top:var(--sp-2); }   /* 항목이 많아도 목록을 밀어내지 않게(DEV-91) */
+.jobs ul{ list-style:none; margin:0; padding:0; }
+.jobs .job-title{ min-width:0; overflow-wrap:anywhere; }
 .jobs li{ display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; padding:6px 0; font-size:13px; border-top:1px solid var(--border); }
 .jobs li .job-btns{ margin-left:auto; display:flex; align-items:center; gap:var(--sp-1); }
 .move-job{ padding:var(--sp-1); line-height:1; }

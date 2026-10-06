@@ -39,6 +39,16 @@ def list_jobs() -> list[dict]:
     return [{**j, "position": n, "prev_id": ids[n - 1], "next_id": ids[n + 1]} for n, j in enumerate(rows, 1)]
 
 
+def list_in_progress() -> list[dict]:
+    """게시판 대기열 상자 위쪽(DEV-91) — in_progress 이슈 전부(프로젝트 무관), 도는 실행이 있으면 mode·provider·started_at."""
+    with db.connect() as c:
+        return [dict(r) for r in c.execute(
+            f"SELECT {issues.ref_sql('i', 'p')} AS ref, i.title, i.claimed_by, i.updated_at, r.mode, r.provider, r.started_at "
+            "FROM issues i JOIN projects p ON p.id=i.project_id "
+            "LEFT JOIN runs r ON r.id=(SELECT MAX(id) FROM runs WHERE issue_id=i.id AND status='running') "
+            "WHERE i.status='in_progress' ORDER BY i.updated_at, i.id")]
+
+
 def job_for(issue_id: int) -> dict | None:
     """화면용 — 이 이슈의 대기 항목(순번 포함)."""
     return next((j for j in list_jobs() if j["issue_id"] == issue_id), None)

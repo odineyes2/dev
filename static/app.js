@@ -451,9 +451,9 @@ async function renderList(){
       L.seen = new Set(data.issues.map(i => i.ref));
       L.offset = data.issues.length; L.done = !data.has_more;
     }else if(data.issues.length) await loadList();
-    await loadJobs();
+    const queued = await loadJobs();
     if(L !== listLoad || body !== view.querySelector('#list-body')) return;
-    if(!data.issues.some(activeProgress) && !view.querySelector('.jobs')) stopLiveRefresh();
+    if(!data.issues.some(activeProgress) && !queued) stopLiveRefresh();
   }, () => body === view.querySelector('#list-body'));
 }
 async function loadList(){
@@ -561,7 +561,7 @@ async function renderBoard(){
   const items = (await api('GET', '/api/issues?' + new URLSearchParams({ project: currentProject(), status: cols.join(',') }))).issues;
   await loadActionSettings(session, items);
   if(actionSession !== session || !session.current()) return;
-  view.innerHTML = `<div class="kanban" tabindex="0" role="region" aria-label="Issue 보드 — 빈 영역을 끌거나 좌우 방향키로 이동해요">${cols.map(s => {
+  view.innerHTML = `<div id="jobs-box"></div><div class="kanban" tabindex="0" role="region" aria-label="Issue 보드 — 빈 영역을 끌거나 좌우 방향키로 이동해요">${cols.map(s => {
     const mine = items.filter(i => i.status === s);
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
@@ -569,6 +569,7 @@ async function renderBoard(){
         ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div>${actionHtml(i)}</div>`).join('')}
     </div></div>`;
   }).join('')}</div>`;
+  loadJobs().catch(() => {});
   bindActions(view.querySelector('.kanban'), session, renderBoard);
   enableBoardPan(view.querySelector('.kanban'));
   view.querySelectorAll('.card').forEach(card => {
@@ -678,15 +679,18 @@ async function moveJob(b){
   (q(dir) || q(dir === 'up' ? 'down' : 'up'))?.focus();
 }
 function queuedMsg(r, started){ return r && r.queued ? `대기열에 넣었어요 — ${r.position}번째` : started; }
-async function loadJobs(){   // 목록 화면 위의 "Claude 대기 n건" — 펼치면 대기 목록과 취소
+async function loadJobs(){   // 목록·Board 위의 대기열(DEV-91) — 늘 펼친 상자: 위는 In Progress, 아래는 대기 항목. 항목 수를 돌려준다
   const box = view.querySelector('#jobs-box');
-  if(!box) return;
-  const { jobs } = await api('GET', '/api/jobs');
-  if(box !== view.querySelector('#jobs-box')) return;
-  const open = !!box.querySelector('details[open]');
-  box.innerHTML = jobs.length ? `<details class="jobs"${open ? ' open' : ''}><summary><span class="status" style="--sc:var(--s-waiting)">Agent 대기 ${jobs.length}건</span></summary>
-    <ul>${jobs.map(j => `<li><span class="ref">${j.position}</span> <a href="#/issue/${esc(j.ref)}">${esc(j.ref)}</a> ${PROVIDER_NAME[j.provider] || 'Claude'} ${RUN_MODE[j.mode] || esc(j.mode)}
-      ${j.note ? `<span class="dim">${esc(j.note)}</span>` : ''}<span class="job-btns">${moveJobHtml(j)}<button class="ghost cancel-job" data-job="${j.id}">취소</button></span></li>`).join('')}</ul></details>` : '';
+  if(!box) return 0;
+  const { jobs, in_progress: prog = [] } = await api('GET', '/api/jobs');
+  if(box !== view.querySelector('#jobs-box')) return 0;
+  const progHtml = prog.map(p => `<li><span class="status" style="--sc:var(--s-in_progress)">In Progress</span> <a href="#/issue/${esc(p.ref)}">${esc(p.ref)}</a> <span class="job-title">${esc(p.title)}</span>
+    <span class="dim">${p.started_at ? `${PROVIDER_NAME[p.provider] || 'Claude'} ${RUN_MODE[p.mode] || esc(p.mode)} 중 · ${fmtTime(p.started_at)}` : p.claimed_by ? esc(actorName(p.claimed_by)) : ''}</span></li>`).join('');
+  const waitHtml = jobs.map(j => `<li><span class="ref">${j.position}</span> <a href="#/issue/${esc(j.ref)}">${esc(j.ref)}</a> ${PROVIDER_NAME[j.provider] || 'Claude'} ${RUN_MODE[j.mode] || esc(j.mode)}
+      ${j.note ? `<span class="dim">${esc(j.note)}</span>` : ''}<span class="job-btns">${moveJobHtml(j)}<button class="ghost cancel-job" data-job="${j.id}">취소</button></span></li>`).join('');
+  box.innerHTML = `<section class="jobs" aria-label="대기열"><div class="jobs-head">대기열 · In Progress ${prog.length} · Waiting ${jobs.length}</div>
+    ${prog.length || jobs.length ? `<div class="jobs-list">${prog.length ? `<ul class="jobs-prog">${progHtml}</ul>` : ''}${jobs.length ? `<ul class="jobs-wait">${waitHtml}</ul>` : ''}</div>` : '<div class="dim jobs-empty">대기 중인 일이 없어요.</div>'}</section>`;
+  return prog.length + jobs.length;
 }
 view.addEventListener('click', (e) => {
   const m = e.target.closest('.move-job');
