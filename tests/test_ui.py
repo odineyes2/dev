@@ -1866,7 +1866,7 @@ try:
 
         # 에이전트 — 키는 한 번만
         page.click("[data-nav=agents]")
-        page.wait_for_selector("#a-vendor option")
+        page.wait_for_selector("#a-vendor option", state="attached")   # option은 visible로 잡히지 않는다
         page.select_option("#a-vendor", "openai")   # Vendor를 고르면 Model 목록이 그 vendor 것으로 바뀐다
         assert "gpt-6.1-sol" in page.eval_on_selector_all("#a-model option", "os => os.map(o => o.value)")
         page.select_option("#a-vendor", "anthropic")
