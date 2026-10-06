@@ -1866,14 +1866,32 @@ try:
 
         # 에이전트 — 키는 한 번만
         page.click("[data-nav=agents]")
-        page.fill("#a-name", "claude"); page.fill("#a-vendor", "anthropic"); page.fill("#a-model", "claude-opus-5-5")
+        page.wait_for_selector("#a-vendor option", state="attached")   # option은 visible로 잡히지 않는다
+        page.select_option("#a-vendor", "openai")   # Vendor를 고르면 Model 목록이 그 vendor 것으로 바뀐다
+        assert "gpt-6.1-sol" in page.eval_on_selector_all("#a-model option", "os => os.map(o => o.value)")
+        page.select_option("#a-vendor", "anthropic")
+        models = page.eval_on_selector_all("#a-model option", "os => os.map(o => o.value)")
+        assert "claude-opus-5-5" in models and "gpt-6.1-sol" not in models, models
+        page.fill("#a-name", "claude"); page.select_option("#a-model", "claude-opus-5-5")
         page.click("#agent-form button")
         page.wait_for_selector(".keybox code")
         key = page.inner_text("#key")
         assert key.startswith("dev_")
         page.click("[data-nav=issues]"); page.click("[data-nav=agents]")
-        page.wait_for_selector("td:text('claude-opus-5-5')")
+        page.wait_for_selector("select[data-model]")
+        assert page.eval_on_selector("select[data-model]", "s => s.value") == "claude-opus-5-5"
         assert page.locator(".keybox").count() == 0 and key not in page.content()
+        # 목록 밖 Agent는 "목록 밖"으로 보이고 드롭다운으로 다시 고르면 목록 안으로 들어간다
+        r = page.request.post(f"{BASE}/api/agents", data={"name": "legacy", "model": "free-text"}, headers={"X-Requested-With": "dev"})
+        assert r.ok, r.text()
+        lid = r.json()["agent"]["id"]
+        page.click("[data-nav=issues]"); page.click("[data-nav=agents]")
+        page.wait_for_selector(f'tr[data-agent="{lid}"] .off-catalog')
+        assert "free-text (목록 밖)" in page.inner_text(f'select[data-model="{lid}"]')
+        page.select_option(f'select[data-vendor="{lid}"]', "openai")
+        page.select_option(f'select[data-model="{lid}"]', "gpt-6-luna")
+        page.wait_for_function(f'!document.querySelector(\'tr[data-agent="{lid}"] .off-catalog\') && document.querySelector(\'select[data-model="{lid}"]\')?.value === "gpt-6-luna"')
+        page.screenshot(path=str(shots / "agents.png"))
 
         # 에이전트가 API로 계획서를 올리면 상세에 모델과 함께 보인다
         r = page.request.post(f"{BASE}/api/issues/NS-1/plans", data={"body": "v2 by agent"}, headers={"Authorization": f"Bearer {key}"})
