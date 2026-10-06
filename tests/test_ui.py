@@ -1776,6 +1776,13 @@ try:
             return {ghost: b.classList.contains('ghost'), style: s.borderTopStyle, color: s.borderTopColor}; }""")
         assert not edit_btn["ghost"] and edit_btn["style"] == "solid", edit_btn
         assert edit_btn["color"] not in ("transparent", "rgba(0, 0, 0, 0)"), edit_btn
+        assert page.get_attribute('[data-edit="NS"]', 'aria-label') == 'Modify'
+        # 모바일은 연필 아이콘만, 테두리는 그대로
+        page.set_viewport_size({'width':390,'height':850})
+        assert page.eval_on_selector('[data-edit="NS"] .hide-m', "e => getComputedStyle(e).display") == "none"
+        assert page.locator('[data-edit="NS"] use[href="#i-pencil"]').is_visible()
+        assert page.eval_on_selector('[data-edit="NS"]', "b => getComputedStyle(b).borderTopStyle") == "solid"
+        page.set_viewport_size({'width':1300,'height':850})
         page.click('[data-edit="NS"]')
         assert page.is_disabled("#p-key") and page.input_value("#p-name") == "nightshift"
         page.fill("#p-path", r"C:\Users\Simon Lomebrote\Projects\nightshift")
