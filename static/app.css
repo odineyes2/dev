@@ -335,6 +335,15 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .jobs li .job-btns{ margin-left:auto; display:flex; align-items:center; gap:var(--sp-1); }
 .move-job{ padding:var(--sp-1); line-height:1; }
 .move-job:disabled{ opacity:.35; }
+/* 대기열 자리(DEV-92) — 좁으면 주 패널 위, PC 폭(>1100px)이면 오른쪽 열. 나중에 오케스트레이션 패널이 이 자리를 쓴다 */
+.ops-split{ display:flex; flex-direction:column; }
+.ops-main{ min-width:0; }
+.ops-side{ order:-1; }
+@media (min-width: 1101px){
+  .ops-split{ display:grid; grid-template-columns:minmax(0, 1fr) 300px; gap:var(--sp-5); align-items:start; }
+  .ops-side{ order:0; position:sticky; top:calc(var(--tabbar-h) + 16px); }
+  .ops-side .jobs-list{ max-height:calc(100dvh - var(--tabbar-h) - 120px); }
+}
 @media (max-width: 800px){ .move-job, .queued .cancel-job, .jobs .cancel-job{ min-width:40px; min-height:40px; justify-content:center; } }
 
 .stage{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel)}

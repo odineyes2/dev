@@ -2232,6 +2232,11 @@ try:
                 page.screenshot(path=str(shots / f"queue_tasks_{scheme}_{tag}.png"), full_page=True)
                 page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector(".jobs-wait")
                 assert "Waiting 2" in page.inner_text(".jobs-head") and page.locator(".jobs-wait li").count() == 2
+                # 대기열 자리(DEV-92) — PC 폭이면 주 패널 오른쪽 열, 좁으면 주 패널 위
+                side_of = lambda main: page.evaluate("""m => { const j = document.querySelector('#jobs-box').getBoundingClientRect(),
+                    b = document.querySelector(m).getBoundingClientRect();
+                    return j.left >= b.right && j.top < b.bottom && b.top < j.bottom ? 'side' : j.bottom <= b.top ? 'above' : 'other'; }""", main)
+                assert side_of('#list-body') == ('side' if tag == 'desktop' else 'above'), (scheme, tag)
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
                 page.click('[data-st="waiting"]')
@@ -2243,6 +2248,7 @@ try:
                 page.goto(BASE + '/#/board'); page.wait_for_selector('[data-col="waiting"] .card')
                 assert page.locator('[data-col="waiting"] .card').count() == 2
                 page.wait_for_selector('#jobs-box .jobs-wait'); assert page.locator('#jobs-box .jobs-wait li').count() == 2   # Board 위에도 대기열(DEV-91)
+                assert side_of('.kanban') == ('side' if tag == 'desktop' else 'above'), (scheme, tag)
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"waiting_board_{scheme}_{tag}.png"), full_page=True)
                 page.goto(BASE + '/#/'); page.wait_for_selector('.jobs-wait')
