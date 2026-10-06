@@ -97,7 +97,16 @@ with TestClient(A.app) as c:
     assert [len(review.list_runs(ref)) for ref in ("JQ-5", "JQ-6", task["ref"], r.json()["ref"])] == [0, 0, 0, 0]
     c.cookies.set("ns_session", "adm")
     assert c.post("/api/issues/JQ-5/review", headers=H).json()["started"]
+    # 게시판 대기열(DEV-91) — 도는 in_progress 이슈는 실행 정보와 함께, 다른 상태 이슈는 빠지고 jobs 키는 그대로
+    issues.set_status(me, "JQ-6", "in_review")
+    listed = c.get("/api/jobs").json()
+    assert listed["jobs"] == jobs.list_jobs()
+    prog = {p["ref"]: p for p in listed["in_progress"]}
+    assert set(prog) == {"JQ-5"} and (prog["JQ-5"]["mode"], prog["JQ-5"]["provider"]) == ("review", "claude") and prog["JQ-5"]["started_at"], listed
     wait_idle()
+    issues.set_status(me, task["ref"], "in_progress")   # 도는 실행 없이 in_progress — 실행 정보는 비어 있다
+    prog = c.get("/api/jobs").json()["in_progress"]
+    assert [(p["ref"], p["mode"]) for p in prog] == [(task["ref"], None)], prog
     assert review.list_runs("JQ-5")[0]["provider"] == "claude"
 # Waiting 소유권과 가짜 실행기로 전체 전환을 검사한다(실제 Git·유료 호출 없음).
 from unittest.mock import patch

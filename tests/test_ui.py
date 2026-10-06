@@ -1245,7 +1245,8 @@ def check_progress_refresh(page, shots):
                 i.update(status=state['status'], merge_state=state['phase'])
             return i
         if '/api/jobs' in url:
-            response = {'jobs': [{'id': 99999, 'ref': ref, 'position': 1, 'mode': 'execute', 'provider': 'codex', 'note': '앞 Task의 병합·운영 반영 완료를 기다려요.'}] if state['queued'] else []}
+            response = {'jobs': [{'id': 99999, 'ref': ref, 'position': 1, 'mode': 'execute', 'provider': 'codex', 'note': '앞 Task의 병합·운영 반영 완료를 기다려요.'}] if state['queued'] else [],
+                        'in_progress': [{'ref': parent, 'title': '도는 이슈', 'mode': 'review', 'provider': 'claude', 'started_at': '2026-10-02T00:00:00+00:00'}] if state['queued'] else []}
         elif 'issues?' in url:
             response['issues'] = [patch(i) for i in response['issues']]
         else:
@@ -1284,10 +1285,12 @@ def check_progress_refresh(page, shots):
         state.update(phase='병합 검사 중', status='in_progress')
         page.evaluate("() => {localStorage.setItem('dev.project','LIVE');projectSel.value='LIVE';localStorage.setItem('dev.list',JSON.stringify({statuses:[],closed:false,q:''}))}")
         page.goto(BASE + '/#/')
-        page.wait_for_selector('.jobs summary'); page.click('.jobs summary')
-        assert '병합·운영 반영 완료' in page.inner_text('.jobs')
+        page.wait_for_selector('.jobs .jobs-wait')
+        assert '병합·운영 반영 완료' in page.inner_text('.jobs') and 'In Progress 1 · Waiting 1' in page.inner_text('.jobs-head')
+        # In Progress가 대기 항목보다 위(DEV-91)
+        assert page.evaluate("document.querySelector('.jobs-list > ul').className") == 'jobs-prog' and 'Claude 검토 중' in page.inner_text('.jobs-prog')
         state.update(phase='병합됨', status='in_review', queued=False)
-        page.wait_for_function("!document.querySelector('.jobs') && [...document.querySelectorAll('.progress-note')].some(el => el.textContent.includes('병합됨'))", timeout=12000)
+        page.wait_for_function("document.querySelector('.jobs-empty')?.textContent.includes('대기 중인 일이 없어요') && [...document.querySelectorAll('.progress-note')].some(el => el.textContent.includes('병합됨'))", timeout=12000)
     finally:
         for pattern in patterns:
             page.unroute(pattern, mock)
@@ -2203,9 +2206,8 @@ try:
                     assert ("실행 대기 중" in b.inner_text()) == (tag == "desktop"), r
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_tasks_{scheme}_{tag}.png"), full_page=True)
-                page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector(".jobs summary")
-                assert "Agent 대기 2건" in page.inner_text(".jobs summary")
-                page.click(".jobs summary"); assert page.locator(".jobs li").count() == 2
+                page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector(".jobs-wait")
+                assert "Waiting 2" in page.inner_text(".jobs-head") and page.locator(".jobs-wait li").count() == 2
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
                 page.click('[data-st="waiting"]')
@@ -2216,31 +2218,32 @@ try:
                 page.click('[data-st="waiting"]')
                 page.goto(BASE + '/#/board'); page.wait_for_selector('[data-col="waiting"] .card')
                 assert page.locator('[data-col="waiting"] .card').count() == 2
+                page.wait_for_selector('#jobs-box .jobs-wait'); assert page.locator('#jobs-box .jobs-wait li').count() == 2   # Board 위에도 대기열(DEV-91)
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"waiting_board_{scheme}_{tag}.png"), full_page=True)
-                page.goto(BASE + '/#/'); page.wait_for_selector('.jobs summary'); page.click('.jobs summary')
+                page.goto(BASE + '/#/'); page.wait_for_selector('.jobs-wait')
         assert page.request.get(f"{BASE}/api/issues/{pr}").json()["children"][0]["job"]["mode"] == "execute"
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
         # 목록에서 위·아래(DEV-85) — 첫 항목의 위·끝 항목의 아래는 꺼짐, 옮긴 뒤에도 펼침과 포커스 유지
         order = lambda: [j["issue_id"] for j in page.request.get(f"{BASE}/api/jobs").json()["jobs"]]
-        assert page.locator('.jobs li:first-child .move-job[data-dir="up"]').is_disabled()
-        assert page.locator('.jobs li:last-child .move-job[data-dir="down"]').is_disabled()
-        page.click('.jobs li:first-child .move-job[data-dir="down"]')
-        page.wait_for_function("document.querySelector('.jobs li:first-child a').textContent === 'DEV-4-2'")
-        assert order() == [i42, i41] and page.locator('details.jobs[open]').count() == 1
-        assert page.evaluate("document.activeElement.matches('.jobs li:last-child .move-job[data-dir=\"up\"]')")
+        assert page.locator('.jobs-wait li:first-child .move-job[data-dir="up"]').is_disabled()
+        assert page.locator('.jobs-wait li:last-child .move-job[data-dir="down"]').is_disabled()
+        page.click('.jobs-wait li:first-child .move-job[data-dir="down"]')
+        page.wait_for_function("document.querySelector('.jobs-wait li:first-child a').textContent === 'DEV-4-2'")
+        assert order() == [i42, i41] and page.locator('.jobs-wait').count() == 1
+        assert page.evaluate("document.activeElement.matches('.jobs-wait li:last-child .move-job[data-dir=\"up\"]')")
         # 다른 탭이 먼저 바꿨으면 409 — 화면은 최신 순서로 다시 그린다
         j42, j41 = (j["id"] for j in page.request.get(f"{BASE}/api/jobs").json()["jobs"])
         stale = page.request.post(f"{BASE}/api/jobs/{j41}/move", headers=H, data={"direction": "up", "neighbor_id": j41 + 999})
         assert stale.status == 409 and order() == [i42, i41]
         assert page.request.post(f"{BASE}/api/jobs/{j41}/move", headers=H, data={"direction": "up", "neighbor_id": j42}).ok   # 다른 탭
-        page.click('.jobs li:last-child .move-job[data-dir="up"]')   # 화면이 본 이웃(j42)이 낡아 409
+        page.click('.jobs-wait li:last-child .move-job[data-dir="up"]')   # 화면이 본 이웃(j42)이 낡아 409
         page.wait_for_function("document.getElementById('toast').innerText.includes('바뀌었어요')")
-        page.wait_for_function("document.querySelector('.jobs li:first-child a').textContent === 'DEV-4-1'")
-        assert order() == [i41, i42] and page.locator('details.jobs[open]').count() == 1
+        page.wait_for_function("document.querySelector('.jobs-wait li:first-child a').textContent === 'DEV-4-1'")
+        assert order() == [i41, i42] and page.locator('.jobs-wait').count() == 1
         page.screenshot(path=str(shots / "queue_move_light_desktop.png"), full_page=True)
-        page.click(".jobs li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")
-        page.wait_for_function("() => document.querySelector('.jobs summary') && document.querySelector('.jobs summary').innerText.includes('1건')")
+        page.click(".jobs-wait li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")
+        page.wait_for_function("() => document.querySelector('.jobs-head')?.innerText.includes('Waiting 1')")
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
         b1 = page.locator('.run-task[data-ref="DEV-4-1"][data-provider="claude"]')
         b2 = page.locator('.run-task[data-ref="DEV-4-2"]')
