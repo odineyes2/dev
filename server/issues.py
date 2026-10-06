@@ -70,7 +70,10 @@ def _text(value, what, limit=MAX_TEXT, required=False) -> str:
 def _event(c, issue_id, actor, kind, body="", data=None):
     d = dict(data or {})
     if actor["kind"] == "agent":
-        d.setdefault("model", actor.get("model") or "")   # 그때의 모델명을 남긴다
+        # 그때의 모델명을 남긴다 — 이 이슈에 도는 실행이 있으면 Agent 행 값보다 실제로 돌린 runs.model이 맞다
+        run = c.execute("SELECT model FROM runs WHERE issue_id=? AND status='running' AND model IS NOT NULL AND model<>'' ORDER BY id DESC LIMIT 1",
+                        (issue_id,)).fetchone()
+        d.setdefault("model", run["model"] if run else actor.get("model") or "")
     c.execute("INSERT INTO events(issue_id, actor, kind, body, data_json, created_at) VALUES(?,?,?,?,?,?)",
               (issue_id, actor_label(actor), kind, body, json.dumps(d, ensure_ascii=False), db.now_iso()))
 

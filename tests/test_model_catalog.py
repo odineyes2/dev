@@ -27,6 +27,24 @@ assert not {"claude-mythos-5-1", "claude-mythos-5", "claude-opus-4-1"} & set(all
 db.init()
 agent, key = auth.create_agent("claude", "anthropic", "claude-opus-5-5")
 
+# DEV-89-5: 착수 이벤트·프롬프트에 모델, 도는 run이 있으면 에이전트 이벤트 model은 runs.model
+import issues, review  # noqa: E402
+HUMAN = {"kind": "human", "id": 1, "name": "admin", "model": None}
+AGENT = {"kind": "agent", "id": agent["id"], "name": "claude", "model": "claude-opus-5-5"}
+issues.create_project(HUMAN, "MC", "model catalog")
+it = issues.create_issue(HUMAN, "MC", "model run")
+_, rid = review.begin(HUMAN, it, "execute", "claude", "claude-sonnet-5-5")
+ev = issues.get_issue(it["ref"])["events"]
+assert ev[-1]["kind"] == "status" and ev[-1]["data"]["model"] == "claude-sonnet-5-5", ev[-1]
+issues.claim(AGENT, it["ref"])
+assert issues.get_issue(it["ref"])["events"][-1]["data"]["model"] == "claude-sonnet-5-5"   # Agent 행(opus)이 아니라 실제 실행 모델
+assert review.list_runs(it["ref"])[0]["model"] == "claude-sonnet-5-5"
+with db.connect() as c:
+    c.execute("UPDATE runs SET status='ok' WHERE id=?", (rid,))
+issues.release(AGENT, it["ref"])
+assert issues.get_issue(it["ref"])["events"][-1]["data"]["model"] == "claude-opus-5-5"   # 도는 실행이 없으면 Agent 행 값
+assert "이 실행의 모델: gpt-6-sol" in review.with_model(["codex", "exec", "P"], "codex", "gpt-6-sol")[-1]
+
 s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
 proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app", "--port", str(port)], cwd=ROOT / "server",
                         env={**os.environ, "DEV_NIGHTSHIFT_URL": "http://127.0.0.1:9"}, stderr=subprocess.DEVNULL)
@@ -43,6 +61,8 @@ async def main():
     async with Client(StreamableHttpTransport(f"{BASE}/mcp/", headers=H)) as c:
         assert "list_models" in {t.name for t in await c.list_tools()}
         assert (await c.call_tool("list_models", {})).structured_content == cat
+        withp = (await c.call_tool("list_models", {"project": "MC"})).structured_content
+        assert withp["vendors"] == cat["vendors"] and withp["agent_orders"]["provider_order"][0]["model"] == "claude-opus-5-5", withp
 
 
 try:

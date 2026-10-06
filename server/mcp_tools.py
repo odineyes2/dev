@@ -73,10 +73,14 @@ def list_projects() -> list[dict]:
 
 
 @mcp.tool
-def list_models() -> dict:
-    """고를 수 있는 모델 카탈로그 — vendors(vendor·name·provider·models[id·name·note])와 vendor→provider 매핑."""
+def list_models(project: str = "") -> dict:
+    """고를 수 있는 모델 카탈로그 — vendors(vendor·name·provider·models[id·name·note])와 vendor→provider 매핑.
+    project(키)를 주면 agent_orders에 역할별 Agent 순서(id·name·vendor·model·provider)를 더한다 — 실제 실행은 이 순서의 모델을 쓴다."""
     _actor()
-    return model_catalog.catalog()
+    if not project:
+        return model_catalog.catalog()
+    import auto_settings
+    return {**model_catalog.catalog(), "agent_orders": _call(auto_settings.get_settings, project)["agent_orders"]}
 
 
 @mcp.tool

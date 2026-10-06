@@ -148,10 +148,13 @@ def list_runs(ref: str) -> list[dict]:
 
 
 def with_model(cmd: list[str], provider: str, model: str | None) -> list[str]:
-    """--model을 넣는다(모델이 없으면 CLI 기본). 재시도가 프롬프트 위치(Claude cmd[2], Codex 끝)를 쓰므로 그 자리를 지킨다."""
+    """--model을 넣고 프롬프트 끝에 모델을 알린다(모델이 없으면 CLI 기본). 재시도가 프롬프트 위치(Claude cmd[2], Codex 끝)를 쓰므로 그 자리를 지킨다."""
     if not model:
         return cmd
-    return cmd[:-1] + ["--model", model, cmd[-1]] if provider == "codex" else cmd[:3] + ["--model", model] + cmd[3:]
+    note = f"\n이 실행의 모델: {model}"
+    if provider == "codex":
+        return cmd[:-1] + ["--model", model, cmd[-1] + note]
+    return cmd[:2] + [cmd[2] + note, "--model", model] + cmd[3:]
 
 
 def start(actor: dict, ref: str, provider: str = "claude", model: str | None = None) -> dict:
@@ -201,7 +204,7 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude", model: 
                 raise issues.StoreError("대기 중 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
             if mode == "execute" or provider == "codex" or (row["status"] == "waiting" and queued and waiting_owner):
                 restore = queued["previous_status"] if queued and row["status"] == "waiting" and waiting_owner else row["status"]
-                issues._set_status(c, actor, row, "in_progress", f"{provider.title()} 작업 착수", {"run_id": run_id, "restore_status": restore, "job_id": queued["id"] if queued else None})
+                issues._set_status(c, actor, row, "in_progress", f"{provider.title()} 작업 착수", {"run_id": run_id, "restore_status": restore, "job_id": queued["id"] if queued else None, "model": model or ""})
             c.execute("UPDATE jobs SET status='started', started_at=?, run_id=? WHERE issue_id=? AND mode=? AND status='queued'", (db.now_iso(), run_id, row["id"], mode))
     return log_path, run_id
 
