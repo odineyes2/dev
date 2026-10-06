@@ -1906,6 +1906,22 @@ try:
         page.wait_for_function(f'!document.querySelector(\'tr[data-agent="{lid}"] .off-catalog\') && document.querySelector(\'select[data-model="{lid}"]\')?.value === "gpt-6-luna"')
         page.screenshot(path=str(shots / "agents.png"))
 
+        # 설정 우선순위 — 추가한 Agent가 역할 카드 끝에 생기고, 순서를 바꾸면 provider 순서도 맞춰진다
+        page.goto(BASE + "/#/settings"); page.wait_for_selector('#project-filter')
+        page.select_option('#project-filter', 'AUTOB')
+        page.wait_for_selector('#provider-order li')
+        rows = page.locator('#provider-order li span').all_inner_texts()
+        assert rows[-2:] == ['claude · anthropic · claude-opus-5-5', 'legacy · openai · gpt-6-luna'], rows
+        assert page.locator('#description-order li span').all_inner_texts() == rows
+        for i in range(len(rows) - 1, 0, -1):
+            page.click(f'#provider-order [data-move="{i}"][data-direction="-1"]')
+            page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'false'")
+        assert page.locator('#provider-order li span').first.inner_text() == 'legacy · openai · gpt-6-luna'
+        saved = page.request.get(BASE + '/api/projects/AUTOB/auto-settings').json()
+        assert saved['provider_order'] == ['codex', 'claude'] and saved['description_provider_order'] == ['claude', 'codex'], saved
+        page.reload(); page.wait_for_selector('#provider-order li')
+        assert page.locator('#provider-order li span').first.inner_text() == 'legacy · openai · gpt-6-luna'
+
         # 에이전트가 API로 계획서를 올리면 상세에 모델과 함께 보인다
         r = page.request.post(f"{BASE}/api/issues/NS-1/plans", data={"body": "v2 by agent"}, headers={"Authorization": f"Bearer {key}"})
         assert r.ok, r.text()

@@ -833,6 +833,46 @@ with db.connect() as c:
     assert json.loads(event['before_json'])['token_exhaustion_fallback'] is False
 print('OK — 세 역할 독립 저장·유효성·이관 기본 OFF·감사·영속성')
 
+# DEV-89-3: 우선순위는 켜진 카탈로그 Agent 목록 — 추가하면 끝에 붙고, 끄면 빠지고, 저장하면 provider 순서도 맞춘다.
+issues.create_project(admin, 'AGO', 'agent order')
+base = auto_settings.get_settings('AGO')
+assert all(v == [] for v in base['agent_orders'].values()) and base['provider_order'] == ['claude', 'codex']
+gpt, _ = auth.create_agent('ago-gpt', 'openai', 'gpt-6.1-sol')
+opus, _ = auth.create_agent('ago-opus', 'anthropic', 'claude-opus-5-5')
+auth.create_agent('ago-free', '', 'free-text')   # 목록 밖은 후보가 아니다
+ids = lambda s, f='provider_order': [a['id'] for a in s['agent_orders'][f]]
+s = auto_settings.get_settings('AGO')
+assert all(ids(s, f) == [opus['id'], gpt['id']] for f in auto_settings.ORDER_FIELDS)   # 마이그레이션 전과 같은 provider 순서
+assert s['agent_orders']['provider_order'][0] == {'id': opus['id'], 'name': 'ago-opus', 'vendor': 'anthropic', 'model': 'claude-opus-5-5', 'provider': 'claude'}
+s = auto_settings.update_settings(admin, 'AGO', {'agent_orders': {'provider_order': [gpt['id'], opus['id']]}})
+assert ids(s) == [gpt['id'], opus['id']] and s['provider_order'] == ['codex', 'claude']
+assert ids(s, 'description_provider_order') == [opus['id'], gpt['id']] and s['description_provider_order'] == ['claude', 'codex']
+for bad in ({'agent_orders': {'provider_order': [gpt['id']]}}, {'agent_orders': {'provider_order': [gpt['id'], gpt['id']]}},
+            {'agent_orders': {'nope': []}}, {'agent_orders': []}, {'agent_orders': {'provider_order': [str(gpt['id']), opus['id']]}}):
+    try:
+        auto_settings.update_settings(admin, 'AGO', bad)
+        raise AssertionError(bad)
+    except issues.StoreError as error:
+        assert error.status == 400
+sonnet, _ = auth.create_agent('ago-sonnet', 'anthropic', 'claude-sonnet-5-5')
+s = auto_settings.get_settings('AGO')
+assert ids(s) == [gpt['id'], opus['id'], sonnet['id']]   # 새 Agent는 각 역할 끝에
+assert ids(s, 'troubleshooter_provider_order') == [opus['id'], sonnet['id'], gpt['id']]
+with db.connect() as c:
+    c.execute('UPDATE agents SET enabled=0 WHERE id=?', (gpt['id'],))
+s = auto_settings.get_settings('AGO')
+assert ids(s) == [opus['id'], sonnet['id']]   # 끈 Agent는 빠진다
+s = auto_settings.update_settings(admin, 'AGO', {'agent_orders': {'provider_order': [sonnet['id'], opus['id']]}})
+assert s['provider_order'] == ['claude', 'codex']   # 남은 provider는 이전 순서대로 뒤에
+with db.connect() as c:
+    c.execute('UPDATE agents SET enabled=1 WHERE id=?', (gpt['id'],))
+assert ids(auto_settings.get_settings('AGO')) == [sonnet['id'], opus['id'], gpt['id']]
+s = auto_settings.update_settings(admin, 'AGO', {'provider_order': ['codex', 'claude']})   # 예전 provider 순서 저장은 Agent 순서를 다시 만든다
+assert ids(s) == [gpt['id'], opus['id'], sonnet['id']]
+with db.connect() as c:
+    c.execute("UPDATE agents SET enabled=0 WHERE name LIKE 'ago-%'")
+print('OK — Agent 우선순위 가변 목록·provider 순서 동기화')
+
 # DEV-84-2: 토큰 소진만 다음 작업 에이전트로, 체인당 도구별 한 번만 이관한다.
 import review, execute, subprocess
 assert review.token_exhausted(json.dumps({'is_error': True, 'result': 'Claude AI usage limit reached|1760000000'}), '')
