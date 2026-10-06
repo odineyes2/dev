@@ -210,6 +210,7 @@ async function route(){
   actionSession = null;
   disposeList();
   cleanupBoard();
+  if(!composerAllowed()) closeComposer(true);
   let h = location.hash.replace(/^#\/?/, '').split('?')[0];
   // 기존 주소를 같은 설정 영역의 하위 주소로 정규화한다.
   if(h === 'settings' || h === 'types'){
@@ -1183,6 +1184,83 @@ async function renderNew(params){
     finally{ saving = false; if(!departed){ form.querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = false); form.querySelector('#n-project').disabled = !!parent; form.querySelector('#cancel-new').onclick = null; draw(); } }
   }); });
 }
+
+// ---- 빠른 발행 입력창(DEV-93) — 목록·Board에서 백틱으로 열고, Enter로 #/new를 거치지 않고 바로 발행한다 ----
+const composer = document.getElementById('composer'), cmpBody = document.getElementById('cmp-body');
+const cmpFiles = [];   // {name, file, busy, error, data}
+let cmpSaving = false;
+function composerAllowed(){ const n = location.hash.replace(/^#\/?/, '').split(/[/?]/)[0]; return !n || n === 'board'; }
+function cmpDraw(){
+  document.getElementById('cmp-files').innerHTML = cmpFiles.map((f, i) => `<span class="cmp-chip${f.error ? ' bad' : ''}">${esc(f.name)}${f.busy ? ' · 업로드 중…' : f.error ? ' · 실패' : ''}
+    <button type="button" data-cmp-remove="${i}" title="첨부 제거" aria-label="${esc(f.name)} 첨부 제거"${f.busy || cmpSaving ? ' disabled' : ''}><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button></span>`).join('');
+  document.getElementById('cmp-send').disabled = cmpSaving || !cmpBody.value.trim() || cmpFiles.some(f => f.busy || f.error);
+}
+const cmpDelete = f => { if(f.data) void api('DELETE', `/api/attachments/${encodeURIComponent(f.data.id)}`).catch(() => {}); };
+async function openComposer(){
+  composer.hidden = false; cmpBody.focus(); cmpDraw();
+  const active = projects.filter(p => !p.archived), proj = document.getElementById('cmp-project'), agent = document.getElementById('cmp-agent');
+  const want = [proj.value, currentProject()].find(k => active.some(p => p.key === k)) || active[0]?.key || '';
+  proj.innerHTML = active.map(p => `<option value="${esc(p.key)}">${esc(p.key)} · ${esc(p.name)}</option>`).join('');
+  proj.value = want;
+  const keep = agent.value, list = await loadAgents().catch(() => [...agentsById.values()]);
+  agent.innerHTML = '<option value="">Agent 자동</option>' + list.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  agent.value = list.some(a => String(a.id) === keep) ? keep : '';
+}
+// 닫아도 초안은 남긴다. 목록·Board를 떠날 때(discard)만 발행 안 된 첨부를 지운다.
+function closeComposer(discard){
+  composer.hidden = true;
+  if(discard && !cmpSaving){ cmpFiles.splice(0).forEach(cmpDelete); cmpDraw(); }
+}
+document.addEventListener('keydown', (e) => {
+  if(e.key !== '`' || e.ctrlKey || e.altKey || e.metaKey || e.isComposing || !composerAllowed() || document.getElementById('shell').hidden) return;
+  const t = e.target;
+  if(t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) return;   // 검색칸 등에서는 글자 그대로
+  e.preventDefault();
+  if(composer.hidden) void openComposer(); else cmpBody.focus();
+});
+composer.addEventListener('keydown', (e) => { if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeComposer(); } });
+cmpBody.addEventListener('keydown', (e) => {
+  if(e.key !== 'Enter' || e.shiftKey) return;   // Shift+Enter는 줄바꿈
+  if(e.isComposing || e.keyCode === 229) return;   // 한글 조합 중 Enter는 글자 확정만 — 보내면 마지막 글자가 두 번 들어간다
+  e.preventDefault(); composer.requestSubmit();
+});
+cmpBody.addEventListener('input', () => { cmpBody.style.height = 'auto'; cmpBody.style.height = cmpBody.scrollHeight + 'px'; cmpDraw(); });
+document.getElementById('cmp-attach').onclick = () => document.getElementById('cmp-file').click();
+document.getElementById('cmp-file').onchange = (e) => {
+  [...e.target.files].forEach(async file => {
+    const f = { name: file.name, file, busy: true, error: '' };
+    cmpFiles.push(f); cmpDraw();
+    try{
+      const body = new FormData(); body.append('file', file);
+      f.data = await api('POST', '/api/attachments', body);
+      if(!cmpFiles.includes(f)) cmpDelete(f);   // 올리는 사이 지웠거나 화면을 떠났다
+    }catch(err){ f.error = err.message; document.getElementById('cmp-error').textContent = `${file.name}: ${err.message} 제거하고 다시 첨부해 주세요.`; }
+    finally{ f.busy = false; cmpDraw(); }
+  });
+  e.target.value = '';
+};
+document.getElementById('cmp-files').onclick = (e) => {
+  const b = e.target.closest('[data-cmp-remove]');
+  if(!b || cmpSaving) return;
+  const [f] = cmpFiles.splice(+b.dataset.cmpRemove, 1);
+  if(f && !f.busy) cmpDelete(f);
+  document.getElementById('cmp-error').textContent = ''; cmpDraw();
+};
+composer.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = document.getElementById('cmp-error');
+  if(cmpSaving || !cmpBody.value.trim() || cmpFiles.some(f => f.busy || f.error)) return;
+  cmpSaving = true; cmpDraw(); err.textContent = '';
+  try{
+    const agent = document.getElementById('cmp-agent').value;
+    const it = await api('POST', '/api/issues', { project: document.getElementById('cmp-project').value, title: '', body: cmpBody.value,
+      status: 'backlog', attachment_ids: cmpFiles.map(f => f.data.id), assignee_agent_id: agent ? Number(agent) : undefined });
+    cmpBody.value = ''; cmpBody.style.height = ''; cmpFiles.length = 0;
+    toast(`${it.ref} 이슈를 발행했어요.`);
+    if(composerAllowed()) void route();   // 페이지는 그대로, 목록·Board만 다시 읽는다
+  }catch(ex){ err.textContent = `${ex.message} 입력과 첨부를 유지했어요. 다시 보내 주세요.`; }
+  finally{ cmpSaving = false; cmpDraw(); if(!composer.hidden) cmpBody.focus(); }
+});
 
 // ---- 에이전트 ----
 async function renderAgents(newKey){

@@ -45,6 +45,7 @@
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
   <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol>
   <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
   <symbol id="i-plus"viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
   <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></symbol>
   <symbol id="i-external-link" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
@@ -86,6 +87,18 @@
     </nav>
   </template>
   <main id="view"></main>
+  <form id="composer" class="composer" hidden aria-label="빠른 이슈 발행">
+    <div id="cmp-files" class="cmp-files" aria-live="polite"></div>
+    <textarea id="cmp-body" rows="1" aria-label="이슈 내용" placeholder="예: 목록에서 백틱으로 입력창을 열어 줘 — Enter로 보내요"></textarea>
+    <p id="cmp-error" class="cmp-error" role="status"></p>
+    <div class="cmp-bar">
+      <button type="button" class="cmp-icon" id="cmp-attach" title="파일 첨부" aria-label="파일 첨부"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button>
+      <input id="cmp-file" type="file" multiple hidden accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mp3,.wav,.ogg,.m4a,.md,.json">
+      <select id="cmp-project" title="Project" aria-label="Project"></select>
+      <select id="cmp-agent" title="Assignee Agent" aria-label="Assignee Agent"></select>
+      <button type="submit" class="primary cmp-send" id="cmp-send" title="보내기(Enter) · 줄바꿈은 Shift+Enter" aria-label="보내기" disabled><svg class="ico" aria-hidden="true"><use href="#i-arrow-up"/></svg></button>
+    </div>
+  </form>
 </div>
 <div id="toast" class="toast" hidden></div>
 <script src="/app.js"></script>
