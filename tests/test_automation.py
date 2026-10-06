@@ -1015,9 +1015,9 @@ with db.connect() as c:
     assert c.execute('SELECT model FROM runs WHERE id=?', (rid,)).fetchone()[0] == 'claude-sonnet-5-5'
     c.execute("UPDATE runs SET status='failed' WHERE id=?", (rid,))
 cl = review.with_model(['claude', '-p', 'PROMPT', '--x'], 'claude', 'claude-opus-5-5')
-assert cl[2] == 'PROMPT' and cl[3:5] == ['--model', 'claude-opus-5-5']   # 재시도는 cmd[2]를 프롬프트로 쓴다
+assert cl[2] == 'PROMPT\n이 실행의 모델: claude-opus-5-5' and cl[3:5] == ['--model', 'claude-opus-5-5']   # 재시도는 cmd[2]를 프롬프트로 쓴다
 cx = review.with_model(['codex', 'exec', '--json', 'PROMPT'], 'codex', 'gpt-6.1-sol')
-assert cx[-1] == 'PROMPT' and cx[-3:-1] == ['--model', 'gpt-6.1-sol']
+assert cx[-1] == 'PROMPT\n이 실행의 모델: gpt-6.1-sol' and cx[-3:-1] == ['--model', 'gpt-6.1-sol']
 assert review.with_model(['claude', '-p', 'P'], 'claude', None) == ['claude', '-p', 'P']   # 모델 없으면 CLI 기본
 with db.connect() as c:
     c.execute('UPDATE agents SET enabled=0 WHERE id IN (?,?,?)', (gpt['id'], opus['id'], sonnet['id']))
