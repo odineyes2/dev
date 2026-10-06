@@ -87,11 +87,14 @@ def codex_command_for(ref: str) -> list[str]:
 def in_flight_section(ref: str) -> str:
     """같은 프로젝트에서 Task가 진행 중인 다른 이슈와 그 남은 Task의 파일 — 계획이 그 작업을 모르고 같은 파일·테스트를 바꾸지 않게(DEV-64-1)."""
     import jobs
-    issue = issues.get_issue(ref)
-    with db.connect() as c:
-        held = jobs._reservations(c, keep_stalled=True)
-        rows = {r["id"]: r for r in c.execute(
-            f"SELECT id, title, project_id FROM issues WHERE id IN ({','.join('?' * len(held))})", list(held))} if held else {}
+    try:
+        issue = issues.get_issue(ref)
+        with db.connect() as c:
+            held = jobs._reservations(c, keep_stalled=True)
+            rows = {r["id"]: r for r in c.execute(
+                f"SELECT id, title, project_id FROM issues WHERE id IN ({','.join('?' * len(held))})", list(held))} if held else {}
+    except Exception:   # 이슈를 못 읽으면 목록 없이 일반 검토 프롬프트를 쓴다
+        return ""
     lines = [f"- {other} {rows[pid]['title']} — 남은 Task 파일: {', '.join(sorted(files)[:15])}{' 외' if len(files) > 15 else ''}"
              for pid, (other, files) in held.items() if pid != issue["id"] and rows[pid]["project_id"] == issue["project_id"]]
     if not lines:
