@@ -11,6 +11,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
 
 import issues
+import model_catalog
 import project_description
 import project_docs
 import attachments
@@ -69,6 +70,13 @@ def list_projects() -> list[dict]:
     """프로젝트 목록(key, name, repo_url, local_path, description)."""
     _actor()
     return issues.list_projects()
+
+
+@mcp.tool
+def list_models() -> dict:
+    """고를 수 있는 모델 카탈로그 — vendors(vendor·name·provider·models[id·name·note])와 vendor→provider 매핑."""
+    _actor()
+    return model_catalog.catalog()
 
 
 @mcp.tool
