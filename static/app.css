@@ -30,6 +30,7 @@
   /* 여백·모서리 — 촘촘하지 않게 */
   --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
   --r-sm:6px; --r-md:8px; --r-lg:12px;
+  --tabbar-h:48px; /* 상단 고정 탭 줄 높이 — .side·앵커 이동 오프셋 */
 }
 :root[data-theme="dark"]{
   --bg:#14161B; --panel:#1C1F26; --panel-2:#22262E; --border:#2C3038; --border-strong:#3A3F49;
@@ -46,7 +47,7 @@
 :root[data-theme="light"]{ color-scheme:light; }
 
 *{ box-sizing:border-box; }
-html{ overflow-x:hidden; }
+html{ overflow-x:hidden; scroll-padding-top:var(--tabbar-h); }
 body{ margin:0; background:var(--bg); color:var(--text); font:14px/1.6 var(--sans); letter-spacing:-0.005em;
   -webkit-font-smoothing:antialiased; }
 a{ color:var(--accent); text-decoration:none; }
@@ -123,7 +124,7 @@ input[type=checkbox]{ width:16px; height:16px; padding:0; accent-color:var(--acc
 .user-menu a:hover, .user-menu button:hover{ background:var(--panel-2); text-decoration:none; }
 .user-menu .ico{ color:var(--dim); }
 /* 탭 줄 — 평소 아이콘만, 마우스를 올리면 제목이 펼쳐진다. 활성 탭은 파랑 밑줄. */
-.tab-bar{ background:var(--panel); border-bottom:1px solid var(--border); }
+.tab-bar{ position:sticky; top:0; z-index:15; background:var(--panel); border-bottom:1px solid var(--border); }
 .tab-bar-inner{ max-width:1320px; margin:0 auto; padding:0 28px; display:flex; align-items:center; gap:4px;
   overflow-x:auto; scrollbar-width:none; }
 .tab-bar-inner::-webkit-scrollbar{ display:none; }
@@ -224,7 +225,7 @@ table.issues.tasks td:nth-child(2){ overflow-wrap:anywhere; }
 .panel h2 .meta{ font-family:var(--sans); text-transform:none; letter-spacing:0; font-weight:400; font-size:12.5px; color:var(--dim); }
 .panel h2 .right{ margin-left:auto; display:flex; gap:6px; }
 .panel h2 .right button, .panel h2 .right .button{ font-family:var(--sans); text-transform:none; letter-spacing:0; font-size:12.5px; padding:5px 10px; color:var(--text); }
-.side{ position:sticky; top:16px; padding:var(--sp-2) var(--sp-5); }
+.side{ position:sticky; top:calc(var(--tabbar-h) + 16px); padding:var(--sp-2) var(--sp-5); }
 .side .field{ padding:var(--sp-3) 0; border-bottom:1px solid var(--border); }
 .side .field:last-child{ border-bottom:none; }
 .side .field > span{ display:block; margin-bottom:6px; }
