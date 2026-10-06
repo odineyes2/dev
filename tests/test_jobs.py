@@ -209,7 +209,7 @@ jid = queued('execute')
 jobs.pump()
 assert jobs.list_jobs()[0]['id'] == jid and issues.get_issue(ref)['status'] == 'waiting'
 issues.set_status(me, dependency['ref'], 'done')
-def fake_start(actor, task_ref, provider):
+def fake_start(actor, task_ref, provider, model=None):
     review.begin(actor, issues.get_issue(task_ref), 'execute', provider)
 with patch.object(execute, 'start', side_effect=fake_start):
     jobs.pump()
@@ -259,7 +259,7 @@ with patch.object(notify, 'send') as sent, patch.object(orchestrate, 'promote_pa
     assert orchestrate._finish(me, record, 'merged', 'duplicate') is None
     assert sent.call_count == 1
 sequence = []
-def next_start(actor, ref, provider):
+def next_start(actor, ref, provider, model=None):
     assert sequence and sequence[-1] == 'recover'
     assert not orchestrate.pending()
     sequence.append('start')
@@ -318,7 +318,7 @@ for neighbor in (jd, jc, jb):
     jobs.move(me, jx, 'up', neighbor)
 assert order() == [jx, jb, jc, jd]
 started = []
-with patch.object(execute, 'start') as ex, patch.object(review, 'start', side_effect=lambda actor, ref, provider: started.append(ref)):
+with patch.object(execute, 'start') as ex, patch.object(review, 'start', side_effect=lambda actor, ref, provider, model=None: started.append(ref)):
     for _ in range(3):
         jobs.pump()
     ex.assert_not_called()

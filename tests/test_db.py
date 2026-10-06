@@ -81,7 +81,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
         after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
-        added = {'jobs': (None, 'manual', None, None, None, None, 1), 'projects': ('',), 'runs': ('',)}.get(table, ())
+        added = {'jobs': (None, 'manual', None, None, None, None, 1, None), 'projects': ('',), 'runs': ('', None)}.get(table, ())   # 끝 None: DEV-89-4 model
         assert after == [r + added for r in before[table]], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=2').fetchone()
     assert job['source'] == 'manual'
@@ -119,7 +119,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings')] == [r + (0,) for r in settings_before]
     assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings_events')] == [r + (0,) for r in event_before]
-    assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == [r + (None, None, r[0]) for r in job_before]
+    assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == [r + (None, None, r[0], None) for r in job_before]   # 끝 None: DEV-89-4 model
     assert c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='auto_run_gate'").fetchone()[0] == trigger_before
     assert c.execute('PRAGMA foreign_key_check').fetchall() == []
     c.execute('UPDATE project_auto_settings SET auto_approve=1 WHERE project_id=1')
@@ -144,7 +144,7 @@ with sqlite3.connect(db.config.DB_PATH) as c:
     jobs_before = c.execute('SELECT * FROM jobs ORDER BY id').fetchall()
 assert db.init() == len(db.MIGRATIONS) and db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
-    assert [tuple(r) for r in c.execute('SELECT * FROM jobs ORDER BY id')] == [r + (r[0],) for r in jobs_before]
+    assert [tuple(r) for r in c.execute('SELECT * FROM jobs ORDER BY id')] == [r + (r[0], None) for r in jobs_before]   # 끝 None: DEV-89-4 model
     c.execute("UPDATE jobs SET sort_key=100 WHERE id=3")   # 사람이 옮긴 뒤에도 새 항목은 가장 큰 키 뒤로
     new = c.execute("INSERT INTO jobs(issue_id,mode,status,actor,created_at) VALUES(1,'execute','queued','human:admin',?)", (now,)).lastrowid
     assert c.execute('SELECT sort_key FROM jobs WHERE id=?', (new,)).fetchone()[0] == 101
