@@ -1321,6 +1321,39 @@ def check_rollback_waiting(page, shots):
             page.unroute(url, pending)
 
 
+def check_sticky_tabbar(page, shots):
+    """긴 이슈를 끝까지 내려도 전역 탭 줄이 맨 위에 붙어 있고 오른쪽 칸·사용자 메뉴와 겹치지 않는다(DEV-88)."""
+    body = '\n\n'.join(f'{i}번째 문단 — 긴 본문을 만들기 위한 줄이에요.' for i in range(120))
+    ref = page.request.post(BASE + '/api/issues', data={'project': 'NS', 'title': '긴 이슈', 'body': body}, headers=H).json()['ref']
+    for scheme in ('light', 'dark'):
+        page.emulate_media(color_scheme=scheme)
+        page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.goto(BASE + f'/#/issue/{ref}')
+            page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim() === ref", arg=ref)
+            page.evaluate('window.scrollTo(0, 0)')
+            page.click('#user-chip')
+            box = page.locator('#user-menu').bounding_box()
+            assert page.evaluate("([x, y]) => !!document.elementFromPoint(x, y)?.closest('#user-menu')",
+                                 [box['x'] + box['width'] / 2, box['y'] + box['height'] - 4])
+            page.keyboard.press('Escape')
+            if tag == 'desktop':
+                page.evaluate('window.scrollTo(0, 400)'); page.wait_for_timeout(100)
+                assert page.evaluate("document.querySelector('.side').getBoundingClientRect().top >= document.querySelector('.tab-bar').getBoundingClientRect().bottom")
+            page.evaluate('window.scrollTo(0, document.body.scrollHeight)'); page.wait_for_timeout(100)
+            assert page.evaluate('scrollY') > 500
+            assert page.evaluate("document.querySelector('.tab-bar').getBoundingClientRect().top") == 0
+            assert page.locator('[data-nav=issues]').is_visible()
+            page.screenshot(path=str(shots / f'issue_sticky_{scheme}_{tag}.png'))
+            page.click('[data-nav=issues]')
+            page.wait_for_function("location.hash === '#/'")
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.emulate_media(color_scheme='light')
+    page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+    page.request.delete(BASE + f'/api/issues/{ref}', headers=H)
+
+
 def check_edit_saving(page, shots):
     """본문과 Plan의 지연·실패·재시도 및 저장 값 스냅샷을 검사한다."""
     ref = page.request.post(f'{BASE}/api/issues', data={
@@ -2212,6 +2245,7 @@ try:
         check_review_buttons(page, fresh, shots)
         check_edit_saving(page, shots)
         check_rollback_waiting(page, shots)
+        check_sticky_tabbar(page, shots)
         page.goto(BASE + f'/#/issue/{fresh}'); page.wait_for_selector('#ask-codex-review')
         for scheme in ("light", "dark"):
             page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)
