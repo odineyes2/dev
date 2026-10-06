@@ -63,3 +63,10 @@ with db.connect() as c:
     assert c.execute('PRAGMA foreign_key_check').fetchall() == []
 assert db.init() == len(db.MIGRATIONS)
 print('OK — 기존 데이터 보존·이관 기본 OFF·Auto 출처·중복 제약')
+
+with db.connect() as c:   # DEV-89-4: 모델 컬럼은 비어 있을 수 있다(CLI 기본). 기존 행은 NULL
+    for table in ('jobs', 'runs'):
+        col = next(r for r in c.execute('pragma table_info(' + table + ')') if r['name'] == 'model')
+        assert not col['notnull']
+    assert c.execute('SELECT model FROM jobs WHERE id=1').fetchone()[0] is None
+print('OK — model 컬럼')

@@ -501,6 +501,12 @@ CREATE TABLE project_agent_orders (
 );
 """)
 
+# DEV-89-4: 우선순위 Agent의 모델을 대기열·실행 기록에 남긴다(NULL이면 CLI 기본 모델).
+MIGRATIONS.append("""
+ALTER TABLE jobs ADD COLUMN model TEXT;
+ALTER TABLE runs ADD COLUMN model TEXT;
+""")
+
 STATUSES += ("waiting",)
 
 

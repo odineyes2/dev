@@ -113,6 +113,7 @@ def reconcile():
 
 def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None) -> dict:
     """줄에 넣고 펌프를 돌린다. 바로 시작하면 {started}, 아니면 {queued, position}."""
+    import auto_settings
     import execute
     import project_docs
     if actor["kind"] != "human":
@@ -139,8 +140,8 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None) -> di
                 why = execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None, wait=False)
                 if why:
                     raise issues.StoreError(why, 409)
-            c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, provider) VALUES(?, ?, ?, 'queued', ?, ?)",
-                      (issue["id"], mode, issues.actor_label(actor), db.now_iso(), provider))
+            c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, provider, model) VALUES(?, ?, ?, 'queued', ?, ?, ?)",
+                      (issue["id"], mode, issues.actor_label(actor), db.now_iso(), provider, auto_settings.model_for(c, issue["id"], provider)))
         j = c.execute("SELECT * FROM jobs WHERE issue_id=? AND mode=? AND status='queued'", (issue["id"], mode)).fetchone()
         _waiting(c, j)
     pump()
@@ -248,7 +249,7 @@ def pump() -> None:
                     _set(j["id"], "skipped", "상태가 바뀌었거나 보호된 이슈여서 대기를 종료했어요")
                     continue
                 if j["mode"] == "review":
-                    review.start(actor, j["ref"], j["provider"])
+                    review.start(actor, j["ref"], j["provider"], j["model"])
                 else:
                     issue = issues.get_issue(j["ref"])
                     parent = issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None
@@ -261,7 +262,7 @@ def pump() -> None:
                     if why:   # 선행 대기 — 뒤 항목을 먼저 본다
                         _set(j["id"], "queued", why)
                         continue
-                    execute.start(actor, j["ref"], j["provider"])
+                    execute.start(actor, j["ref"], j["provider"], j["model"])
             except sqlite3.IntegrityError as e:
                 if j['source'] != 'auto':
                     raise

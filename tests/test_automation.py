@@ -34,7 +34,8 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
         added = (None, None) if table == 'jobs' else (0,) if table == 'project_auto_settings' else ('',) if table == 'runs' else ()
-        assert [r + added + ((r[0],) if table == 'jobs' else ()) for r in before[table]] == [tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
+        model = (None,) if table in ('jobs', 'runs') else ()   # DEV-89-4 model 컬럼
+        assert [r + added + ((r[0],) if table == 'jobs' else ()) + model for r in before[table]] ==[tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=?', (legacy['id'],)).fetchone()
     assert job['source'] == 'manual' and job['provider'] == 'codex'
     assert job['delegation_id'] is None and job['approval_version'] is None
@@ -128,7 +129,7 @@ jobs.pump()
 assert not [j for j in jobs.list_jobs() if j['ref'] in (one['ref'],two['ref'])]
 new = issues.create_issue(admin, 'AUTO', '착수')
 starts = []
-def fake_start(actor, ref, provider):
+def fake_start(actor, ref, provider, model=None):
     starts.append((ref, provider))
     review.begin(actor, issues.get_issue(ref), 'review', provider)
 review.start = fake_start
@@ -169,7 +170,7 @@ print('OK — 미승인·stale·선행 미완료·상태 변경 차단과 선행
 # 준비 도중 OFF가 저장되어도 실행 기록 생성 트랜잭션에서 막는다.
 late = issues.create_issue(admin, 'AUTO', 'OFF 경합')
 auto_settings.update_settings(admin, 'AUTO', {'auto_review': True})
-def off_before_begin(actor, ref, provider):
+def off_before_begin(actor, ref, provider, model=None):
     auto_settings.update_settings(admin, 'AUTO', {'auto_review': False})
     review.begin(actor, issues.get_issue(ref), 'review', provider)
 review.start = off_before_begin
@@ -476,7 +477,7 @@ for change in ('claim', 'goal', 'status', 'dependency', 'approval'):
 issues.decide(admin, p['ref'], 'approve', plan_version=2)
 # 착수 직전 OFF 경합: DB gate가 차단하고 실행 이력 없이 재등록한다.
 t = rec_task(); automation.sync(); a = rec_job(t)
-def execute_off(actor, ref, provider):
+def execute_off(actor, ref, provider, model=None):
     auto_settings.update_settings(admin, 'REC', {'auto_execute': False})
     review.begin(actor, issues.get_issue(ref), 'execute', provider)
 with patch.object(execute, 'start', side_effect=execute_off):
@@ -489,7 +490,7 @@ assert rec_job(t)['id'] != a['id']
 
 # 준비 중 sync가 취소까지 마친 경우에도 오래된 위임은 실행 gate를 우회하지 않는다.
 t = rec_task(); automation.sync(); a = rec_job(t)
-def sync_off_before_begin(actor, ref, provider):
+def sync_off_before_begin(actor, ref, provider, model=None):
     toggle_off()
     review.begin(actor, issues.get_issue(ref), 'execute', provider)
 with patch.object(execute, 'start', side_effect=sync_off_before_begin):
@@ -990,3 +991,35 @@ third = issues.create_issue(admin, 'ORD', 'third', parent=op['ref'])
 automation.sync()
 assert [j['issue_id'] for j in jobs.list_jobs()[-3:]] == [second['id'], first['id'], third['id']]
 print('OK — 순서 이동 뒤 Auto 등록은 맨 뒤')
+
+# DEV-89-4: 우선순위 1위 Agent의 provider+model이 jobs/runs에 남고 명령에 --model이 들어간다.
+with db.connect() as c:
+    c.execute('UPDATE agents SET enabled=1 WHERE id IN (?,?)', (gpt['id'], sonnet['id']))
+rest = [i for i in ids(auto_settings.get_settings('AGO')) if i not in (sonnet['id'], gpt['id'])]
+auto_settings.update_settings(admin, 'AGO', {'agent_orders': {'provider_order': [sonnet['id'], gpt['id']] + rest}})
+mi = issues.create_issue(admin, 'AGO', 'model pick')
+with db.connect() as c:
+    assert auto_settings.model_for(c, mi['id'], 'claude') == 'claude-sonnet-5-5'
+    assert auto_settings.model_for(c, mi['id'], 'codex') == 'gpt-6.1-sol'   # 이관은 provider 단위로 그 provider의 첫 Agent 모델
+with db.connect() as c:   # 위 ORD 등록이 착수되지 않게 비우고 펌프를 다시 연다
+    c.execute("UPDATE jobs SET status='cancelled' WHERE status='queued'")
+jobs._threads = 0
+with patch.object(review, 'start', side_effect=lambda *a: None) as rs:
+    jobs.enqueue(admin, mi['ref'], 'review', 'claude')
+assert rs.call_args.args[2:] == ('claude', 'claude-sonnet-5-5')
+with db.connect() as c:
+    assert tuple(c.execute('SELECT provider, model FROM jobs WHERE issue_id=?', (mi['id'],)).fetchone()) == ('claude', 'claude-sonnet-5-5')
+    c.execute("UPDATE jobs SET status='cancelled' WHERE issue_id=?", (mi['id'],))
+_, rid = review.begin(admin, issues.get_issue(mi['ref']), 'review', 'claude', 'claude-sonnet-5-5')
+with db.connect() as c:
+    assert c.execute('SELECT model FROM runs WHERE id=?', (rid,)).fetchone()[0] == 'claude-sonnet-5-5'
+    c.execute("UPDATE runs SET status='failed' WHERE id=?", (rid,))
+cl = review.with_model(['claude', '-p', 'PROMPT', '--x'], 'claude', 'claude-opus-5-5')
+assert cl[2] == 'PROMPT' and cl[3:5] == ['--model', 'claude-opus-5-5']   # 재시도는 cmd[2]를 프롬프트로 쓴다
+cx = review.with_model(['codex', 'exec', '--json', 'PROMPT'], 'codex', 'gpt-6.1-sol')
+assert cx[-1] == 'PROMPT' and cx[-3:-1] == ['--model', 'gpt-6.1-sol']
+assert review.with_model(['claude', '-p', 'P'], 'claude', None) == ['claude', '-p', 'P']   # 모델 없으면 CLI 기본
+with db.connect() as c:
+    c.execute('UPDATE agents SET enabled=0 WHERE id IN (?,?,?)', (gpt['id'], opus['id'], sonnet['id']))
+    assert auto_settings.model_for(c, mi['id'], 'claude') is None
+print('OK — 우선순위 모델 적용')

@@ -5,6 +5,7 @@ import shutil
 import re
 from pathlib import Path, PureWindowsPath
 
+import auto_settings
 import db
 import issues
 
@@ -277,8 +278,9 @@ def _migrate(c, run_id):
             return stop(why)
         if parent['approval']['plan_version'] != job['approval_version'] or not parent['approval']['actor'].startswith('human:'):
             return stop('부모 계획서의 승인이 바뀌었어요.')
-    jid = c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,provider,source,delegation_id,approval_version) VALUES(?,?,?,'queued',?,?,'auto',?,?)",
-                    (row['id'], job['mode'], job['actor'], db.now_iso(), nxt, job['delegation_id'], job['approval_version'])).lastrowid
+    jid = c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,provider,source,delegation_id,approval_version,model) VALUES(?,?,?,'queued',?,?,'auto',?,?,?)",
+                    (row['id'], job['mode'], job['actor'], db.now_iso(), nxt, job['delegation_id'], job['approval_version'],
+                     auto_settings.model_for(c, row['id'], nxt))).lastrowid
     c.execute('INSERT INTO provider_migration_attempts(chain_id,provider,previous_run_id,job_id,created_at) VALUES(?,?,?,?,?)',
               (chain, nxt, run_id, jid, db.now_iso()))
     c.execute("UPDATE provider_run_failures SET failure_reason='token_exhausted/migrated' WHERE run_id=?", (run_id,))
@@ -357,6 +359,6 @@ def sync():
                 # 기존 실행기의 사람 위임 경로를 쓰되 수동 요청자로 가장하지 않는다.
                 actor = 'human:auto/delegation/' + str(delegation['id'])
                 version = issues.get_issue(issue['parent_ref'])['approval']['plan_version'] if mode == 'execute' else None
-                jid = c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,provider,source,delegation_id,approval_version) VALUES(?,?,?,'queued',?,?,'auto',?,?)", (issue['id'],mode,actor,db.now_iso(),provider,delegation['id'],version)).lastrowid
+                jid = c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,provider,source,delegation_id,approval_version,model) VALUES(?,?,?,'queued',?,?,'auto',?,?,?)", (issue['id'],mode,actor,db.now_iso(),provider,delegation['id'],version,auto_settings.model_for(c, issue['id'], provider))).lastrowid
                 issues._event(c, issue['id'], jobs._actor(actor), 'comment', 'Auto 설정 위임으로 작업을 등록했어요.', {'source':'auto','delegation_id':delegation['id'],'delegated_by':setting['updated_by'],'job_id':jid})
                 jobs._waiting(c, c.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())

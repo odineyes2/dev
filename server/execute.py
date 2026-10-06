@@ -344,7 +344,7 @@ def _run_then_merge(actor, ref, *args):
         issues.add_comment(actor, ref, f"⚠️ 자동 병합 중 오류: {e}")
 
 
-def start(actor: dict, ref: str, provider: str | None = None) -> dict:
+def start(actor: dict, ref: str, provider: str | None = None, model: str | None = None) -> dict:
     """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
     import review
     import project_docs
@@ -367,8 +367,9 @@ def start(actor: dict, ref: str, provider: str | None = None) -> dict:
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
     worktree = prepare_worktree(repo, ref)
     cmd = codex_command_for(ref, issue["parent_ref"]) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
+    cmd = review.with_model(cmd, provider, model)
     env = safe_env(repo)
-    log_path, run_id = review.begin(actor, issue, "execute", provider)
+    log_path, run_id = review.begin(actor, issue, "execute", provider, model)
     with db.connect() as c:
         c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (_git(worktree, 'rev-parse', 'HEAD'), run_id))
         c.execute('INSERT INTO task_execution_results(run_id,plan_version) SELECT id,? FROM runs WHERE id=? AND issue_id=?',

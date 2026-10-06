@@ -147,7 +147,14 @@ def list_runs(ref: str) -> list[dict]:
         return [dict(r) for r in c.execute("SELECT * FROM runs WHERE issue_id=? ORDER BY id DESC", (iid,))]
 
 
-def start(actor: dict, ref: str, provider: str = "claude") -> dict:
+def with_model(cmd: list[str], provider: str, model: str | None) -> list[str]:
+    """--model을 넣는다(모델이 없으면 CLI 기본). 재시도가 프롬프트 위치(Claude cmd[2], Codex 끝)를 쓰므로 그 자리를 지킨다."""
+    if not model:
+        return cmd
+    return cmd[:-1] + ["--model", model, cmd[-1]] if provider == "codex" else cmd[:3] + ["--model", model] + cmd[3:]
+
+
+def start(actor: dict, ref: str, provider: str = "claude", model: str | None = None) -> dict:
     """검토를 시작한다(사람만). 이미 하나 돌고 있으면 409. 이슈가 없으면 404. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
     if actor["kind"] != "human":
         raise issues.StoreError("검토는 사람만 맡길 수 있어요.", 403)
@@ -157,9 +164,9 @@ def start(actor: dict, ref: str, provider: str = "claude") -> dict:
         raise issues.StoreError("서버에 DEV_CODEX_AGENT_KEY를 설정해 주세요 — Codex용 dev Agent 키가 필요해요.", 409)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
-    cmd = codex_command_for(ref) if provider == "codex" else command_for(ref)
+    cmd = with_model(codex_command_for(ref) if provider == "codex" else command_for(ref), provider, model)
     baseline_plan_id = (issue.get("plan") or {}).get("id", 0)
-    log_path, run_id = begin(actor, issue, "review", provider)
+    log_path, run_id = begin(actor, issue, "review", provider, model)
     name = "Codex" if provider == "codex" else "Claude"
     launch(actor, ref, run_id, provider,
            f"🔎 {name}에게 검토를 맡겼어요 — 홈서버에서 검토만 해요(코드 수정 없음). 몇 분 뒤 계획서가 올라와요.",
@@ -167,7 +174,7 @@ def start(actor: dict, ref: str, provider: str = "claude") -> dict:
     return {"started": True, "ref": ref}
 
 
-def begin(actor: dict, issue: dict, mode: str, provider: str = "claude") -> tuple[Path, int]:
+def begin(actor: dict, issue: dict, mode: str, provider: str = "claude", model: str | None = None) -> tuple[Path, int]:
     """running 기록과 대기열/Codex 착수 상태를 함께 만들고 (로그 경로, run id)를 돌려준다."""
     with _lock:
         busy = running_ref()
@@ -184,8 +191,8 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude") -> tupl
             row = issues._find(c, issue["ref"])
             if row["status"] != issue["status"]:
                 raise issues.StoreError("시작 전에 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
-            run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file, provider) VALUES(?, ?, 'running', ?, ?, ?, ?)",
-                               (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name, provider)).lastrowid
+            run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file, provider, model) VALUES(?, ?, 'running', ?, ?, ?, ?, ?)",
+                               (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name, provider, model)).lastrowid
             import jobs
             queued = c.execute("SELECT * FROM jobs WHERE issue_id=? AND mode=? AND status='queued' ORDER BY id LIMIT 1", (row["id"], mode)).fetchone()
             owner = jobs._latest(c, row["id"]).get("job_id")
