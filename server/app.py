@@ -198,6 +198,23 @@ def _agent_fields(body: dict) -> dict:
     return out
 
 
+def _check_catalog(f: dict, current: dict | None = None) -> None:
+    """새로 쓰는 vendor/model이 카탈로그 안인지 본다. 이미 있는 목록 밖 값은 건드리지 않는 한 그대로 둔다.
+    vendor가 비어 있으면(이전 자유 입력과 같은 형태) 검사하지 않는다."""
+    if "vendor" not in f and "model" not in f:
+        return
+    import model_catalog
+    vendor = f.get("vendor", (current or {}).get("vendor", ""))
+    model = f.get("model", (current or {}).get("model", ""))
+    if not vendor:
+        return
+    v = next((x for x in model_catalog.VENDORS if x["vendor"] == vendor), None)
+    if not v:
+        raise HTTPException(400, "목록에 없는 Vendor예요.")
+    if model not in {m["id"] for m in v["models"]}:
+        raise HTTPException(400, "이 Vendor의 목록에 없는 Model이에요.")
+
+
 @app.get("/api/agents")
 def list_agents(request: Request):
     human_only(request)
@@ -211,6 +228,7 @@ async def create_agent(request: Request):
     f = _agent_fields(await json_body(request))
     if "name" not in f:
         raise HTTPException(400, "이름이 필요해요.")
+    _check_catalog(f)
     try:
         agent, key = auth.create_agent(f["name"], f.get("vendor", ""), f.get("model", ""))
     except sqlite3.IntegrityError:
@@ -227,6 +245,9 @@ async def update_agent(agent_id: int, request: Request):
         f["enabled"] = 1 if body["enabled"] else 0
     if not f:
         raise HTTPException(400, "바꿀 내용이 없어요.")
+    with db.connect() as c:
+        cur = c.execute("SELECT vendor, model FROM agents WHERE id=?", (agent_id,)).fetchone()
+    _check_catalog(f, dict(cur) if cur else None)
     try:
         with db.connect() as c:
             n = c.execute(f"UPDATE agents SET {', '.join(k + '=?' for k in f)} WHERE id=?", (*f.values(), agent_id)).rowcount

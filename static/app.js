@@ -1182,23 +1182,34 @@ async function renderNew(params){
 
 // ---- 에이전트 ----
 async function renderAgents(newKey){
-  const list = await loadAgents();
+  const [list, catalog] = await Promise.all([loadAgents(), api('GET', '/api/model-catalog')]);
+  const vendorOf = (id) => catalog.vendors.find(v => v.vendor === id);
+  const inCatalog = (a) => !!vendorOf(a.vendor)?.models.some(m => m.id === a.model);
+  const vendorOptions = (cur) => catalog.vendors.map(v => `<option value="${esc(v.vendor)}" ${v.vendor === cur ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
+  const modelOptions = (vendor, cur) => (vendorOf(vendor)?.models || []).map(m =>
+    `<option value="${esc(m.id)}" ${m.id === cur ? 'selected' : ''}>${esc(m.name)}${m.note ? ` · ${esc(m.note)}` : ''}</option>`).join('');
+  // 목록 밖 Agent는 지금 값을 고를 수 없는 첫 항목으로 보여 주고, 드롭다운으로 다시 고르면 목록 안으로 들어간다
+  const outside = (label) => `<option value="" selected disabled>${esc(label || '—')} (목록 밖)</option>`;
+  const first = catalog.vendors[0]?.vendor || '';
   view.innerHTML = `
     ${newKey ? `<div class="keybox"><b>${esc(newKey.name)}</b>의 API 키예요. 지금 한 번만 보여 드려요 — 에이전트 설정에 넣어 주세요.<br>
       <code id="key">${esc(newKey.key)}</code> <button id="copy-key">복사</button></div>` : ''}
     <form class="form panel" id="agent-form"><div class="line">
       <label>Name<input id="a-name" required placeholder="claude-main"></label>
-      <label>Vendor<input id="a-vendor" placeholder="anthropic / openai"></label>
-      <label>Model<input id="a-model" placeholder="claude-opus-5-5"></label>
+      <label>Vendor<select id="a-vendor">${vendorOptions(first)}</select></label>
+      <label>Model<select id="a-model">${modelOptions(first)}</select></label>
       <label class="actions"><button class="primary" type="submit">에이전트 추가</button></label></div></form>
-    ${list.length ? `<table class="issues"><thead><tr><th>Name</th><th>Model</th><th class="hide-m">Key</th><th class="hide-m">Last seen</th><th>Enabled</th><th></th></tr></thead><tbody>
-      ${list.map(a => `<tr><td>${esc(a.name)} <span class="dim">${esc(a.vendor)}</span></td><td>${esc(a.model)}</td>
+    ${list.length ? `<table class="issues"><thead><tr><th>Name</th><th>Vendor · Model</th><th class="hide-m">Key</th><th class="hide-m">Last seen</th><th>Enabled</th><th></th></tr></thead><tbody>
+      ${list.map(a => { const ok = inCatalog(a); return `<tr data-agent="${a.id}"><td>${esc(a.name)}${ok ? '' : ' <span class="dim off-catalog">목록 밖</span>'}</td>
+        <td><div class="agent-model"><select data-vendor="${a.id}" aria-label="${esc(a.name)} Vendor">${vendorOf(a.vendor) ? '' : outside(a.vendor)}${vendorOptions(a.vendor)}</select>
+          <select data-model="${a.id}" aria-label="${esc(a.name)} Model">${ok ? '' : outside(a.model)}${modelOptions(a.vendor, a.model)}</select></div></td>
         <td class="hide-m ref">${esc(a.key_prefix)}…</td><td class="hide-m dim">${a.last_seen_at ? fmtTime(a.last_seen_at) : '—'}</td>
         <td><input type="checkbox" data-toggle="${a.id}" ${a.enabled ? 'checked' : ''}></td>
-        <td><button data-model="${a.id}" class="ghost">모델 바꾸기</button><button data-rotate="${a.id}" class="ghost">키 재발급</button></td></tr>`).join('')}
+        <td><button data-rotate="${a.id}" class="ghost">키 재발급</button></td></tr>`; }).join('')}
       </tbody></table>` : '<div class="empty">등록된 에이전트가 없어요.</div>'}`;
   const $ = (s) => view.querySelector(s);
   if(newKey) $('#copy-key').addEventListener('click', () => navigator.clipboard.writeText(newKey.key).then(() => toast('복사했어요')));
+  $('#a-vendor').addEventListener('change', () => { $('#a-model').innerHTML = modelOptions($('#a-vendor').value); });
   $('#agent-form').addEventListener('submit', (e) => { e.preventDefault(); whileBusy(submitBtn(e), async () => {
     const r = await api('POST', '/api/agents', { name: $('#a-name').value, vendor: $('#a-vendor').value, model: $('#a-model').value });
     renderAgents({ name: r.agent.name, key: r.key });
@@ -1206,11 +1217,13 @@ async function renderAgents(newKey){
   view.querySelectorAll('[data-toggle]').forEach(cb => cb.addEventListener('change', async () => {
     await api('PATCH', `/api/agents/${cb.dataset.toggle}`, { enabled: cb.checked }).catch(() => {}); renderAgents();
   }));
-  view.querySelectorAll('[data-model]').forEach(b => b.addEventListener('click', async () => {
-    const a = agentsById.get(Number(b.dataset.model));
-    const model = prompt('모델 이름', a.model);
-    if(model === null) return;
-    await api('PATCH', `/api/agents/${a.id}`, { model }).catch(() => {}); renderAgents();
+  // Vendor를 바꾸면 Model 목록만 갈아 끼우고, Model을 고를 때 둘을 같이 저장한다
+  view.querySelectorAll('[data-vendor]').forEach(s => s.addEventListener('change', () => {
+    view.querySelector(`[data-model="${s.dataset.vendor}"]`).innerHTML = `<option value="" selected disabled>Model 선택</option>${modelOptions(s.value)}`;
+  }));
+  view.querySelectorAll('[data-model]').forEach(s => s.addEventListener('change', async () => {
+    const id = s.dataset.model, vendor = view.querySelector(`[data-vendor="${id}"]`).value;
+    await api('PATCH', `/api/agents/${id}`, { vendor, model: s.value }).then(() => toast('모델을 바꿨어요')).catch(() => {}); renderAgents();
   }));
   view.querySelectorAll('[data-rotate]').forEach(b => b.addEventListener('click', async () => {
     const a = agentsById.get(Number(b.dataset.rotate));

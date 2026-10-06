@@ -361,6 +361,8 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .project-docs .line{ display:flex; gap:var(--sp-2); flex-wrap:wrap; }
 .project-docs button, .project-docs select{ min-height:40px; max-width:100%; }
 .project-docs select{ width:100%; }
+.agent-model{ display:flex; gap:var(--sp-2); flex-wrap:wrap; }
+.agent-model select{ max-width:100%; min-width:0; }
 .project-docs p, .document-source{ overflow-wrap:anywhere; }
 .document-source{ white-space:pre-wrap; font-family:var(--mono); font-size:13px; line-height:1.7; padding:var(--sp-4); border:1px solid var(--border); border-radius:var(--r-md); background:var(--panel-2); }
 .project-scope button:focus-visible, .project-docs :focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }

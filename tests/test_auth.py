@@ -69,6 +69,15 @@ with TestClient(A.app) as c:
     assert c.get("/api/auth/me", headers=bearer).json()["actor"] is None
     c.cookies.set("ns_session", "adm")
     c.patch(f"/api/agents/{agent['id']}", json={"enabled": True}, headers=H)
+    # 카탈로그 검사 — 새로 쓰는 vendor/model은 목록 안이어야 하고, 이미 있는 목록 밖 값은 보존
+    assert c.post("/api/agents", json={"name": "z", "vendor": "acme", "model": "x"}, headers=H).status_code == 400
+    assert c.post("/api/agents", json={"name": "z", "vendor": "openai", "model": "claude-opus-5-5"}, headers=H).status_code == 400
+    assert c.patch(f"/api/agents/{agent['id']}", json={"model": "gpt-6-sol"}, headers=H).status_code == 400   # anthropic에 없는 모델
+    assert c.patch(f"/api/agents/{agent['id']}", json={"vendor": "openai", "model": "gpt-6-sol"}, headers=H).json()["agent"]["model"] == "gpt-6-sol"
+    with db.connect() as conn:
+        conn.execute("UPDATE agents SET vendor='old', model='free-text' WHERE id=?", (agent["id"],))
+    assert c.patch(f"/api/agents/{agent['id']}", json={"enabled": True}, headers=H).json()["agent"]["model"] == "free-text"
+    assert c.patch(f"/api/agents/{agent['id']}", json={"vendor": "anthropic", "model": "claude-opus-5-5"}, headers=H).status_code == 200
     new_key = c.post(f"/api/agents/{agent['id']}/rotate", headers=H).json()["key"]
     c.cookies.clear()
     assert c.get("/api/auth/me", headers=bearer).json()["actor"] is None           # 옛 키는 끝
