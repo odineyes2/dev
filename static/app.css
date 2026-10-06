@@ -289,6 +289,33 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .toast{ position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:#1B1F24; color:#fff; padding:10px 16px;
   border-radius:var(--r-md); z-index:20; max-width:90vw; box-shadow:var(--shadow-pop); font-size:13.5px; }
 
+/* 빠른 발행 입력창(DEV-93) — Claude·ChatGPT식: 하단 가운데 둥근 카드, 위는 늘어나는 입력, 아래 줄 왼쪽 도구·오른쪽 원형 보내기 */
+.composer{ position:fixed; left:50%; bottom:var(--sp-4); transform:translateX(-50%); z-index:18; width:min(760px, calc(100vw - 28px));
+  display:flex; flex-direction:column; gap:var(--sp-2); padding:var(--sp-3) var(--sp-3) var(--sp-2); background:var(--panel);
+  border:1px solid var(--border); border-radius:var(--r-lg); box-shadow:var(--shadow-pop); animation:cmp-in .22s cubic-bezier(.2,.8,.2,1); }
+.composer[hidden]{ display:none; }
+.composer:focus-within{ border-color:var(--border-strong); }
+.composer textarea{ border:none; box-shadow:none; background:transparent; resize:none; padding:var(--sp-1); min-height:24px; max-height:40vh;
+  overflow-y:auto; font-size:14px; line-height:1.6; }
+.composer textarea:focus{ box-shadow:none; }
+.cmp-bar{ display:flex; align-items:center; gap:var(--sp-2); min-width:0; }
+.cmp-bar select{ min-width:0; max-width:180px; font-size:13px; padding:6px 8px; border-radius:999px; background:var(--panel-2); }
+.cmp-icon, .cmp-send{ flex-shrink:0; width:32px; height:32px; padding:0; justify-content:center; border-radius:999px; }
+.cmp-send{ margin-left:auto; }
+.cmp-send:disabled{ opacity:.4; cursor:default; box-shadow:none; }
+.cmp-files{ display:flex; flex-wrap:wrap; gap:var(--sp-1); }
+.cmp-files:empty, .cmp-error:empty{ display:none; }
+.cmp-chip{ display:inline-flex; align-items:center; gap:var(--sp-1); max-width:100%; padding:2px 4px 2px 10px; font-size:12px; color:var(--dim);
+  background:var(--panel-2); border:1px solid var(--border); border-radius:999px; overflow-wrap:anywhere; }
+.cmp-chip.bad{ color:var(--danger); border-color:var(--danger); }
+.cmp-chip button{ width:22px; height:22px; padding:0; justify-content:center; border:none; background:transparent; border-radius:999px; }
+.cmp-error{ margin:0; font-size:12px; color:var(--danger); }
+body:has(.composer:not([hidden])) main{ padding-bottom:200px; }
+body:has(.composer:not([hidden])) .toast{ bottom:auto; top:72px; }
+@keyframes cmp-in{ from{ opacity:0; transform:translate(-50%, 4px); } }
+@media (prefers-reduced-motion: reduce){ .composer{ animation:none; } }
+@media (max-width: 800px){ .cmp-bar select{ max-width:120px; } .cmp-icon, .cmp-send{ width:40px; height:40px; } }
+
 @media (max-width: 800px){
   .detail{ grid-template-columns:minmax(0, 1fr); }
   .side{ position:static; }
