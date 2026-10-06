@@ -466,7 +466,8 @@ def _next_number(c, proj, parent=None) -> tuple:
     return number, None, None
 
 
-def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None) -> dict:
+def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None,
+                 assignee_agent_id=None) -> dict:
     # 제목은 비워도 된다 — 본문만 쓰면 이슈를 처리하는 에이전트가 제목을 지어 채운다(DEV-8). 둘 다 비면 안 된다.
     title = _text(title, "제목", 300).strip()
     body = _text(body, "본문")
@@ -488,11 +489,19 @@ def create_issue(actor, project, title, body="", priority="none", labels=None, p
                 raise StoreError("하위 이슈는 부모와 같은 프로젝트여야 해요.")
             parent_id = par["id"]
         ids = _type_ids(c, type_ids if type_ids is not None else [])
+        # 빠른 발행(DEV-93)은 만들 때 Assignee를 같이 정한다 — 없는 에이전트면 아무것도 만들지 않는다.
+        if assignee_agent_id is not None:
+            try:
+                assignee_agent_id = int(assignee_agent_id)
+            except (TypeError, ValueError):
+                raise StoreError("에이전트 id는 숫자여야 해요.")
+            if c.execute("SELECT 1 FROM agents WHERE id=?", (assignee_agent_id,)).fetchone() is None:
+                raise _not_found("에이전트")
         number, sub_of, sub = _next_number(c, proj, par)
         iid = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
-                        "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "assignee_agent_id, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (proj["id"], number, sub_of, sub, parent_id, title, body, status, _priority(priority), _labels(labels),
-                         actor_label(actor), now, now)).lastrowid
+                         actor_label(actor), assignee_agent_id, now, now)).lastrowid
         _replace_types(c, iid, ids, actor)
         if attachment_ids is not None:
             import attachments
