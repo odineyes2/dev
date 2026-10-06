@@ -208,6 +208,10 @@ def merged(ref, files):
 status, note = orchestrate.deploy(str(repo), cfg, merged("T-7", {"static/x.js": "1\n"}))
 assert status == "merged" and restarts() == 0, note
 
+# 서버 파일인데 pm2_app 설정 없음 → 재시작 안 하고 직접 재시작하라고 알림(NS-35-1 거짓 안내 재발 방지)
+status, note = orchestrate.deploy(str(repo), {k: v for k, v in cfg.items() if k != "pm2_app"}, merged("T-7b", {"server/no_pm2.py": "1\n"}))
+assert status == "merged" and restarts() == 0 and "직접 재시작" in note, note
+
 # 서버 파일 → 재시작 한 번, health 통과
 status, note = orchestrate.deploy(str(repo), cfg, merged("T-8", {"server/x.py": "1\n"}))
 assert status == "merged" and restarts() == 1 and "health" in note, note

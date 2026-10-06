@@ -87,6 +87,14 @@ def _healthy(cfg) -> bool:
         time.sleep(1)
 
 
+def _no_restart_note(hits) -> str:
+    """재시작을 건너뛴 이유 — 서버 파일이 바뀌었는데 pm2_app 설정이 없으면 직접 재시작하라고 알린다."""
+    if not hits:
+        return "재시작이 필요 없는 변경이라 재시작하지 않았어요."
+    return (f"⚠️ 서버 파일이 바뀌었지만({', '.join(hits[:5])}) 이 프로젝트는 자동 재시작 설정(orchestrate.json의 pm2_app)이 없어 "
+            "재시작하지 않았어요 — 운영 서버를 직접 재시작해야 반영돼요.")
+
+
 def _restart(repo, cfg) -> str | None:
     """재시작 명령을 돌린다. 실패하면 출력 끝부분."""
     r = subprocess.run(cfg["restart_cmd"].format(app=cfg.get("pm2_app", "")), shell=True, cwd=repo, capture_output=True,
@@ -101,7 +109,7 @@ def deploy(repo: str, cfg: dict, sha: str, say=lambda msg: None) -> tuple[str, s
     files = _git(repo, "diff", "--name-only", f"{sha}^1", sha).stdout.split()
     hits = [f for f in files if any(fnmatch.fnmatch(f, p) for p in cfg["restart_when"])]
     if not hits or not cfg.get("pm2_app"):
-        return "merged", "재시작이 필요 없는 변경이라 재시작하지 않았어요."
+        return "merged", _no_restart_note(hits)
     if _busy(cfg):
         say(f"⏳ 실행 중인 작업이 있어 끝나면 `{cfg['pm2_app']}`를 재시작할 예정이에요(최대 {cfg['wait_minutes']}분).")
         deadline = time.monotonic() + cfg["wait_minutes"] * 60
@@ -327,7 +335,7 @@ def _post_deploy(actor, repo, cfg, record):
     hits = [f for f in files if any(fnmatch.fnmatch(f, p) for p in cfg['restart_when'])]
     if record['phase'] == 'deployed':
         if not hits or not cfg.get('pm2_app'):
-            return _finish(actor, record, 'merged', '재시작이 필요 없는 변경이라 재시작하지 않았어요.')
+            return _finish(actor, record, 'merged', _no_restart_note(hits))
         deadline = time.monotonic() + cfg['wait_minutes'] * 60
         while _busy(cfg):
             if time.monotonic() >= deadline:
