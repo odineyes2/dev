@@ -507,6 +507,11 @@ ALTER TABLE jobs ADD COLUMN model TEXT;
 ALTER TABLE runs ADD COLUMN model TEXT;
 """)
 
+# 계획서 판이 어느 base 커밋을 보고 쓰였는지 — Task 시작 때 그 뒤 다른 이슈가 같은 파일을 바꿨는지 본다(빈 값이면 보지 않음).
+MIGRATIONS.append("""
+ALTER TABLE plans ADD COLUMN base_sha TEXT NOT NULL DEFAULT '';
+""")
+
 STATUSES += ("waiting",)
 
 

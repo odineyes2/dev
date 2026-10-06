@@ -709,14 +709,18 @@ def complete_tree(actor, ref, note="") -> list[dict]:
 
 
 def post_plan(actor, ref, body) -> dict:
+    import execute
     body = _text(body, "계획서", required=True)
+    with db.connect() as c:
+        repo = c.execute("SELECT p.local_path FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id=?", (_find(c, ref)["id"],)).fetchone()[0]
+    base = execute.base_sha(repo)   # 에이전트가 적는 값이 아니라 서버가 지금 base를 적는다
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         row = _find(c, ref)
         version = c.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM plans WHERE issue_id=?", (row["id"],)).fetchone()[0]
         now = db.now_iso()
-        pid = c.execute("INSERT INTO plans(issue_id, version, body, author, created_at) VALUES(?,?,?,?,?)",
-                        (row["id"], version, body, actor_label(actor), now)).lastrowid
+        pid = c.execute("INSERT INTO plans(issue_id, version, body, author, created_at, base_sha) VALUES(?,?,?,?,?,?)",
+                        (row["id"], version, body, actor_label(actor), now, base)).lastrowid
         run = c.execute("SELECT id, mode, status FROM runs WHERE issue_id=? ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
         if run and run["mode"] == "review" and run["status"] == "running":
             c.execute("INSERT INTO review_plan_runs(plan_id,run_id) VALUES(?,?)", (pid, run["id"]))

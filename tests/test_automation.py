@@ -376,7 +376,9 @@ with patch.object(config, 'DB_PATH', old_path):
             c.executescript('BEGIN;' + sql + f'PRAGMA user_version={i};COMMIT;')
     issues.create_project(admin, 'MIG', '이전 설정')
     old_issue = issues.create_issue(admin, 'MIG', '보존하는 승인')
-    issues.post_plan(admin, old_issue['ref'], '## Tasks\n1. 기존 Task | 파일: server/db.py')
+    with db.connect() as c:   # 이전 스키마라 post_plan(base_sha 기록) 대신 그때의 열로 직접 넣는다
+        c.execute("INSERT INTO plans(issue_id,version,body,author,created_at) VALUES(?,1,?,'human:admin',?)",
+                  (old_issue['id'], '## Tasks\n1. 기존 Task | 파일: server/db.py', db.now_iso()))
     issues.decide(admin, old_issue['ref'], 'approve_notes', '기존 사람 조건', plan_version=1)
     with db.connect() as c:
         c.execute("INSERT INTO project_auto_settings VALUES(1,1,1,1,'[\"codex\",\"claude\"]','human:admin',?)", (db.now_iso(),))
@@ -397,7 +399,7 @@ with patch.object(config, 'DB_PATH', old_path):
                 assert after[-1][2] == 'system:migration/task-result-approval'
                 assert json.loads(after[-1][4])['auto_approve'] is False
             else:
-                assert after == [r + ('',) for r in snapshot[table]] if table == 'runs' else after == snapshot[table], table
+                assert after == [r + ('',) for r in snapshot[table]] if table in ('runs', 'plans') else after == snapshot[table], table   # plans ''는 base_sha
         assert c.execute('PRAGMA foreign_key_check').fetchall() == []
     assert auto_settings.get_settings('MIG')['auto_approve'] is False
 print('OK — 기존 ON 초기화·전환 감사·다른 설정/승인/Task/이력 보존·migration 재실행')

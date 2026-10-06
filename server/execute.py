@@ -83,6 +83,42 @@ def prepare_worktree(repo: str, ref: str) -> Path:
     return path
 
 
+def base_sha(repo: str | None) -> str:
+    """저장소의 base 브랜치 끝 커밋. 저장소가 없거나 git이 실패하면 빈 값."""
+    if not repo or not Path(repo).is_dir():
+        return ""
+    r = _run_git(repo, "rev-parse", "--verify", "--quiet", BASE_BRANCH)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def stale_commits(repo: str, issue: dict, parent: dict) -> list[str]:
+    """승인된 계획서 판이 쓰인 뒤 base에 들어온, 이 Task의 파일을 바꾼 **다른 이슈**의 커밋("해시 제목").
+    이 부모의 Task 커밋·병합(제목의 `(부모-N)`·`relay/부모-N`, 옛 번호 Task는 그 ref)은 뺀다. 기준이 없으면 빈 목록."""
+    files = sorted(task_files(issue))
+    version = (parent.get("approval") or {}).get("plan_version")
+    if not files or not version or not repo or not Path(repo).is_dir():
+        return []
+    with db.connect() as c:
+        row = c.execute("SELECT base_sha FROM plans WHERE issue_id=? AND version=?", (parent["id"], version)).fetchone()
+    if not row or not row["base_sha"]:
+        return []
+    r = _run_git(repo, "log", "--format=%h %s", f"{row['base_sha']}..{BASE_BRANCH}", "--", *files)
+    if r.returncode:
+        return []
+    own = [re.escape(parent["ref"]) + r"-\d+"] + [re.escape(ch["ref"]) for ch in parent.get("children", [])]
+    mine = re.compile(r"(?:\(|relay/)(?:" + "|".join(own) + r")(?![\w-])")
+    return [line for line in r.stdout.splitlines() if line and not mine.search(line)]
+
+
+def stale_notice(commits: list[str], version: int) -> str:
+    """계획서 판 이후 다른 작업이 같은 파일을 바꿨다는 지시."""
+    shown = "\n".join(f"- {c}" for c in commits[:20]) + ("\n- …" if len(commits) > 20 else "")
+    return (f"먼저 확인할 것: 부모 계획서 v{version}이 쓰인 뒤 다른 이슈의 작업이 이 Task의 파일을 바꿨다(지금 worktree에는 반영돼 있다).\n{shown}\n"
+            "`git log -p`로 그 변경을 읽고, 계획서의 가정(함수·스키마·화면 구조·테스트 기대값)이 아직 맞는지 확인한다. "
+            "맞으면 바뀐 코드에 맞춰 구현한다. 가정이 깨져 계획서대로 할 수 없으면 구현하지 말고 무엇이 달라졌는지 적어 사람에게 묻는다"
+            "(Claude는 add_comment 뒤 on_hold, Codex는 outcome=blocked).\n\n")
+
+
 def _server_git(cwd, *args):
     """서버 이름으로 커밋·병합한다(훅·서명 없이)."""
     return _run_git(cwd, "-c", "user.name=dev orchestrator", "-c", "user.email=orchestrator@dev.local",
@@ -371,11 +407,16 @@ def _eligibility_reason(issue: dict, parent: dict | None, wait: bool = True) -> 
     return None
 
 
+def task_files(issue: dict) -> set[str]:
+    """Task 본문의 `바꿀 파일:` 목록."""
+    fields = re.findall(r"(?:\*\*)?(?:바꿀 파일|파일)(?:\*\*)?\s*:\s*([^\n|]+)", issue.get("body", ""))
+    return {p.strip(" `*").replace("\\", "/").lstrip("./") for f in fields for p in re.split(r"[,、]", f)} - {""}
+
+
 def out_of_scope(issue: dict, changed: list[str]) -> list[str]:
     """Task 본문의 `바꿀 파일:` 목록에 없는 변경 파일(tests/ 아래 .py는 허용). 목록이 없으면 빈 목록.
     Codex 경로는 `git add -A`라 검사가 만든 파일 같은 것도 그대로 커밋된다(NS-32-1의 캡처 PNG)."""
-    fields = re.findall(r"(?:\*\*)?(?:바꿀 파일|파일)(?:\*\*)?\s*:\s*([^\n|]+)", issue.get("body", ""))
-    allowed = {p.strip(" `*").replace("\\", "/").lstrip("./") for f in fields for p in re.split(r"[,、]", f)} - {""}
+    allowed = task_files(issue)
     if not allowed:
         return []
     def ok(path):
@@ -441,8 +482,10 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
     worktree = prepare_worktree(repo, ref)
     start_sha, conflicts = refresh_worktree(worktree, ref)
+    stale = stale_commits(repo, issue, parent)
+    notice = (conflict_notice(conflicts) if conflicts else "") + (stale_notice(stale, parent["approval"]["plan_version"]) if stale else "")
     cmd = codex_command_for(ref, issue["parent_ref"]) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
-    cmd = review.with_model(with_notice(cmd, provider, conflict_notice(conflicts) if conflicts else ""), provider, model)
+    cmd = review.with_model(with_notice(cmd, provider, notice), provider, model)
     env = safe_env(repo)
     log_path, run_id = review.begin(actor, issue, "execute", provider, model)
     with db.connect() as c:
