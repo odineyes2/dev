@@ -1763,6 +1763,12 @@ try:
         assert page.get_attribute("#p-path", "placeholder").startswith("C:\\Users\\")
         # Modify — 키는 잠기고, 이름·경로가 바뀐다
         assert page.inner_text('[data-edit="NS"]').strip() == "Modify"
+        # 연필 아이콘 + 보조(테두리) 버튼
+        assert page.locator('[data-edit="NS"] use[href="#i-pencil"]').count() == 1
+        edit_btn = page.eval_on_selector('[data-edit="NS"]', """b => { const s = getComputedStyle(b);
+            return {ghost: b.classList.contains('ghost'), style: s.borderTopStyle, color: s.borderTopColor}; }""")
+        assert not edit_btn["ghost"] and edit_btn["style"] == "solid", edit_btn
+        assert edit_btn["color"] not in ("transparent", "rgba(0, 0, 0, 0)"), edit_btn
         page.click('[data-edit="NS"]')
         assert page.is_disabled("#p-key") and page.input_value("#p-name") == "nightshift"
         page.fill("#p-path", r"C:\Users\Simon Lomebrote\Projects\nightshift")

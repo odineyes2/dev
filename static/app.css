@@ -86,6 +86,7 @@ button:hover, .button:hover{ border-color:var(--border-strong); background:var(-
 .ghost:hover{ background:var(--panel-2); color:var(--text); border-color:transparent; }
 .danger{ color:var(--danger); }
 .danger:hover{ border-color:var(--danger); background:transparent; }
+[data-edit] + [data-delete-project]{ margin-left:6px; }
 button:disabled{ opacity:.5; cursor:default; }
 input[type=checkbox]{ width:16px; height:16px; padding:0; accent-color:var(--accent); }
 
