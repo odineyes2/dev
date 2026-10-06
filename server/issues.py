@@ -736,14 +736,23 @@ def parse_tasks(body: str) -> list[dict]:
 
 
 def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
-    """승인 시 계획서의 Task를 하위 이슈로 만들고 선후관계를 잇는다. 이미 하위 이슈가 있으면 건너뛴다(재승인·이어 하기)."""
-    if parent["parent_id"] or c.execute("SELECT 1 FROM issues WHERE parent_id=?", (parent["id"],)).fetchone():
+    """승인 시 계획서의 Task를 하위 이슈로 만들고 선후관계를 잇는다. 이미 같은 제목의 하위가 있으면 그것을 쓴다
+    (같은 판 재승인·같은 Task를 다시 쓴 새 검토 판은 복제하지 않는다). 수정 요청 뒤 새 판의 새 Task는 이전 판의
+    Task가 있어도 만든다(DEV-86 — v2 승인에 Task가 안 생겼다). 만든 개수를 돌려준다."""
+    if parent["parent_id"]:
         return 0
+    has_children = c.execute("SELECT 1 FROM issues WHERE parent_id=?", (parent["id"],)).fetchone()
+    if (version == 1 or not parse_tasks(plan_body)) and has_children:
+        return 0   # 첫 판인데 하위가 이미 있음(사람이 만든 Task), 또는 Tasks 절 없는 새 판(기존 Task를 이어 감) — 그대로 둔다
     # 계획서에 Tasks 절이 없으면(작은 일) 이슈 자체를 Task 하나로 — 실행은 Task에만 붙는다
     tasks = parse_tasks(plan_body) or [{"n": 1, "title": parent["title"], "files": "", "check": "", "after": []}]
+    existing = {r["title"]: r["id"] for r in c.execute("SELECT id, title FROM issues WHERE parent_id=?", (parent["id"],))}
     proj = c.execute("SELECT * FROM projects WHERE id=?", (parent["project_id"],)).fetchone()
-    now, ids, ref = db.now_iso(), {}, _issue_dict(parent)["ref"]
+    now, ids, made, ref = db.now_iso(), {}, set(), _issue_dict(parent)["ref"]
     for t in tasks:
+        if t["title"] in existing:
+            ids[t["n"]] = existing[t["title"]]
+            continue
         body = f"{ref} 계획서 v{version}의 Task {t['n']}."
         if t["files"]:
             body += f"\n\n**바꿀 파일**: {t['files']}"
@@ -755,11 +764,14 @@ def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
         ids[t["n"]] = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
                                 "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (proj["id"], number, sub_of, sub, parent["id"], t["title"], body, "backlog", "none", "[]", actor_label(actor), now, now)).lastrowid
+        made.add(t["n"])
     for t in tasks:
+        if t["n"] not in made:
+            continue   # 기존 Task의 선후관계는 건드리지 않는다
         for a in t["after"]:
             if a in ids and a != t["n"]:
                 c.execute("INSERT OR IGNORE INTO issue_deps(issue_id, blocked_by_id) VALUES(?,?)", (ids[t["n"]], ids[a]))
-    return len(tasks)
+    return len(made)
 
 
 def _record_plan_decision(c, row, latest, verdict, note, actor, provenance=None):

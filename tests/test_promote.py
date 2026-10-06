@@ -79,4 +79,21 @@ assert st(status="in_review", parent_ref=p, project_key="TP", ref=t1) == "병합
 orchestrate.SETTINGS.write_text(json.dumps({"TP": {"auto_merge": False}}))
 assert st(status="in_review", parent_ref=p, project_key="TP") is None
 
+# 수정 요청 뒤 새 판(DEV-86): v1 Task가 다 끝나도 v2가 결정 대기면 올리지 않고, v2 승인은 새 Task를 만든다.
+q = issues.create_issue(me, "TP", "두 판")["ref"]
+issues.post_plan(me, q, "## Tasks\n1. 첫 판 일 | 파일: a.txt")
+issues.decide(me, q, "approve", plan_version=1)
+first = issues.get_issue(q)["children"]
+assert len(first) == 1
+issues.set_status(me, first[0]["ref"], "done")
+issues.set_status(me, q, "triage")
+issues.post_plan(me, q, "## Tasks\n1. 수정 요청 반영 | 파일: a.txt")   # v2 — 아직 결정 전
+assert not orchestrate.promote_parent(me, first[0]["ref"]) and issues.get_issue(q)["status"] == "triage"
+issues.decide(me, q, "approve", plan_version=2)
+kids = issues.get_issue(q)["children"]
+assert len(kids) == 2 and kids[-1]["title"] == "수정 요청 반영" and kids[-1]["status"] == "backlog", kids
+assert "하위 Task 1개를 만들었어요" in issues.get_issue(q)["events"][-1]["body"]
+issues.decide(me, q, "approve", plan_version=2)   # 같은 판 재승인은 다시 만들지 않는다
+assert len(issues.get_issue(q)["children"]) == 2
+
 print("ok")

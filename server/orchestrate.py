@@ -430,6 +430,8 @@ def promote_parent(actor: dict, ref: str) -> bool:
     parent = issues.get_issue(parent_ref)
     if parent["status"] in ("in_progress", "waiting", "on_hold", "changes_requested", "in_review", "done", "closed") or "goal" in parent["labels"]:   # goal은 사용자만 닫는다
         return False
+    if parent.get("plan") and (not parent.get("approval") or parent["approval"].get("stale")):
+        return False   # 새 판이 결정을 기다린다 — 이전 판 Task가 다 끝났다고 올리면 새 요구가 묻힌다(DEV-86)
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == parent["project_key"]), "")
     lines, checks = [], []
     for ch in parent["children"]:
