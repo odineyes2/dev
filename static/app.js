@@ -400,7 +400,7 @@ async function renderList(){
       <span class="checks"><label class="dim"><input type="checkbox" id="show-closed" ${st.closed ? 'checked' : ''}> 끝난 것도</label>
       <label class="dim"><input type="checkbox" id="only-approved" ${st.approved ? 'checked' : ''}> 승인된 것만</label></span>
     </div>
-    <div id="jobs-box"></div><div id="list-body"></div><div id="list-more" class="list-more"></div>`;
+    <div class="ops-split"><div class="ops-main"><div id="list-body"></div><div id="list-more" class="list-more"></div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
   loadJobs().catch(() => {});
   const save = (patch) => { localStorage.setItem('dev.list', JSON.stringify({ ...listState(), ...patch })); loadList(); };
   view.querySelector('#q').addEventListener('input', (e) => {
@@ -562,14 +562,14 @@ async function renderBoard(){
   const items = (await api('GET', '/api/issues?' + new URLSearchParams({ project: currentProject(), status: cols.join(',') }))).issues;
   await loadActionSettings(session, items);
   if(actionSession !== session || !session.current()) return;
-  view.innerHTML = `<div id="jobs-box"></div><div class="kanban" tabindex="0" role="region" aria-label="Issue 보드 — 빈 영역을 끌거나 좌우 방향키로 이동해요">${cols.map(s => {
+  view.innerHTML = `<div class="ops-split"><div class="ops-main"><div class="kanban" tabindex="0" role="region" aria-label="Issue 보드 — 빈 영역을 끌거나 좌우 방향키로 이동해요">${cols.map(s => {
     const mine = items.filter(i => i.status === s);
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
         <div class="t">${titleHtml(i)}</div><div class="meta">${prioHtml(i.priority)}${approvalHtml(i.approval)}${labelsHtml(i.labels)}${typesHtml(i)}
         ${i.claimed_by ? `<span>● ${esc(actorName(i.claimed_by))}</span>` : ''}</div>${actionHtml(i)}</div>`).join('')}
     </div></div>`;
-  }).join('')}</div>`;
+  }).join('')}</div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
   loadJobs().catch(() => {});
   bindActions(view.querySelector('.kanban'), session, renderBoard);
   enableBoardPan(view.querySelector('.kanban'));
