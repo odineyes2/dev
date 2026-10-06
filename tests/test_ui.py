@@ -1443,9 +1443,12 @@ def check_board_pan(page, shots):
     page.on('request', record)
     def left():
         return board.evaluate('e => e.scrollLeft')
+    def bottom(box):   # 대기열 상자가 위에 있어 보드 아래가 화면 밖일 수 있으니 보이는 영역 안에서 잡는다(DEV-91)
+        return min(box['y'] + box['height'], page.viewport_size['height']) - 20
     def drag(dx, selector='.kanban', outside=False):
+        page.evaluate('window.scrollTo(0, document.documentElement.scrollHeight)')
         box = page.locator(selector).first.bounding_box()
-        x, y = box['x'] + min(box['width'] - 20, 240), box['y'] + box['height'] - 20
+        x, y = box['x'] + min(box['width'] - 20, 240), bottom(box)
         page.mouse.move(x, y); page.mouse.down()
         page.mouse.move(x + dx, y, steps=10)
         if outside:
@@ -1460,9 +1463,10 @@ def check_board_pan(page, shots):
     board.evaluate('e => e.scrollLeft = 0')
     drag(-100, '.col[data-col="triage"] .cards'); assert left() >= 90
     for event in ('pointercancel', 'lostpointercapture'):
+        page.evaluate('window.scrollTo(0, document.documentElement.scrollHeight)')
         box = board.bounding_box()
-        page.mouse.move(box['x'] + 200, box['y'] + box['height'] - 20)
-        page.mouse.down(); page.mouse.move(box['x'] + 150, box['y'] + box['height'] - 20)
+        page.mouse.move(box['x'] + 200, bottom(box))
+        page.mouse.down(); page.mouse.move(box['x'] + 150, bottom(box))
         board.dispatch_event(event, {'pointerId': 1})
         assert not board.evaluate("e => e.classList.contains('panning')")
         page.mouse.up()
