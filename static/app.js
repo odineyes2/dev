@@ -1216,7 +1216,7 @@ document.addEventListener('keydown', (e) => {
   const t = e.target;
   if(t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) return;   // 검색칸 등에서는 글자 그대로
   e.preventDefault();
-  if(composer.hidden) void openComposer(); else cmpBody.focus();
+  if(composer.hidden) void openComposer(); else closeComposer();   // 열린 상태에서 백틱(입력칸 밖)이면 닫는다(DEV-96)
 });
 composer.addEventListener('keydown', (e) => { if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeComposer(); } });
 cmpBody.addEventListener('keydown', (e) => {
