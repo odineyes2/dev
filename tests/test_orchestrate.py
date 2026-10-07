@@ -520,3 +520,40 @@ with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(not
     assert issues.get_issue(ref)['status'] == 'in_progress'
     assert orchestrate.completion(ref)['phase'] == 'abandoned'
 print('OK interruption and protected completion boundaries')
+
+# 실패한 실행이 남긴 커밋은 다음 실행이 새 커밋 없이 이어받는다(NS-47-2: 커밋 뒤 API 529로 끊긴 실행 →
+# 재실행이 "새 Task 커밋 없음"으로 영원히 실패했다). 이미 완료로 제출된 커밋을 그대로 다시 내는 것은 계속 막는다.
+orchestrate.SETTINGS.write_text(json.dumps({'FLOW': {'auto_merge': False}}))
+task = issues.create_issue(me, 'FLOW', 'resume after failed run', parent=parent['ref'])
+ref = task['ref']
+wt = execute.prepare_worktree(str(repo), ref)
+_, r1 = review.begin(me, task, 'execute', 'claude')
+(wt / 'resumed.txt').write_text('work')
+execute._git(wt, 'add', '.')
+execute._git(wt, '-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-qm', 'implemented then crashed')
+left = execute._git(wt, 'rev-parse', 'HEAD')
+with db.connect() as c:
+    c.execute("UPDATE runs SET status='failed' WHERE id=?", (r1,))
+issues.set_status(me, ref, 'backlog')
+
+def rerun():
+    _, rid = review.begin(me, issues.get_issue(ref), 'execute', 'claude')
+    with db.connect() as c:
+        c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (left, rid))
+        c.execute('INSERT INTO task_execution_results(run_id,plan_version) VALUES(?,1)', (rid,))
+    return rid
+
+r2 = rerun()
+issues.link_commit(me, ref, left)
+execute.register_completion(me, ref, wt, r2, 'took over the commit of the failed run')
+assert orchestrate.completion(ref)['task_sha'] == left
+assert issues.get_issue(ref)['status'] == 'in_review'
+
+issues.set_status(me, ref, 'changes_requested')
+r3 = rerun()
+try:
+    execute.register_completion(me, ref, wt, r3, 'nothing new')
+    raise AssertionError('already submitted commit must be refused')
+except issues.StoreError as e:
+    assert '새 Task 커밋' in str(e), e
+print('OK failed run commit is taken over, submitted commit is refused')

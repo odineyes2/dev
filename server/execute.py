@@ -295,12 +295,20 @@ def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> str | N
     else:   # 서버가 최신 base를 깨끗이 병합해 둔 재실행은 고칠 것이 없을 수 있다 — 이번 실행에 새 커밋이 있으면 그것으로 완료한다
         with db.connect() as c:
             start = c.execute("SELECT task_start_sha FROM runs WHERE id=?", (run_id,)).fetchone()[0]
-        if _git(cwd, "rev-parse", "HEAD") == start:
-            raise issues.StoreError("커밋할 코드 변경이 없어요.", 409)
+            head = _git(cwd, "rev-parse", "HEAD")
+            if head == start and already_submitted(c, issue["id"], head):
+                raise issues.StoreError("커밋할 코드 변경이 없어요.", 409)
     sha = _git(cwd, "rev-parse", "HEAD")
     issues.link_commit(actor, ref, sha, message=message)
     note = result["summary"] + "\n\n검사:\n" + "\n".join(result["tests"])
     register_completion(actor, ref, cwd, run_id, note)
+
+
+def already_submitted(c, issue_id: int, sha: str) -> bool:
+    """이 커밋이 이 이슈의 앞선 실행에서 이미 완료로 제출됐나. 실패한 실행(예: API 529로 보고 전에 끊김)이 남긴 커밋은
+    제출된 적이 없으므로 다음 실행이 새 커밋 없이 이어받아 완료할 수 있다(NS-47-2). 제출된 커밋을 그대로 다시 내는
+    재실행(고칠 것 없는 수정 요청 등)만 막는다."""
+    return bool(c.execute("SELECT 1 FROM execution_completion WHERE issue_id=? AND task_sha=?", (issue_id, sha)).fetchone())
 
 
 def register_completion(actor, ref, cwd, run_id, note):
@@ -332,7 +340,7 @@ def register_completion(actor, ref, cwd, run_id, note):
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         row = issues._find(c, ref)
-        if sha == start_sha:
+        if sha == start_sha and already_submitted(c, row['id'], sha):
             raise issues.StoreError('이번 실행에서 새 Task 커밋이 만들어지지 않았어요.', 409)
         latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (row['id'],)).fetchone()[0]
         if latest != run_id or row['status'] != 'in_progress' or not review.owned_start(c, row['id'], run_id):
