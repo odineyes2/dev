@@ -48,7 +48,8 @@ js, html = (root / "app.js").read_text(encoding="utf-8"), (root / "index.html").
 for needle in ["e.key !== '`'", "['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)", "t.isContentEditable",
                "e.isComposing || e.keyCode === 229", "e.key !== 'Enter' || e.shiftKey",
                "api('POST', '/api/issues', { project: document.getElementById('cmp-project').value",
-               "assignee_agent_id: agent ? Number(agent)", "if(!composerAllowed()) closeComposer(true);"]:
+               "assignee_agent_id: agent ? Number(agent)", "if(!composerAllowed()) closeComposer(true);",
+               "if(composer.hidden) void openComposer(); else closeComposer();"]:
     assert needle in js, needle
 for needle in ['id="composer"', 'id="cmp-attach"', 'aria-label="파일 첨부"', 'id="cmp-project"', 'id="cmp-agent"',
                'id="cmp-send"', 'aria-label="보내기"', 'id="i-x"']:
