@@ -449,6 +449,7 @@ async function renderList(){
     if(tbody){
       tbody.innerHTML = '';
       data.issues.forEach(i => placeRow(tbody, i));
+      bindActions(tbody, L.actions, loadList);   // 새로 그린 Action 버튼에 핸들러를 다시 붙인다(DEV-97)
       L.seen = new Set(data.issues.map(i => i.ref));
       L.offset = data.issues.length; L.done = !data.has_more;
     }else if(data.issues.length) await loadList();

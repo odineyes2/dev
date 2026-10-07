@@ -1645,6 +1645,12 @@ def check_board_actions(page, shots, answers, asked):
                         page.wait_for_timeout(200)
                         page.screenshot(path=str(shots / f'action_board_review_{scheme}_{width}.png'),full_page=True)
             page.set_viewport_size({'width':1300,'height':850})
+        # 목록의 5초 자동 갱신이 행을 새로 그린 뒤에도 Action 버튼이 동작한다(DEV-97).
+        ready(); btn(1,'review','claude').evaluate('e => { e.__old = true; }')
+        page.wait_for_function('() => { const b = document.querySelector(\'[data-action="review"][data-ref="ACT-1"][data-provider="claude"]\'); return b && !b.__old; }', timeout=12000)
+        before = len(posts); btn(1,'review','claude').click()
+        page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
+        assert len(posts) == before + 1 and posts[-1][0].endswith('/ACT-1/review')
         for ref, kind, provider in ((1,'review','claude'), (22,'task-approve','')):
             ready(); delay = True; before = len(posts)
             btn(ref,kind,provider).evaluate('e => {e.click();e.click()}')
