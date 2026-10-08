@@ -272,6 +272,28 @@ def launch(actor, ref: str, run_id: int, provider: str, comment: str, args: tupl
         raise issues.StoreError(f"작업을 시작하지 못했어요 — {e}", 409) from e
 
 
+def token_count(value):
+    """누락·손상된 토큰은 미계측으로 남기고 실제 정수 0은 보존한다."""
+    return value if type(value) is int and 0 <= value <= 2**63 - 1 else None
+
+
+def _add_usage(total, current):
+    """턴·재시도 중 한 번이라도 누락된 항목은 전체 사용량을 알 수 없다."""
+    keys = ["input_tokens", "output_tokens"]
+    if "cost_usd" in total or "cost_usd" in current:
+        keys.append("cost_usd")
+    for key in keys:
+        value = current.get(key)
+        if key not in total:
+            total[key] = value
+        elif total[key] is None or value is None:
+            total[key] = None
+        else:
+            total[key] += value
+        if key != "cost_usd":
+            total[key] = token_count(total[key])
+
+
 def _parse(out: str, provider: str = "claude") -> tuple[str, dict]:
     """JSON 출력에서 (결과 글, 토큰·비용)을 뽑는다. 읽지 못하면 원문과 빈 dict."""
     if provider == "codex":
@@ -286,7 +308,7 @@ def _parse(out: str, provider: str = "claude") -> tuple[str, dict]:
                     messages.append(item.get("text", ""))
                 if event.get("type") == "turn.completed":
                     u = event.get("usage") or {}
-                    stats = {"input_tokens": u.get("input_tokens"), "output_tokens": u.get("output_tokens")}
+                    _add_usage(stats, {k: token_count(u.get(k)) for k in ("input_tokens", "output_tokens")})
                 if event.get("type") in ("error", "turn.failed"):
                     messages.append(str(event.get("message") or event.get("error") or event))
             except (ValueError, AttributeError, TypeError):
@@ -295,8 +317,9 @@ def _parse(out: str, provider: str = "claude") -> tuple[str, dict]:
     try:
         d = json.loads(out)
         u = d.get("usage") or {}
-        stats = {"input_tokens": (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0),
-                 "output_tokens": u.get("output_tokens"), "cost_usd": d.get("total_cost_usd")}
+        inputs = [token_count(u.get("input_tokens"))] + [token_count(u.get(k, 0)) for k in ("cache_creation_input_tokens", "cache_read_input_tokens")]
+        stats = {"input_tokens": token_count(sum(inputs)) if all(v is not None for v in inputs) else None,
+                 "output_tokens": token_count(u.get("output_tokens")), "cost_usd": d.get("total_cost_usd")}
         return str(d.get("result") or ""), stats if u else {}
     except (ValueError, AttributeError, TypeError):
         return out, {}
@@ -363,8 +386,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         if code:
             status = "failed"
         text, stats = _parse(out, provider)
-        for k, v in stats.items():   # 재시도까지 합친 토큰·비용
-            spent[k] = (spent.get(k) or 0) + (v or 0)
+        _add_usage(spent, stats)
         if status != "ok" or label != "실행":
             break
         now = issues.get_issue(ref)

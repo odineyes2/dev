@@ -398,6 +398,12 @@ def api_project_documents(key: str):
     return project_docs.list_documents(key)
 
 
+@app.get("/api/projects/{key}/usage")
+def api_project_usage(key: str, limit: int = 50, offset: int = 0):
+    import usage
+    return usage.project_usage(key, limit, offset)
+
+
 @app.get("/api/projects/{key}/auto-settings")
 def api_auto_settings(key: str):
     import auto_settings

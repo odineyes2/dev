@@ -199,4 +199,19 @@ with TestClient(A.app) as c:
     key = c.post('/api/agents', json={'name': 'codex-test'}, headers=H).json()['key']
     c.cookies.clear()
     assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers={'Authorization': 'Bearer ' + key}).status_code == 403
+# 다중 턴은 한 번씩 누적하고 누락된 턴을 실제 0으로 꾸미지 않는다.
+import json
+multi = '\n'.join(json.dumps({'type': 'turn.completed', 'usage': u}) for u in (
+    {'input_tokens': 100, 'output_tokens': 12}, {'input_tokens': 20, 'output_tokens': 3}))
+stats = review._parse(multi, 'codex')[1]
+assert stats['input_tokens'] == 120 and stats['output_tokens'] == 15
+missing = multi + '\n' + json.dumps({'type': 'turn.completed', 'usage': {'output_tokens': 0}})
+assert review._parse(missing, 'codex')[1]['input_tokens'] is None
+assert review._parse('invalid JSON', 'codex')[1] == {}
+spent = {}
+review._add_usage(spent, stats)
+review._add_usage(spent, review._parse(multi, 'codex')[1])
+assert spent['input_tokens'] == 240 and spent['output_tokens'] == 30
+review._add_usage(spent, {})
+assert spent['input_tokens'] is None and spent['output_tokens'] is None
 print('OK')
