@@ -409,6 +409,42 @@ body:has(.composer:not([hidden])) .toast{ bottom:auto; top:72px; }
 .project-docs[hidden], #project-form[hidden]{ display:none; }
 .project-docs .skeleton{ padding:var(--sp-4); color:var(--dim); }
 .project-docs .skeleton::after{ content:""; display:block; height:32px; margin-top:var(--sp-3); border-radius:var(--r-sm); background:var(--panel-2); }
+/* 사용량 — 숫자 정렬과 모바일 카드로 DESIGN 2~4, 7~8, 11~12절을 따른다. */
+.project-usage{ min-width:0; }
+.project-create-inline{ position:static; display:flex; margin:0 0 var(--sp-4) auto; min-height:40px; border-radius:var(--r-sm); box-shadow:none; }
+.usage-toolbar{ display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3); }
+.usage-toolbar h3{ margin:0; }
+.project-usage button{ min-height:40px; }
+.project-usage :focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+.usage-summary{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--sp-4); margin:var(--sp-5) 0; }
+.usage-summary>div{ padding:var(--sp-4); border:1px solid var(--border); border-radius:var(--r-md); }
+.usage-summary dt{ font:600 12px/1.4 var(--mono); letter-spacing:var(--track-label); color:var(--dim); }
+.usage-summary dd{ margin:var(--sp-2) 0; font-size:24px; font-weight:600; }
+.usage-summary p{ margin:0; font-size:13px; }
+.usage-summary, .usage-table, .usage-pagination{ font-variant-numeric:tabular-nums; }
+.usage-table{ width:100%; table-layout:fixed; border-collapse:collapse; font-size:13px; }
+.usage-table th{ text-align:left; font:600 11px/1.4 var(--mono); letter-spacing:var(--track-label); background:var(--panel-2); color:var(--dim); }
+.usage-table th:first-child{ width:28%; }
+.usage-caption{ text-align:left; margin-bottom:var(--sp-3); font:600 12px/1.4 var(--mono); color:var(--dim); }
+.usage-table th, .usage-table td{ padding:var(--sp-3); border-bottom:1px solid var(--border); vertical-align:top; }
+.usage-table tr:hover td{ background:var(--panel-2); }
+.usage-table small{ display:block; font-size:12px; }
+.usage-issue{ display:flex; flex-direction:column; gap:var(--sp-1); margin-bottom:var(--sp-2); }
+.usage-pagination{ display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:var(--sp-3); margin-top:var(--sp-4); }
+.project-usage p, .usage-summary, .usage-table td, .project-scope h2{ overflow-wrap:anywhere; }
+.usage-loading{ padding:var(--sp-4); color:var(--dim); }
+.usage-skeleton{ height:160px; margin-top:var(--sp-3); border-radius:var(--r-md); background:var(--panel-2); }
+@media(max-width:800px){
+  .usage-summary{ grid-template-columns:1fr; gap:var(--sp-3); }
+  .usage-caption{ display:block; }
+  .usage-table, .usage-table tbody, .usage-table tr, .usage-table td{ display:block; width:auto; }
+  .usage-table thead{ display:none; }
+  .usage-table tr{ margin-top:var(--sp-4); border:1px solid var(--border); border-radius:var(--r-md); }
+  .usage-table td{ border:0; padding:var(--sp-2) var(--sp-4); }
+  .usage-table td:first-child{ padding-top:var(--sp-4); }
+  .usage-table td:last-child{ padding-bottom:var(--sp-4); }
+  .usage-table td::before{ content:attr(data-label); display:block; margin-bottom:var(--sp-1); font:600 11px/1.4 var(--mono); color:var(--dim); letter-spacing:var(--track-label); }
+}
 
 /* 설정 — 디자인 2~5·7·8·11절의 토큰과 스위치 규칙을 따른다. */
 .auto-settings{ padding:var(--sp-5); }
