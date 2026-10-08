@@ -602,9 +602,13 @@ def _set_status(c, actor, row, status, note="", data=None):
     _guard_goal(row, actor, "상태")
     note = _text(note, "메모", 20_000)
     now = db.now_iso()
-    c.execute("UPDATE issues SET status=?, closed_at=?, updated_at=?"
+    c.execute("UPDATE issues SET status=?, closed_at=?, updated_at=?, "
+              "first_started_at=COALESCE(first_started_at, ?), "
+              "last_done_at=CASE WHEN ? THEN ? ELSE last_done_at END"
               + (", claimed_by=NULL, lease_until=NULL" if status in RELEASE_ON else "") + " WHERE id=?",
-              (status, now if status in HUMAN_ONLY_STATUSES else None, now, row["id"]))
+              (status, now if status in HUMAN_ONLY_STATUSES else None, now,
+               now if status == 'in_progress' else None,
+               status == 'done' and row['status'] != 'done', now, row["id"]))
     _event(c, row["id"], actor, "status", note, {"from": row["status"], "to": status, **(data or {})})
 
 
@@ -703,7 +707,7 @@ def complete_tree(actor, ref, note="") -> list[dict]:
         now = db.now_iso()
         body = note.strip() or f"전체 완료 ({row['ref']}에서 한 번에)"
         for r in rows:
-            c.execute("UPDATE issues SET status='done', closed_at=?, updated_at=?, claimed_by=NULL, lease_until=NULL WHERE id=?", (now, now, r["id"]))
+            c.execute("UPDATE issues SET status='done', closed_at=?, updated_at=?, last_done_at=?, claimed_by=NULL, lease_until=NULL WHERE id=?", (now, now, now, r["id"]))
             _event(c, r["id"], actor, "status", body, {"from": r["status"], "to": "done", "tree_from": row["ref"]})
         return [_issue_dict(r) for r in c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({','.join('?' * len(rows))}) ORDER BY i.id", [r["id"] for r in rows])]
 

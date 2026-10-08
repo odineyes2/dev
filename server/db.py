@@ -517,6 +517,38 @@ MIGRATIONS.append("""
 CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 """)
 
+# 생애 시각은 현재 상태·closed_at과 독립적으로 보존한다.
+MIGRATIONS.append("""
+ALTER TABLE issues ADD COLUMN first_started_at TEXT;
+ALTER TABLE issues ADD COLUMN last_done_at TEXT;
+-- 이력 전체는 한 번만 읽고 후보를 인덱싱해 이슈별 반복 전체 탐색을 피한다.
+CREATE TEMP TABLE lifecycle_candidates AS
+    SELECT issue_id, json_extract(data_json, '$.to') AS kind, created_at AS at
+    FROM events WHERE kind='status'
+      AND CASE WHEN json_valid(data_json) THEN json_extract(data_json, '$.to') END IN ('in_progress','done')
+      AND julianday(created_at) IS NOT NULL
+    UNION ALL
+    SELECT issue_id, 'in_progress', started_at FROM runs WHERE julianday(started_at) IS NOT NULL
+    UNION ALL
+    SELECT id, 'done', closed_at FROM issues WHERE status='done' AND julianday(closed_at) IS NOT NULL;
+CREATE INDEX lifecycle_candidates_lookup ON lifecycle_candidates(issue_id, kind, julianday(at), at);
+UPDATE issues SET first_started_at=(
+    SELECT at FROM lifecycle_candidates WHERE issue_id=issues.id AND kind='in_progress'
+    ORDER BY julianday(at), at LIMIT 1),
+    last_done_at=(
+    SELECT at FROM lifecycle_candidates WHERE issue_id=issues.id AND kind='done'
+    ORDER BY julianday(at) DESC, at DESC LIMIT 1);
+DROP TABLE lifecycle_candidates;
+-- 공개 API의 생성 상태 제한은 유지하고 내부 INSERT의 생성 상태도 기록한다.
+CREATE TRIGGER issues_lifecycle_created AFTER INSERT ON issues
+WHEN NEW.status IN ('in_progress','done') BEGIN
+    UPDATE issues SET
+      first_started_at=CASE WHEN NEW.status='in_progress' THEN COALESCE(NEW.first_started_at, NEW.created_at) ELSE NEW.first_started_at END,
+      last_done_at=CASE WHEN NEW.status='done' THEN COALESCE(NEW.last_done_at, NEW.created_at) ELSE NEW.last_done_at END
+    WHERE id=NEW.id;
+END;
+""")
+
 STATUSES += ("waiting",)
 
 

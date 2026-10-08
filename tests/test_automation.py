@@ -35,7 +35,8 @@ with db.connect() as c:
     for table in tables:
         added = (None, None) if table == 'jobs' else (0,) if table == 'project_auto_settings' else ('',) if table == 'runs' else ()
         model = (None,) if table in ('jobs', 'runs') else ()   # DEV-89-4 model 컬럼
-        assert [r + added + ((r[0],) if table == 'jobs' else ()) + model for r in before[table]] ==[tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
+        lifecycle = (None, None) if table == 'issues' else ()   # 근거 없는 생애 시각은 NULL로 확장한다.
+        assert [r + added + ((r[0],) if table == 'jobs' else ()) + model + lifecycle for r in before[table]] ==[tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=?', (legacy['id'],)).fetchone()
     assert job['source'] == 'manual' and job['provider'] == 'codex'
     assert job['delegation_id'] is None and job['approval_version'] is None
@@ -398,6 +399,8 @@ with patch.object(config, 'DB_PATH', old_path):
                 assert after[:-1] == snapshot[table] and len(after) == len(snapshot[table]) + 1
                 assert after[-1][2] == 'system:migration/task-result-approval'
                 assert json.loads(after[-1][4])['auto_approve'] is False
+            elif table == 'issues':
+                assert after == [r + (None, None) for r in snapshot[table]], table
             else:
                 assert after == [r + ('',) for r in snapshot[table]] if table in ('runs', 'plans') else after == snapshot[table], table   # plans ''는 base_sha
         assert c.execute('PRAGMA foreign_key_check').fetchall() == []
