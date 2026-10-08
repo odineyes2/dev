@@ -535,13 +535,13 @@ def api_delete_issue(ref: str, request: Request):
 @app.post("/api/issues/{ref}/status")
 async def api_set_status(ref: str, request: Request):
     b = await json_body(request)
-    return await run_in_threadpool(issues.set_status, actor(request), ref, b.get("status"), b.get("note", ""))
+    return await run_in_threadpool(issues.set_status, actor(request), ref, b.get("status"), b.get("note", ""), bool(b.get("confirm_checks")))
 
 
 @app.post("/api/issues/{ref}/complete-tree")
 async def api_complete_tree(ref: str, request: Request):
     b = await json_body(request)
-    return {"issues": issues.complete_tree(actor(request), ref, b.get("note", ""))}
+    return {"issues": issues.complete_tree(actor(request), ref, b.get("note", ""), bool(b.get("confirm_checks")))}
 
 
 @app.get("/api/issues/{ref}/plans")

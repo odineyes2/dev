@@ -428,5 +428,10 @@ def start_timer() -> None:
                 pump()
             except Exception as e:   # 주기 펌프는 죽지 않게
                 print("jobs.pump 오류:", e)
+            try:
+                import execute
+                execute.prune_worktrees()
+            except Exception as e:
+                print("worktree 정리 오류:", e)
             time.sleep(PERIOD_SEC)
     threading.Thread(target=loop, daemon=True).start()

@@ -420,6 +420,7 @@ def get_issue(ref) -> dict:
         d["type_revision"] = _type_revision(c, row["id"])
         plan = c.execute("SELECT * FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1", (row["id"],)).fetchone()
         d["plan"] = dict(plan) if plan else None
+        d["human_checks"] = human_checks(plan["body"]) if plan else []
         dec = c.execute("SELECT * FROM decisions WHERE issue_id=? AND gate='plan' ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
         if dec:   # 요약(list와 같은 모양)에 메모·누가·언제를 더한다
             d["approval"] = {**d["approval"], "note": dec["note"], "actor": dec["actor"], "created_at": dec["created_at"]}
@@ -643,7 +644,7 @@ def _sync_terminal_status(c, actor, row, status, note):
                          **({'rollback_id': pending['id'], 'rollback_sha': pending['head']} if pending else {})})
 
 
-def set_status(actor, ref, status, note="") -> dict:
+def set_status(actor, ref, status, note="", confirm_checks=False) -> dict:
     status = str(status or "")
     if status not in db.STATUSES:
         raise StoreError(f"status는 {'/'.join(db.STATUSES)} 중 하나예요.")
@@ -655,6 +656,8 @@ def set_status(actor, ref, status, note="") -> dict:
         row = _find(c, ref)
         _guard_goal(row, actor, "상태")
         if status in HUMAN_ONLY_STATUSES:
+            if status == "done":
+                _checks_gate(c, [row], confirm_checks)
             _sync_terminal_status(c, actor, row, status, note)
             return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
         if row["status"] == status:
@@ -684,7 +687,7 @@ def _complete_auto_task(c, row, provenance):
     return True
 
 
-def complete_tree(actor, ref, note="") -> list[dict]:
+def complete_tree(actor, ref, note="", confirm_checks=False) -> list[dict]:
     """묶음 전체 완료(DEV-44) — ref의 최상위 이슈와 그 아래 모든 이슈를 한 트랜잭션으로 done.
     이미 done/closed인 것은 그대로 둔다(거절해서 닫은 Task를 덮지 않게). Claude 실행 중인 이슈가 있으면 아무것도 바꾸지 않는다.
     사람만 — goal 라벨도 사람이 누른 것이니 닫는다. 바뀐 이슈 목록을 돌려준다."""
@@ -704,6 +707,7 @@ def complete_tree(actor, ref, note="") -> list[dict]:
         if busy:
             raise StoreError(f"Claude가 실행 중인 이슈가 있어요: {', '.join(busy)} — 끝난 뒤 다시 해 주세요.", 409)
         rows = c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({marks}) AND i.status NOT IN ('done','closed') ORDER BY i.id", ids).fetchall()
+        _checks_gate(c, rows, confirm_checks)
         now = db.now_iso()
         body = note.strip() or f"전체 완료 ({row['ref']}에서 한 번에)"
         for r in rows:
@@ -753,6 +757,29 @@ def parse_tasks(body: str) -> list[dict]:
         out.append({"n": int(mm.group(1)), "title": title[:300], "files": info.get("파일", ""), "check": info.get("확인", ""),
                     "after": [int(x) for x in re.findall(r"\d+", info.get("선행", ""))]})
     return out
+
+
+def human_checks(body: str) -> list[str]:
+    """계획서의 `## 사람이 할 일` 절 — 실행기가 못 하는 운영 재시작·실계정 확인 같은 것. 한 줄이 한 항목(NS-60)."""
+    m = re.search(r"^#{1,6}[ \t]*사람이 할 일[ \t]*$", body or "", re.M)
+    if not m:
+        return []
+    rest = body[m.end():]
+    nxt = re.search(r"^#{1,6}[ \t]", rest, re.M)
+    items = [re.sub(r"^\s*(?:[-*]\s*(?:\[[ xX]\]\s*)?|\d+[.)]\s+)", "", line).strip() for line in (rest[:nxt.start()] if nxt else rest).splitlines()]
+    return [i for i in items if i and i not in ("없음", "없다")]
+
+
+def _checks_gate(c, rows, confirmed) -> list[str]:
+    """Done으로 바꿀 이슈들의 최신 계획서에 `사람이 할 일`이 있으면 사람이 확인(confirmed)해야 한다. 확인한 항목을 돌려준다."""
+    items = []
+    for r in rows:
+        plan = c.execute("SELECT body FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1", (r["id"],)).fetchone()
+        items += human_checks(plan["body"]) if plan else []
+    if items and not confirmed:
+        raise StoreError("계획서의 '사람이 할 일'을 확인해야 Done으로 바꿀 수 있어요 — 이슈 화면에서 Done을 눌러 확인해 주세요:\n"
+                         + "\n".join(f"· {i}" for i in items), 409)
+    return items
 
 
 def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:

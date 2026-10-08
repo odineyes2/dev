@@ -449,7 +449,7 @@ def promote_parent(actor: dict, ref: str) -> bool:
     if parent.get("plan") and (not parent.get("approval") or parent["approval"].get("stale")):
         return False   # 새 판이 결정을 기다린다 — 이전 판 Task가 다 끝났다고 올리면 새 요구가 묻힌다(DEV-86)
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == parent["project_key"]), "")
-    lines, checks, warns = [], [], []
+    lines, checks, warns = [], [], [f"- ☐ {i}" for i in parent.get("human_checks", [])]   # 계획서의 사람이 할 일 — Done 전에 확인받는다
     for ch in parent["children"]:
         finished = ch["status"] in ("done", "closed")
         if not finished and not (ch["status"] == "in_review" and _merged(repo, ch["ref"])):

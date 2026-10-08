@@ -21,6 +21,10 @@ function toast(msg){
   el.textContent = msg; el.hidden = false;
   clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, 3000);
 }
+// 계획서의 '사람이 할 일'(NS-60) — Done 전에 다 했는지 확인받는다. 없으면 바로 통과. 서버도 확인 없이는 Done을 거절한다.
+function confirmChecks(items){
+  return !(items || []).length || confirm(`계획서의 '사람이 할 일'을 모두 했나요?\n\n${items.map(x => `☐ ${x}`).join('\n')}\n\n했으면 확인을 눌러 주세요 — Done으로 바꿔요.`);
+}
 async function api(method, url, body, isCurrent = () => true){
   const opt = { method, headers: { 'X-Requested-With': 'dev' } };
   if(body instanceof FormData) opt.body = body;
@@ -322,6 +326,7 @@ function bindActions(container,session,refresh){
           const warn=root.children.filter(x=>!['done','closed'].includes(x.status) && (x.status!=='in_review' || ['병합 대기','재시작 대기','되돌림'].includes(x.merge_state)));
           if(!open.length){toast('이미 모두 끝났어요');return;}
           if(!confirm(`${root.ref} 묶음 전체를 Done으로 바꿀까요? 되돌리기 기능은 없어요.\n\n닫힐 이슈:\n${open.map(x=>`· ${x.ref} ${x.title}`).join('\n')}`+(warn.length?`\n\n주의:\n${warn.map(x=>`· ${x.ref} — ${STATUS_LABEL[x.status]} ${x.merge_state||''}`).join('\n')}`:'')))return;
+          if(!confirmChecks(root.human_checks))return;
         }else if(!['decision','task-approve'].includes(kind)){
           const name=provider==='claude'?'Claude':'Codex';
           const task=kind==='execute'?await api('GET',`/api/issues/${encodeURIComponent(i.ref)}`,undefined,current):null;
@@ -331,7 +336,7 @@ function bindActions(container,session,refresh){
           if(!confirm(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?\n${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}`))return;
         }
         if(!current())return;
-        await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:provider?{provider}:{},current);
+        await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:kind==='complete-tree'?{confirm_checks:true}:provider?{provider}:{},current);
         if(current())toast(kind==='decision'?'계획을 승인했어요.':kind==='task-approve'?'Task를 승인했어요.':kind==='complete-tree'?'묶음을 끝냈어요.':'작업을 대기열에 등록했어요.');
       }catch(e){ /* 최신 정보로 다시 판단한다. */ }
       finally{pendingActions.delete(i.ref);if(current())await refresh();}
@@ -871,7 +876,8 @@ async function renderIssue(ref, background = false){
   // done/closed로 끝내면 목록으로 돌아간다(DEV-5) — 끝난 이슈 화면에 머물 일은 없다.
   const setStatus = async (status, note) => {
     let updated;
-    try{ updated = await api('POST', `/api/issues/${R}/status`, note === undefined ? { status } : { status, note }); }
+    if(status === 'done' && !confirmChecks(it.human_checks)){ reload(); return; }
+    try{ updated = await api('POST', `/api/issues/${R}/status`, { status, ...(note === undefined ? {} : { note }), ...(status === 'done' ? { confirm_checks: true } : {}) }); }
     catch(e){ reload(); return; }
     if(status === 'closed' && updated.status !== 'closed'){
       toast('롤백 후 운영 반영을 확인 중이에요 — 보류 상태로 남겨요.'); await reload(); return;
@@ -906,8 +912,9 @@ async function renderIssue(ref, background = false){
 닫힐 이슈:
 ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
       + (warn.length ? `\n\n주의:\n${warn.map(c => `· ${c.ref} — ${c.status !== 'in_review' ? STATUS_LABEL[c.status] : ''}${c.status !== 'in_review' && c.merge_state ? ' · ' : ''}${c.merge_state || ''}`).join('\n')}` : ''))) return;
+    if(!confirmChecks(root.human_checks)) return;
     b.disabled = true; b.textContent = '완료하는 중…';
-    try{ await api('POST', `/api/issues/${R}/complete-tree`, {}); }
+    try{ await api('POST', `/api/issues/${R}/complete-tree`, { confirm_checks: true }); }
     catch(e){ reload(); return; }
     toast(`${root.ref} 묶음을 끝냈어요`); location.hash = '#/';
   }));
