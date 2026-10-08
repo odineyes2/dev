@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 graphify-out/
 tests/shots/
+.ui-captures/

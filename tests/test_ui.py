@@ -6,40 +6,7 @@ import json
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
-FAKE_NS = r'''
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-app = FastAPI()
-@app.get("/api/auth/me")
-def me(request: Request):
-    users = {"adm": {"id": 1, "username": "admin", "role": "admin"},
-             "mem": {"id": 2, "username": "admin", "role": "user"}}
-    return {"user": users.get(request.cookies.get("ns_session"))}
-@app.post("/api/auth/login")
-async def login(request: Request):
-    b = await request.json()
-    if b.get("password") != "pw":
-        return JSONResponse({"detail": "아이디 또는 비밀번호가 올바르지 않아요."}, 401)
-    r = JSONResponse({"user": {"id": 1, "username": "admin", "role": "admin"}})
-    r.set_cookie("ns_session", "adm", path="/")
-    return r
-@app.post("/api/auth/logout")
-def logout():
-    r = JSONResponse({}); r.delete_cookie("ns_session", path="/"); return r
-'''
-
-
-def free_port():
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
-
-
-def wait_port(port):
-    for _ in range(100):
-        try:
-            socket.create_connection(("127.0.0.1", port), 0.2).close(); return
-        except OSError:
-            time.sleep(0.1)
-    raise RuntimeError(f"port {port} not up")
+from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP
 
 
 def check_attachments(page, shots):
@@ -1682,12 +1649,11 @@ def check_board_actions(page, shots, answers, asked):
 
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
+(tmp / "capture_app.py").write_text(BOOTSTRAP, "utf-8")
 ns_port, dev_port = free_port(), free_port()
-env = {**os.environ, "DEV_DATA_DIR": str(tmp / "data"), "DEV_NIGHTSHIFT_URL": f"http://127.0.0.1:{ns_port}",
-       "DEV_CLAUDE_BIN": str(tmp / 'disabled-claude'), "DEV_CODEX_AGENT_KEY": "",
-       "DEV_REVIEW_MCP_CONFIG": str(tmp / 'no-mcp.json'), "NTFY_TOPIC": ""}
-procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "fake_ns:app", "--port", str(ns_port)], cwd=tmp, stderr=subprocess.DEVNULL),
-         subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app", "--port", str(dev_port)], cwd=ROOT / "server", env=env, stderr=subprocess.DEVNULL)]
+env = child_environment(tmp, ns_port, dev_port)
+procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "fake_ns:app", "--port", str(ns_port)], cwd=tmp, env=env, stderr=subprocess.DEVNULL),
+         subprocess.Popen([sys.executable, str(tmp / "capture_app.py"), str(ROOT / "server"), str(ns_port), str(dev_port)], cwd=tmp, env=env, stderr=subprocess.DEVNULL)]
 BASE = f"http://127.0.0.1:{dev_port}"
 shots = ROOT / "tests" / "shots"; shots.mkdir(exist_ok=True)
 try:
