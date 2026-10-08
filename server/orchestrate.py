@@ -298,7 +298,8 @@ def _finish(actor, record, status, note):
             return None
         phase = 'complete' if status == 'merged' else 'held' if status == 'on_hold' else 'failed'
         issues._set_status(c, actor, row, 'in_review' if status == 'merged' else status,
-                           record['note'] + '\n\n🔁 ' + note if status == 'merged' else '🔀 자동 병합: ' + note)
+                           ('🔁 ' + note + '\n\n' + record['note'] if note.startswith('⚠️') else record['note'] + '\n\n🔁 ' + note)
+                           if status == 'merged' else '🔀 자동 병합: ' + note)
         c.execute('UPDATE execution_completion SET phase=?,updated_at=? WHERE run_id=?', (phase, db.now_iso(), record['run_id']))
         c.execute("UPDATE task_execution_results SET state=?,commit_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='commit'),status_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status') WHERE run_id=?", ('merged' if status == 'merged' else 'blocked',row['id'],row['id'],record['run_id']))
     if status == 'merged':
@@ -448,7 +449,7 @@ def promote_parent(actor: dict, ref: str) -> bool:
     if parent.get("plan") and (not parent.get("approval") or parent["approval"].get("stale")):
         return False   # 새 판이 결정을 기다린다 — 이전 판 Task가 다 끝났다고 올리면 새 요구가 묻힌다(DEV-86)
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == parent["project_key"]), "")
-    lines, checks = [], []
+    lines, checks, warns = [], [], []
     for ch in parent["children"]:
         finished = ch["status"] in ("done", "closed")
         if not finished and not (ch["status"] == "in_review" and _merged(repo, ch["ref"])):
@@ -463,7 +464,10 @@ def promote_parent(actor: dict, ref: str) -> bool:
         how = next((e["body"] for e in reversed(full["events"]) if e["kind"] == "status" and e["data"].get("to") == "in_review" and e["body"]), "")
         if how:
             checks.append(f"- **{ch['ref']}**: {how[:600]}")
-    note = (f"🔀 하위 Task {len(lines)}개가 모두 {BASE_BRANCH}에 반영됐어요.\n\n" + "\n".join(lines)
+        # ⚠️ 줄(재시작 안 됨·바꿀 파일 밖 변경)은 600자 자르기에 묻히지 않게 맨 위로 따로 올린다(NS-60).
+        warns += [f"- **{ch['ref']}**: {w.lstrip('🔁 ')}" for w in f"{how}\n{restart}".splitlines() if w.lstrip("🔁 ").startswith("⚠️")]
+    note = ("**⚠️ 직접 확인할 것**\n" + "\n".join(warns) + "\n\n" if warns else "") + (
+            f"🔀 하위 Task {len(lines)}개가 모두 {BASE_BRANCH}에 반영됐어요.\n\n" + "\n".join(lines)
             + ("\n\n**확인할 곳**\n" + "\n".join(checks) if checks else "") + "\n\n확인했으면 Done으로 바꿔 주세요.")
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')

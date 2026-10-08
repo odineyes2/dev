@@ -40,7 +40,8 @@ assert issues.get_issue(p)["status"] == "backlog"
 
 # 둘째가 in_review지만 아직 병합 전 — 상위는 그대로
 branch(t2, "c.txt")
-issues.set_status(me, t2, "in_review", "설정 화면에서 c 확인")
+WARN = "⚠️ 서버 파일이 바뀌었지만(server/a.py) 자동 재시작 설정이 없어 재시작하지 않았어요 — 운영 서버를 직접 재시작해야 반영돼요."
+issues.set_status(me, t2, "in_review", "설정 화면에서 c 확인" + "." * 700 + "\n\n🔁 " + WARN)   # NS-60: 600자 뒤 경고
 assert not orchestrate.promote_parent(me, t2)
 
 # 둘 다 병합 → 상위 in_review, 노트에 병합 커밋·재시작 결과·확인할 곳
@@ -62,6 +63,7 @@ assert par["status"] == "in_review"
 note = par["events"][-1]["body"]
 sha1 = git("log", "-1", "--merges", "--format=%h", f"--grep=({t1})", "main")
 assert sha1 in note and "재시작하지 않았어요" in note and "목록 화면에서 b 확인" in note and "설정 화면에서 c 확인" in note, note
+assert note.startswith("**⚠️ 직접 확인할 것**\n- **" + t2 + "**: " + WARN), note   # 잘리지 않고 맨 위
 assert not orchestrate.promote_parent(me, t2)   # 이미 올라가 있으면 다시 안 함
 
 # Task 줄 상태 문구
