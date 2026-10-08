@@ -31,7 +31,7 @@ with patch.object(automation, 'provider_available', return_value=False):
 
 # 우선순위대로 쓸 수 있는 첫 provider를 고른다.
 auto_settings.update_settings(me, 'DSC', {'description_provider_order': ['codex', 'claude']})
-with patch.object(jobs, 'busy', return_value=True), \
+with patch.object(jobs, 'start_block', return_value='바쁨'), \
      patch.object(automation, 'provider_available', side_effect=lambda p: p == 'claude'):
     first = pd.request_description(me, 'dsc')
 assert first['provider'] == 'claude' and not first['reused'], first
@@ -39,7 +39,7 @@ ref = first['ref']
 issue = issues.get_issue(ref)
 assert issue['type_ids'] == [2] and '사람이 쓴 의도' in issue['body']
 assert jobs.list_jobs()[-1]['provider'] == 'claude' and jobs.list_jobs()[-1]['mode'] == 'review'
-with patch.object(jobs, 'busy', return_value=True), patch.object(automation, 'provider_available', return_value=True):
+with patch.object(jobs, 'start_block', return_value='바쁨'), patch.object(automation, 'provider_available', return_value=True):
     again = pd.request_description(me, 'DSC')
 assert again['ref'] == ref and again['reused'] and again['provider'] == 'claude', again
 

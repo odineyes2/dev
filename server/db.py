@@ -512,6 +512,11 @@ MIGRATIONS.append("""
 ALTER TABLE plans ADD COLUMN base_sha TEXT NOT NULL DEFAULT '';
 """)
 
+# 프로젝트와 무관한 설정(예: 대기열 동시 실행 상한) — 값이 없으면 코드의 기본값.
+MIGRATIONS.append("""
+CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
+""")
+
 STATUSES += ("waiting",)
 
 

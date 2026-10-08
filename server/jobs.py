@@ -1,14 +1,17 @@
 """
-Claude 맡기기 대기열(DEV-43) — 검토·실행을 여러 개 눌러 두면 하나씩 차례로 돌린다.
-동시에 하나만 도는 규칙(비용·저장소 깨끗함)은 그대로 두고, 바쁠 때 거절하는 대신 `jobs` 테이블에 줄을 세운다.
+Claude 맡기기 대기열(DEV-43) — 검토·실행을 여러 개 눌러 두면 차례로 돌린다.
+줄은 (프로젝트, 검토|실행)마다 하나이고 각 줄은 한 번에 하나만 돈다. 실행 줄은 병합·운영 반영이 끝날 때까지 바쁘다
+(프로젝트 안의 실행 순서는 예전 한 줄 대기열 그대로). 전체 규칙 두 가지:
+동시에 바쁜 줄 수는 설정 상한(app_settings.queue_concurrency, 기본 2)까지, dev 자신을 재시작할 병합이 진행 중이면 어느 줄도 새로 시작하지 않는다.
 
 - enqueue: 사람만. 같은 이슈·같은 mode가 이미 줄에 있거나 도는 중이면 새로 넣지 않는다. 실행은 기다려도 풀리지 않는
   조건(Task 아님·계획서 미승인 등)만 거절하고, 선행 Task 미완료·저장소가 깨끗하지 않음은 줄에서 기다린다.
-- pump: 도는 것이 없으면 queued를 대기열 순서(sort_key — 기본은 넣은 순, 사람이 move로 바꿈)로 훑어 지금 시작할 수 있는 첫 항목을 기존 review.start/execute.start로 돌린다.
-  막힌 실행 항목은 건너뛰고(note에 이유), 영영 못 도는 항목은 skipped + 댓글.
+- pump: queued를 대기열 순서(sort_key — 기본은 넣은 순, 사람이 move로 바꿈)로 훑어 줄이 비고 상한이 남은 항목을 기존 review.start/execute.start로 돌린다.
+  막힌 항목은 건너뛰고(note에 그 줄의 이유), 영영 못 도는 항목은 skipped + 댓글.
 - 펌프 시점: 넣을 때, 각 실행 스레드가 끝난 뒤(실행은 병합까지), 서버가 뜰 때, 그리고 60초 주기(선행 done 등을 놓치지 않게).
 """
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -17,8 +20,10 @@ import db
 import issues
 
 PERIOD_SEC = 60
+DEFAULT_CONCURRENCY, MAX_CONCURRENCY = 2, 6
+SELF_PM2_APP = os.environ.get("DEV_PM2_APP") or "dev"   # 이 앱을 재시작하는 병합은 모든 줄의 작업을 끊는다
 _lock = threading.Lock()
-_threads = 0   # 맡긴 작업 스레드 수 — 실행은 runs가 끝난 뒤 병합까지 이 수로 "도는 중"을 본다
+_threads: dict[tuple, int] = {}   # 줄별 맡긴 작업 스레드 수 — 실행 줄은 runs가 끝난 뒤 병합까지 이 수로 "도는 중"을 본다
 
 
 def _actor(label: str) -> dict:
@@ -54,10 +59,69 @@ def job_for(issue_id: int) -> dict | None:
     return next((j for j in list_jobs() if j["issue_id"] == issue_id), None)
 
 
-def busy() -> bool:
-    import review
+def concurrency(c=None) -> int:
+    """동시에 바쁠 수 있는 줄 수(Settings에서 바꾼다)."""
+    if c is None:
+        with db.connect() as c:
+            return concurrency(c)
+    row = c.execute("SELECT value FROM app_settings WHERE key='queue_concurrency'").fetchone()
+    return int(row["value"]) if row else DEFAULT_CONCURRENCY
+
+
+def set_concurrency(actor: dict, value) -> dict:
+    if actor["kind"] != "human":
+        raise issues.StoreError("대기열 설정은 사람만 바꿀 수 있어요.", 403)
+    if type(value) is not int or not 1 <= value <= MAX_CONCURRENCY:
+        raise issues.StoreError(f"동시 실행 상한은 1~{MAX_CONCURRENCY} 사이의 정수예요.", 400)
+    with db.connect() as c:
+        c.execute("INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES('queue_concurrency',?,?,?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by",
+                  (str(value), db.now_iso(), issues.actor_label(actor)))
+    pump()   # 늘렸으면 기다리던 줄을 바로 채운다
+    return {"queue_concurrency": value, "max": MAX_CONCURRENCY}
+
+
+def lane_of_run(run_id: int) -> tuple | None:
+    with db.connect() as c:
+        r = c.execute("SELECT p.key, r.mode FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id WHERE r.id=?", (run_id,)).fetchone()
+    return (r["key"], r["mode"]) if r else None
+
+
+def _pending_merges(c) -> list[dict]:
     import orchestrate
-    return _threads > 0 or review.running_ref() is not None or bool(orchestrate.pending())
+    return [dict(r) for r in c.execute("SELECT * FROM execution_completion WHERE phase IN (%s) ORDER BY run_id" % ','.join('?' * len(orchestrate.ACTIVE_PHASES)), orchestrate.ACTIVE_PHASES)]
+
+
+def _active_lanes(c) -> set[tuple]:
+    """지금 바쁜 줄 — 도는 runs, 병합·반영 중인 실행, 아직 끝나지 않은 작업 스레드."""
+    lanes = {(r["key"], r["mode"]) for r in c.execute(
+        "SELECT p.key, r.mode FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id WHERE r.status='running'")}
+    lanes |= {(m["ref"].split("-")[0], "execute") for m in _pending_merges(c)}
+    return lanes | {lane for lane, n in _threads.items() if n and lane}
+
+
+def busy() -> bool:
+    """바쁜 줄이 하나라도 있는지."""
+    with db.connect() as c:
+        return bool(_active_lanes(c))
+
+
+def start_block(c, project_key: str, mode: str) -> str | None:
+    """이 줄에서 지금 새로 시작하면 안 되는 이유. 없으면 None."""
+    import orchestrate
+    for m in _pending_merges(c):
+        if orchestrate.settings(m["ref"].split("-")[0]).get("pm2_app") == SELF_PM2_APP:
+            return f"{m['ref']} 병합 뒤 dev 재시작을 기다려요 — 재시작하면 도는 작업이 모두 끊겨서 그동안은 새로 시작하지 않아요."
+    lanes = _active_lanes(c)
+    if (project_key, mode) in lanes:
+        merging = next((m["ref"] for m in _pending_merges(c) if mode == "execute" and m["ref"].split("-")[0] == project_key), None)
+        if merging:
+            return f"{merging}의 병합·운영 반영이 끝나면 시작해요."
+        return f"{project_key} {'실행' if mode == 'execute' else '검토'} 줄의 앞 작업이 끝나면 시작해요."
+    limit = concurrency(c)
+    if len(lanes) >= limit:
+        return f"동시 실행 상한({limit}개)이 차서 기다려요 — 도는 작업이 끝나면 시작해요."
+    return None
 
 
 def _latest(c, issue_id):
@@ -266,26 +330,37 @@ def schedule(c, queued: list[dict]) -> tuple[list[dict], dict[int, str]]:
     return ordered, notes
 
 
+def _note(job_id: int, note: str) -> None:
+    with db.connect() as c:
+        c.execute("UPDATE jobs SET note=? WHERE id=? AND status='queued'", (note, job_id))
+
+
 def pump() -> None:
-    """도는 것이 없으면 시작할 수 있는 첫 항목을 돌린다."""
+    """비어 있는 줄마다 시작할 수 있는 첫 항목을 돌린다(전체 상한까지)."""
     import execute, review
     with _lock:
         import automation
         import orchestrate
-        if _threads == 0:
-            orchestrate.recover()
+        if not any(n for lane, n in _threads.items() if lane and lane[1] == "execute"):
+            orchestrate.recover()   # 병합을 이어받는 스레드가 없을 때만 — 도는 병합과 겹치지 않게
         automation.sync()
         reconcile()
-        if busy():
-            pending = orchestrate.pending()
-            if pending:
-                with db.connect() as c:
-                    c.execute("UPDATE jobs SET note=? WHERE status='queued'", (pending[0]['ref'] + '의 병합·운영 반영 완료를 기다려요.',))
-            return
         with db.connect() as c:
             queued, waits = schedule(c, _rows(c))
         for j in queued:
             actor = _actor(j["actor"])
+            with db.connect() as c:
+                block = start_block(c, j["ref"].split("-")[0], j["mode"])
+            if block:   # 그 줄의 진짜 이유만 적는다 — 다른 줄 항목은 계속 본다. 실행은 자기 사정(선행·겹치는 파일)이 있으면 그것이 더 쓸모 있다.
+                own = None
+                if j["mode"] == "execute":
+                    try:
+                        issue = issues.get_issue(j["ref"])
+                        own = waits.get(j["id"]) or execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None)
+                    except issues.StoreError:
+                        pass
+                _note(j["id"], own or block)
+                continue
             try:
                 if j['source'] == 'auto':
                     with db.connect() as c:
@@ -331,19 +406,17 @@ def pump() -> None:
                     _set(j["id"], "queued", str(e))
                 continue
             _set(j["id"], "started")
-            return
 
 
-def run_then_pump(fn, *args) -> None:
-    """작업 스레드 — 끝나면(실행은 병합까지) 다음 항목을 꺼낸다."""
-    global _threads
+def run_then_pump(fn, *args, lane: tuple | None = None) -> None:
+    """작업 스레드 — 끝나면(실행은 병합까지) 다음 항목을 꺼낸다. lane은 (프로젝트 키, mode)."""
     with _lock:
-        _threads += 1
+        _threads[lane] = _threads.get(lane, 0) + 1
     try:
         fn(*args)
     finally:
         with _lock:
-            _threads -= 1
+            _threads[lane] -= 1
         pump()
 
 

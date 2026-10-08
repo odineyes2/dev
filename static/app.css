@@ -416,6 +416,8 @@ body:has(.composer:not([hidden])) .toast{ bottom:auto; top:72px; }
 .setting-row{ display:flex; align-items:center; justify-content:space-between; gap:var(--sp-4); padding:var(--sp-4) 0; border-bottom:1px solid var(--border); }
 .setting-row > div{ min-width:0; }
 .setting-row p{ margin:var(--sp-1) 0 0; font-size:13px; }
+.queue-limit{ display:flex; align-items:center; gap:var(--sp-2); flex-shrink:0; }
+.queue-limit input{ width:72px; }
 .auto-switch{ flex:none; min-height:40px; border:none; background:transparent; padding:var(--sp-2); font-size:12px; }
 .switch-track{ display:block; width:40px; height:24px; border-radius:999px; background:var(--dim); padding:4px; }
 .switch-track::before{ content:''; display:block; width:16px; height:16px; border-radius:999px; background:var(--panel); transition:transform 150ms ease; }

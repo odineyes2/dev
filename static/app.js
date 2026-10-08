@@ -1551,12 +1551,34 @@ function settingsHeader(tab){
   container.append(header);
   return container.innerHTML;
 }
+// 대기열 동시 실행 상한 — 모든 프로젝트 공통. 줄은 프로젝트마다 검토·실행 하나씩이고, 동시에 도는 줄 수를 이 값까지로 막는다.
+async function renderQueueSettings(box, current){
+  let s;
+  try { s = await api('GET', '/api/settings/queue', undefined, current); }
+  catch(e){ if(current()) box.innerHTML = `<p class="error" role="alert">${esc(e.message)}</p>`; return; }
+  if(!current()) return;
+  box.innerHTML = `<div class="setting-row"><div><b id="queue-limit-label">동시 실행 상한</b><p class="dim" id="queue-limit-help">대기열은 프로젝트마다 검토·실행 줄이 하나씩이에요. 모든 프로젝트를 합쳐 동시에 도는 작업을 이 수까지로 막아요(1~${s.max}). 늘리면 홈서버 부하와 사용량 소모가 빨라져요.</p></div>
+    <form class="queue-limit"><input type="number" id="queue-limit" min="1" max="${s.max}" step="1" value="${s.queue_concurrency}" required aria-labelledby="queue-limit-label" aria-describedby="queue-limit-help"><button type="submit">저장</button></form></div>
+    <p id="queue-limit-status" class="dim" role="status" aria-live="polite"></p>`;
+  const form = box.querySelector('form'), input = form.querySelector('input'), status = box.querySelector('#queue-limit-status');
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const value = Number(input.value), button = form.querySelector('button');
+    if(!Number.isInteger(value) || value < 1 || value > s.max){ status.textContent = `1~${s.max} 사이의 정수로 입력해 주세요.`; return; }
+    button.disabled = true; button.textContent = '저장 중…'; status.textContent = '';
+    try{ s = await api('PUT', '/api/settings/queue', { queue_concurrency: value }, current); if(current()) status.textContent = `저장했어요 — 동시에 ${s.queue_concurrency}개까지 돌아요.`; }
+    catch(err){ if(current()){ input.value = s.queue_concurrency; status.textContent = `${err.message} 이전 값으로 되돌렸어요.`; } }
+    finally{ if(current()){ button.disabled = false; button.textContent = '저장'; } }
+  };
+}
+
 async function renderSettings(){
   const session = {};
   settingsSession = session;
   const key = projectSel.value;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = `<section class="panel auto-settings">${settingsHeader('auto')}<h3>Auto 위임 설정</h3><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
+  view.innerHTML = `<section class="panel auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><h3>Auto 위임 설정</h3><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
+  void renderQueueSettings(view.querySelector('#queue-settings'), current);
   const body = view.querySelector('#settings-body');
   if(!key){ body.innerHTML = '<div class="empty">위의 프로젝트 필터에서 설정할 프로젝트를 선택해 주세요.</div>'; return; }
   body.innerHTML = '<div class="settings-skeleton" aria-label="설정을 불러오는 중" aria-busy="true"></div>';

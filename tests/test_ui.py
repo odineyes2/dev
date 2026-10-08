@@ -2172,10 +2172,10 @@ try:
         check_task_actions(page, pr, shots, answers, asked)
         assert page.locator("#delete svg").count() == 1 and not page.text_content("#delete").strip()
 
-        # 대기열(DEV-43) — 진짜 claude를 돌리지 않게 도는 run 하나를 심어 두고 줄을 DB에 직접 넣는다
+        # 대기열(DEV-43) — 진짜 claude를 돌리지 않게 같은 줄(DEV 실행)에 도는 run 하나를 심어 두고 줄을 DB에 직접 넣는다
         db = sqlite3.connect(tmp / "data" / "dev.db")
         i41, i42 = (page.request.get(u).json()["id"] for u in (t5, t6))
-        db.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'running', 'human:admin', '2026-10-02T00:00:00+00:00')", (iid,))
+        db.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'execute', 'running', 'human:admin', '2026-10-02T00:00:00+00:00')", (iid,))
         db.executemany("INSERT INTO jobs(issue_id, mode, actor, status, note, created_at) VALUES(?, 'execute', 'human:admin', 'queued', ?, '2026-10-02T00:00:00+00:00')",
                        [(i41, ""), (i42, "선행 Task(DEV-4-1)가 done이 되어야 해요.")])
         db.commit()
@@ -2275,7 +2275,8 @@ try:
             assert page.locator('.task-queued').get_attribute('data-provider') == provider
             page.request.delete(f"{BASE}/api/jobs/{queued[0]['id']}", headers=H)
             page.reload(); page.wait_for_selector('.run-task[data-ref="DEV-4-1"]:not([disabled])')
-        # 바쁠 때도 검토 버튼은 눌러 둘 수 있다
+        # 바쁠 때도 검토 버튼은 눌러 둘 수 있다 — 줄이 나뉘어 있으니 같은 줄(DEV 검토)에도 도는 run을 심는다
+        db.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'running', 'human:admin', '2026-10-02T00:00:00+00:00')", (iid,)); db.commit()
         fresh = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "바쁠 때 검토"}, headers=H).json()["ref"]
         page.goto(BASE + f"/#/issue/{fresh}"); page.reload(); page.wait_for_selector("#ask-review")
         assert page.is_enabled("#ask-review") and "차례로" in page.inner_text(".side")
