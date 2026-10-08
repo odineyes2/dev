@@ -492,8 +492,9 @@ def api_issue(ref: str):
     with timing.span("issue"):
         it = issues.get_issue(ref)
     with timing.span("review"):
-        it["review_running"] = review.running_ref() == it["ref"]   # "Claude에게 검토 맡기기"가 도는 중(DEV-13)
-        it["review_busy"] = review.running_ref() is not None
+        it["review_running"] = review.is_running(it["id"])   # 이 이슈에서 검토·실행이 도는 중(DEV-13)
+        with db.connect() as c:   # 이 이슈가 설 줄(Task는 실행, 그 밖은 검토)이 다른 작업으로 바쁜지 — 맡기면 대기열에 선다
+            it["review_busy"] = jobs.start_block(c, it["project_key"], "execute" if it["parent_ref"] else "review") is not None
     with timing.span("execute"):
         it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
     with timing.span("job"):
@@ -609,11 +610,22 @@ async def api_move_job(job_id: int, request: Request):
     return jobs.move(me, job_id, b.get("direction"), b.get("neighbor_id"))
 
 
+@app.get("/api/settings/queue")
+def api_queue_settings():
+    return {"queue_concurrency": jobs.concurrency(), "max": jobs.MAX_CONCURRENCY}
+
+
+@app.put("/api/settings/queue")
+async def api_update_queue_settings(request: Request):
+    me = human_only(request)
+    b = await json_body(request)
+    return await run_in_threadpool(jobs.set_concurrency, me, b.get("queue_concurrency"))
+
+
 @app.post("/api/issues/{ref}/decision")
 async def api_decision(ref: str, request: Request):
     b = await json_body(request)
-    running = review.running_ref()
-    if running and issues.get_issue(ref)["ref"] == running:
+    if review.is_running(issues.get_issue(ref)["id"], "review"):
         raise issues.StoreError("검토가 돌고 있어요 — 끝나면 결정해 주세요.", 409)
     return await run_in_threadpool(issues.decide, actor(request), ref, b.get("verdict"), b.get("note", ""), b.get("plan_version"))
 

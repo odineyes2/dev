@@ -28,7 +28,7 @@ denied(lambda: project_docs.request_documents(me, 'MISSING', 'codex'), 404)
 denied(lambda: project_docs.request_documents(me, 'DOC', 'other'), 400)
 denied(lambda: project_docs.request_documents({'kind': 'agent', 'id': 1}, 'DOC', 'codex'), 403)
 
-with patch.object(jobs, 'busy', return_value=True):
+with patch.object(jobs, 'start_block', return_value='바쁨'):
     for provider in ('codex', 'claude'):
         request = project_docs.request_documents(me, 'doc', provider)
         ref = request['ref']
@@ -56,7 +56,7 @@ with patch.object(jobs, 'busy', return_value=True):
              patch.object(execute, 'refresh_worktree', return_value=('a' * 40, [])), \
              patch.object(execute, '_git', return_value='a' * 40), \
              patch.object(execute, 'blocked_reason', return_value=None), \
-             patch('review.running_ref', return_value=None), \
+             patch('jobs.start_block', return_value=None), \
              patch('review.begin', return_value=(Path('/log'), 100)), \
              patch('review.launch') as launch, \
              patch.dict(os.environ, {'DEV_CODEX_AGENT_KEY': 'mock'}):
@@ -69,7 +69,7 @@ with patch.object(jobs, 'busy', return_value=True):
 issues.create_project(me, 'OTHER', '다른 저장소', '', '/other-repo')
 foreign = issues.create_issue(me, 'DOC', '범위 초과', parent=ref, body='바꿀 파일: /other-repo/AGENTS.md')
 assert 'OTHER' in execute.blocked_reason(issues.get_issue(foreign['ref']), issues.get_issue(ref), wait=False)
-with patch.object(jobs, 'busy', return_value=True):
+with patch.object(jobs, 'start_block', return_value='바쁨'):
     denied(lambda: jobs.enqueue(me, foreign['ref'], 'execute'), 409)
 
 # 설명 수정은 요청 당시 스냅샷을 바꾸지 않는다. 실패 후 동일 이슈로 다시 등록한다.
@@ -79,7 +79,7 @@ with patch.object(jobs, 'enqueue', side_effect=RuntimeError('queue failed')):
 assert failed['retryable'] and failed['queue_error'] == 'queue failed'
 assert issues.get_issue(failed['ref'])['type_ids'] == [2]
 issues.update_project(me, 'RETRY', {'description': '새 설명'})
-with patch.object(jobs, 'busy', return_value=True):
+with patch.object(jobs, 'start_block', return_value='바쁨'):
     retry = project_docs.request_documents(me, 'RETRY', 'codex')
 assert retry['ref'] == failed['ref'] and retry['reused'] and 'job' in retry
 assert '원래 설명' in issues.get_issue(retry['ref'])['body']
@@ -152,7 +152,7 @@ from fastapi.testclient import TestClient
 import app, auth
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
     lambda req: httpx.Response(200, json={'user': {'id': 1, 'username': 'admin', 'role': 'admin'}})))
-with TestClient(app.app) as client, patch.object(jobs, 'busy', return_value=True):
+with TestClient(app.app) as client, patch.object(jobs, 'start_block', return_value='바쁨'):
     client.cookies.set('ns_session', 'adm')
     headers = {'X-Requested-With': 'dev'}
     response = client.post('/api/projects/RETRY/documents/request', json={'provider': 'codex'}, headers=headers)
@@ -211,7 +211,7 @@ listing = project_docs.list_documents('READ')
 assert len(listing['documents']) == 7
 assert listing['documents'][0]['status'] == 'available'
 assert listing['documents'][1]['status'] == 'unavailable'
-with patch.object(jobs, 'busy', return_value=True):
+with patch.object(jobs, 'start_block', return_value='바쁨'):
     request = project_docs.request_documents(me, 'READ', 'codex')
 assert project_docs.list_documents('READ')['requests'][0]['state'] == 'in_progress'
 issues.set_status(me, request['ref'], 'in_review')

@@ -160,6 +160,13 @@ def running_ref() -> str | None:
     return r["ref"] if r else None
 
 
+def is_running(issue_id: int, mode: str | None = None) -> bool:
+    """이 이슈에서 도는 실행이 있는지 — 줄이 여럿이라 running_ref(가장 최근 하나)로는 알 수 없다."""
+    with db.connect() as c:
+        return c.execute("SELECT 1 FROM runs WHERE issue_id=? AND status='running'" + (" AND mode=?" if mode else ""),
+                         (issue_id, mode) if mode else (issue_id,)).fetchone() is not None
+
+
 def list_runs(ref: str) -> list[dict]:
     """이슈의 실행 기록, 최근 것이 먼저."""
     iid = issues.get_issue(ref)["id"]
@@ -199,18 +206,15 @@ def start(actor: dict, ref: str, provider: str = "claude", model: str | None = N
 
 def begin(actor: dict, issue: dict, mode: str, provider: str = "claude", model: str | None = None) -> tuple[Path, int]:
     """running 기록과 대기열/Codex 착수 상태를 함께 만들고 (로그 경로, run id)를 돌려준다."""
+    import jobs
     with _lock:
-        busy = running_ref()
-        if busy:
-            raise issues.StoreError(f"{busy} 실행이 아직 돌고 있어요 — 끝나면 다시 눌러 주세요.", 409)
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"{issue['ref']}-{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}.log"
         with db.connect() as c:
             c.execute("BEGIN IMMEDIATE")
-            import orchestrate
-            pending = c.execute("SELECT ref FROM execution_completion WHERE phase IN (%s) LIMIT 1" % ','.join('?' for _ in orchestrate.ACTIVE_PHASES), orchestrate.ACTIVE_PHASES).fetchone()
-            if pending:
-                raise issues.StoreError(f"{pending['ref']}의 병합·운영 반영이 아직 진행 중이에요.", 409)
+            block = jobs.start_block(c, issue["project_key"], mode)   # 같은 줄이 바쁨·상한·dev 재시작 대기
+            if block:
+                raise issues.StoreError(block, 409)
             row = issues._find(c, issue["ref"])
             if row["status"] != issue["status"]:
                 raise issues.StoreError("시작 전에 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
@@ -258,7 +262,7 @@ def launch(actor, ref: str, run_id: int, provider: str, comment: str, args: tupl
     import jobs
     try:
         issues.add_comment(actor, ref, comment)
-        threading.Thread(target=jobs.run_then_pump, args=args, daemon=True).start()
+        threading.Thread(target=jobs.run_then_pump, args=args, kwargs={"lane": jobs.lane_of_run(run_id)}, daemon=True).start()
     except Exception as e:
         with db.connect() as c:
             c.execute("BEGIN IMMEDIATE")

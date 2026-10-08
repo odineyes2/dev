@@ -119,7 +119,7 @@ task = issues.create_issue(me, 'WT', 'task', parent=parent['ref'])
 ref = task['ref']
 
 def queued(mode='review', provider='claude'):
-    with patch.object(jobs, 'busy', return_value=True):
+    with patch.object(jobs, 'start_block', return_value='바쁨'):
         result = jobs.enqueue(me, ref, mode, provider)
     assert issues.get_issue(ref)['status'] == 'waiting'
     return result['job_id']
@@ -244,15 +244,20 @@ with db.connect() as c:
 db.init(); jobs.reconcile()
 assert issues.get_issue(pending_task['ref'])['status'] == 'in_progress' and jobs.busy()
 next_issue = issues.create_issue(me, 'WT', 'next review', type_ids=[1])
-with patch.object(orchestrate, 'recover'), patch.object(review, 'start') as start:
+# 줄 분리 — 병합 중인 줄은 그 프로젝트의 실행 줄뿐이다. 검토 줄은 비어 있다.
+with db.connect() as c:
+    assert '병합' in jobs.start_block(c, 'WT', 'execute') and jobs.start_block(c, 'WT', 'review') is None
+# dev 자신을 재시작할 병합이면 어느 줄도 새로 시작하지 않는다(재시작이 도는 작업을 끊으므로).
+self_restart = patch.object(orchestrate, 'settings', return_value={'auto_merge': True, 'pm2_app': jobs.SELF_PM2_APP})
+with self_restart, patch.object(orchestrate, 'recover'), patch.object(review, 'start') as start:
     result = jobs.enqueue(me, next_issue['ref'], 'review')
-    assert result['queued'] and '병합' in result['note']
+    assert result['queued'] and '재시작' in result['note'], result
     jobs.pump(); start.assert_not_called()
-try:
-    review.begin(me, next_issue, 'review')
-    raise AssertionError('pending completion must block direct begin')
-except issues.StoreError as e:
-    assert e.status == 409
+    try:
+        review.begin(me, next_issue, 'review')
+        raise AssertionError('pending completion must block direct begin')
+    except issues.StoreError as e:
+        assert e.status == 409
 record = orchestrate.completion(pending_task['ref'])
 with patch.object(notify, 'send') as sent, patch.object(orchestrate, 'promote_parent', return_value=False):
     assert orchestrate._finish(me, record, 'merged', 'fake health verified') == 'merged'
@@ -276,7 +281,7 @@ with db.connect() as c:
 patch.object(orchestrate, 'recover').start()   # 앞 블록의 가짜 병합 기록이 실제 git을 부르지 않게
 issues.create_project(me, 'MV', 'move', '', '/unused')
 mv = [issues.create_issue(me, 'MV', t, type_ids=[1])['ref'] for t in ('a', 'b', 'c', 'd')]
-with patch.object(jobs, 'busy', return_value=True):
+with patch.object(jobs, 'start_block', return_value='바쁨'):
     ja, jb, jc = (jobs.enqueue(me, r, 'review')['job_id'] for r in mv[:3])
 order = lambda: [j['id'] for j in jobs.list_jobs()]
 assert order() == [ja, jb, jc]
@@ -296,7 +301,7 @@ jobs.move(me, jc, 'up', ja)
 assert order() == [jc, ja, jb] and jobs.job_for(issues.get_issue(mv[2])['id'])['position'] == 1
 db.init(); jobs.reconcile()
 assert order() == [jc, ja, jb]   # 재시작 후에도 유지
-with patch.object(jobs, 'busy', return_value=True):
+with patch.object(jobs, 'start_block', return_value='바쁨'):
     jd = jobs.enqueue(me, mv[3], 'review')['job_id']
 assert order() == [jc, ja, jb, jd]   # 새 등록은 맨 뒤
 jobs.cancel(me, ja)
@@ -312,7 +317,7 @@ blocker = issues.create_issue(me, 'WT', 'blocker', parent=parent['ref'])
 blocked = issues.create_issue(me, 'WT', 'blocked', parent=parent['ref'])
 with db.connect() as c:
     c.execute('INSERT INTO issue_deps VALUES(?,?)', (blocked['id'], blocker['id']))
-with patch.object(jobs, 'busy', return_value=True):
+with patch.object(jobs, 'start_block', return_value='바쁨'):
     jx = jobs.enqueue(me, blocked['ref'], 'execute')['job_id']
 for neighbor in (jd, jc, jb):
     jobs.move(me, jx, 'up', neighbor)
@@ -328,7 +333,7 @@ jobs.cancel(me, jx)
 
 # REST — 사람만, 잘못된 본문은 400.
 with TestClient(A.app) as c:
-    with patch.object(jobs, 'busy', return_value=True):
+    with patch.object(jobs, 'start_block', return_value='바쁨'):
         ids = [jobs.enqueue(me, r, 'review')['job_id'] for r in mv[:2]]
     c.cookies.set('ns_session', 'adm')
     assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'up', 'neighbor_id': ids[0]}, headers=H).json()['moved']
@@ -341,3 +346,44 @@ with TestClient(A.app) as c:
     for i in ids:
         jobs.cancel(me, i)
 print('OK move')
+
+# 줄 분리 — (프로젝트, 검토|실행)마다 한 줄, 전체 동시 실행 상한(기본 2), Settings API, dev 재시작은 도는 실행을 기다린다.
+wait_idle()
+for k in ('LA', 'LB', 'LC'):
+    issues.create_project(me, k, k, '', '/unused')
+la, la2, lb, lc = (issues.create_issue(me, k, t, type_ids=[1])['ref'] for k, t in (('LA', 'a'), ('LA', 'b'), ('LB', 'c'), ('LC', 'd')))
+fake.write_text("import time\ntime.sleep(1.5)\nprint('ok')\n", "utf-8")
+assert jobs.concurrency() == jobs.DEFAULT_CONCURRENCY == 2
+assert jobs.enqueue(me, la, 'review')['started']
+assert jobs.enqueue(me, lb, 'review')['started']   # 다른 프로젝트 줄은 기다리지 않는다
+r = jobs.enqueue(me, la2, 'review')
+assert r['queued'] and 'LA 검토 줄' in r['note'], r   # 같은 줄은 하나씩
+r = jobs.enqueue(me, lc, 'review')
+assert r['queued'] and '상한(2개)' in r['note'], r     # 빈 줄이어도 전체 상한
+wait_idle()
+assert all(review.list_runs(x)[0]['status'] == 'ok' for x in (la, la2, lb, lc))
+assert review.list_runs(la)[0]['ended_at'] <= review.list_runs(la2)[0]['started_at']                 # 같은 줄은 차례로
+assert review.list_runs(lb)[0]['started_at'] < review.list_runs(la)[0]['ended_at']                   # 다른 줄은 겹쳐 돈다
+for bad, status in ((({'kind': 'agent', 'id': 1}, 3), 403), ((me, 0), 400), ((me, 7), 400), ((me, '2'), 400), ((me, True), 400)):
+    try:
+        jobs.set_concurrency(*bad); raise AssertionError(bad)
+    except issues.StoreError as e:
+        assert e.status == status, (bad, e.status)
+with TestClient(A.app) as c:
+    c.cookies.set('ns_session', 'adm')
+    assert c.get('/api/settings/queue').json() == {'queue_concurrency': 2, 'max': jobs.MAX_CONCURRENCY}
+    assert c.put('/api/settings/queue', json={'queue_concurrency': 3}, headers=H).json()['queue_concurrency'] == 3
+    assert c.put('/api/settings/queue', json={'queue_concurrency': 9}, headers=H).status_code == 400
+    c.cookies.clear()
+    assert c.put('/api/settings/queue', json={'queue_concurrency': 1}, headers={'Authorization': f'Bearer {key}'}).status_code == 403
+assert jobs.concurrency() == 3
+db.init()
+assert jobs.concurrency() == 3   # 재시작 후에도 유지
+# dev 자신을 재시작하는 병합은 다른 줄에서 도는 실행이 끝날 때까지 기다린다. 다른 앱 재시작은 상관없다.
+_, rid = review.begin(me, issues.get_issue(la), 'review')
+assert orchestrate._busy({'pm2_app': jobs.SELF_PM2_APP}) and not orchestrate._busy({'pm2_app': 'nightshift'})
+assert not orchestrate._busy({'pm2_app': jobs.SELF_PM2_APP}, rid)   # 자기 실행은 빼고 본다
+with db.connect() as c:
+    c.execute("UPDATE runs SET status='ok' WHERE id=?", (rid,))
+assert not orchestrate._busy({'pm2_app': jobs.SELF_PM2_APP})
+print('OK lanes')

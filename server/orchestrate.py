@@ -65,7 +65,14 @@ def _get(url, timeout=5):
         return 0, ""
 
 
-def _busy(cfg) -> bool:
+def _busy(cfg, exclude_run: int | None = None) -> bool:
+    import jobs
+    # dev 자신을 재시작하면 다른 줄에서 도는 에이전트 실행이 끊긴다 — 끝날 때까지 기다린다(jobs가 그동안 새로 시작하지 않는다).
+    # 다른 병합은 기다리지 않는다: 병합은 _lock으로 줄 서 있어 기다리면 교착이고, 끊겨도 재시작 뒤 recover가 이어받는다.
+    if cfg.get("pm2_app") == jobs.SELF_PM2_APP:
+        with db.connect() as c:
+            if c.execute("SELECT 1 FROM runs WHERE status='running' AND id<>?", (exclude_run or 0,)).fetchone():
+                return True
     if not cfg.get("busy_url"):
         return False
     code, body = _get(cfg["busy_url"])
@@ -337,7 +344,7 @@ def _post_deploy(actor, repo, cfg, record):
         if not hits or not cfg.get('pm2_app'):
             return _finish(actor, record, 'merged', _no_restart_note(hits))
         deadline = time.monotonic() + cfg['wait_minutes'] * 60
-        while _busy(cfg):
+        while _busy(cfg, record['run_id']):
             if time.monotonic() >= deadline:
                 return _finish(actor, record, 'on_hold', '작업 종료 대기 시간 제한을 넘었어요. 병합은 반영됐으며 재시작 확인이 필요해요.')
             time.sleep(cfg['poll_seconds'])

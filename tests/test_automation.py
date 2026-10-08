@@ -104,7 +104,7 @@ print("OK — 자동화 설정 기본값·격리·영속성·입력 검증·권�
 # 가짜 provider로만 자동 실행하며 운영 CLI·Git 작업은 시작하지 않는다.
 import review, execute
 auto_settings.update_settings(admin, 'DEV', {'auto_review': False, 'auto_execute': False})
-jobs._threads = 1
+jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}
 issues.create_project(admin, 'AUTO', '자동 검사', '', '/fake')
 one = issues.create_issue(admin, 'AUTO', '첫 검토')
 two = issues.create_issue(admin, 'AUTO', '둘째 검토')
@@ -133,7 +133,7 @@ def fake_start(actor, ref, provider, model=None):
     starts.append((ref, provider))
     review.begin(actor, issues.get_issue(ref), 'review', provider)
 review.start = fake_start
-jobs._threads = 0
+jobs._threads = {}
 jobs.pump(); jobs.pump()
 assert starts == [(new['ref'], 'claude')]
 db.init(); jobs.pump()
@@ -141,7 +141,7 @@ assert len(starts) == 1
 assert issues.get_issue(goal['ref'])['status'] == 'backlog'
 print('OK — Auto 선정·provider fallback·중복·재시작·OFF 취소·수동 보존·실패 재시도 차단')
 
-jobs._threads = 1
+jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}
 auto_settings.update_settings(admin, 'AUTO', {'auto_review': False, 'auto_execute': True})
 parent = issues.create_issue(admin, 'AUTO', '승인 부모')
 issues.post_plan(admin, parent['ref'], '## Tasks\n1. 먼저 | 파일: server/jobs.py\n2. 다음 | 파일: server/jobs.py | 선행: 1')
@@ -174,7 +174,7 @@ def off_before_begin(actor, ref, provider, model=None):
     auto_settings.update_settings(admin, 'AUTO', {'auto_review': False})
     review.begin(actor, issues.get_issue(ref), 'review', provider)
 review.start = off_before_begin
-jobs._threads = 0
+jobs._threads = {}
 jobs.pump()
 assert not review.list_runs(late['ref'])
 assert issues.get_issue(late['ref'])['status'] == 'backlog'
@@ -185,7 +185,7 @@ from unittest.mock import patch
 import threading
 import orchestrate
 
-jobs._threads = 1
+jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}
 issues.create_project(admin, 'RESULT', '결과 승인', '', '/fake')
 auto_settings.update_settings(admin, 'RESULT', {'auto_approve': True})
 
@@ -483,7 +483,7 @@ def execute_off(actor, ref, provider, model=None):
     auto_settings.update_settings(admin, 'REC', {'auto_execute': False})
     review.begin(actor, issues.get_issue(ref), 'execute', provider)
 with patch.object(execute, 'start', side_effect=execute_off):
-    jobs._threads = 0; jobs.pump(); jobs._threads = 1
+    jobs._threads = {}; jobs.pump(); jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}
 with db.connect() as c:
     assert not c.execute('SELECT 1 FROM runs WHERE issue_id=?', (t['id'],)).fetchone()
     assert c.execute('SELECT cancellation_reason FROM jobs WHERE id=?', (a['id'],)).fetchone()[0] == 'auto_execute_off'
@@ -496,7 +496,7 @@ def sync_off_before_begin(actor, ref, provider, model=None):
     toggle_off()
     review.begin(actor, issues.get_issue(ref), 'execute', provider)
 with patch.object(execute, 'start', side_effect=sync_off_before_begin):
-    jobs._threads = 0; jobs.pump(); jobs._threads = 1
+    jobs._threads = {}; jobs.pump(); jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}
 with db.connect() as c:
     assert not c.execute('SELECT 1 FROM runs WHERE issue_id=?', (t['id'],)).fetchone()
     assert c.execute('SELECT cancellation_reason FROM jobs WHERE id=?', (a['id'],)).fetchone()[0] == 'auto_execute_off'
@@ -581,7 +581,7 @@ print('OK — legacy 증거 부족·모호함·부분 적용·실행 이력 거�
 # 자동 승인 자체는 provider 호출 없이 완료된 검토에만 적용한다.
 from unittest.mock import patch
 import threading
-jobs._threads = 1
+jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}
 auto_settings.update_settings(admin, 'AUTO', {'auto_review': False, 'auto_execute': False})
 issues.create_project(admin, 'PLAN', '계획 승인', '', str(Path(os.environ['DEV_DATA_DIR'])))
 agent_actor = {'kind': 'agent', 'id': agent['id']}
@@ -895,7 +895,8 @@ auto_settings.update_settings(admin, 'TOK', {'auto_review': True, 'token_exhaust
 def fake_run(ref, provider, payload):
     job = next(j for j in jobs.list_jobs() if j['ref'] == ref)
     actor = jobs._actor(job['actor'])
-    log, rid = review.begin(actor, issues.get_issue(ref), 'review', provider)
+    with patch.object(jobs, 'start_block', return_value=None):   # 펌프는 막아 둔 채(_threads) 직접 착수한다
+        log, rid = review.begin(actor, issues.get_issue(ref), 'review', provider)
     review.run_headless(actor, ref, log, rid, [sys.executable, '-c', 'import sys;sys.stdout.write(sys.argv[1])', payload],
                         '.', None, 30, '검토', provider, 0)
     return rid
@@ -978,7 +979,7 @@ automation.provider_available = real_available
 print('OK — 토큰 소진만 이관·도구별 1회·중복/OFF/수동 변경 차단·worktree 이어받기 검사')
 
 # DEV-85: 사람이 순서를 바꾼 뒤에도 Auto 등록은 대기열 맨 뒤에 선다.
-jobs._threads = 1   # 등록만 보고 펌프가 착수하지 않게
+jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}   # 등록만 보고 펌프가 착수하지 않게
 issues.create_project(admin, 'ORD', '순서', '', '/fake')
 op = issues.create_issue(admin, 'ORD', 'parent')
 issues.post_plan(admin, op['ref'], 'plan')
@@ -1005,7 +1006,7 @@ with db.connect() as c:
     assert auto_settings.model_for(c, mi['id'], 'codex') == 'gpt-6.1-sol'   # 이관은 provider 단위로 그 provider의 첫 Agent 모델
 with db.connect() as c:   # 위 ORD 등록이 착수되지 않게 비우고 펌프를 다시 연다
     c.execute("UPDATE jobs SET status='cancelled' WHERE status='queued'")
-jobs._threads = 0
+jobs._threads = {}
 with patch.object(review, 'start', side_effect=lambda *a: None) as rs:
     jobs.enqueue(admin, mi['ref'], 'review', 'claude')
 assert rs.call_args.args[2:] == ('claude', 'claude-sonnet-5-5')

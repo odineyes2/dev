@@ -543,9 +543,11 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     why = blocked_reason(issue, parent)
     if why:
         raise issues.StoreError(why, 409)
-    busy = review.running_ref()
+    import jobs
+    with db.connect() as c:
+        busy = jobs.start_block(c, issue["project_key"], "execute")   # worktree를 만들기 전에 줄이 비었는지 본다
     if busy:
-        raise issues.StoreError(f"{busy} 실행이 아직 돌고 있어요 — 끝나면 다시 눌러 주세요.", 409)
+        raise issues.StoreError(busy, 409)
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
     worktree = prepare_worktree(repo, ref)
     start_sha, conflicts = refresh_worktree(worktree, ref)
