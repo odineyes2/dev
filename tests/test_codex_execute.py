@@ -33,7 +33,11 @@ result = {'outcome': 'ready', 'summary': 'Add feature; checked output', 'tests':
 def output_script(result, edit=True):
     final = json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(result)}})
     return ('import pathlib,time\ntime.sleep(.3)\n'
-            + ("pathlib.Path('codex.txt').write_text('implemented\\n')\n" if edit else '')
+            + ("pathlib.Path('codex.txt').write_text('implemented\\n')\n"
+               "for root in ('.ui-captures/capture-test', 'tests/shots'):\n"
+               " pathlib.Path(root).mkdir(parents=True, exist_ok=True)\n"
+               " for name in ('screen.png', 'manifest.json', 'server.log', 'temporary.db'):\n"
+               "  pathlib.Path(root, name).write_text('capture artifact')\n" if edit else '')
             + 'print(' + repr(final) + ')\n'
             + 'print(\'{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":24}}\')\n')
 
@@ -79,7 +83,9 @@ try:
         wt = execute.worktree_path('EX-1-2')
         assert (wt / 'codex.txt').exists() and not (base.repo / 'codex.txt').exists()
         assert base.git(base.repo, 'rev-parse', 'main').stdout == main_before
-        assert base.git(wt, 'status', '--porcelain').stdout == ''
+        assert base.git(wt, 'status', '--porcelain', '--', *execute.CODE_PATHSPEC).stdout == ''
+        assert (wt / '.ui-captures/capture-test/manifest.json').exists()
+        assert not base.git(wt, 'ls-files', '--', '.ui-captures', 'tests/shots').stdout
         assert merged == ['EX-1-2']
         assert not review.list_runs(task['ref']) and issues.get_issue(task['ref'])['status'] == 'backlog'
         issues.set_status(base.me, 'EX-1-2', 'changes_requested', 'retry')
