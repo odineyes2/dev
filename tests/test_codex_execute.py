@@ -32,7 +32,7 @@ result = {'outcome': 'ready', 'summary': 'Add feature; checked output', 'tests':
 
 def output_script(result, edit=True):
     final = json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(result)}})
-    return ('import pathlib,time\ntime.sleep(.3)\n'
+    return ('import pathlib,time,json,base64\ntime.sleep(.3)\n'
             + ("pathlib.Path('codex.txt').write_text('implemented\\n')\n"
                # 실제 저장소처럼 tests/shots는 ignore, .ui-captures는 아님 — exclude pathspec add가 exit 1 나던 경우(DEV-99-3)
                "pathlib.Path('.gitignore').write_text('tests/shots\\n')\n"
@@ -40,6 +40,8 @@ def output_script(result, edit=True):
                " pathlib.Path(root).mkdir(parents=True, exist_ok=True)\n"
                " for name in ('screen.png', 'manifest.json', 'server.log', 'temporary.db'):\n"
                "  pathlib.Path(root, name).write_text('capture artifact')\n" if edit else '')
+            + ("pathlib.Path('.ui-captures/capture-test/screen.png').write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='))\n"
+               "pathlib.Path('.ui-captures/capture-test/manifest.json').write_text(json.dumps({'version':1,'captures':[{'path':'.ui-captures/capture-test/screen.png'}],'errors':[]}))\n" if edit else '')
             + 'print(' + repr(final) + ')\n'
             + 'print(\'{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":24}}\')\n')
 
@@ -81,6 +83,7 @@ try:
         assert run['provider'] == 'codex' and run['mode'] == 'execute' and run['status'] == 'ok', run
         assert run['input_tokens'] == 120 and run['output_tokens'] == 24 and run['cost_usd'] is None
         issue = issues.get_issue('EX-1-2')
+        assert len(issue['attachments']) == 1 and issue['attachments'][0]['media_type'] == 'image/png'
         assert issue['status'] == 'in_review' and any(e['kind'] == 'commit' for e in issue['events'])
         wt = execute.worktree_path('EX-1-2')
         assert (wt / 'codex.txt').exists() and not (base.repo / 'codex.txt').exists()

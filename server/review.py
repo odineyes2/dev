@@ -335,6 +335,13 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     name = "Codex" if provider == "codex" else "Claude Code"
     spent, earlier, held = {}, "", False
+    capture_before, capture_warning = None, ''
+    if label == '실행':
+        import attachments
+        try:
+            capture_before = attachments.capture_baseline(cwd)
+        except Exception as e:
+            capture_warning = f'⚠️ 화면 캡처 기준 목록을 읽지 못했어요: {type(e).__name__}'
     for attempt in range(2 if label == "실행" else 1):
         code, note, status, out, err = None, "", "ok", "", ""
         try:
@@ -409,6 +416,9 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         result = issues.get_issue(ref)
         if not result["type_ids"] and "goal" not in result.get("labels", []):
             status, note = "failed", "자동 분류가 저장되지 않았어요 — 종류 선택과 MCP 호출 결과를 확인하고 검토를 다시 맡겨 주세요."
+    if label == '실행' and capture_before is not None:
+        import execute
+        capture_warning = execute.collect_execution_captures(actor, ref, run_id, cwd, capture_before)
     if provider == "codex" and label == "실행" and status == "ok" and not held:
         import execute
         try:
@@ -421,7 +431,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             execute.register_completion(actor, ref, cwd, run_id, text)
         except (issues.StoreError, ValueError, OSError) as e:
             status, note = 'failed', f'Claude 실행을 완료하지 못했어요 — {e}'
-    log_path.write_text(earlier + text + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
+    log_path.write_text(earlier + text + ('\n\n' + capture_warning if capture_warning else '') + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         finish_codex_status(c, actor, ref, run_id, status, label)

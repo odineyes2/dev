@@ -1,5 +1,8 @@
 """첨부 저장·마이그레이션·권한·실패 복구를 임시 DATA_DIR에서 검사한다."""
 import os
+import json
+import struct
+import zlib
 import sqlite3
 import sys
 import tempfile
@@ -28,6 +31,100 @@ class AttachmentsTest(unittest.TestCase):
 
     def upload(self, name='note.md', data=b'# hello'):
         return attachments.upload(H, name, iter([data[:2], data[2:]]))
+
+    def capture(self, directory='capture-new', paths=None):
+        root = config.DATA_DIR / 'worktree'
+        folder = root / '.ui-captures' / directory
+        folder.mkdir(parents=True, exist_ok=True)
+        def chunk(kind, body):
+            return struct.pack('>I', len(body)) + kind + body + struct.pack('>I', zlib.crc32(kind + body))
+        png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0))
+               + chunk(b'IDAT', zlib.compress(b'\0\xff\0\0')) + chunk(b'IEND', b''))
+        (folder / 'screen.png').write_bytes(png)
+        (folder / 'manifest.json').write_text(json.dumps({'version': 1, 'captures': [
+            {'path': p} for p in (paths or [f'.ui-captures/{directory}/screen.png'])], 'errors': []}))
+        return root, folder, png
+
+    def capture_run(self):
+        with db.connect() as c:
+            return c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,log_file) VALUES(?,'execute','running','human:admin',?,'test.log')",
+                             (self.issue['id'], db.now_iso())).lastrowid
+
+    def test_internal_capture_registration_and_retry(self):
+        root, old, png = self.capture('capture-old')
+        baseline = attachments.capture_baseline(root)
+        self.capture()
+        run = self.capture_run()
+        self.assertEqual(attachments.collect_captures(self.issue['ref'], run, root, baseline), (1, []))
+        self.assertEqual(attachments.collect_captures(self.issue['ref'], run, root, baseline), (0, []))
+        a = issues.get_issue(self.issue['ref'])['attachments'][0]
+        self.assertEqual(a['media_type'], 'image/png')
+        with attachments.open_content(attachments.get(AGENT, a['id'], self.issue['ref'])) as f:
+            self.assertEqual(f.read(), png)
+        self.capture_run()
+        self.assertTrue(attachments.collect_captures(self.issue['ref'], run, root, baseline)[1])
+        self.assertEqual(len(attachments.list_for_issue(self.issue['id'])), 1)
+        attachments.delete(H, a['id'])
+        self.assertEqual(attachments.list_for_issue(self.issue['id']), [])
+
+    def test_internal_capture_rejects_paths_format_and_limits(self):
+        run = self.capture_run()
+        for source in ('../screen.png', '/screen.png', 'C:/screen.png',
+                       '.ui-captures/capture-new/../screen.png', '.ui-captures/capture-old/screen.png',
+                       '.ui-captures/capture-new/note.md'):
+            root, folder, _ = self.capture(paths=[source])
+            self.assertTrue(attachments.collect_captures(self.issue['ref'], run, root, set())[1])
+        root, folder, _ = self.capture()
+        with patch.object(Path, 'is_symlink', return_value=True):
+            with self.assertRaises(issues.StoreError):
+                attachments.collect_captures(self.issue['ref'], run, root, set())
+        with patch.object(config, 'ATTACHMENT_MAX_BYTES', 8):
+            self.assertTrue(attachments.collect_captures(self.issue['ref'], run, root, set())[1])
+        for limit in ('ATTACHMENT_MAX_COUNT', 'ATTACHMENT_TOTAL_BYTES'):
+            with patch.object(config, limit, 0):
+                self.assertTrue(attachments.collect_captures(self.issue['ref'], run, root, set())[1])
+        (folder / 'screen.png').write_bytes(b'\x89PNG\r\n\x1a\n')
+        self.assertTrue(attachments.collect_captures(self.issue['ref'], run, root, set())[1])
+        self.assertEqual(attachments.list_for_issue(self.issue['id']), [])
+
+    def test_internal_capture_malformed_errors_preserves_valid_partial_results(self):
+        root, folder, _ = self.capture()
+        manifest_path = folder / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['errors'] = None
+        manifest['captures'].insert(0, None)
+        manifest_path.write_text(json.dumps(manifest))
+        added, warnings = attachments.collect_captures(self.issue['ref'], self.capture_run(), root, set())
+        self.assertEqual(added, 1)
+        self.assertEqual(len(warnings), 2)
+        self.assertEqual(len(attachments.list_for_issue(self.issue['id'])), 1)
+
+    def test_internal_capture_database_failure_removes_copy(self):
+        root, folder, _ = self.capture()
+        run = self.capture_run()
+        with patch.object(attachments, '_insert', side_effect=sqlite3.OperationalError('DB failed')):
+            with self.assertRaises(sqlite3.Error):
+                attachments.collect_captures(self.issue['ref'], run, root, set())
+        self.assertEqual(attachments.list_for_issue(self.issue['id']), [])
+        self.assertEqual(list((config.DATA_DIR / 'attachments').iterdir()), [])
+
+    def test_internal_capture_partial_limit_and_wrong_task(self):
+        root, folder, png = self.capture(paths=['.ui-captures/capture-new/screen.png',
+                                               '.ui-captures/capture-new/second.png'])
+        (folder / 'second.png').write_bytes(png)
+        run = self.capture_run()
+        other = issues.create_issue(H, 'DEV', 'other')
+        self.assertTrue(attachments.collect_captures(other['ref'], run, root, set())[1])
+        self.assertEqual(attachments.list_for_issue(other['id']), [])
+        with patch.object(config, 'ATTACHMENT_MAX_COUNT', 1):
+            added, warnings = attachments.collect_captures(self.issue['ref'], run, root, set())
+        self.assertEqual(added, 1)
+        self.assertTrue(warnings)
+        self.assertEqual(len(attachments.list_for_issue(self.issue['id'])), 1)
+        # 루트가 아니라 PNG 자체가 링크인 경우에도 읽지 않는다.
+        original = Path.is_symlink
+        with patch.object(Path, 'is_symlink', lambda p: p.name == 'second.png' or original(p)):
+            self.assertTrue(attachments.collect_captures(self.issue['ref'], run, root, set())[1])
 
     def link(self, ids, actor=H, iid=None):
         with db.connect() as c:

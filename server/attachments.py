@@ -1,7 +1,9 @@
 """첨부 저장·연결·만료 정리. 외부 URL을 가져오거나 자동화를 시작하지 않는다."""
 import json
 import re
+import struct
 import uuid
+import zlib
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -13,6 +15,127 @@ import issues
 # MCP 콘텐츠는 업로드 상한과 별도로 제한한다.
 TEXT_PREVIEW_BYTES = 64 * 1024
 IMAGE_CONTENT_BYTES = 4 * 1024 * 1024
+
+
+def capture_baseline(cwd):
+    """실행 전에 존재한 캡처 디렉터리는 이후 수정되어도 제외한다."""
+    root = Path(cwd) / '.ui-captures'
+    if root.is_symlink() or root.is_junction():
+        raise issues.StoreError('캡처 링크 경로는 사용할 수 없어요.')
+    return {p.name for p in root.iterdir()} if root.is_dir() else set()
+
+
+def _capture_path(cwd, relative):
+    """경로 구성 요소의 symlink와 Windows 경로도 거절한다."""
+    if not isinstance(relative, str) or '\\' in relative or ':' in relative:
+        raise issues.StoreError('캡처 상대 경로가 잘못됐어요.')
+    parts = relative.split('/')
+    if len(parts) < 3 or parts[0] != '.ui-captures' or any(p in ('', '.', '..') for p in parts):
+        raise issues.StoreError('캡처 경로가 산출물 폴더를 벗어나요.')
+    root = Path(cwd).resolve()
+    path = root
+    for part in parts:
+        path = path / part
+        if path.is_symlink() or path.is_junction():
+            raise issues.StoreError('캡처 링크 경로는 사용할 수 없어요.')
+    if not path.resolve().is_relative_to(root):
+        raise issues.StoreError('캡처 경로가 worktree를 벗어나요.')
+    return path
+
+
+def _capture_png(data):
+    """PNG 시그니처뿐 아니라 청크 길이·CRC·필수 청크를 확인한다."""
+    _validate('.png', data)
+    offset, kinds = 8, []
+    while offset + 12 <= len(data):
+        size = struct.unpack('>I', data[offset:offset + 4])[0]
+        end = offset + 12 + size
+        if end > len(data):
+            break
+        chunk = data[offset + 4:end - 4]
+        kind = chunk[:4]
+        if zlib.crc32(chunk) != struct.unpack('>I', data[end - 4:end])[0]:
+            break
+        if not kinds and (kind != b'IHDR' or size != 13 or not all(struct.unpack('>II', chunk[4:12]))):
+            break
+        kinds.append(kind)
+        offset = end
+        if kind == b'IEND':
+            if size == 0 and offset == len(data) and b'IDAT' in kinds:
+                return
+            break
+    raise issues.StoreError('캡처 PNG 형식이 잘못됐어요.')
+
+
+def collect_captures(ref, run_id, cwd, baseline):
+    """서버 내부 완료 경로만 호출한다. 현재 실행의 PNG를 원자적으로 연결한다."""
+    warnings, added = [], 0
+    root = Path(cwd) / '.ui-captures'
+    if not root.exists():
+        return added, warnings
+    # 산출물 폴더 자체가 링크이면 열거하지 않는다.
+    _capture_path(cwd, '.ui-captures/check/manifest.json')
+    directories = sorted(p.name for p in root.iterdir() if p.name not in baseline)
+    for directory in directories:
+        try:
+            relative = f'.ui-captures/{directory}/manifest.json'
+            manifest_path = _capture_path(cwd, relative)
+            if not manifest_path.is_file():
+                continue
+            with manifest_path.open('rb') as f:
+                raw = f.read(64 * 1024 + 1)
+            if len(raw) > 64 * 1024:
+                raise issues.StoreError('캡처 manifest 용량 제한을 넘었어요.')
+            manifest = json.loads(raw)
+            if not isinstance(manifest, dict) or manifest.get('version') != 1 or not isinstance(manifest.get('captures'), list):
+                raise issues.StoreError('캡처 manifest 형식이 잘못됐어요.')
+            errors = manifest.get('errors', [])
+            if not isinstance(errors, list):
+                warnings.append(f'{relative}: 캡처 manifest 오류 목록 형식이 잘못됐어요.')
+                errors = []
+            for error in errors[:10]:
+                warnings.append(f'{relative}: {str(error)[:500]}')
+            for entry in manifest['captures']:
+                try:
+                    source = entry['path']
+                    path = _capture_path(cwd, source)
+                    if not source.startswith(f'.ui-captures/{directory}/') or path.suffix.lower() != '.png':
+                        raise issues.StoreError('현재 캡처 디렉터리의 PNG만 첨부할 수 있어요.')
+                    with path.open('rb') as f:
+                        data = f.read(config.ATTACHMENT_MAX_BYTES + 1)
+                    if len(data) > config.ATTACHMENT_MAX_BYTES:
+                        raise issues.StoreError('캡처 파일 용량 제한을 넘었어요.', 413)
+                    _capture_png(data)
+                    key, stored = uuid.uuid4().hex, None
+                    try:
+                        with db.connect() as c:
+                            c.execute('BEGIN IMMEDIATE')
+                            row = issues._find(c, ref)
+                            run = c.execute("SELECT * FROM runs WHERE id=? AND issue_id=? AND mode='execute'", (run_id, row['id'])).fetchone()
+                            latest = c.execute("SELECT MAX(id) FROM runs WHERE issue_id=? AND mode='execute'", (row['id'],)).fetchone()[0]
+                            if not run or latest != run_id:
+                                raise issues.StoreError('현재 Task 실행이 아니에요.')
+                            aid = uuid.uuid5(uuid.NAMESPACE_URL, f'dev:capture:{row["id"]}:{run_id}:{source}').hex
+                            if c.execute('SELECT 1 FROM attachments WHERE issue_id=? AND id=?', (row['id'], aid)).fetchone():
+                                continue
+                            count, total = c.execute('SELECT COUNT(*),COALESCE(SUM(size),0) FROM attachments WHERE issue_id=?', (row['id'],)).fetchone()
+                            if count >= config.ATTACHMENT_MAX_COUNT or total + len(data) > config.ATTACHMENT_TOTAL_BYTES:
+                                raise issues.StoreError('이슈의 첨부 개수 또는 합계 용량 제한을 넘었어요.', 413)
+                            stored = file_path(key)
+                            stored.parent.mkdir(parents=True, exist_ok=True)
+                            stored.write_bytes(data)
+                            a = _insert(c, run['actor'], 'image', _name(path.name), 'image/png', len(data), key)
+                            c.execute('UPDATE attachments SET id=?,issue_id=?,expires_at=NULL WHERE id=?', (aid, row['id'], a['id']))
+                        added += 1
+                    except BaseException:
+                        if stored:
+                            stored.unlink(missing_ok=True)
+                        raise
+                except (OSError, ValueError, KeyError, TypeError, issues.StoreError) as e:
+                    warnings.append(f'{relative}: {str(e)[:500]}')
+        except (OSError, ValueError, TypeError, issues.StoreError) as e:
+            warnings.append(f'.ui-captures/{directory}: {str(e)[:500]}')
+    return added, warnings
 
 
 def metadata(a):

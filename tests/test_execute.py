@@ -225,3 +225,46 @@ with patch.object(execute, 'completion_blocked_reason', return_value=None), \
     issues.link_commit(me, 'EX-1-2', git(artifact_repo, 'rev-parse', 'HEAD').stdout.strip())
     assert '중간 Task 커밋' in rejects(original_register, me, 'EX-1-2', artifact_repo, 0, 'capture')
 print('OK capture commit protection')
+
+# 양쪽 실행기의 성공·실패·시간 초과에서 부분 캡처를 완료 처리 전에 수집한다.
+import json, base64
+from unittest.mock import Mock
+import attachments
+png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')
+for provider in ('claude', 'codex'):
+    for result_status in ('ok', 'failed', 'timeout'):
+        item = issues.create_issue(me, 'EX', 'capture completion', parent='EX-1')
+        log_path, run_id = review.begin(me, item, 'execute', provider)
+        capture_wt = tmp / f'capture-{run_id}'
+        capture_wt.mkdir()
+        old = capture_wt / '.ui-captures' / 'old'
+        old.mkdir(parents=True)
+        (old / 'screen.png').write_bytes(png)
+        manifest = {'version': 1, 'captures': [{'path': '.ui-captures/old/screen.png'}], 'errors': []}
+        (old / 'manifest.json').write_text(json.dumps(manifest))
+        def process(*args, **kwargs):
+            folder = capture_wt / '.ui-captures' / 'new'
+            folder.mkdir()
+            (folder / 'screen.png').write_bytes(png)
+            (folder / 'manifest.json').write_text(json.dumps({**manifest, 'captures': [{'path': '.ui-captures/new/screen.png'}]}))
+            proc = Mock(returncode=0 if result_status == 'ok' else 3)
+            output = json.dumps({'result': 'complete'}) if provider == 'claude' else ''
+            proc.communicate.side_effect = ([subprocess.TimeoutExpired('fake', 1), (output, '')]
+                                            if result_status == 'timeout' else [(output, '')])
+            return proc
+        def completed(*args):
+            assert len(attachments.list_for_issue(item['id'])) == 1
+        with patch.object(review.subprocess, 'Popen', side_effect=process), \
+             patch.object(review, '_kill_tree'), \
+             patch.object(orchestrate, 'run_tests', return_value=None), \
+             patch.object(execute, 'register_completion', side_effect=completed), \
+             patch.object(execute, 'finalize_codex', side_effect=completed):
+            # timeout 후 returncode는 실제 종료 코드에 따라 failed가 될 수 있다.
+            status = review.run_headless(me, item['ref'], log_path, run_id, ['fake'], capture_wt, {}, 1, '실행', provider)
+            assert status == result_status if result_status != 'timeout' else status in ('timeout', 'failed')
+        assert len(attachments.list_for_issue(item['id'])) == 1
+        assert review.list_runs(item['ref'])[0]['status'] == status
+with patch.object(attachments, 'collect_captures', side_effect=OSError('disk full')):
+    warning = execute.collect_execution_captures(me, item['ref'], run_id, capture_wt, set())
+    assert 'disk full' in warning and '화면 캡처 수집 경고' in warning
+print('OK capture collection on both providers and failure paths')

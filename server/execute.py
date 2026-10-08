@@ -498,6 +498,23 @@ def scope_reason(issue: dict, projects: list[dict] | None = None) -> str | None:
     return None
 
 
+def collect_execution_captures(actor, ref, run_id, cwd, baseline):
+    """첨부 실패는 경고로만 기록하며 구현 완료·실패 상태를 바꾸지 않는다."""
+    import attachments
+    try:
+        added, warnings = attachments.collect_captures(ref, run_id, cwd, baseline)
+    except Exception as e:
+        added, warnings = 0, [f'{type(e).__name__}: {str(e)[:500]}']
+    if warnings:
+        message = '⚠️ 화면 캡처 수집 경고(구현 결과와 별도):\n' + '\n'.join(warnings[:20])
+        try:
+            issues.add_comment(actor, ref, message)
+        except Exception:
+            pass   # DB 장애도 실행 완료 결과를 덮지 않는다.
+        return message
+    return ''
+
+
 def _run_then_merge(actor, ref, *args):
     """실행 스레드 — 검증된 완료 기록부터 운영 반영까지 오케스트레이터가 처리한다."""
     import orchestrate, review
