@@ -83,3 +83,14 @@ assert not any(t.startswith(("WebFetch", "WebSearch")) for t in ec[ec.index("--a
 assert {"WebFetch", "WebSearch"} <= set(ec[ec.index("--disallowedTools") + 1:])
 assert 'web_search="disabled"' in execute.codex_command_for("NS-1-1", "NS-1") and "sandbox_workspace_write.network_access=false" in execute.codex_command_for("NS-1-1", "NS-1")
 print("ok web policy")
+
+# 두 실행기의 화면 확인 계약과 캡처만의 실패 예외를 보존한다.
+for prompt, viewer in ((execute.prompt_for('NS-1-1', 'NS-1'), 'Read'),
+                       (execute.codex_command_for('NS-1-1', 'NS-1')[-1], '이미지 보기 도구')):
+    for text in ('python scripts/capture_ui.py --route', viewer, '재캡처', '잘림·겹침·가로 스크롤',
+                 '미지원 이유', '확인한 PNG', '필수 기능 검사 실패', '.ui-captures/', '임시 DB'):
+        assert text in prompt, text
+capture_tools = [t for t in execute.ALLOWED_TOOLS if 'capture_ui' in t]
+assert capture_tools == ['Bash(python scripts/capture_ui.py --route *)']
+assert not any(t in execute.ALLOWED_TOOLS for t in ('Bash(python scripts/*)', 'Bash(uvicorn:*)', 'Bash(python:*)'))
+print('ok capture instructions')

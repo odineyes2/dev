@@ -194,3 +194,34 @@ assert '_scratch.py' in orchestrate.completion(auto_task['ref'])['note']
 orchestrate.SETTINGS.write_text('{"EX":{"auto_merge":false}}')
 execute.register_completion = original_register
 print("OK")
+
+# Claude가 강제 add/commit해도 캡처 산출물을 완료로 제출할 수 없다.
+artifact_repo = tmp / 'artifact-repo'
+artifact_repo.mkdir()
+git(artifact_repo, 'init', '-b', 'main')
+git(artifact_repo, 'config', 'user.name', 'test')
+git(artifact_repo, 'config', 'user.email', 'test@example.com')
+(artifact_repo / 'code.py').write_text('pass')
+git(artifact_repo, 'add', '.')
+git(artifact_repo, 'commit', '-qm', 'base')
+git(artifact_repo, 'checkout', '-b', 'task')
+for root in execute.CAPTURE_PATHS:
+    folder = artifact_repo / root
+    folder.mkdir(parents=True)
+    (folder / 'manifest.json').write_text('{}')
+    git(artifact_repo, 'add', '-f', '--', root)
+    assert '캡처 산출물' in rejects(execute.reject_capture_changes, artifact_repo, '--cached')
+    git(artifact_repo, 'commit', '-qm', 'bad capture')
+assert '캡처 산출물' in rejects(execute.reject_capture_changes, artifact_repo, 'main...HEAD')
+with patch.object(execute, 'completion_blocked_reason', return_value=None), \
+     patch.object(execute, 'worktree_path', return_value=artifact_repo), \
+     patch.object(execute, 'branch_name', return_value='task'):
+    issues.link_commit(me, 'EX-1-2', git(artifact_repo, 'rev-parse', 'HEAD').stdout.strip())
+    assert '캡처 산출물' in rejects(original_register, me, 'EX-1-2', artifact_repo, 0, 'capture')
+    # 최종 트리만 깨끗하게 만들어도 이전 커밋의 산출물은 전송되므로 거절한다.
+    git(artifact_repo, 'rm', '-r', '--', *execute.CAPTURE_PATHS)
+    git(artifact_repo, 'commit', '-qm', 'remove captures')
+    execute.reject_capture_changes(artifact_repo, 'main...HEAD')
+    issues.link_commit(me, 'EX-1-2', git(artifact_repo, 'rev-parse', 'HEAD').stdout.strip())
+    assert '중간 Task 커밋' in rejects(original_register, me, 'EX-1-2', artifact_repo, 0, 'capture')
+print('OK capture commit protection')
