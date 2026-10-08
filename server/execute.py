@@ -234,7 +234,7 @@ def capture_instructions(viewer):
 - 임시 데이터·테스트 admin만 사용한다. 운영 데이터·.env·외부 URL·운영 서버는 사용하지 않으며 다운로드/설치나 다른 저장소 수정으로 도구를 마련하지 않는다.
 - 낮·밤 × 데스크톱 1300·모바일 390 PNG를 {viewer}로 실제 열어 보고, DESIGN.md 기준으로 잘림·겹침·가로 스크롤을 확인한다. 필요한 수정 뒤 재캡처하고 다시 연다. 바뀐 화면만 열어 이미지 토큰을 아낀다.
 - 도구가 없는 프로젝트(별도 도구 구현 전 nightshift 포함)는 미지원 이유를 요약에 적고 진행한다. 캡처 실패·부분 성공은 확인한 PNG 파일과 실패 이유를 완료 요약에 그대로 남긴다. 캡처 실패만으로 blocked/on_hold로 만들지 않는다. 구현·필수 기능 검사 실패는 이 예외로 덮지 않는다.
-- .ui-captures/와 tests/shots/ 안 PNG·manifest·로그·임시 DB 전체를 커밋하지 않는다. Claude의 git add에는 `git add -A -- . ':(top,exclude).ui-captures/**' ':(top,exclude)tests/shots/**'`를 사용하고 커밋 전 staged diff를 확인한다.
+- .ui-captures/와 tests/shots/ 안 PNG·manifest·로그·임시 DB 전체를 커밋하지 않는다. git add는 `git add -A`만 쓰고(exclude pathspec은 ignore된 폴더에서 실패한다) 커밋 전 staged diff에 산출물이 없는지 확인한다.
 """
 
 
@@ -316,7 +316,9 @@ def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> str | N
     message = f"{result['summary'].splitlines()[0][:160]} ({ref})"
     reject_capture_changes(cwd, "--cached")
     if _git(cwd, "status", "--porcelain", "--", *CODE_PATHSPEC):
-        _git(cwd, "add", "-A", "--", *CODE_PATHSPEC)
+        # exclude pathspec으로 add하면 .gitignore에 있는 캡처 폴더가 디스크에 있을 때 git이 exit 1을 낸다 — 다 올리고 캡처만 내린다
+        _git(cwd, "add", "-A", "--", ".")
+        _git(cwd, "reset", "-q", "--", *CAPTURE_PATHS)
         reject_capture_changes(cwd, "--cached")
         _git(cwd, "-c", "core.hooksPath=NUL" if os.name == "nt" else "core.hooksPath=/dev/null",
              "-c", "commit.gpgsign=false", "-c", "user.name=Codex", "-c", "user.email=noreply@openai.com", "commit", "-m", message)
