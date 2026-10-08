@@ -824,6 +824,120 @@ def check_project_flows(page, shots, answers, asked):
     page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
 
 
+def check_project_usage(page, shots):
+    """임시 API의 직접 실행분·누락·재개와 화면 전환의 오래된 응답을 검사한다."""
+    import sqlite3
+    H = {'X-Requested-With': 'dev'}
+    def post(path, body):
+        r = page.request.post(BASE + path, headers=H, data=body)
+        assert r.ok, r.text()
+        return r.json()
+    post('/api/projects', {'key': 'USAGE', 'name': '사용량 검사'})
+    post('/api/projects', {'key': 'EMPTY', 'name': '빈 프로젝트'})
+    parent = post('/api/issues', {'project': 'USAGE', 'title': '완료된 Issue의 직접 실행분'})
+    task = post('/api/issues', {'project': 'USAGE', 'parent': parent['ref'],
+                               'title': '재개한 Task — 긴 제목도 모바일에서 줄바꿈해요 ' * 3})
+    unknown = post('/api/issues', {'project': 'USAGE', 'title': '<script>window.usageXSS=1</script>'})
+    with sqlite3.connect(tmp / 'data/dev.db') as db:
+        db.execute("UPDATE issues SET status='done',first_started_at='2026-10-01T00:00:00+00:00',last_done_at='2026-10-01T02:00:00+00:00' WHERE id=?", (parent['id'],))
+        db.execute("UPDATE issues SET status='in_progress',first_started_at='2026-10-01T00:00:00+00:00',last_done_at='2026-10-01T01:00:00+00:00' WHERE id=?", (task['id'],))
+        db.executemany("INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,input_tokens,output_tokens) VALUES(?,'execute',?,'human:admin',?,?,?,?)", [
+            (parent['id'], 'ok', '2026-10-01T00:00:00+00:00', '2026-10-01T00:01:00+00:00', 100, 20),
+            (task['id'], 'failed', '2026-10-01T00:00:00+00:00', '2026-10-01T00:02:00+00:00', None, 30),
+            (unknown['id'], 'orphaned', '2026-10-01T00:00:00+00:00', None, None, None),
+            (task['id'], 'running', '2026-10-01T00:00:00+00:00', None, 0, 0)])
+    def open_usage(key='USAGE'):
+        page.goto(BASE + f'/#/projects?project={key}&tab=usage')
+        page.wait_for_selector('#usage-body[aria-busy="false"]')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('[data-edit="USAGE"]')
+    open_usage()
+    assert page.locator('#project-form').is_hidden() and page.locator('.project-docs').is_hidden()
+    assert page.locator('[data-project-tab="usage"]').get_attribute('aria-current') == 'page'
+    assert page.locator('.usage-summary dd').nth(1).inner_text() == '150'
+    assert '입력 100 · 출력 50 · 부분 집계' in page.inner_text('.usage-summary')
+    assert page.locator('.usage-summary dd').nth(2).inner_text() == '2시간 0분'
+    rows = page.locator('.usage-table tbody tr')
+    assert rows.count() == 3
+    parent_row = rows.filter(has=page.locator(f'a[href="#/issue/{parent["ref"]}"]'))
+    task_row = rows.filter(has=page.locator(f'a[href="#/issue/{task["ref"]}"]'))
+    assert '120' in parent_row.inner_text()
+    assert '진행 경과' in task_row.inner_text()
+    assert '과거 Done 경과 1시간 0분' in task_row.inner_text()
+    assert '토큰 미계측 2회' in page.inner_text('.usage-measurement')
+    assert '실행 시간 미계측 1회' in page.inner_text('.usage-measurement')
+    assert page.evaluate('window.usageXSS') is None
+    assert page.locator('#usage-prev').is_disabled() and page.locator('#usage-next').is_disabled()
+    for theme in ('light', 'dark'):
+        for width, height in ((1300, 850), (390, 800)):
+            page.set_viewport_size({'width': width, 'height': height})
+            page.emulate_media(color_scheme=theme)
+            page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
+            page.locator('#usage-refresh').focus()
+            assert page.evaluate("document.activeElement.id === 'usage-refresh'")
+            page.keyboard.press('Enter'); page.wait_for_selector('#usage-body[aria-busy="false"]')
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'usage_{theme}_{width}.png'), full_page=True)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    link = page.locator(f'.usage-issue[href="#/issue/{parent["ref"]}"]')
+    link.focus(); page.keyboard.press('Enter'); page.wait_for_selector('#title')
+    assert page.locator('#title').inner_text() == parent['title']
+    open_usage()
+    page.click('[data-project-tab="manage"]'); assert page.locator('#project-form').is_visible()
+    page.click('[data-project-tab="usage"]'); page.wait_for_selector('.usage-table')
+    page.click('[data-project-tab="documents"]'); page.wait_for_selector('#docs-body .empty, #doc-select')
+    assert page.locator('.project-usage').count() == 0
+    open_usage('EMPTY'); assert '아직 Issue가 없어요' in page.inner_text('#usage-body')
+    assert page.locator('.usage-summary dd').nth(1).inner_text() == '0'
+    # 로딩 중 이탈한 응답과 401도 다른 프로젝트·로그인을 덮지 않는다.
+    pending = []
+    def hold(route): pending.append(route)
+    page.route('**/api/projects/USAGE/usage?*', hold)
+    page.goto(BASE + '/#/projects?project=USAGE&tab=usage')
+    page.wait_for_selector('.usage-skeleton')
+    assert page.locator('#usage-refresh').is_disabled()
+    page.wait_for_timeout(100); assert pending
+    page.click('[data-edit="EMPTY"]'); page.click('[data-project-tab="usage"]')
+    page.wait_for_selector('#usage-body[aria-busy="false"]')
+    pending.pop().fulfill(status=401, json={'detail': '이전 화면 응답'})
+    page.wait_for_timeout(100)
+    assert page.locator('#shell').is_visible() and '빈 프로젝트' in page.inner_text('.project-scope')
+    page.unroute('**/api/projects/USAGE/usage?*', hold)
+    def fail(route): route.fulfill(status=500, json={'detail': '임시 실패'})
+    page.route('**/api/projects/USAGE/usage?*', fail)
+    open_usage(); assert '새로고침으로 다시 시도' in page.inner_text('#usage-body')
+    assert page.locator('#usage-refresh').is_enabled()
+    page.unroute('**/api/projects/USAGE/usage?*', fail)
+    page.locator('#usage-refresh').focus(); page.keyboard.press('Enter'); page.wait_for_selector('.usage-table')
+    # 실제 API 페이지 경계: 프로젝트 전체 요약은 페이지를 바꿔도 그대로다.
+    for n in range(48): post('/api/issues', {'project': 'USAGE', 'title': f'페이지 검사 {n}'})
+    page.click('#usage-refresh'); page.wait_for_function("document.querySelectorAll('.usage-table tbody tr').length === 50")
+    assert page.locator('.usage-summary dd').nth(1).inner_text() == '150'
+    page.locator('#usage-next').focus(); page.keyboard.press('Enter')
+    page.wait_for_function("document.querySelectorAll('.usage-table tbody tr').length === 1")
+    assert parent['ref'] in page.inner_text('.usage-table')
+    assert page.locator('#usage-next').is_disabled() and page.locator('#usage-prev').is_enabled()
+    assert page.locator('.usage-summary dd').nth(1).inner_text() == '150'
+    assert page.evaluate("document.activeElement.id === 'usage-refresh'")
+    page.click('#usage-prev'); page.wait_for_function("document.querySelectorAll('.usage-table tbody tr').length === 50")
+    assert page.locator('#usage-prev').is_disabled()
+    # 정상 응답도 관리 탭으로 떠난 뒤에는 새 화면에 삽입하지 않는다.
+    page.route('**/api/projects/USAGE/usage?*', hold)
+    page.click('#usage-refresh'); page.wait_for_selector('.usage-skeleton'); page.wait_for_timeout(100)
+    page.click('[data-project-tab="manage"]')
+    response = page.request.get(BASE + '/api/projects/USAGE/usage').json()
+    pending.pop().fulfill(json=response); page.wait_for_timeout(100)
+    assert page.locator('#project-form').is_visible() and page.locator('.usage-table').count() == 0
+    page.unroute('**/api/projects/USAGE/usage?*', hold)
+    # 뒤의 UI 검사에 실행 중 fixture와 프로젝트를 남기지 않는다.
+    with sqlite3.connect(tmp / 'data/dev.db') as db:
+        db.execute('PRAGMA foreign_keys=ON')
+        db.execute("DELETE FROM issues WHERE project_id IN (SELECT id FROM projects WHERE key IN ('USAGE','EMPTY'))")
+        db.execute("DELETE FROM projects WHERE key IN ('USAGE','EMPTY')")
+    page.evaluate("localStorage.setItem('dev.theme','light');document.documentElement.dataset.theme='light'")
+    page.emulate_media(color_scheme='light')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+
+
 def check_account_menu(page, shots):
     """검증된 admin에게만 외부 링크를 보여 주고 로그인 전환 시 숨긴다."""
     link = page.locator('#open-jupyter')
@@ -1676,6 +1790,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--usage-only' in sys.argv:
+            check_project_usage(page, shots)
+            assert not errs, errs
+            print('OK: project usage'); sys.exit(0)
         if '--attachments-only' in sys.argv:
             check_attachments(page, shots)
             assert not errs, errs
@@ -1728,6 +1846,7 @@ try:
         check_project_dialog(page, shots)
         check_project_flows(page, shots, answers, asked)
         check_project_documents(page, shots)
+        check_project_usage(page, shots)
         check_auto_settings(page, shots)
         check_attachments(page, shots)
         check_published_notice(page, shots)

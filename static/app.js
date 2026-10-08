@@ -228,7 +228,10 @@ async function route(){
     else if(name === 'issue' && arg) await renderIssue(decodeURIComponent(arg));
     else if(name === 'new') await renderNew(new URLSearchParams(location.hash.split('?')[1] || ''));
     else if(name === 'agents') await renderAgents();
-    else if(name === 'projects') renderProjects();
+    else if(name === 'projects'){
+      const params = new URLSearchParams(location.hash.split('?')[1] || '');
+      renderProjects(params.get('project'), params.get('tab') || 'manage');
+    }
     else if(name === 'settings' && settingsTab === 'auto') await renderSettings();
     else if(name === 'settings' && settingsTab === 'types') await renderTypes();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
@@ -1338,12 +1341,14 @@ function projectSuggestion(name){
 // 생성은 라이트박스, 수정은 기존 인라인 폼에서 한다.
 function renderProjects(editKey, projectTab = 'manage'){
   const ed = projects.find(p => p.key === editKey);
+  if(!['manage', 'documents', 'usage'].includes(projectTab)) projectTab = 'manage';
+  history.replaceState(null, '', ed ? `#/projects?project=${encodeURIComponent(ed.key)}&tab=${projectTab}` : '#/projects');
   view.innerHTML = `
     <div class="projects-page">
-    ${ed ? `<div class="project-scope"><h2>${esc(ed.name)} · ${esc(ed.key)}</h2><nav aria-label="프로젝트 화면"><button type="button" data-project-tab="manage" aria-current="${projectTab === 'manage' ? 'page' : 'false'}">관리</button><button type="button" data-project-tab="documents" aria-current="${projectTab === 'documents' ? 'page' : 'false'}">문서</button></nav></div>` : ''}
-    <button class="primary project-create" id="project-create" type="button" aria-haspopup="dialog"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>프로젝트 추가</button>
+    ${ed ? `<div class="project-scope"><h2>${esc(ed.name)} · ${esc(ed.key)}</h2><nav aria-label="프로젝트 화면"><button type="button" data-project-tab="manage" aria-current="${projectTab === 'manage' ? 'page' : 'false'}">관리</button><button type="button" data-project-tab="documents" aria-current="${projectTab === 'documents' ? 'page' : 'false'}">문서</button><button type="button" data-project-tab="usage" aria-current="${projectTab === 'usage' ? 'page' : 'false'}">사용량</button></nav></div>` : ''}
+    <button class="primary project-create${ed && projectTab === 'usage' ? ' project-create-inline' : ''}" id="project-create" type="button" aria-haspopup="dialog"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>프로젝트 추가</button>
     ${ed ? '' : '<dialog class="project-dialog" id="project-dialog" aria-labelledby="project-dialog-title">'}
-    <form class="form panel" id="project-form" ${ed && projectTab === 'documents' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-dialog-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
+    <form class="form panel" id="project-form" ${ed && projectTab !== 'manage' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-dialog-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
       <label style="flex:0 0 90px">Key<input id="p-key" required placeholder="NS" maxlength="10" value="${esc(ed ? ed.key : '')}"${ed ? ' disabled' : ''}></label>
       <label>Name<input id="p-name" required placeholder="nightshift" value="${esc(ed ? ed.name : '')}"></label>
       <label>Repository<input id="p-repo" placeholder="https://github.com/…" value="${esc(ed ? ed.repo_url : '')}"></label>
@@ -1354,6 +1359,7 @@ function renderProjects(editKey, projectTab = 'manage'){
         : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">프로젝트 추가</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
     ${ed ? '' : '</dialog>'}
     ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg><span>Codex로 문서 생성</span></button><button type="button" data-doc-provider="claude"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg><span>Claude로 문서 생성</span></button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
+    ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
     ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
@@ -1442,6 +1448,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     view.querySelector(`[data-project-tab="${b.dataset.projectTab}"]`).focus();
   });
   if(ed && projectTab === 'documents') bindProjectDocuments(ed);
+  if(ed && projectTab === 'usage') bindProjectUsage(ed);
   view.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { renderProjects(b.dataset.edit); window.scrollTo(0, 0); }));
   view.querySelectorAll('[data-delete-project]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
     const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;
@@ -1459,6 +1466,62 @@ function renderProjects(editKey, projectTab = 'manage'){
     await api('PATCH', `/api/projects/${cb.dataset.archive}`, { archived: cb.checked }).catch(() => {});
     await loadProjects(); renderProjects();
   }));
+}
+
+// 화면을 떠나면 이전 프로젝트의 응답과 인증 오류를 반영하지 않는다.
+function bindProjectUsage(project){
+  const panel = view.querySelector('.project-usage'), body = panel.querySelector('#usage-body');
+  const refresh = panel.querySelector('#usage-refresh');
+  let generation = 0, offset = 0;
+  const number = n => Number(n).toLocaleString();
+  const duration = seconds => {
+    if(seconds === null || seconds === undefined) return '미계측';
+    const n = Math.floor(seconds), hours = Math.floor(n / 3600), minutes = Math.floor(n % 3600 / 60);
+    return hours ? `${number(hours)}시간 ${minutes}분` : minutes ? `${minutes}분 ${n % 60}초` : `${n}초`;
+  };
+  const time = iso => iso ? `<time datetime="${esc(iso)}" title="${esc(new Date(iso).toLocaleString())}">${esc(fmtTime(iso))}</time>` : '<span class="dim">미계측</span>';
+  const metric = (label, value, note) => `<div><dt>${label}</dt><dd>${value}</dd><p class="dim">${note}</p></div>`;
+  const missing = row => [row.unmeasured_run_count ? `토큰 미계측 ${number(row.unmeasured_run_count)}회` : '',
+    row.running_run_count ? `실행 중 ${number(row.running_run_count)}회` : '',
+    row.unmeasured_duration_run_count ? `실행 시간 미계측 ${number(row.unmeasured_duration_run_count)}회` : ''].filter(Boolean).join(' · ');
+  async function load(nextOffset = 0, focusId){
+    const token = ++generation;
+    const current = () => panel.isConnected && generation === token;
+    refresh.disabled = true;
+    body.setAttribute('aria-busy', 'true');
+    body.innerHTML = '<div class="usage-loading" role="status">사용량을 불러오는 중이에요…<div class="usage-skeleton" aria-hidden="true"></div></div>';
+    try {
+      const data = await api('GET', `/api/projects/${encodeURIComponent(project.key)}/usage?limit=50&offset=${nextOffset}`, undefined, current);
+      if(!current()) return;
+      offset = data.offset;
+      const s = data.summary;
+      body.innerHTML = `<dl class="usage-summary">
+        ${metric('에이전트 실행 시간', duration(s.agent_seconds), `${number(s.run_count)}회 실행 · ${s.unmeasured_duration_run_count ? `미계측 ${number(s.unmeasured_duration_run_count)}회` : '보존된 실행 기록 기준이에요'}`)}
+        ${metric('측정된 토큰', number(s.total_tokens), `입력 ${number(s.input_tokens)} · 출력 ${number(s.output_tokens)}${s.partial ? ' · 부분 집계예요' : ''}`)}
+        ${metric('완료 경과 시간 합계', duration(s.completed_elapsed_seconds), `Done ${number(s.completed_issue_count)}개 · 경과 시간 미계측 ${number(s.unmeasured_completed_issue_count)}개`)}
+      </dl><p class="usage-measurement">${esc(missing(s) || '모든 보존된 실행의 토큰과 실행 시간을 측정했어요.')}</p>
+      <p class="dim usage-notes">${data.notes.map(esc).join(' ')} 부모 Issue와 Task는 자신의 직접 실행분만 표시해요. 현재 보존된 ${number(s.issue_count)}개 Issue 기준 · ${time(data.as_of)} 조회</p>
+      ${data.issues.length ? `<table class="usage-table"><caption class="usage-caption">${esc(project.name)} Issue별 사용량</caption><thead><tr><th>Issue / 상태</th><th>최초 시작 / 마지막 Done</th><th>경과 시간</th><th>실행 시간</th><th>측정된 토큰</th></tr></thead><tbody>${data.issues.map(row => {
+        const ongoing = !['done', 'closed'].includes(row.status);
+        return `<tr><td data-label="Issue / 상태"><a class="usage-issue" href="#/issue/${encodeURIComponent(row.ref)}"><span class="ref">${esc(row.ref)}</span><span>${esc(row.title)}</span></a>${statusHtml(row.status)}</td>
+        <td data-label="최초 시작 / 마지막 Done"><div>시작 ${time(row.first_started_at)}</div><div>마지막 Done ${time(row.last_done_at)}</div></td>
+        <td data-label="경과 시간"><div>${ongoing ? '진행 경과' : row.status === 'done' ? '완료 경과' : '과거 Done 경과'} ${duration(ongoing ? row.ongoing_elapsed_seconds : row.elapsed_seconds)}</div>${ongoing && row.last_done_at ? `<small class="dim">과거 Done 경과 ${duration(row.elapsed_seconds)}</small>` : ''}</td>
+        <td data-label="실행 시간">${duration(row.agent_seconds)}<small class="dim">${number(row.run_count)}회${row.unmeasured_duration_run_count ? ` · 미계측 ${number(row.unmeasured_duration_run_count)}회` : ''}</small></td>
+        <td data-label="측정된 토큰"><div>${number(row.total_tokens)}${row.partial ? ' · 부분 집계' : ''}</div><small class="dim">입력 ${number(row.input_tokens)} · 출력 ${number(row.output_tokens)}</small><small class="dim">${esc(missing(row))}</small></td></tr>`;
+      }).join('')}</tbody></table><div class="usage-pagination"><button type="button" id="usage-prev" ${offset === 0 ? 'disabled' : ''}>이전</button><span>${number(offset + 1)}–${number(offset + data.issues.length)} / ${number(data.total)}개</span><button type="button" id="usage-next" ${data.has_more ? '' : 'disabled'}>다음</button></div>` : '<div class="empty">아직 Issue가 없어요. Issue를 만들면 사용량을 여기서 확인할 수 있어요.</div>'}`;
+      body.querySelector('#usage-prev')?.addEventListener('click', () => load(Math.max(0, offset - data.limit), 'usage-prev'));
+      body.querySelector('#usage-next')?.addEventListener('click', () => load(offset + data.limit, 'usage-next'));
+    } catch(e){
+      if(current()) body.innerHTML = '<div class="empty" role="alert">사용량을 불러오지 못했어요. 새로고침으로 다시 시도해 주세요.</div>';
+    } finally {
+      if(current()){
+        body.setAttribute('aria-busy', 'false'); refresh.disabled = false;
+        if(focusId) (body.querySelector(`#${focusId}:not(:disabled)`) || refresh).focus();
+      }
+    }
+  }
+  refresh.onclick = () => load(offset);
+  load();
 }
 
 // 응답이 늦게 도착해도 떠난 화면이나 다른 문서에 반영하지 않는다.
