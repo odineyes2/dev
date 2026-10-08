@@ -89,7 +89,11 @@ def collect_captures(ref, run_id, cwd, baseline):
             manifest = json.loads(raw)
             if not isinstance(manifest, dict) or manifest.get('version') != 1 or not isinstance(manifest.get('captures'), list):
                 raise issues.StoreError('캡처 manifest 형식이 잘못됐어요.')
-            for error in manifest.get('errors', [])[:10]:
+            errors = manifest.get('errors', [])
+            if not isinstance(errors, list):
+                warnings.append(f'{relative}: 캡처 manifest 오류 목록 형식이 잘못됐어요.')
+                errors = []
+            for error in errors[:10]:
                 warnings.append(f'{relative}: {str(error)[:500]}')
             for entry in manifest['captures']:
                 try:

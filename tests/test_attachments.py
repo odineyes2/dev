@@ -87,6 +87,18 @@ class AttachmentsTest(unittest.TestCase):
         self.assertTrue(attachments.collect_captures(self.issue['ref'], run, root, set())[1])
         self.assertEqual(attachments.list_for_issue(self.issue['id']), [])
 
+    def test_internal_capture_malformed_errors_preserves_valid_partial_results(self):
+        root, folder, _ = self.capture()
+        manifest_path = folder / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['errors'] = None
+        manifest['captures'].insert(0, None)
+        manifest_path.write_text(json.dumps(manifest))
+        added, warnings = attachments.collect_captures(self.issue['ref'], self.capture_run(), root, set())
+        self.assertEqual(added, 1)
+        self.assertEqual(len(warnings), 2)
+        self.assertEqual(len(attachments.list_for_issue(self.issue['id'])), 1)
+
     def test_internal_capture_database_failure_removes_copy(self):
         root, folder, _ = self.capture()
         run = self.capture_run()
