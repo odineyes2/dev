@@ -82,7 +82,10 @@ with db.connect() as c:
     for table in tables:
         after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
         added = {'jobs': (None, 'manual', None, None, None, None, 1, None), 'projects': ('',), 'runs': ('', None), 'plans': ('',)}.get(table, ())   # 끝 None: DEV-89-4 model, plans ''는 base_sha
-        assert after == [r + added for r in before[table]], table
+        if table == 'issues':
+            assert after == [r + (now if r[0] == 2 else None, None) for r in before[table]], table
+        else:
+            assert after == [r + added for r in before[table]], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=2').fetchone()
     assert job['source'] == 'manual'
     assert job['delegation_id'] is None and job['approval_version'] is None
@@ -153,3 +156,36 @@ with db.connect() as c:
     assert 'jobs_queue_order' in {r[1] for r in c.execute('PRAGMA index_list(jobs)')}
 db.config.DB_PATH = original_path
 print("OK")
+
+# 생애 시각 도입 직전 DB를 업그레이드하고 근거 없는 값은 비워 둔다.
+db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'lifecycle.db'
+with sqlite3.connect(db.config.DB_PATH) as c:
+    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+        c.executescript(sql + f'PRAGMA user_version={version};')
+    c.execute("INSERT INTO projects(key,name,created_at) VALUES('LIFE','lifecycle',?)", (now,))
+    for iid, status, closed in ((1,'done','2026-01-05T00:00:00Z'),(2,'closed','2026-01-06T00:00:00Z'),(3,'backlog',None),(4,'in_review',None)):
+        c.execute("INSERT INTO issues(id,project_id,number,title,reporter,status,created_at,updated_at,closed_at) VALUES(?,1,?,'lifecycle','human:admin',?,?,?,?)", (iid,iid,status,now,now,closed))
+    for iid, target, at in ((1,'in_progress','2026-01-02T00:00:00Z'),(1,'done','2026-01-04T00:00:00Z'),(2,'done','2026-01-03T00:00:00Z'),(2,'done','2026-01-04T00:00:00Z'),(4,'in_progress','2026-01-01T01:00:00+02:00')):
+        c.execute("INSERT INTO events(issue_id,actor,kind,data_json,created_at) VALUES(?,'human:admin','status',json_object('to',?),?)", (iid,target,at))
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(1,'execute','ok','human:admin','2026-01-01T00:00:00Z')")
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(4,'review','ok','human:admin','2026-01-01T00:00:00Z')")
+    c.execute("INSERT INTO events(issue_id,actor,kind,data_json,created_at) VALUES(3,'human:admin','status','broken',?)", (now,))
+    c.execute("INSERT INTO issues(id,project_id,number,title,reporter,status,created_at,updated_at,closed_at) VALUES(8,1,8,'closed only','human:admin','closed',?,?,?)", (now,now,now))
+    # 큰 이력에서도 이슈·이벤트를 한 번씩 모으고 인덱스로 후보를 찾는다.
+    c.executemany("INSERT INTO issues(id,project_id,number,title,reporter,created_at,updated_at) VALUES(?,1,?,'bulk','human:admin',?,?)", [(i,i,now,now) for i in range(100,2100)])
+    c.executemany("INSERT INTO events(issue_id,actor,kind,data_json,created_at) VALUES(?,'human:admin','status',?,?)", [(i,'{"to":"in_progress"}',f'2026-01-0{day}T00:00:00Z') for i in range(100,2100) for day in range(1,6)])
+assert db.init() == len(db.MIGRATIONS)
+with db.connect() as c:
+    values = [tuple(r) for r in c.execute('SELECT first_started_at,last_done_at FROM issues WHERE id<8 ORDER BY id')]
+    assert values == [('2026-01-01T00:00:00Z','2026-01-05T00:00:00Z'),(None,'2026-01-04T00:00:00Z'),(None,None),('2026-01-01T01:00:00+02:00',None)], values
+    assert tuple(c.execute('SELECT first_started_at,last_done_at FROM issues WHERE id=8').fetchone()) == (None,None)
+    assert c.execute("SELECT COUNT(*) FROM issues WHERE id>=100 AND first_started_at='2026-01-01T00:00:00Z' AND last_done_at IS NULL").fetchone()[0] == 2000
+assert db.init() == len(db.MIGRATIONS)
+with db.connect() as c:
+    assert values == [tuple(r) for r in c.execute('SELECT first_started_at,last_done_at FROM issues WHERE id<8 ORDER BY id')]
+    for iid, status in ((5,'in_progress'),(6,'done'),(7,'closed')):
+        c.execute("INSERT INTO issues(id,project_id,number,title,reporter,status,created_at,updated_at) VALUES(?,1,?,'lifecycle','human:admin',?,?,?)", (iid,iid,status,now,now))
+    assert [tuple(r) for r in c.execute('SELECT first_started_at,last_done_at FROM issues WHERE id BETWEEN 5 AND 7 ORDER BY id')] == [(now,None),(None,now),(None,None)]
+    assert not c.execute('PRAGMA foreign_key_check').fetchall()
+db.config.DB_PATH = original_path
+print('OK lifecycle migration')

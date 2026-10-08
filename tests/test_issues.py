@@ -558,3 +558,34 @@ assert issues.get_issue(selected['ref'])['status'] == 'done'
 assert issues.get_issue(root['ref'])['status'] == 'backlog'
 assert issues.get_issue(sibling['ref'])['status'] == 'backlog'
 print("OK")
+
+# 최초 시작은 고정하고 마지막 done은 실제 재완료 때만 갱신한다.
+life = issues.create_issue(admin_actor, 'DEV', 'lifecycle test')
+assert life['first_started_at'] is None and life['last_done_at'] is None
+for forbidden in ('in_progress','done','closed'):
+    rejects(lambda: issues.create_issue(admin_actor, 'DEV', 'lifecycle test', status=forbidden))
+with patch.object(db, 'now_iso', return_value='2026-01-01T00:00:00Z'):
+    issues.set_status(admin_actor, life['ref'], 'in_progress')
+with patch.object(db, 'now_iso', return_value='2026-01-02T00:00:00Z'):
+    issues.set_status(admin_actor, life['ref'], 'done')
+with patch.object(db, 'now_iso', return_value='2026-01-03T00:00:00Z'):
+    issues.set_status(admin_actor, life['ref'], 'done')
+    issues.set_status(admin_actor, life['ref'], 'closed')
+    issues.set_status(admin_actor, life['ref'], 'in_progress')
+current = issues.get_issue(life['ref'])
+assert current['first_started_at'] == '2026-01-01T00:00:00Z'
+assert current['last_done_at'] == '2026-01-02T00:00:00Z' and current['closed_at'] is None
+rejects(lambda: issues.set_status(auto_actor, life['ref'], 'done'), 403)
+with patch.object(db, 'now_iso', return_value='2026-01-04T00:00:00Z'):
+    issues.set_status(admin_actor, life['ref'], 'done')
+assert issues.get_issue(life['ref'])['last_done_at'] == '2026-01-04T00:00:00Z'
+assert issues.get_issue(selected['ref'])['last_done_at']
+tree_root = issues.create_issue(admin_actor, 'DEV', 'lifecycle test')
+tree_child = issues.create_issue(admin_actor, 'DEV', 'lifecycle test', parent=tree_root['ref'])
+closed_child = issues.create_issue(admin_actor, 'DEV', 'lifecycle test', parent=tree_root['ref'])
+issues.set_status(admin_actor, closed_child['ref'], 'closed')
+with patch.object(db, 'now_iso', return_value='2026-01-05T00:00:00Z'):
+    completed = issues.complete_tree(admin_actor, tree_child['ref'])
+assert len(completed) == 2 and all(r['last_done_at'] == '2026-01-05T00:00:00Z' for r in completed)
+assert issues.get_issue(closed_child['ref'])['last_done_at'] is None
+print('OK lifecycle transitions')
