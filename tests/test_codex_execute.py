@@ -34,6 +34,8 @@ def output_script(result, edit=True):
     final = json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(result)}})
     return ('import pathlib,time,json,base64\ntime.sleep(.3)\n'
             + ("pathlib.Path('codex.txt').write_text('implemented\\n')\n"
+               # 실제 저장소처럼 tests/shots는 ignore, .ui-captures는 아님 — exclude pathspec add가 exit 1 나던 경우(DEV-99-3)
+               "pathlib.Path('.gitignore').write_text('tests/shots\\n')\n"
                "for root in ('.ui-captures/capture-test', 'tests/shots'):\n"
                " pathlib.Path(root).mkdir(parents=True, exist_ok=True)\n"
                " for name in ('screen.png', 'manifest.json', 'server.log', 'temporary.db'):\n"
