@@ -10,6 +10,13 @@ import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 import app as A, auth, review  # noqa: E402
 
+# 누락과 실제 0을 구분하고 캐시 입력을 포함한다.
+for value in (None, -1, 1.5, '10', True):
+    stats = review._parse(__import__('json').dumps({'usage': {'input_tokens': value, 'output_tokens': 0}}))[1]
+    assert stats['input_tokens'] is None and stats['output_tokens'] == 0
+assert review._parse('{"usage":{"output_tokens":0}}')[1]['input_tokens'] is None
+assert review._parse('{"usage":{"input_tokens":0,"cache_creation_input_tokens":3,"cache_read_input_tokens":7,"output_tokens":0}}')[1]['input_tokens'] == 10
+
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
     lambda req: httpx.Response(200, json={"user": {"id": 1, "username": "admin", "role": "admin"}})))
 H = {"X-Requested-With": "dev"}
