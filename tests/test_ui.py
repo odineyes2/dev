@@ -268,7 +268,7 @@ def check_issue_types(page, shots):
                     assert page.locator(f'[data-type="{a["id"]}"]').get_attribute('aria-pressed') == 'true'
                     assert '비활성' in page.locator('.byline .type-badge').first.get_attribute('title')
                 if name in ('list','board'):
-                    assert '이름 수정 확인' in page.locator('#view').inner_text()
+                    assert '#이름수정확인' in page.locator('#view').inner_text()
                 page.locator('#toast').evaluate('e => e.hidden = true')
                 page.screenshot(path=str(shots / f'types_{name}_{scheme}_{width}.png'), full_page=True)
     page.goto(BASE + '/#/issue/' + ref); page.wait_for_selector('#save-types')
