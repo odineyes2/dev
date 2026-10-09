@@ -104,6 +104,38 @@ class InitializationTest(unittest.TestCase):
             start.assert_not_called()
         self.assertEqual(pi.status('NEW')['status'], 'cancelled')
 
+    def test_invalid_generation_is_corrected_once(self):
+        self.request()
+        invalid = fixture()
+        invalid['files'].append({'path': 'secret.exe', 'content': '금지된 확장자'})
+        with patch.object(pi, 'generate', side_effect=[invalid, fixture()]) as generate:
+            pi._run('NEW')
+        self.assertEqual(generate.call_count, 2)
+        self.assertIn('허용되지 않은 파일', generate.call_args.args[1])
+        self.assertEqual(pi.status('NEW')['status'], 'complete')
+
+    def test_generated_spec_cannot_replace_original(self):
+        self.request()
+        result = fixture()
+        result['files'].append({'path': 'PROJECT_SPEC.md', 'content': '에이전트가 바꾼 내용'})
+        original = pi.get('NEW')['spec']
+        with patch.object(pi, 'generate', return_value=result) as generate:
+            pi._run('NEW')
+        generate.assert_called_once()
+        self.assertEqual(pi.status('NEW')['status'], 'complete')
+        self.assertEqual((self.projects / 'new-product' / 'PROJECT_SPEC.md').read_text(encoding='utf-8'), original)
+
+    def test_validation_failure_preserves_specific_error_and_log(self):
+        self.request()
+        invalid = fixture()
+        invalid['files'] = []
+        with patch.object(pi, 'generate', return_value=invalid) as generate:
+            pi._run('NEW')
+        self.assertEqual(generate.call_count, 2)
+        self.assertIn('파일 개수', pi.status('NEW')['error'])
+        diagnostic = config.DATA_DIR / 'project-initializations' / self.body['request_id'] / 'failure.log'
+        self.assertIn('ValueError', diagnostic.read_text(encoding='utf-8'))
+
     def test_complete_http_git_documents_tasks(self):
         self.request()
         self.execute()
