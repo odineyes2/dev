@@ -378,7 +378,7 @@ function completionTimeHtml(i){
 }
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
-    <td class="title-cell">${titleHtml(i)}<div class="issue-badges">${labelsHtml(i.labels)}${typesHtml(i)}</div>${i.parent_id ? '<div class="sub">Task</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)}</div></td>
+    <td class="title-cell">${(i.labels || []).includes('goal') ? '<span class="label goal-badge">Goal</span> ' : ''}${titleHtml(i)}<div class="issue-badges">${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i)}</div>${i.parent_id ? '<div class="sub">Task</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)}</div></td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td>
     <td class="hide-m">${processingAgentsHtml(i)}</td><td class="hide-m">${completionTimeHtml(i)}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }

@@ -201,6 +201,7 @@ table.issues.tasks td:nth-child(2){ overflow-wrap:anywhere; }
 table.issues:not(.tasks) .title-cell{ width:100%; min-width:240px; overflow-wrap:anywhere; padding-top:8px; padding-bottom:8px; }
 .issue-badges:empty{ display:none; }
 .issue-badges .label:first-child{ margin-left:0; }
+.title-cell .goal-badge{ margin-left:0; }
 .title-cell .sub{ font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:var(--track-label); color:var(--faint); font-weight:500; }
 .list-more{ min-height:1px; padding:14px; text-align:center; color:var(--dim); font-size:13px; }
 .empty{ padding:64px var(--sp-4); text-align:center; color:var(--dim); background:var(--panel); border:1px dashed var(--border); border-radius:var(--r-md); }
