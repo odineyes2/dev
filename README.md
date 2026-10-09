@@ -1,5 +1,13 @@
 # dev
 
+프로젝트 추가 화면에서 UTF-8 Markdown 기획서(최대 200KB), Key·이름·Projects 하위 폴더명과 Claude/Codex를 선택하고 **초기 프로젝트 생성**을 누른다.
+선택한 CLI가 기획서를 분석하면 서버가 원본 `PROJECT_SPEC.md`, 공식 문서, 최소 소스·설정 골격, 로컬 Git의 첫 커밋과 dev Project·목표 Issue·개발 Issue·Task·선행 관계를 생성한다.
+구체성이 낮은 기획서는 제안·미정 사항을 구분하며, 생성 코드를 실행하거나 의존성을 설치하지 않는다. GitHub 원격 저장소는 만들지 않는다.
+분석은 유료 호출이다. Claude는 `DEV_EXEC_BUDGET_USD`(기본 2달러), 두 도구는 `DEV_REVIEW_TIMEOUT_SEC` 제한을 사용한다. Codex는 비용 상한을 지원하지 않는다.
+관리 화면에 진행 상태·실패 사유·재시도와 생성된 Issue 링크를 표시한다. 실패 후 같은 요청을 재사용하고 검증된 분석 결과가 있으면 다시 과금하지 않고 적용을 이어간다.
+기존 폴더는 덮어쓰지 않는다. 생성 중 프로젝트 수정·삭제를 막으며, 재시작으로 끊긴 작업은 실패로 표시해 재시도하게 한다.
+생성된 Plan·Task는 초안이며 계획서 승인이 필요하다. 초기 생성은 기존 Auto 설정을 켜지 않는다. 실제 API 확인·배포 같은 외부 작업은 후속 확인으로 남긴다.
+
 이슈 발행은 저장만 한다. 사용자가 Claude 또는 Codex 검토 버튼을 눌러 검토를 요청한다. 승인된 Task 상세에서 Claude 또는 Codex 실행을 선택한다.
 Codex 검토는 서버 계정의 `codex login`과 `DEV_CODEX_AGENT_KEY`(Agents에서 발급한 Codex용 dev 키)가 필요하다.
 `codex exec`의 읽기 전용 sandbox, 승인 요청 금지, dev MCP 도구 허용 목록을 사용한다.

@@ -1362,9 +1362,11 @@ function renderProjects(editKey, projectTab = 'manage'){
       <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
       <label class="project-description">프로젝트 설명<textarea id="p-description" maxlength="200000" placeholder="목적, 대상 사용자와 원하는 기능을 적어 주세요.">${esc(ed?.description || '')}</textarea></label>
       ${ed ? '<div class="project-description"><button type="button" id="p-description-request">현재 상태로 Description 작성</button><p id="p-description-status" role="status" aria-live="polite"></p></div>' : ''}
+      ${ed ? '' : `<div class="project-description"><h3>기획서로 시작</h3><p class="dim">기획서로 공식 문서·최소 개발 골격·로컬 Git·Issue·Task를 만들어요. 선택한 에이전트의 유료 분석을 시작하며, 개발 Task 실행은 별도 승인이 필요해요.</p><div class="line"><label>기획서<input id="p-spec" type="file" accept=".md,text/markdown"></label><label>Projects 하위 폴더명<input id="p-folder" placeholder="예: moai" maxlength="80"></label><label>분석 도구<select id="p-init-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label></div><p class="dim">UTF-8 Markdown · 최대 200KB. 위 Repository와 Local path는 기존 저장소 등록에 사용해요.</p><button type="button" id="p-initialize">초기 프로젝트 생성</button><p id="p-init-message" role="status" aria-live="polite"></p></div>`}
       <label class="actions">${ed ? '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">저장</button>'
         : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">프로젝트 추가</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
     ${ed ? '' : '</dialog>'}
+    ${ed ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
     ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg><span>Codex로 문서 생성</span></button><button type="button" data-doc-provider="claude"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg><span>Claude로 문서 생성</span></button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
     ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
@@ -1377,18 +1379,23 @@ function renderProjects(editKey, projectTab = 'manage'){
   const dialog = view.querySelector('#project-dialog');
   const form = view.querySelector('#project-form');
   let saving = false;
+  let initRequest = null;
   let suggestion = null;
   const clearSuggestion = () => { suggestion = null; form.querySelector('#project-suggestion')?.remove(); };
-  form.addEventListener('input', clearSuggestion);
+  form.addEventListener('input', () => { clearSuggestion(); if(!saving) initRequest = null; });
   opener.addEventListener('click', () => {
     if(ed){ renderProjects(); view.querySelector('#project-create').click(); return; }
-    form.reset(); clearSuggestion(); view.querySelector('#project-error').textContent = '';
+    form.reset(); clearSuggestion(); initRequest = null; view.querySelector('#project-error').textContent = '';
     dialog.showModal(); view.querySelector('#p-key').focus();
   });
   if(dialog){
     dialog.addEventListener('close', () => opener.focus());
     dialog.addEventListener('cancel', e => { if(saving) e.preventDefault(); });
   }
+  const initialize = view.querySelector('#p-initialize');
+  if(initialize) initialize.onclick = () => {
+    if(form.reportValidity()) form.dispatchEvent(new SubmitEvent('submit', {bubbles:true, cancelable:true, submitter:initialize}));
+  };
   form.addEventListener('submit', async e => {
     e.preventDefault();
     if(saving) return;
@@ -1396,9 +1403,30 @@ function renderProjects(editKey, projectTab = 'manage'){
     const button = submitBtn(e), cancel = view.querySelector('#p-cancel');
     const original = button.textContent;
     button.disabled = cancel.disabled = true;
+    form.querySelectorAll('input, textarea, select, button').forEach(el => { if(!el.disabled){ el.dataset.savingDisabled = '1'; el.disabled = true; } });
     button.textContent = '저장 중…'; form.setAttribute('aria-busy', 'true');
     view.querySelector('#project-error').textContent = '';
     try{
+      if(!ed && (e.submitter?.id === 'p-initialize' || initRequest)){
+        if(!initRequest){
+          const file = view.querySelector('#p-spec').files[0];
+          if(!file || !file.name.toLowerCase().endsWith('.md')) throw new Error('Markdown 기획서를 첨부해 주세요.');
+          if(file.size > 200000) throw new Error('기획서는 200KB 이내로 첨부해 주세요.');
+          const folder = val('#p-folder').trim();
+          if(!folder) throw new Error('Projects 하위 폴더명을 입력해 주세요.');
+          view.querySelector('#p-init-message').textContent = '기획서를 업로드하고 생성 요청을 등록하고 있어요…';
+          const data = new FormData(); data.append('file', file);
+          const attachment = await api('POST', '/api/attachments', data);
+          initRequest = {request_id: crypto.randomUUID(), attachment_id: attachment.id,
+            key: val('#p-key'), name: val('#p-name'), folder, provider: val('#p-init-provider')};
+        }
+        const result = await api('POST', '/api/projects/initialize', initRequest);
+        await loadProjects();
+        if(!form.isConnected) return;
+        dialog.close(); renderProjects(result.key);
+        toast('초기 프로젝트 생성을 시작했어요. 진행 상태를 확인해 주세요.');
+        return;
+      }
       let fields = { name: val('#p-name'), repo_url: val('#p-repo'), local_path: val('#p-path'), description: val('#p-description') };
       if(!ed && !fields.repo_url.trim() && !fields.local_path.trim()){
         if(suggestion){
@@ -1430,10 +1458,32 @@ function renderProjects(editKey, projectTab = 'manage'){
       if(form.isConnected) view.querySelector('#project-error').textContent = `${error.message} 입력을 확인하고 다시 시도해 주세요.`;
     }finally{
       saving = false;
+      form.querySelectorAll('[data-saving-disabled]').forEach(el => { el.disabled = false; delete el.dataset.savingDisabled; });
       button.disabled = cancel.disabled = false; button.textContent = original;
       form.removeAttribute('aria-busy');
     }
   });
+  if(ed){
+    const panel = view.querySelector('#project-initialization');
+    const refreshInitialization = async () => {
+      if(!panel.isConnected) return;
+      try{
+        const result = await api('GET', `/api/projects/${encodeURIComponent(ed.key)}/initialization`);
+        if(!panel.isConnected) return;
+        panel.hidden = false;
+        panel.innerHTML = `<h3>초기 프로젝트 생성</h3><p>${esc(result.phase)}</p><p class="dim">${esc(result.local_path)}</p>${result.error ? `<p class="error" role="alert">${esc(result.error)}</p>` : ''}${result.status === 'failed' ? '<button type="button" id="p-init-retry">다시 생성</button>' : ''}${result.refs.length ? `<p>${result.refs.map(ref => `<a href="#/issue/${esc(ref)}">${esc(ref)}</a>`).join(' · ')}</p><p class="dim">생성된 Plan과 Task는 초안이에요. 검토 후 승인하여 실행해 주세요.</p>` : ''}`;
+        const retry = panel.querySelector('#p-init-retry');
+        if(retry) retry.onclick = () => whileBusy(retry, async () => {
+          await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/initialization/retry`);
+          await refreshInitialization();
+        });
+        if(['queued', 'running'].includes(result.status)) setTimeout(refreshInitialization, 2000);
+      }catch(error){
+        if(panel.isConnected && !panel.hidden) panel.textContent = `${error.message} 새로고침해 주세요.`;
+      }
+    };
+    refreshInitialization();
+  }
   view.querySelector('#p-cancel').addEventListener('click', () => {
     if(ed){ renderProjects(); view.querySelector('#project-create').focus(); }
     else dialog.close();

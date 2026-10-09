@@ -27,6 +27,8 @@ async def lifespan(app):
     rollback.start_recovery(startup=True)
     orchestrate.take_over()
     jobs.start_timer()   # 남은 대기열을 이어서 돌리고 60초마다 펌프(DEV-43)
+    import project_init
+    project_init.recover()
     async with mcp_app.lifespan(app):   # MCP(streamable HTTP)의 세션 관리자도 같이 띄운다
         yield
 
@@ -393,6 +395,26 @@ def api_projects():
 async def api_create_project(request: Request):
     b = await json_body(request)
     return issues.create_project(actor(request), b.get("key"), b.get("name"), b.get("repo_url", ""), b.get("local_path", ""), b.get("description", ""))
+
+
+@app.post('/api/projects/initialize', status_code=202)
+async def api_initialize_project(request: Request):
+    import project_init
+    a = human_only(request)
+    body = await json_body(request)
+    return await run_in_threadpool(project_init.request, a, body)
+
+
+@app.get('/api/projects/{key}/initialization')
+def api_project_initialization(key: str):
+    import project_init
+    return project_init.status(key)
+
+
+@app.post('/api/projects/{key}/initialization/retry', status_code=202)
+def api_retry_project_initialization(key: str, request: Request):
+    import project_init
+    return project_init.retry(human_only(request), key)
 
 
 @app.patch("/api/projects/{key}")

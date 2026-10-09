@@ -549,6 +549,23 @@ WHEN NEW.status IN ('in_progress','done') BEGIN
 END;
 """)
 
+MIGRATIONS.append("""
+CREATE TABLE project_initializations (
+    project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    request_id TEXT NOT NULL UNIQUE,
+    owner TEXT NOT NULL,
+    provider TEXT NOT NULL CHECK(provider IN ('codex','claude')),
+    spec TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('queued','running','failed','complete')),
+    phase TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    result_json TEXT,
+    refs_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+""")
+
 STATUSES += ("waiting",)
 
 

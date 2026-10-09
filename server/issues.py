@@ -214,6 +214,8 @@ def update_project(actor, key, fields: dict) -> dict:
     if not sets:
         raise StoreError("바꿀 내용이 없어요.")
     with db.connect() as c:
+        if c.execute("SELECT 1 FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE p.key=? AND r.status!='complete'", (key,)).fetchone():
+            raise StoreError('초기 생성이 끝나기 전에는 프로젝트 정보를 바꿀 수 없어요.', 409)
         n = c.execute(f"UPDATE projects SET {', '.join(k + '=?' for k in sets)} WHERE key=?", (*sets.values(), key)).rowcount
         if not n:
             raise _not_found("프로젝트")
@@ -237,6 +239,8 @@ def _project_deletion(c, key):
     snapshot["dependencies"] = deps
     ids = {r["id"] for r in rows}
     blockers = []
+    if c.execute("SELECT 1 FROM project_initializations WHERE project_id=? AND status IN ('queued','running')", (project['id'],)).fetchone():
+        blockers.append('초기 프로젝트 생성이 진행 중이에요.')
     if any(_lease_active(r) for r in rows):
         blockers.append("유효한 작업 점유가 있어요.")
     if any(r["status"] == "running" for r in snapshot["runs"]):

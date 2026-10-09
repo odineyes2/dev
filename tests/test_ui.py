@@ -1761,6 +1761,66 @@ def check_board_actions(page, shots, answers, asked):
         page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
 
 
+def check_project_initialization(page, shots):
+    """운영 생성·유료 CLI 없이 업로드·중복 방지·진행·재시도 화면을 확인한다."""
+    requests, uploads = [], []
+    state = {'status': 'queued', 'phase': '기획서 분석 대기', 'error': '', 'refs': []}
+    def observe(response):
+        if response.request.method == 'POST' and response.url.endswith('/api/attachments'):
+            uploads.append(response)
+    def initialize(route):
+        data = route.request.post_data_json
+        requests.append(data)
+        if len(requests) == 1:
+            route.fulfill(status=500, json={'detail': '요청 확인 실패'})
+            return
+        r = page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'}, data={'key': 'INIT', 'name': '기획서 생성 검사', 'local_path': 'C:/Projects/init-demo'})
+        assert r.ok, r.text()
+        route.fulfill(status=202, json={'key': 'INIT', **state})
+    def progress(route):
+        route.fulfill(json={'key': 'INIT', 'provider': 'codex', 'local_path': 'C:/Projects/init-demo', 'updated_at': '', **state})
+    def retry(route):
+        state.update(status='complete', phase='초기 생성 완료', error='', refs=['INIT-2'])
+        route.fulfill(status=202, json={'key': 'INIT', **state})
+    page.on('response', observe)
+    page.route('**/api/projects/initialize', initialize)
+    page.route('**/api/projects/INIT/initialization', progress)
+    page.route('**/api/projects/INIT/initialization/retry', retry)
+    try:
+        page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create'); page.click('#project-create')
+        page.fill('#p-key', 'INIT'); page.fill('#p-name', '기획서 생성 검사'); page.fill('#p-folder', 'init-demo')
+        page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("첨부")')
+        assert not requests
+        page.set_input_files('#p-spec', {'name': 'example.md', 'mimeType': 'text/markdown', 'buffer': '# 간단한 개인 도구\n기술 스택은 미정'.encode()})
+        for theme in ('light', 'dark'):
+            page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}', theme)
+            for width in (1300, 390):
+                page.set_viewport_size({'width': width, 'height': 900})
+                page.wait_for_timeout(150)
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                assert page.locator('#project-dialog').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+                page.screenshot(path=str(shots / f'project-initialization-{theme}-{width}.png'))
+        page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("요청 확인 실패")')
+        page.locator('#p-initialize').evaluate('e => {e.click();e.click()}')
+        page.wait_for_selector('#project-initialization:not([hidden])')
+        assert len(requests) == 2 and requests[0] == requests[1]
+        assert len(uploads) == 1
+        assert '기획서 분석 대기' in page.inner_text('#project-initialization')
+        state.update(status='failed', phase='생성 중단', error='서버 재시작으로 중단됐어요.')
+        page.wait_for_selector('#p-init-retry'); page.click('#p-init-retry')
+        page.wait_for_function('document.querySelector("#project-initialization").textContent.includes("초기 생성 완료")')
+        assert page.locator('#project-initialization a').get_attribute('href') == '#/issue/INIT-2'
+    finally:
+        page.remove_listener('response', observe)
+        page.unroute('**/api/projects/initialize', initialize)
+        page.unroute('**/api/projects/INIT/initialization', progress)
+        page.unroute('**/api/projects/INIT/initialization/retry', retry)
+        page.request.delete(BASE + '/api/projects/INIT', headers={'X-Requested-With': 'dev'})
+        page.set_viewport_size({'width': 1300, 'height': 850})
+        page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
+        page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 (tmp / "capture_app.py").write_text(BOOTSTRAP, "utf-8")
@@ -1790,6 +1850,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--initialization-only' in sys.argv:
+            check_project_initialization(page, shots)
+            assert not errs, errs
+            print('OK: project initialization'); sys.exit(0)
         if '--usage-only' in sys.argv:
             check_project_usage(page, shots)
             assert not errs, errs

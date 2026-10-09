@@ -160,7 +160,8 @@ print("OK")
 # 생애 시각 도입 직전 DB를 업그레이드하고 근거 없는 값은 비워 둔다.
 db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'lifecycle.db'
 with sqlite3.connect(db.config.DB_PATH) as c:
-    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+    lifecycle_version = next(i for i, sql in enumerate(db.MIGRATIONS) if 'CREATE TEMP TABLE lifecycle_candidates' in sql)
+    for version, sql in enumerate(db.MIGRATIONS[:lifecycle_version], 1):
         c.executescript(sql + f'PRAGMA user_version={version};')
     c.execute("INSERT INTO projects(key,name,created_at) VALUES('LIFE','lifecycle',?)", (now,))
     for iid, status, closed in ((1,'done','2026-01-05T00:00:00Z'),(2,'closed','2026-01-06T00:00:00Z'),(3,'backlog',None),(4,'in_review',None)):

@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["description", "files", "issues"],
+  "properties": {
+    "description": {"type": "string"},
+    "files": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "content"],
+      "properties": {"path": {"type": "string"}, "content": {"type": "string"}}
+    }},
+    "issues": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["title", "body", "plan"],
+      "properties": {"title": {"type": "string"}, "body": {"type": "string"}, "plan": {"type": "string"}}
+    }}
+  }
+}
