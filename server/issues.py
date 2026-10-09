@@ -524,6 +524,18 @@ def repair_terminal_children():
     return count
 
 
+def _check_assignee(c, aid):
+    try:
+        aid = int(aid)
+    except (TypeError, ValueError):
+        raise StoreError("에이전트 id는 숫자여야 해요.")
+    row = c.execute("SELECT kind FROM agents WHERE id=?", (aid,)).fetchone()
+    if row is None:
+        raise _not_found("에이전트")
+    if row["kind"] != "agent":
+        raise StoreError("채팅 연결 키는 Assignee로 지정할 수 없어요.")
+
+
 def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None,
                  assignee_agent_id=None) -> dict:
     # 제목은 비워도 된다 — 본문만 쓰면 이슈를 처리하는 에이전트가 제목을 지어 채운다(DEV-8). 둘 다 비면 안 된다.
@@ -554,8 +566,7 @@ def create_issue(actor, project, title, body="", priority="none", labels=None, p
                 assignee_agent_id = int(assignee_agent_id)
             except (TypeError, ValueError):
                 raise StoreError("에이전트 id는 숫자여야 해요.")
-            if c.execute("SELECT 1 FROM agents WHERE id=?", (assignee_agent_id,)).fetchone() is None:
-                raise _not_found("에이전트")
+            _check_assignee(c, assignee_agent_id)
         number, sub_of, sub = _next_number(c, proj, par)
         iid = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
                         "assignee_agent_id, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -592,8 +603,8 @@ def update_issue(actor, ref, fields: dict) -> dict:
             sets["labels_json"] = _labels(fields["labels"])
         if "assignee_agent_id" in fields:
             aid = fields["assignee_agent_id"]
-            if aid is not None and c.execute("SELECT 1 FROM agents WHERE id=?", (int(aid),)).fetchone() is None:
-                raise _not_found("에이전트")
+            if aid is not None:
+                _check_assignee(c, aid)
             sets["assignee_agent_id"] = None if aid is None else int(aid)
         if "parent" in fields:
             if fields["parent"]:

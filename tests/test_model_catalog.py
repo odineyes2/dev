@@ -26,6 +26,7 @@ assert not {"claude-mythos-5-1", "claude-mythos-5", "claude-opus-4-1"} & set(all
 
 db.init()
 agent, key = auth.create_agent("claude", "anthropic", "claude-opus-5-5")
+chat, chat_key = auth.create_agent('catalog-chat', 'anthropic', 'claude-sonnet-5-5', kind='chat')
 
 # DEV-89-5: 착수 이벤트·프롬프트에 모델, 도는 run이 있으면 에이전트 이벤트 model은 runs.model
 import issues, review  # noqa: E402
@@ -63,6 +64,9 @@ async def main():
         assert (await c.call_tool("list_models", {})).structured_content == cat
         withp = (await c.call_tool("list_models", {"project": "MC"})).structured_content
         assert withp["vendors"] == cat["vendors"] and withp["agent_orders"]["provider_order"][0]["model"] == "claude-opus-5-5", withp
+        assert all(chat['id'] not in [a['id'] for a in order] for order in withp['agent_orders'].values())
+    async with Client(StreamableHttpTransport(f"{BASE}/mcp/", headers={'Authorization': f'Bearer {chat_key}'})) as c:
+        assert (await c.call_tool('list_models', {})).structured_content == cat
 
 
 try:
