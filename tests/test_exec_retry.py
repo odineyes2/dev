@@ -37,6 +37,8 @@ assert prompts[0] == "원래 지시" and prompts[1].startswith("원래 지시") 
 assert '전체 검사는 서버가 다시 수행한다' in prompts[1]
 with patch.object(orchestrate, 'settings', return_value={'auto_merge': False}):
     assert '전체 검사' in execute.test_scope(task) and '직접 돌리지 않는다' in execute.test_scope(task)
+assert '직접 작성·수정한 검사만' in execute.test_scope(task)
+assert '다른 회귀 검사까지 확대하지 않는다' in execute.test_scope(task)
 
 # 두 번 다 실패 → 완료 등록 없이 failed
 status, prompts, registered = run(["a 실패", "b 실패"])

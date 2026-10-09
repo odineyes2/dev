@@ -241,8 +241,9 @@ def safe_env(repo: str) -> dict:
 CAPTURE_PATHS = ('.ui-captures', 'tests/shots')
 # 전체 검사는 서버가 완료 등록 전에 수행한다. 에이전트는 관련 검사만 수행한다.
 def test_scope(ref: str) -> str:
-    return ("Task의 '확인'에 적힌 검사와, 고친 파일을 import·참조하는 tests/test_*.py만 각각 Python으로 실행한다"
-            "(어떤 검사인지는 고친 모듈 이름으로 grep해 고른다). 전체 검사(tests/test_ui.py 포함)는 서버가 완료 등록 전에 돌리니 직접 돌리지 않는다. "
+    return ("Task의 '확인'에 명시된 검사와 이번에 직접 작성·수정한 검사만 실행한다. "
+            "공통 모듈을 import·참조한다는 이유로 다른 회귀 검사까지 확대하지 않는다. "
+            "전체 검사(tests/test_ui.py 포함)는 서버가 완료 등록 전에 돌리니 직접 돌리지 않는다. "
             "재실행이면 이전 실행 이후 바뀐 부분과 관련된 검사만 다시 돌린다.")
 CODE_PATHSPEC = ('.', *(f':(top,exclude){p}/**' for p in CAPTURE_PATHS))
 
