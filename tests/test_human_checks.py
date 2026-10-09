@@ -55,6 +55,7 @@ assert not execute.untested_routes(wt)
 
 # 4) worktree 정리 — Done인 Task만, 커밋 안 된 추적 변경이 있으면 둔다, 브랜치는 남긴다
 execute.WORKTREE_DIR.mkdir(parents=True, exist_ok=True)
+issues.set_status(me, r, "backlog")  # 부모를 먼저 다시 열고 정리 검사용 Task를 만든다.
 t_done = issues.create_issue(me, "TP", "끝난 Task", parent=r)["ref"]
 t_dirty = issues.create_issue(me, "TP", "변경 남은 Task", parent=r)["ref"]
 t_open = issues.create_issue(me, "TP", "진행 중 Task", parent=r)["ref"]

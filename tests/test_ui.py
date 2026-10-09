@@ -2203,6 +2203,9 @@ try:
         page.wait_for_function("location.hash === '#/'")
         ev = page.request.get(f"{BASE}/api/issues/NS-1").json()["events"][-1]
         assert ev["kind"] == "status" and ev["data"]["to"] == "closed" and ev["body"] == "NS-3과 중복", ev
+        # 종결 부모 아래 Task를 다시 열려면 부모를 먼저 연다.
+        reopened = page.request.post(f"{BASE}/api/issues/NS-1/status", data={"status": "on_hold"}, headers={"X-Requested-With": "dev"})
+        assert reopened.status == 200, reopened.text()
         page.goto(BASE + "/#/issue/NS-1-1"); page.wait_for_selector("#status")
         page.select_option("#status", "in_progress")   # 끝내는 게 아니면 그 자리에 머문다
         page.wait_for_function("document.getElementById('status') && document.getElementById('status').value === 'in_progress'")
@@ -2222,7 +2225,7 @@ try:
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_function("document.querySelectorAll('tr.row').length === 100")
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_function("document.querySelectorAll('tr.row').length === 111")   # NS-1-1(in_progress) + 110
+        page.wait_for_function("document.querySelectorAll('tr.row').length === 112")   # NS-1(on_hold) + NS-1-1(in_progress) + 110
         refs = page.evaluate("[...document.querySelectorAll('tr.row')].map(r => r.dataset.ref)")
         assert len(refs) == len(set(refs))
         # 검색하면 처음부터, 검색 글칸 포커스 유지
