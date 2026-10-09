@@ -24,7 +24,7 @@ def run(results):
     def popen(c, **kw):
         prompts.append(c[2])
         return real(cmd, **kw)
-    with patch.object(orchestrate, "run_tests", side_effect=lambda cwd: calls.pop(0)), \
+    with patch.object(orchestrate, "run_tests", side_effect=lambda cwd, **kwargs: calls.pop(0)), \
          patch.object(review.subprocess, "Popen", side_effect=popen), patch.object(execute, "register_completion") as reg:
         status = review.run_headless(human, task, log_path, run_id, [cmd[0], "-p", "원래 지시"], None, None, 30, "실행")
     return status, prompts, reg.called

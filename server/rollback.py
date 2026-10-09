@@ -114,7 +114,7 @@ def prepare(c, actor, root, rows, note):
             result = orchestrate._git(str(worktree), 'revert', '-m', '1', '--no-edit', sha)
             if result.returncode:
                 raise RollbackError(f'{ref} 롤백이 후속 변경과 충돌했어요 — 운영 코드는 유지했어요.\n' + (result.stdout + result.stderr)[-1500:], 409)
-        failed = orchestrate.run_tests(str(worktree))
+        failed = orchestrate.run_tests(str(worktree), stage='server_rollback')
         if failed:
             raise RollbackError('롤백 뒤 검사가 실패했어요 — 운영 코드는 유지했어요.\n' + failed, 409)
         record['head'] = orchestrate._git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()

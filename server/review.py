@@ -398,7 +398,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             break
         # 병합 때 처음 실패를 알면 사람이 다시 실행해야 한다 — 완료 등록 전에 Task worktree에서 전체 검사를 돌려 한 번 스스로 고치게 한다.
         import orchestrate
-        failed = orchestrate.run_tests(str(cwd))
+        failed = orchestrate.run_tests(str(cwd), stage='server_completion')
         if not failed:
             break
         if attempt:

@@ -143,8 +143,12 @@ def _merged(repo, ref) -> bool:
     return _git(repo, "merge-base", "--is-ancestor", branch_name(ref), BASE_BRANCH).returncode == 0
 
 
-def run_tests(repo) -> str | None:
+def run_tests(repo, stage='server_merge') -> str | None:
     """발견한 검사를 한 번씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다."""
+    import regression
+    policy = regression.values()
+    if not policy.get(stage, True):
+        return None
     def once(t):
         try:
             return subprocess.run([sys.executable, str(t)], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -155,6 +159,8 @@ def run_tests(repo) -> str | None:
             return subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
     failures = []
     for t in sorted(Path(repo, "tests").glob("test_*.py")):
+        if not policy.get('file:' + t.name, True):
+            continue
         r = once(t)
         if r.returncode:
             detail = (f"검사: {t}\n작업 폴더: {repo}\nPython: {sys.executable}\n"
@@ -212,7 +218,9 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
         sha = _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()
         # 완료 기록(expected_task)은 Task worktree 전체 검사를 통과해야 생긴다. 그 뒤 base가 안 움직였으면
         # 시험 병합 트리가 검사한 Task 트리와 같으니 같은 검사를 또 돌리지 않는다(test_ui만 수 분).
-        same = expected_task and _git(repo, 'rev-parse', f'{sha}^{{tree}}').stdout.strip() == _git(repo, 'rev-parse', f'{task_sha}^{{tree}}').stdout.strip()
+        import regression
+        # 설정을 조정한 경우 완료 당시와 검사 구성이 같다는 증거가 없으므로 병합 검사를 생략하지 않는다.
+        same = expected_task and not regression.values() and _git(repo, 'rev-parse', f'{sha}^{{tree}}').stdout.strip() == _git(repo, 'rev-parse', f'{task_sha}^{{tree}}').stdout.strip()
         failed = None if same else run_tests(str(worktree))
         if failed:
             return 'changes_requested', f'시험 병합 전체 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'

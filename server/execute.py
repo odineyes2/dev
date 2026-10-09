@@ -241,10 +241,22 @@ def safe_env(repo: str) -> dict:
 CAPTURE_PATHS = ('.ui-captures', 'tests/shots')
 # 전체 검사는 서버가 완료 등록 전에 수행한다. 에이전트는 관련 검사만 수행한다.
 def test_scope(ref: str) -> str:
-    return ("Task의 '확인'에 명시된 검사와 이번에 직접 작성·수정한 검사만 실행한다. "
+    import regression
+    policy = regression.values()
+    scope = ("Task의 '확인'에 명시된 검사와 이번에 직접 작성·수정한 검사만 실행한다. "
             "공통 모듈을 import·참조한다는 이유로 다른 회귀 검사까지 확대하지 않는다. "
             "전체 검사(tests/test_ui.py 포함)는 서버가 완료 등록 전에 돌리니 직접 돌리지 않는다. "
-            "재실행이면 이전 실행 이후 바뀐 부분과 관련된 검사만 다시 돌린다.")
+            "재실행이면 이전 실행 이후 바뀐 부분과 관련된 검사만 다시 돌린다.") if policy.get('agent_related', True) else 'Settings에서 Task 관련 검사를 껐다. Task 관련 테스트 명령은 실행하지 않고 미실시로 기록한다.'
+    disabled = [key[5:] for key, on in policy.items() if key.startswith('file:') and not on]
+    if disabled:
+        scope += ' Settings에서 꺼진 테스트 파일은 실행하지 않는다: ' + ', '.join(disabled) + '.'
+    scope += ' 전체 검사는 에이전트가 직접 실행하지 않는다. 서버도 Settings에서 켜진 단계·파일만 실행한다. 아래 필수 검사 지시보다 Settings의 꺼짐 설정이 우선하며, 꺼진 검사는 미실시로 기록하고 완료할 수 있다.'
+    return scope
+
+
+def api_test_instructions():
+    import regression
+    return '새 HTTP 라우트를 만들면 실제 앱에 요청을 보내는 검사(TestClient 등)를 하나 둔다.' if regression.enabled('agent_api') else 'Settings에서 새 API 요청 검사를 껐다. 해당 검사 작성·실행은 생략하고 미실시로 기록한다.'
 CODE_PATHSPEC = ('.', *(f':(top,exclude){p}/**' for p in CAPTURE_PATHS))
 
 
@@ -256,6 +268,9 @@ def reject_capture_changes(cwd, *revision):
 
 
 def capture_instructions(viewer):
+    import regression
+    if not regression.enabled('agent_capture'):
+        return 'Settings에서 UI 캡처 확인을 껐다. 캡처를 실행하지 않고 미실시로 기록한다.\n'
     return f"""UI Task면 완료 전에 바뀐 화면만 직접 확인한다.
 - 현재 worktree에 scripts/capture_ui.py가 있으면 `python scripts/capture_ui.py --route "#/..."`로 바뀐 로컬 hash 화면을 캡처한다. 상세 화면은 지원되는 --fixture를 함께 지정한다.
 - 화면을 바꾸지 않은 서버 Task는 캡처를 실행하지 않는다. 환경·권한 오류로 캡처가 실패하면 같은 오류를 반복 시도하지 않고 이유를 기록한다.
@@ -274,7 +289,7 @@ def prompt_for(ref: str, parent_ref: str | None) -> str:
    {f'부모 {parent_ref}도 get_issue로 읽어 계획서를 확인한다(계획서보다 사람의 조건부 승인 메모가 우선).' if parent_ref else ''}
 2. 작업 폴더의 CLAUDE.md 규칙을 따른다. 화면 작업이면 {DESIGN_DOC}(공통 디자인 방향, worktree 밖이라 이 절대 경로로)를 먼저 읽는다. Task에 적힌 범위만 고친다.
    바꿀 파일 밖에서 작은 버그(파일 2개·20줄 안팎)를 찾으면 멈추지 말고 고친 뒤 무엇을 왜 고쳤는지 마지막 응답에 적는다(서버가 바꿀 파일 밖 변경을 ⚠️로 알린다).
-   그보다 크면 고치지 말고 사람에게 묻는다. 새 HTTP 라우트를 만들면 실제 앱에 요청을 보내는 검사(TestClient 등)를 하나 둔다.
+   그보다 크면 고치지 말고 사람에게 묻는다. {api_test_instructions()}
 3. 고친 뒤 {test_scope(ref)} 기능 하나를 커밋 하나로 `git add`·`git commit` 한다(커밋 메시지 끝에 `({ref})` 표시,
    트레일러 `Co-Authored-By: Claude Code <noreply@anthropic.com>`).
 4. `git rev-parse HEAD`로 커밋 해시를 얻어 mcp__dev__link_commit으로 잇고, 마지막 응답에 확인하는 법을 적고(상태 전환은 서버가 수행한다),
@@ -302,7 +317,7 @@ def codex_command_for(ref: str, parent_ref: str | None) -> list[str]:
 3. 현재 worktree에서만 파일을 수정한다.
    필요한 외부 문서 조회·명령 실행·의존성 설치는 할 수 있다. 비밀값을 외부로 보내거나 운영 서비스를 임의로 변경하지 않는다.
    바꿀 파일 밖에서 작은 버그(파일 2개·20줄 안팎)를 찾으면 멈추지 말고 고친 뒤 무엇을 왜 고쳤는지 summary에 적는다(서버가 바꿀 파일 밖 변경을 ⚠️로 알린다).
-   그보다 크면 고치지 말고 blocked로 이유를 적는다. 새 HTTP 라우트를 만들면 실제 앱에 요청을 보내는 검사(TestClient 등)를 하나 둔다.
+   그보다 크면 고치지 말고 blocked로 이유를 적는다. {api_test_instructions()}
 {test_scope(ref)} Git 커밋·브랜치 변경·push·서버 재시작은 하지 않는다.
    Task에 적힌 필수 검사와 변경에 직접 관련된 검사부터 실행하고, 전체 검사 여부는 위 검사 범위 지시를 따른다.
    동일한 명령 실행·임시 파일·프로세스 생성 권한 오류가 반복되면 환경 우회 실험을 중단하고 실패한 명령과 오류를 보고한다. 필수 검사를 실행할 수 없으면 blocked로 보고한다.
@@ -407,7 +422,8 @@ def register_completion(actor, ref, cwd, run_id, note):
     stray = out_of_scope(issue, _git(cwd, 'diff', '--name-only', f'{BASE_BRANCH}...HEAD').splitlines())   # 병합해 온 base 변경은 빼고 Task 변경만
     if stray:   # 막지는 않는다(새 검사 파일 등 정당한 추가가 있다) — 검토하는 사람이 보게 남긴다
         note += '\n\n⚠️ Task의 바꿀 파일 밖 변경: ' + ', '.join(f'`{f}`' for f in stray[:20]) + (' 외' if len(stray) > 20 else '')
-    if untested_routes(cwd):
+    import regression
+    if regression.enabled('server_api_warning') and untested_routes(cwd):
         note += '\n\n⚠️ 새 HTTP 라우트가 생겼는데 tests/에 실제 요청(`/api/…` 경로) 검사가 없어요 — 함수 직접 호출로는 라우트 등록·인증을 못 봐요(NS-60).'
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')

@@ -88,3 +88,6 @@ npx pm2 start ecosystem.config.js
 
 도구: `whoami`, `list_projects`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `claim_issue`, `release_issue`,
 `post_plan`, `set_status`, `add_comment`, `link_commit`. 같은 일을 REST(`/api/…`, `Authorization: Bearer`)로도 할 수 있다.
+# 회귀검사 설정
+
+Settings → 회귀검사에서 모든 프로젝트의 서버 검사 단계(완료·병합·롤백·API 누락 경고), 에이전트 검사 지시(Task 관련·API·UI 캡처), 개별 `tests/test_*.py` 파일을 켜고 끈다. 기본은 모두 켜짐이며 SQLite `app_settings`에 저장한다. 서버는 다음 검사부터, Claude·Codex 지시는 다음 실행부터 적용한다. 에이전트 지시는 강제 실행 차단이 아니며 꺼진 검사는 통과를 보장하지 않는다. 인증·입력 검증·데이터 및 Git 반영 안전성·health 확인은 유지한다. 검사 설정을 조정한 경우 완료 때의 검사 구성과 같은지 증명할 수 없으므로 병합 전 검사를 별도로 실행한다.

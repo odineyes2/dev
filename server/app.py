@@ -658,6 +658,20 @@ def api_queue_settings():
     return {"queue_concurrency": jobs.concurrency(), "max": jobs.MAX_CONCURRENCY}
 
 
+@app.get('/api/settings/regression')
+def api_regression_settings():
+    import regression
+    return regression.settings()
+
+
+@app.put('/api/settings/regression')
+async def api_update_regression_settings(request: Request):
+    import regression
+    me = human_only(request)
+    body = await json_body(request)
+    return await run_in_threadpool(regression.update, me, body.get('checks'))
+
+
 @app.put("/api/settings/queue")
 async def api_update_queue_settings(request: Request):
     me = human_only(request)

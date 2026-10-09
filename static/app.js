@@ -238,6 +238,7 @@ async function route(){
     }
     else if(name === 'settings' && settingsTab === 'auto') await renderSettings();
     else if(name === 'settings' && settingsTab === 'types') await renderTypes();
+    else if(name === 'settings' && settingsTab === 'regression') await renderRegressionSettings();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
   }catch(e){ if(!view.innerHTML) view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   perfReport(name || 'issues', t0);
@@ -1711,6 +1712,29 @@ async function renderQueueSettings(box, current){
     try{ s = await api('PUT', '/api/settings/queue', { queue_concurrency: value }, current); if(current()) status.textContent = `저장했어요 — 동시에 ${s.queue_concurrency}개까지 돌아요.`; }
     catch(err){ if(current()){ input.value = s.queue_concurrency; status.textContent = `${err.message} 이전 값으로 되돌렸어요.`; } }
     finally{ if(current()){ button.disabled = false; button.textContent = '저장'; } }
+  };
+}
+
+async function renderRegressionSettings(){
+  const session = {};
+  settingsSession = session;
+  const current = () => settingsSession === session && location.hash.split('?')[0] === '#/settings/regression';
+  view.innerHTML = `<section class="panel auto-settings">${settingsHeader('regression')}<h3>회귀검사</h3><p class="dim">모든 프로젝트와 Claude·Codex에 공통 적용해요. 기본은 켜짐이에요. 서버는 다음 검사부터, 에이전트 지시는 다음 실행부터 적용돼요. 꺼진 검사는 통과를 보장하지 않아요.</p><div id="regression-body"></div><p id="regression-status" role="status" aria-live="polite"></p><h3>항상 유지하는 기본 검증</h3><p class="dim">인증·권한·입력 검증, 승인된 작업 범위, Git 충돌·변경 중 반영 방지, 결과 형식과 커밋 연결, 운영 재시작 health 확인·실패 복구는 회귀 테스트와 별개로 유지해요. 에이전트 토글은 실행 지시를 바꾸며, 에이전트가 별도로 판단하는 확인까지 강제로 차단하지는 않아요.</p></section>`;
+  const body = view.querySelector('#regression-body'), status = view.querySelector('#regression-status');
+  let settings, busy = false;
+  function paint(){
+    body.innerHTML = [...new Set(settings.checks.map(c => c.group))].map(group => `<h3>${esc(group)}</h3>${settings.checks.filter(c => c.group === group).map(c => `<div class="setting-row"><div><b>${esc(c.name)}</b><p class="dim">${esc(c.description)}</p></div><button type="button" class="auto-switch" data-check="${esc(c.key)}" role="switch" aria-label="${esc(c.name)}" aria-checked="${c.enabled}" ${busy ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span><span>${c.enabled ? '켜짐' : '꺼짐'}</span></button></div>`).join('')}`).join('');
+  }
+  try{ settings = await api('GET', '/api/settings/regression', undefined, current); if(current()) paint(); }
+  catch(e){ if(current()) status.textContent = e.message; return; }
+  body.onclick = async e => {
+    const button = e.target.closest('[data-check]');
+    if(!button || busy) return;
+    const key = button.dataset.check, on = settings.checks.find(c => c.key === key).enabled;
+    busy = true; paint(); status.textContent = '저장 중…';
+    try{ settings = await api('PUT', '/api/settings/regression', {checks: {[key]: !on}}, current); if(current()) status.textContent = '저장했어요.'; }
+    catch(err){ if(current()) status.textContent = `${err.message} 이전 설정을 유지했어요.`; }
+    finally{ busy = false; if(current()) paint(); }
   };
 }
 
