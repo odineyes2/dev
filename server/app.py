@@ -68,6 +68,14 @@ async def authenticate(request: Request, call_next):
     if path == "/mcp" or path.startswith("/mcp/"):
         # MCP는 에이전트 키만 — 쿠키로는 받지 않는다(다른 사이트가 브라우저 쿠키로 도구를 부르지 못하게).
         actor, _ = await _resolve_actor(request) if bearer else (None, "")
+        # Claude 앱 커스텀 커넥터는 헤더를 못 붙이므로 `/mcp/dev_<키>` 경로로도 받는다(nightshift와 같은 방식).
+        seg = path[5:].split("/", 1)[0]
+        if actor is None and not bearer and seg.startswith(auth.KEY_PREFIX):
+            agent = auth.agent_for_key(seg)
+            if agent:
+                actor = {"kind": "agent", "id": agent["id"], "name": agent["name"], "model": agent["model"]}
+                path = "/mcp" + path[5 + len(seg):]
+                request.scope["path"] = path
         if actor is None:
             return JSONResponse({"detail": "에이전트 키(Authorization: Bearer dev_…)가 필요해요."}, status_code=401)
         request.state.actor = actor

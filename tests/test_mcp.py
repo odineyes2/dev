@@ -54,6 +54,10 @@ async def main():
     async with httpx.AsyncClient() as h:   # 쿠키로는 안 됨
         r = await h.post(URL, cookies={"ns_session": "x"}, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         assert r.status_code == 401, r.status_code
+        r = await h.post(URL + "dev_wrong", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        assert r.status_code == 401, r.status_code
+    async with Client(StreamableHttpTransport(URL + key)) as c:   # 헤더 없는 커스텀 커넥터: 경로에 키
+        assert "whoami" in {t.name for t in await c.list_tools()}
 
     async with client(key) as c:
         names = {t.name for t in await c.list_tools()}
