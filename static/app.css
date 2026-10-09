@@ -174,6 +174,11 @@ main{ padding:28px; max-width:1320px; margin:0 auto; }
 .ref{ font-size:12px; font-weight:500; color:var(--dim); letter-spacing:0.04em; white-space:nowrap; }
 
 /* 이슈 표 */
+.processing-agents{ display:inline-flex; align-items:center; gap:4px; color:var(--dim); }
+.completion-time{ font-variant-numeric:tabular-nums; white-space:nowrap; }
+.history-heading{ white-space:nowrap; }
+.issue-history-mobile{ display:none; }
+.task-history{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim); }
 table.issues{ width:100%; border-collapse:separate; border-spacing:0; background:var(--panel); border:1px solid var(--border);
   border-radius:var(--r-md); overflow:hidden; box-shadow:var(--shadow); }
 table.issues td, table.issues th{ padding:0 var(--sp-4); height:46px; border-bottom:1px solid var(--border); text-align:left; vertical-align:middle; }
@@ -328,6 +333,7 @@ body:has(.composer:not([hidden])) .toast{ bottom:auto; top:72px; }
   #project-filter{ max-width:30vw; }
   main{ padding:14px; }
   table.issues .hide-m, .tab-bar .hide-m{ display:none; }
+  .issue-history-mobile{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim); }
   .task-actions{ flex-direction:column; padding:var(--sp-1) 0; }
   .task-actions button{ min-width:40px; min-height:40px; padding:var(--sp-2); }
   table.issues.tasks td{ padding:0 var(--sp-1); }

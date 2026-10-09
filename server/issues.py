@@ -303,6 +303,11 @@ _PARENT_REF = f"(SELECT {ref_sql('q', 'p')} FROM issues q WHERE q.id=i.parent_id
 _ISSUE_SELECT = (f"SELECT i.*, p.key AS project_key, {ref_sql('i', 'p')} AS ref, {_PARENT_REF} AS parent_ref, "
                  f"{_DEC_VERDICT} AS dec_verdict, {_DEC_VERSION} AS dec_version, "
                  f"{_LATEST_PLAN} AS latest_plan, "
+                 "(WITH RECURSIVE family(id) AS (SELECT i.id UNION SELECT q.id FROM issues q JOIN family f ON q.parent_id=f.id) "
+                 "SELECT json_group_array(provider) FROM (SELECT DISTINCT r.provider FROM runs r JOIN family f ON r.issue_id=f.id "
+                 "UNION SELECT CASE a.vendor WHEN 'anthropic' THEN 'claude' WHEN 'openai' THEN 'codex' END "
+                 "FROM events e JOIN family f ON e.issue_id=f.id JOIN agents a ON e.actor='agent:'||a.id "
+                 "WHERE a.vendor IN ('anthropic','openai') AND e.kind IN ('plan','commit','comment','status'))) AS processing_agents_json, "
                  "(SELECT json_group_array(json_object('id',t.id,'name',t.name,'active',t.active,'source',l.source)) "
                  "FROM issue_type_links l JOIN issue_types t ON t.id=l.type_id WHERE l.issue_id=i.id ORDER BY t.id) AS types_json "
                  "FROM issues i JOIN projects p ON p.id = i.project_id")
@@ -325,6 +330,14 @@ def _issue_dict(r) -> dict:
     for t in d["types"]:
         t["active"] = bool(t["active"])
     d["type_ids"] = [t["id"] for t in d["types"]]
+    d["processing_agents"] = sorted(json.loads(d.pop("processing_agents_json") or "[]"))
+    d["completion_seconds"] = None
+    if d["status"] in ("done", "closed") and d["first_started_at"]:
+        end = d["last_done_at"] if d["status"] == "done" else d["closed_at"]
+        if end:
+            seconds = (datetime.fromisoformat(end) - datetime.fromisoformat(d["first_started_at"])).total_seconds()
+            if seconds >= 0:
+                d["completion_seconds"] = seconds
     verdict, version, latest = d.pop("dec_verdict"), d.pop("dec_version"), d.pop("latest_plan")
     # 결정은 그 계획서 판에 붙는다 — 새 판이 올라오면 stale(승인이 무효, 다시 결정해야 한다)
     d["approval"] = {"verdict": verdict, "plan_version": version, "stale": version != latest} if verdict else None
