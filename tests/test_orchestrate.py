@@ -99,7 +99,7 @@ assert git('rev-parse', 'HEAD') == before and not (repo / 'new-feature.txt').exi
 # 검사한 사본은 detached이며 운영 main은 검사 중에도 원래 SHA를 유지한다.
 branch('C-2', {'safe.txt': 'safe\n'})
 checked = []
-def inspect_candidate(path):
+def inspect_candidate(path, **kwargs):
     assert Path(path).resolve() != repo.resolve()
     assert git('rev-parse', 'HEAD') == before and not (repo / 'safe.txt').exists()
     assert orchestrate._git(path, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip() == 'HEAD'
@@ -113,7 +113,7 @@ for kind in ('main', 'task', 'dirty', 'candidate'):
     ref = 'R-' + kind
     branch(ref, {ref + '.txt': 'task\n'})
     before = git('rev-parse', 'HEAD')
-    def race(path):
+    def race(path, **kwargs):
         if kind == 'main':
             (repo / 'external.txt').write_text('keep\n'); git('add', '.'); git('commit', '-qm', 'external change')
         elif kind == 'task':
@@ -292,7 +292,7 @@ with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(not
             assert issues.get_issue(ref)['status'] == ('in_progress' if auto else 'in_review')
             before_sent = sent.call_count
             if auto:
-                def inspect(path):
+                def inspect(path, **kwargs):
                     assert issues.get_issue(ref)['status'] == 'in_progress'
                     assert orchestrate.completion(ref)['phase'] == 'checking'
                     assert jobs.busy()
@@ -312,7 +312,7 @@ with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(not
 
     # 검사 실패·커밋 변경·사람의 상태 변경을 구분한다.
     ref, _ = ready()
-    with patch.object(orchestrate, 'run_tests', side_effect=AssertionError('base가 그대로면 같은 트리를 다시 검사하지 않는다')):
+    with patch.object(orchestrate, 'run_tests', return_value=None):
         assert orchestrate.handle(me, ref) == 'merged'
     ref, _ = ready()
     (repo / 'main-moved.txt').write_text(ref)   # Task 뒤 base가 움직이면 시험 병합 트리를 다시 검사한다

@@ -811,7 +811,9 @@ def complete_tree(actor, ref, note="", confirm_checks=False) -> list[dict]:
 
 def post_plan(actor, ref, body) -> dict:
     import execute
+    import regression
     body = _text(body, "계획서", required=True)
+    regression.parse_plan(body)
     with db.connect() as c:
         repo = c.execute("SELECT p.local_path FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id=?", (_find(c, ref)["id"],)).fetchone()[0]
     base = execute.base_sha(repo)   # 에이전트가 적는 값이 아니라 서버가 지금 base를 적는다

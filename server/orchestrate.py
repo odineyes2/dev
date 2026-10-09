@@ -143,11 +143,14 @@ def _merged(repo, ref) -> bool:
     return _git(repo, "merge-base", "--is-ancestor", branch_name(ref), BASE_BRANCH).returncode == 0
 
 
-def run_tests(repo, stage='server_merge') -> str | None:
+def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
     """발견한 검사를 한 번씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다."""
     import regression
-    policy = regression.values()
-    if not policy.get(stage, True):
+    selection = regression.resolve(ref, repo if ref or changed is not None else None, changed)
+    policy = selection['checks']
+    if ref:
+        regression.save_record('regression-selection:' + ref + ':' + stage, selection)
+    if not policy[stage]['enabled']:
         return None
     def once(t):
         try:
@@ -158,10 +161,23 @@ def run_tests(repo, stage='server_merge') -> str | None:
                 return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
             return subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
     failures = []
+    cached = regression.load_record('regression-cache:' + ref) if ref else {}
+    identity = regression.tree_identity(repo) if ref else None
+    results = {}
     for t in sorted(Path(repo, "tests").glob("test_*.py")):
-        if not policy.get('file:' + t.name, True):
+        if not policy.get('file:' + t.name, {'enabled': True})['enabled']:
+            results[t.name] = 'skipped'
+            continue
+        stamp = regression.fingerprint(t, identity) if ref else None
+        if stamp and cached.get(t.name) == stamp:
+            results[t.name] = 'reused'
             continue
         r = once(t)
+        results[t.name] = 'failed' if r.returncode else 'passed'
+        if not r.returncode and stamp:
+            cached[t.name] = stamp
+        elif r.returncode:
+            cached.pop(t.name, None)
         if r.returncode:
             detail = (f"검사: {t}\n작업 폴더: {repo}\nPython: {sys.executable}\n"
                       f"종료 코드: {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n"
@@ -172,6 +188,9 @@ def run_tests(repo, stage='server_merge') -> str | None:
             log.write_text(detail, encoding="utf-8")
             output = (r.stdout + r.stderr).strip() or "표준 출력과 오류 출력이 없어요."
             failures.append(f"{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
+    if ref:
+        regression.save_record('regression-cache:' + ref, cached)
+        regression.save_record('regression-selection:' + ref + ':' + stage, {**selection, 'results': results})
     return '\n\n'.join(failures) or None
 
 
@@ -181,7 +200,7 @@ def merge(repo: str, ref: str, after: list[str] = ()) -> tuple[str, str]:
         return _merge(repo, ref, after)
 
 
-def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task=None, reuse_tests=True) -> tuple[str, str]:
+def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task=None) -> tuple[str, str]:
     head = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if head != BASE_BRANCH:
         return "on_hold", f"저장소가 {BASE_BRANCH}가 아니라 {head}에 있어 병합 보류 — {BASE_BRANCH}로 돌려 놓은 뒤 재개해 주세요."
@@ -216,14 +235,11 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
         if r.returncode:
             return 'changes_requested', f'{BASE_BRANCH}와 시험 병합이 실패했어요 — 운영 코드는 유지했어요.\n' + (r.stdout + r.stderr).strip()[-1500:]
         sha = _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()
-        # 완료 기록(expected_task)은 Task worktree 전체 검사를 통과해야 생긴다. 그 뒤 base가 안 움직였으면
-        # 시험 병합 트리가 검사한 Task 트리와 같으니 같은 검사를 또 돌리지 않는다(test_ui만 수 분).
-        import regression
-        # 설정을 조정한 경우 완료 당시와 검사 구성이 같다는 증거가 없으므로 병합 검사를 생략하지 않는다.
-        same = reuse_tests and expected_task and not regression.values() and _git(repo, 'rev-parse', f'{sha}^{{tree}}').stdout.strip() == _git(repo, 'rev-parse', f'{task_sha}^{{tree}}').stdout.strip()
-        failed = None if same else run_tests(str(worktree))
+        # 검사 선택은 매 단계 확정하고 같은 트리·파일의 통과 결과만 재사용한다.
+        changed = _git(str(worktree), 'diff', '--name-only', before, sha).stdout.splitlines()
+        failed = run_tests(str(worktree), ref=ref if expected_task else None, changed=changed)
         if failed:
-            return 'changes_requested', f'시험 병합 전체 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
+            return 'changes_requested', f'시험 병합의 선택된 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
         changed = _git(str(worktree), 'status', '--porcelain', '--untracked-files=no').stdout.strip()
         if _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip() != sha or changed:
             return 'changes_requested', ('검사 중 시험 병합 사본이 변경됐어요 — 검사 결과를 반영하지 않았어요. 검사가 커밋된 파일을 다시 쓰면 .gitignore에 넣거나 임시 폴더에 쓰게 고쳐 주세요.'
@@ -313,7 +329,7 @@ def retry_merge(actor, ref):
             issues._set_status(c, actor, row, 'in_progress', '기존 구현 커밋으로 병합 재시도 — 에이전트 재실행 없음')
             event = c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status'", (row['id'],)).fetchone()[0]
             c.execute("UPDATE execution_completion SET phase='ready',worker_id=?,owner_event=?,actor=?,cfg_json=?,updated_at=? WHERE run_id=?",
-                      (PROCESS_ID, event, issues.actor_label(actor), json.dumps({**cfg, 'retry_merge': True}), db.now_iso(), record['run_id']))
+                      (PROCESS_ID, event, issues.actor_label(actor), json.dumps(cfg), db.now_iso(), record['run_id']))
         try:
             threading.Thread(target=jobs.run_then_pump, args=(handle, actor, ref), daemon=True).start()
         except Exception as error:
@@ -460,7 +476,7 @@ def handle(actor: dict, ref: str) -> str | None:
                 _save(record, 'checking')
                 def checkpoint(sha):
                     _save(record, 'applying', merge_sha=sha)
-                status, note = _merge(repo, ref, [b['ref'] for b in issue['blocked_by']], checkpoint, record['task_sha'], reuse_tests=not cfg.get('retry_merge'))
+                status, note = _merge(repo, ref, [b['ref'] for b in issue['blocked_by']], checkpoint, record['task_sha'])
                 if status != 'merged':
                     return _finish(actor, record, status, note)
                 _save(record, 'deployed', merge_sha=note)

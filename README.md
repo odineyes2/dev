@@ -90,6 +90,8 @@ npx pm2 start ecosystem.config.js
 `post_plan`, `set_status`, `add_comment`, `link_commit`. 같은 일을 REST(`/api/…`, `Authorization: Bearer`)로도 할 수 있다.
 # 회귀검사 설정
 
-Settings → 회귀검사에서 모든 프로젝트의 서버 검사 단계(완료·병합·롤백·API 누락 경고), 에이전트 검사 지시(Task 관련·API·UI 캡처), 개별 `tests/test_*.py` 파일을 켜고 끈다. 기본은 모두 켜짐이며 SQLite `app_settings`에 저장한다. 서버는 다음 검사부터, Claude·Codex 지시는 다음 실행부터 적용한다. 에이전트 지시는 강제 실행 차단이 아니며 꺼진 검사는 통과를 보장하지 않는다. 인증·입력 검증·데이터 및 Git 반영 안전성·health 확인은 유지한다. 검사 설정을 조정한 경우 완료 때의 검사 구성과 같은지 증명할 수 없으므로 병합 전 검사를 별도로 실행한다.
+Settings → 회귀검사에서 모든 프로젝트의 서버 검사 단계(완료·병합·롤백·API 누락 경고), 에이전트 검사 지시(Task 관련·API·UI 캡처), 개별 `tests/test_*.py` 파일을 On·Off·Auto로 지정한다. 기본은 Auto이며 기존에 저장한 켜짐·꺼짐은 On·Off로 유지한다. SQLite `app_settings`에 저장하며 서버는 다음 검사부터, Claude·Codex 지시는 다음 실행부터 적용한다. Off는 Auto 보강보다 우선한다. 검사 단계가 Off이면 그 단계의 파일 검사도 생략한다. 에이전트 지시는 강제 실행 차단이 아니며 꺼진 검사는 통과를 보장하지 않는다. 인증·입력 검증·데이터 및 Git 반영 안전성·health 확인은 유지한다.
+
+계획 에이전트는 계획서의 `## 검사 선택` 아래 json 코드 블록에 Task 번호별 `level`(light/normal/high), `reason`, `checks`(검사 키: true/false)를 적는다. 서버는 승인된 최신 계획에서 제목이 일치하는 Task의 선택을 읽고 실제 변경으로 보강한다. 계획 선택이 없는 기존 Task는 변경 범위·관련 테스트 import로 결정한다. 인증·DB·공통 실행 변경은 Auto 검사를 높이고, 가벼운 문구·문서 변경은 전체 검사를 강제하지 않는다. Task 상세에서 선택·생략 이유와 최근 실제 테스트 결과를 확인한다. 같은 Git 트리·테스트·검사 실행 코드·Python 환경의 통과 결과만 재사용하며, 작업 코드나 테스트가 바뀌면 다시 검사한다.
 
 Task 상세의 **병합 재시도**(`POST /api/issues/{ref}/retry-merge`, 관리자 전용)는 미반영 커밋의 완료 기록이 남은 Backlog·On Hold·Changes Requested Task에 표시한다. 에이전트를 다시 호출하지 않고 현재 설정에 따른 서버 검사·병합·재시작을 진행하며, 성공하면 In Review가 된다. 커밋 변경·미커밋 작업·승인 계획 변경·대기/실행 중인 작업·이미 반영 또는 롤백한 결과는 거부한다. 완료 처리(Done)는 별도다.

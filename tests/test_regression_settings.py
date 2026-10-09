@@ -23,14 +23,14 @@ assert client.get('/api/settings/regression').status_code == 401
 client.cookies.set('ns_session', 'test')
 url = '/api/settings/regression'
 headers = {'X-Requested-With': 'dev'}
-assert all(row['enabled'] for row in client.get(url).json()['checks'])
-assert client.put(url, json={'checks': {'server_merge': False}}).status_code == 403
+assert all(row['mode'] == 'auto' for row in client.get(url).json()['checks'])
+assert client.put(url, json={'checks': {'server_merge': 'off'}}).status_code == 403
 for changes in ({'unknown': False}, {'server_merge': 0}, {}):
     assert client.put(url, json={'checks': changes}, headers=headers).status_code == 400
-assert client.put(url, json={'checks': {'server_merge': False, 'file:test_ui.py': False}}, headers=headers).status_code == 200
+assert client.put(url, json={'checks': {'server_merge': 'off', 'file:test_ui.py': 'off'}}, headers=headers).status_code == 200
 assert not regression.enabled('server_merge')
 agent, key = auth.create_agent('regression', 'openai', '')
-assert client.put(url, json={'checks': {'server_merge': True}}, headers={'Authorization': 'Bearer ' + key}).status_code == 403
+assert client.put(url, json={'checks': {'server_merge': 'on'}}, headers={'Authorization': 'Bearer ' + key}).status_code == 403
 
 repo = Path(tempfile.mkdtemp())
 (repo / 'tests').mkdir()
@@ -42,10 +42,10 @@ with patch.object(orchestrate.subprocess, 'run') as run:
     assert not run.called
     assert orchestrate.run_tests(repo, stage='server_completion') is None
     assert run.call_count == 1 and run.call_args.args[0][1].endswith('test_other.py')
-client.put(url, json={'checks': {'agent_related': False, 'agent_api': False, 'agent_capture': False}}, headers=headers).raise_for_status()
+client.put(url, json={'checks': {'agent_related': 'off', 'agent_api': 'off', 'agent_capture': 'off'}}, headers=headers).raise_for_status()
 assert '실행하지 않고' in execute.test_scope('DEV-1')
 assert 'test_ui.py' in execute.test_scope('DEV-1')
 assert '생략' in execute.api_test_instructions()
 assert '캡처를 실행하지 않고' in execute.capture_instructions('Read')
-assert not next(row for row in client.get(url).json()['checks'] if row['key'] == 'agent_capture')['enabled']
+assert next(row for row in client.get(url).json()['checks'] if row['key'] == 'agent_capture')['mode'] == 'off'
 print('regression settings OK')

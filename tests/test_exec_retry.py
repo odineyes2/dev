@@ -90,6 +90,8 @@ assert 'web_search="cached"' in execute.codex_command_for("NS-1-1", "NS-1") and 
 print("ok web policy")
 
 # 두 실행기의 화면 확인 계약과 캡처만의 실패 예외를 보존한다.
+import regression
+regression.update(human, {'agent_capture': 'on'})
 for prompt, viewer in ((execute.prompt_for('NS-1-1', 'NS-1'), 'Read'),
                        (execute.codex_command_for('NS-1-1', 'NS-1')[-1], '이미지 보기 도구')):
     for text in ('python scripts/capture_ui.py --route', viewer, '재캡처', '잘림·겹침·가로 스크롤',
