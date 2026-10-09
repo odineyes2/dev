@@ -266,7 +266,7 @@ def check_issue_types(page, shots):
                 if name == 'new': assert page.locator(f'[data-type="{a["id"]}"]').count() == 0
                 if name == 'detail':
                     assert page.locator(f'[data-type="{a["id"]}"]').get_attribute('aria-pressed') == 'true'
-                    assert '비활성' in page.locator('.byline').inner_text()
+                    assert '비활성' in page.locator('.byline .type-badge').first.get_attribute('title')
                 if name in ('list','board'):
                     assert '이름 수정 확인' in page.locator('#view').inner_text()
                 page.locator('#toast').evaluate('e => e.hidden = true')
