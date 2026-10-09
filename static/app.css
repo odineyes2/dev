@@ -492,6 +492,14 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .auto-switch[aria-checked="true"] .switch-track{ background:var(--s-done); }
 .auto-switch[aria-checked="true"] .switch-track::before{ transform:translateX(16px); }
 .auto-settings button:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+.check-modes{ display:flex; flex:none; gap:4px; }
+.check-modes button{ min-height:40px; padding:4px 8px; font-size:12px; }
+.check-modes button[aria-pressed="true"]{ color:var(--accent); border-color:var(--accent); background:rgba(var(--accent-rgb),.08); }
+.task-checks{ margin-top:var(--sp-3); font-size:12px; overflow-wrap:anywhere; }
+.task-checks summary{ cursor:pointer; }
+.task-checks > div{ margin-top:var(--sp-3); }
+.task-checks p{ margin:4px 0; }
+@media(max-width:800px){ #regression-body .setting-row{ flex-wrap:wrap; } #regression-body .check-modes{ margin-left:auto; } }
 .role-cards{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:var(--sp-4); }
 .role-card{ min-width:0; border:1px solid var(--border); border-radius:var(--r-md); padding:var(--sp-4); }
 .role-card h4{ margin:0; font-size:14px; }

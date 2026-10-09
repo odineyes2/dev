@@ -746,12 +746,13 @@ function executeHtml(it, liveMode, liveProvider){
     : x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
     : it.review_busy ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : `격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}.`;
   const b = x.branch;
+  const checks = x.regression ? `<details class="task-checks"><summary>검사 선택 · ${{light:'가벼움',normal:'보통',high:'높음'}[x.regression.level]} · ${x.regression.planned ? '승인 계획 반영' : '서버 판단'}</summary><p class="dim">실제 변경에 따라 Auto 선택이 보강될 수 있어요.</p>${Object.values(x.regression.checks).sort((a,b) => Number(b.enabled) - Number(a.enabled)).map(c => `<div><b>${esc(c.name)}</b> · ${c.mode.toUpperCase()} · ${c.enabled ? '실행' : '생략'}<p class="dim">${esc(c.reason)}</p></div>`).join('')}${Object.entries(x.regression_results || {}).filter(([,r]) => r.results).map(([stage,r]) => `<h4>${stage === 'server_completion' ? '최근 완료 전 검사' : '최근 병합 검사'}</h4>${Object.entries(r.results).map(([name,result]) => `<div>${esc(name)} · ${{passed:'통과',failed:'실패',reused:'기존 통과 결과 재사용',skipped:'생략'}[result]}</div>`).join('')}`).join('')}</details>` : '';
   return `<div class="exec">${job ? jobHtml(job) : `<button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>${provider === 'claude' ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
     <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>${provider === 'codex' ? '실행 중…' : 'Codex에게 실행 맡기기'}</button>
     <div class="dim hint">${hint}</div><div class="dim hint">Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음.</div>`}
     ${x.retry_merge_available && !running && !job ? '<button id="retry-merge">병합 재시도</button><div class="dim hint">기존 구현 커밋으로 서버 검사·병합만 다시 진행해요. 회귀검사 설정과 자동 병합·재시작 정책이 적용돼요.</div>' : ''}
     ${b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
-      ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}</div>`;
+      ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}${checks}</div>`;
 }
 function decisionHtml(it){
   const a = it.approval;
@@ -1748,20 +1749,21 @@ async function renderRegressionSettings(){
   const session = {};
   settingsSession = session;
   const current = () => settingsSession === session && location.hash.split('?')[0] === '#/settings/regression';
-  view.innerHTML = `<section class="panel auto-settings">${settingsHeader('regression')}<h3>회귀검사</h3><p class="dim">모든 프로젝트와 Claude·Codex에 공통 적용해요. 기본은 켜짐이에요. 서버는 다음 검사부터, 에이전트 지시는 다음 실행부터 적용돼요. 꺼진 검사는 통과를 보장하지 않아요.</p><div id="regression-body"></div><p id="regression-status" role="status" aria-live="polite"></p><h3>항상 유지하는 기본 검증</h3><p class="dim">인증·권한·입력 검증, 승인된 작업 범위, Git 충돌·변경 중 반영 방지, 결과 형식과 커밋 연결, 운영 재시작 health 확인·실패 복구는 회귀 테스트와 별개로 유지해요. 에이전트 토글은 실행 지시를 바꾸며, 에이전트가 별도로 판단하는 확인까지 강제로 차단하지는 않아요.</p></section>`;
+  view.innerHTML = `<section class="panel auto-settings">${settingsHeader('regression')}<h3>회귀검사</h3><p class="dim">모든 프로젝트와 Claude·Codex에 공통 적용해요. 기본은 Auto예요. On은 항상 실행, Off는 생략, Auto는 계획 에이전트의 선택을 서버가 변경 범위로 확인해요. 검사 판단이 없는 기존 Task는 서버가 선택해요. 서버는 다음 검사부터, 에이전트 지시는 다음 실행부터 적용돼요.</p><div id="regression-body"></div><p id="regression-status" role="status" aria-live="polite"></p><h3>항상 유지하는 기본 검증</h3><p class="dim">인증·권한·입력 검증, 승인된 작업 범위, Git 충돌·변경 중 반영 방지, 결과 형식과 커밋 연결, 운영 재시작 health 확인·실패 복구는 회귀 테스트와 별개로 유지해요. Off는 서버의 Auto 보강보다 우선해요. 꺼진 검사는 통과를 보장하지 않아요. 에이전트 설정은 실행 지시를 바꾸며 자체 확인까지 강제로 차단하지는 않아요.</p></section>`;
   const body = view.querySelector('#regression-body'), status = view.querySelector('#regression-status');
   let settings, busy = false;
   function paint(){
-    body.innerHTML = [...new Set(settings.checks.map(c => c.group))].map(group => `<h3>${esc(group)}</h3>${settings.checks.filter(c => c.group === group).map(c => `<div class="setting-row"><div><b>${esc(c.name)}</b><p class="dim">${esc(c.description)}</p></div><button type="button" class="auto-switch" data-check="${esc(c.key)}" role="switch" aria-label="${esc(c.name)}" aria-checked="${c.enabled}" ${busy ? 'disabled' : ''}><span class="switch-track" aria-hidden="true"></span><span>${c.enabled ? '켜짐' : '꺼짐'}</span></button></div>`).join('')}`).join('');
+    body.innerHTML = [...new Set(settings.checks.map(c => c.group))].map(group => `<h3>${esc(group)}</h3>${settings.checks.filter(c => c.group === group).map(c => `<div class="setting-row"><div><b>${esc(c.name)}</b><p class="dim">${esc(c.description)}</p></div><div class="check-modes" role="group" aria-label="${esc(c.name)}">${['on','off','auto'].map(mode => `<button type="button" data-check="${esc(c.key)}" data-mode="${mode}" aria-pressed="${c.mode === mode}" ${busy ? 'disabled' : ''}>${mode === 'auto' ? 'Auto' : mode === 'on' ? 'On' : 'Off'}</button>`).join('')}</div></div>`).join('')}`).join('');
   }
   try{ settings = await api('GET', '/api/settings/regression', undefined, current); if(current()) paint(); }
   catch(e){ if(current()) status.textContent = e.message; return; }
   body.onclick = async e => {
     const button = e.target.closest('[data-check]');
     if(!button || busy) return;
-    const key = button.dataset.check, on = settings.checks.find(c => c.key === key).enabled;
+    const key = button.dataset.check, mode = button.dataset.mode;
+    if(settings.checks.find(c => c.key === key).mode === mode) return;
     busy = true; paint(); status.textContent = '저장 중…';
-    try{ settings = await api('PUT', '/api/settings/regression', {checks: {[key]: !on}}, current); if(current()) status.textContent = '저장했어요.'; }
+    try{ settings = await api('PUT', '/api/settings/regression', {checks: {[key]: mode}}, current); if(current()) status.textContent = '저장했어요.'; }
     catch(err){ if(current()) status.textContent = `${err.message} 이전 설정을 유지했어요.`; }
     finally{ busy = false; if(current()) paint(); }
   };
