@@ -388,9 +388,13 @@ def _list_action_context(c, rows):
     return {r["id"]: {**contexts[r["id"]], "parent": contexts.get(r["parent_id"])} for r in rows}
 
 
-def list_issues(project=None, status=None, assignee=None, parent=None, q=None, limit=500, offset=0, approved=False) -> list[dict]:
+def list_issues(project=None, status=None, assignee=None, parent=None, q=None, limit=500, offset=0, approved=False, sort=None) -> list[dict]:
     """status: 목록 또는 쉼표 문자열. parent: 이슈 ref(그 하위만) 또는 "none"(최상위만). offset부터 limit개(나눠 읽기).
     approved: 최신 계획서가 승인(조건부 포함)된 이슈만."""
+    orders = {None: "i.updated_at DESC, i.id DESC", "": "i.updated_at DESC, i.id DESC",
+              "id_asc": "i.id ASC", "id_desc": "i.id DESC"}
+    if sort not in orders:
+        raise StoreError("모르는 정렬이에요.")
     where, args = [], []
     if approved:
         where.append(f"{_DEC_VERDICT} IN ('approve','approve_notes') AND {_DEC_VERSION} = {_LATEST_PLAN}")
@@ -412,7 +416,7 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
             where.append("i.parent_id=?"); args.append(_find(c, parent)["id"])
         if q:
             where.append("(i.title LIKE ? OR i.body LIKE ?)"); args += [f"%{q}%"] * 2
-        sql = _ISSUE_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?"
+        sql = _ISSUE_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY " + orders[sort] + " LIMIT ? OFFSET ?"
         rows = c.execute(sql, (*args, max(1, min(int(limit), 2001)), max(0, int(offset)))).fetchall()
         contexts = _list_action_context(c, rows)
     out = []
@@ -478,6 +482,48 @@ def _next_number(c, proj, parent=None) -> tuple:
     return number, None, None
 
 
+def _terminal_ancestor(c, row):
+    """가장 가까운 종결 조상을 찾는다. 순환 데이터도 무한 반복하지 않는다."""
+    seen = {row["id"]}
+    parent = row["parent_id"]
+    while parent is not None and parent not in seen:
+        seen.add(parent)
+        ancestor = c.execute(_ISSUE_SELECT + " WHERE i.id=?", (parent,)).fetchone()
+        if ancestor is None:
+            break
+        if ancestor["status"] in HUMAN_ONLY_STATUSES:
+            return ancestor
+        parent = ancestor["parent_id"]
+    return None
+
+
+def _guard_terminal_parent(c, row, include_self=False):
+    ancestor = row if include_self and row["status"] in HUMAN_ONLY_STATUSES else _terminal_ancestor(c, row)
+    if ancestor:
+        raise StoreError("끝난 이슈 아래에는 Task를 만들거나 다시 실행할 수 없어요 — 부모를 먼저 다시 열어 주세요.", 409)
+
+
+def repair_terminal_children():
+    """시작 시 종결 조상 아래 살아 있는 후손을 정리한다. 실행 중인 후손은 건너뛴다."""
+    actor = {"kind": "human", "name": "system/terminal-repair"}
+    count = 0
+    with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        rows = c.execute(_ISSUE_SELECT + " WHERE i.parent_id IS NOT NULL AND i.status NOT IN ('done','closed') ORDER BY i.id").fetchall()
+        # 변경 전 조상을 기준으로 이벤트 근거를 보존한다.
+        targets = [(row, _terminal_ancestor(c, row)) for row in rows]
+        for row, ancestor in targets:
+            if ancestor is None or c.execute("SELECT 1 FROM runs WHERE issue_id=? AND status='running'", (row["id"],)).fetchone():
+                continue
+            c.execute("UPDATE jobs SET status='cancelled' WHERE issue_id=? AND status='queued'", (row["id"],))
+            _set_status(c, actor, row, ancestor["status"], "부모가 끝나 있어 함께 종결했어요",
+                        {"tree_from": ancestor["ref"], "repair": True})
+            count += 1
+    import project_init
+    project_init.stop_cancelled()
+    return count
+
+
 def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None,
                  assignee_agent_id=None) -> dict:
     # 제목은 비워도 된다 — 본문만 쓰면 이슈를 처리하는 에이전트가 제목을 지어 채운다(DEV-8). 둘 다 비면 안 된다.
@@ -499,6 +545,7 @@ def create_issue(actor, project, title, body="", priority="none", labels=None, p
             par = _find(c, parent)
             if par["project_id"] != proj["id"]:
                 raise StoreError("하위 이슈는 부모와 같은 프로젝트여야 해요.")
+            _guard_terminal_parent(c, par, include_self=True)
             parent_id = par["id"]
         ids = _type_ids(c, type_ids if type_ids is not None else [])
         # 빠른 발행(DEV-93)은 만들 때 Assignee를 같이 정한다 — 없는 에이전트면 아무것도 만들지 않는다.
@@ -674,6 +721,8 @@ def set_status(actor, ref, status, note="", confirm_checks=False) -> dict:
         c.execute("BEGIN IMMEDIATE")
         row = _find(c, ref)
         _guard_goal(row, actor, "상태")
+        if status not in HUMAN_ONLY_STATUSES:
+            _guard_terminal_parent(c, row)
         if status in HUMAN_ONLY_STATUSES:
             if status == "done":
                 _checks_gate(c, [row], confirm_checks)

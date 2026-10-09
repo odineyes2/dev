@@ -193,6 +193,7 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None) -> di
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         issue = issues.get_issue(ref)
+        issues._guard_terminal_parent(c, issues._find(c, ref))
         existing = c.execute("SELECT provider FROM runs WHERE issue_id=? AND mode=? AND status='running' UNION ALL SELECT provider FROM jobs WHERE issue_id=? AND mode=? AND status='queued' LIMIT 1",
                              (issue["id"], mode, issue["id"], mode)).fetchone()
         if existing and existing["provider"] != provider:

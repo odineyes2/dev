@@ -166,8 +166,8 @@ jid = queued('execute')
 issues.decide(me, parent['ref'], 'reject', 'test rejection', plan_version=1)
 jobs.pump()
 assert issues.get_issue(ref)['status'] == 'closed' and not jobs.list_jobs()
-issues.set_status(me, ref, 'changes_requested')
 issues.set_status(me, parent['ref'], 'triage')
+issues.set_status(me, ref, 'changes_requested')
 issues.decide(me, parent['ref'], 'approve', plan_version=1)
 
 # 일시적 시작 실패는 Waiting에 남고, 실제 시작 실패도 재시도 가능한 대기로 돌아간다.
@@ -399,3 +399,21 @@ with db.connect() as c:
     c.execute("UPDATE runs SET status='ok' WHERE id=?", (rid,))
 assert not orchestrate._busy({'pm2_app': jobs.SELF_PM2_APP})
 print('OK lanes')
+
+# 검토·실행 모두 종결 조상 아래에서는 대기열을 만들지 않는다.
+for terminal in ('done', 'closed'):
+    root = issues.create_issue(me, 'JQ', 'terminal parent', type_ids=[1])
+    child = issues.create_issue(me, 'JQ', 'child', parent=root['ref'], type_ids=[1])
+    issues.set_status(me, root['ref'], terminal)
+    with db.connect() as c:
+        c.execute("UPDATE issues SET status='backlog' WHERE id=?", (child['id'],))
+    for mode in ('review', 'execute'):
+        try:
+            jobs.enqueue(me, child['ref'], mode)
+            raise AssertionError('terminal parent enqueued')
+        except issues.StoreError as exc:
+            assert exc.status == 409 and '부모' in str(exc)
+    with db.connect() as c:
+        assert not c.execute('SELECT 1 FROM jobs WHERE issue_id=?', (child['id'],)).fetchone()
+    assert issues.get_issue(child['ref'])['status'] == 'backlog'
+print('OK terminal parent enqueue guards')

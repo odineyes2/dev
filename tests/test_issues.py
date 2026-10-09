@@ -336,7 +336,10 @@ with TestClient(A.app) as c:
         before = {ref: issues.get_issue(ref) for ref in (top, *ks, grand)}
         ok(status(top, terminal))
         assert before == {ref: issues.get_issue(ref) for ref in before}
-        ok(status(grand, 'backlog'))
+        assert status(grand, 'backlog').status_code == 409
+        # 이미 존재하는 오염 데이터에도 반복 종결이 후손을 맞춘다.
+        with db.connect() as cx:
+            cx.execute("UPDATE issues SET status='backlog' WHERE id=?", (issues.get_issue(grand)['id'],))
         ok(status(top, terminal))
         assert st(grand) == terminal and issues.get_issue(top)['events'] == before[top]['events']
 
@@ -589,3 +592,68 @@ with patch.object(db, 'now_iso', return_value='2026-01-05T00:00:00Z'):
 assert len(completed) == 2 and all(r['last_done_at'] == '2026-01-05T00:00:00Z' for r in completed)
 assert issues.get_issue(closed_child['ref'])['last_done_at'] is None
 print('OK lifecycle transitions')
+
+# ID 정렬은 페이지를 나누기 전에 적용하며 REST 인증을 거친 결과도 같다.
+issues.create_project(admin_actor, 'SORT', 'sort')
+ordered = [issues.create_issue(admin_actor, 'SORT', str(n)) for n in range(3)]
+with db.connect() as cx:
+    cx.execute("UPDATE issues SET updated_at='2099-01-01' WHERE id=?", (ordered[0]['id'],))
+assert issues.list_issues(project='SORT')[0]['id'] == ordered[0]['id']
+for direction, expected in [('id_asc', ordered), ('id_desc', ordered[::-1])]:
+    assert [r['id'] for r in issues.list_issues(project='SORT', sort=direction)] == [r['id'] for r in expected]
+    with TestClient(A.app) as client:
+        client.cookies.set('ns_session', 'adm')
+        first = client.get('/api/issues', params={'project': 'SORT', 'sort': direction, 'limit': 2})
+        assert first.status_code == 200, first.text
+        assert [r['id'] for r in first.json()['issues']] == [r['id'] for r in expected[:2]]
+        assert first.json()['has_more']
+        last = client.get('/api/issues', params={'project': 'SORT', 'sort': direction, 'limit': 2, 'offset': 2}).json()
+        assert [r['id'] for r in last['issues']] == [expected[2]['id']] and not last['has_more']
+        assert client.get('/api/issues?sort=invalid').status_code == 400
+        client.cookies.clear()
+        assert client.get('/api/issues?sort=id_asc').status_code == 401
+try:
+    issues.list_issues(sort='invalid')
+    raise AssertionError('invalid sort accepted')
+except issues.StoreError as exc:
+    assert exc.status == 400
+
+for terminal in ('done', 'closed'):
+    root = issues.create_issue(admin_actor, 'SORT', terminal)
+    child = issues.create_issue(admin_actor, 'SORT', 'child', parent=root['ref'])
+    grandchild = issues.create_issue(admin_actor, 'SORT', 'grandchild', parent=child['ref'])
+    issues.set_status(admin_actor, root['ref'], terminal)
+    for parent in (root, child):
+        try:
+            issues.create_issue(admin_actor, 'SORT', 'forbidden', parent=parent['ref'])
+            raise AssertionError('terminal parent accepted')
+        except issues.StoreError as exc:
+            assert exc.status == 409
+    for target in (child, grandchild):
+        try:
+            issues.set_status(admin_actor, target['ref'], 'backlog')
+            raise AssertionError('terminal ancestor reopened')
+        except issues.StoreError as exc:
+            assert exc.status == 409
+    # 오염 데이터와 대기 항목을 정리하고 실행 중인 후손은 보존한다.
+    with db.connect() as cx:
+        cx.execute("UPDATE issues SET status='waiting' WHERE id IN (?,?)", (child['id'], grandchild['id']))
+        cx.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at) VALUES(?,'review','human:admin','queued',?)", (child['id'], db.now_iso()))
+        rid = cx.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'review','running','human:admin',?)", (grandchild['id'], db.now_iso())).lastrowid
+    assert issues.repair_terminal_children() == 1
+    repaired = issues.get_issue(child['ref'])
+    assert repaired['status'] == terminal
+    assert repaired['events'][-1]['data']['tree_from'] == root['ref']
+    assert repaired['events'][-1]['data']['repair'] is True
+    assert issues.get_issue(grandchild['ref'])['status'] == 'waiting'
+    assert issues.repair_terminal_children() == 0
+    with db.connect() as cx:
+        assert cx.execute('SELECT status FROM jobs WHERE issue_id=?', (child['id'],)).fetchone()[0] == 'cancelled'
+        cx.execute("UPDATE runs SET status='ok' WHERE id=?", (rid,))
+    assert issues.repair_terminal_children() == 1
+    assert issues.repair_terminal_children() == 0
+    issues.set_status(admin_actor, root['ref'], 'backlog')
+    issues.set_status(admin_actor, child['ref'], 'backlog')
+    issues.set_status(admin_actor, grandchild['ref'], 'backlog')
+    assert issues.create_issue(admin_actor, 'SORT', 'allowed', parent=child['ref'])
+print('OK ID sort and terminal ancestor guards/repair')

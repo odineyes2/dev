@@ -23,6 +23,7 @@ from mcp_tools import mcp_app
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    issues.repair_terminal_children()
     import rollback
     rollback.start_recovery(startup=True)
     orchestrate.take_over()
@@ -509,11 +510,11 @@ async def api_update_issue_type(type_id: int, request: Request):
 
 @app.get("/api/issues")
 def api_issues(project: str = "", status: str = "", assignee: int | None = None, parent: str = "", q: str = "",
-               limit: int = 500, offset: int = 0, approved: bool = False):
+               limit: int = 500, offset: int = 0, approved: bool = False, sort: str = ""):
     """offset부터 limit개와 action_context를 제공한다. 페이지 밖 부모의 근거도 포함한다."""
     limit = max(1, min(limit, 2000))
     items = issues.list_issues(project or None, status or None, assignee, parent or None, q or None, limit + 1, offset,
-                               approved=approved)
+                               approved=approved, sort=sort)
     for it in items[:limit]:
         it['merge_state'] = orchestrate.merge_state(it)
         it['job'] = jobs.job_for(it['id'])
