@@ -34,6 +34,58 @@ def fake_nightshift(req: httpx.Request):
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(fake_nightshift))
 H = {"X-Requested-With": "dev"}
 
+# 채팅 키도 같은 Bearer 권한을 가지며 실행 후보와 Assignee에서는 제외한다.
+with TestClient(A.app) as c:
+    import auto_settings
+    c.cookies.set("ns_session", "adm")
+    for invalid in ("other", None, [], {}):
+        assert c.post('/api/agents', json={'name': 'invalid', 'kind': invalid}, headers=H).status_code == 400
+    chat = c.post('/api/agents', json={'name': 'chat', 'kind': 'chat'}, headers=H).json()
+    aid, chat_key = chat['agent']['id'], chat['key']
+    assert chat['agent']['kind'] == 'chat' and chat['agent']['vendor'] == chat['agent']['model'] == ''
+    assert c.patch(f'/api/agents/{aid}', json={'kind': 'bad'}, headers=H).status_code == 400
+    assert c.patch(f'/api/agents/{aid}', json={'vendor': 'outside', 'model': 'outside'}, headers=H).status_code == 200
+    assert c.post('/api/projects', json={'key': 'CHAT', 'name': 'chat test'}, headers=H).status_code == 200
+    made = c.post('/api/issues', json={'project': 'CHAT', 'title': 'assigned'}, headers=H).json()
+    ref = made['ref']
+    assert c.post('/api/issues', json={'project': 'CHAT', 'title': 'bad', 'assignee_agent_id': aid}, headers=H).status_code == 400
+    assert c.patch(f'/api/issues/{ref}', json={'assignee_agent_id': aid}, headers=H).status_code == 400
+    # 먼저 만들어진 chat 모델이 실행 Agent 모델보다 앞에 있어도 선택하지 않는다.
+    assert c.patch(f'/api/agents/{aid}', json={'vendor': 'anthropic', 'model': 'claude-sonnet-5-5'}, headers=H).status_code == 200
+    runner = c.post('/api/agents', json={'name': 'runner', 'vendor': 'anthropic', 'model': 'claude-opus-5-5'}, headers=H).json()
+    rid = runner['agent']['id']
+    assert runner['agent']['kind'] == 'agent'
+    settings = c.get('/api/projects/CHAT/auto-settings').json()
+    assert all([a['id'] for a in order] == [rid] for order in settings['agent_orders'].values())
+    with db.connect() as conn:
+        assert auto_settings.model_for(conn, made['id'], 'claude') == 'claude-opus-5-5'
+    assert c.patch(f'/api/issues/{ref}', json={'assignee_agent_id': rid}, headers=H).status_code == 200
+    order = {'agent_orders': {role: [rid] for role in auto_settings.ORDER_FIELDS}}
+    assert c.patch('/api/projects/CHAT/auto-settings', json=order, headers=H).status_code == 200
+    before = c.get(f'/api/issues/{ref}').json()['events']
+    moved = c.patch(f'/api/agents/{rid}', json={'kind': 'chat'}, headers=H).json()
+    assert moved['cleared_assignees'] == 1 and moved['agent']['kind'] == 'chat'
+    after = c.get(f'/api/issues/{ref}').json()
+    assert after['assignee_agent_id'] is None and after['events'] == before
+    assert all(not order for order in c.get('/api/projects/CHAT/auto-settings').json()['agent_orders'].values())
+    with db.connect() as conn:
+        assert auto_settings.model_for(conn, made['id'], 'claude') is None
+    c.cookies.clear()
+    for issued in (chat_key, runner['key']):
+        bearer = {'Authorization': f'Bearer {issued}'}
+        assert c.get('/api/auth/me', headers=bearer).json()['actor']['kind'] == 'agent'
+        assert c.get('/api/issues?project=CHAT', headers=bearer).status_code == 200
+        assert c.post('/api/agents', json={'name': 'forbidden'}, headers=bearer).status_code == 403
+    c.cookies.set('ns_session', 'adm')
+    assert c.patch(f'/api/agents/{rid}', json={'kind': 'agent'}, headers=H).status_code == 200
+    assert c.get(f'/api/issues/{ref}').json()['assignee_agent_id'] is None
+    assert c.patch(f'/api/agents/{aid}', json={'enabled': False}, headers=H).status_code == 200
+    # 기존 인증 검사와 격리한다.
+    with db.connect() as conn:
+        conn.execute('DELETE FROM issues WHERE id=?', (made['id'],))
+        conn.execute('DELETE FROM projects WHERE key=?', ('CHAT',))
+        conn.execute('DELETE FROM agents WHERE id IN (?,?)', (aid, rid))
+
 with TestClient(A.app) as c:
     assert c.get("/api/health").json() == {"ok": True}
     assert c.get("/api/agents").status_code == 401
@@ -127,3 +179,21 @@ with TestClient(A.app) as c:
         assert f'"/{name}?v={v}"' in html, (name, re.findall(r'/app\.\w+[^"]*', html))
     assert c.get("/index.html").text == html and c.get("/").headers["cache-control"] == "no-cache"
 print("OK version")
+
+# 기존 키의 해시·앞자리·모델을 보존하고 이름으로 종류를 추측하지 않는다.
+import sqlite3
+from unittest.mock import patch
+old_path = Path(tempfile.mkdtemp()) / 'old.db'
+with sqlite3.connect(old_path) as conn:
+    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+        conn.executescript(sql + f'PRAGMA user_version={version};')
+    conn.execute("INSERT INTO agents(name,vendor,model,key_hash,key_prefix,created_at) VALUES(?,?,?,?,?,?)",
+                 ('ChatGPT', 'openai', 'gpt-6.1-sol', 'old-hash', 'old-prefix', db.now_iso()))
+with patch.object(db.config, 'DB_PATH', old_path):
+    assert db.init() == len(db.MIGRATIONS)
+    assert db.init() == len(db.MIGRATIONS)
+    with db.connect() as conn:
+        row = dict(conn.execute('SELECT * FROM agents').fetchone())
+        assert row['kind'] == 'agent' and row['key_hash'] == 'old-hash' and row['key_prefix'] == 'old-prefix'
+        assert row['vendor'] == 'openai' and row['model'] == 'gpt-6.1-sol'
+print('OK chat migration')

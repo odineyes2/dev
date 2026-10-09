@@ -23,7 +23,7 @@ def _candidates(c):
     """우선순위 후보 — 켜져 있고 vendor·model이 카탈로그 안인 Agent(id 순)."""
     allowed = {v["vendor"]: (v["provider"], {m["id"] for m in v["models"]}) for v in model_catalog.VENDORS}
     out = []
-    for a in c.execute("SELECT id, name, vendor, model FROM agents WHERE enabled=1 ORDER BY id"):
+    for a in c.execute("SELECT id, name, vendor, model FROM agents WHERE enabled=1 AND kind='agent' ORDER BY id"):
         provider, models = allowed.get(a["vendor"], (None, set()))
         if a["model"] in models:
             out.append({"id": a["id"], "name": a["name"], "vendor": a["vendor"], "model": a["model"], "provider": provider})

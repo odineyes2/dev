@@ -590,6 +590,10 @@ DROP TABLE project_initializations;
 ALTER TABLE project_initializations_new RENAME TO project_initializations;
 """)
 
+MIGRATIONS.append("""
+ALTER TABLE agents ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent' CHECK (kind IN ('agent','chat'));
+""")
+
 STATUSES += ("waiting",)
 
 

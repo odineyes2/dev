@@ -80,12 +80,12 @@ def _new_key() -> tuple[str, str, str]:
     return key, _hash_key(key), key[:len(KEY_PREFIX) + 6]
 
 
-def create_agent(name: str, vendor: str = "", model: str = "") -> tuple[dict, str]:
+def create_agent(name: str, vendor: str = "", model: str = "", kind: str = "agent") -> tuple[dict, str]:
     """새 에이전트와 키. 키는 여기서 한 번만 돌려준다(DB에는 해시만)."""
     key, key_hash, prefix = _new_key()
     with db.connect() as c:
-        aid = c.execute("INSERT INTO agents(name, vendor, model, key_hash, key_prefix, created_at) VALUES(?,?,?,?,?,?)",
-                        (name, vendor, model, key_hash, prefix, db.now_iso())).lastrowid
+        aid = c.execute("INSERT INTO agents(name, vendor, model, key_hash, key_prefix, created_at, kind) VALUES(?,?,?,?,?,?,?)",
+                        (name, vendor, model, key_hash, prefix, db.now_iso(), kind)).lastrowid
         row = c.execute("SELECT * FROM agents WHERE id=?", (aid,)).fetchone()
     return public_agent(row), key
 

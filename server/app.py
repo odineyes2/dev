@@ -198,6 +198,10 @@ async def auth_logout(request: Request):
 # ---- 에이전트 관리(사람만) ----
 def _agent_fields(body: dict) -> dict:
     out = {}
+    if "kind" in body:
+        if body["kind"] not in ("agent", "chat"):
+            raise HTTPException(400, "kind는 agent 또는 chat이어야 해요.")
+        out["kind"] = body["kind"]
     for k in ("name", "vendor", "model"):
         if k in body:
             v = str(body[k] or "").strip()
@@ -213,6 +217,8 @@ def _check_catalog(f: dict, current: dict | None = None) -> None:
     """새로 쓰는 vendor/model이 카탈로그 안인지 본다. 이미 있는 목록 밖 값은 건드리지 않는 한 그대로 둔다.
     vendor가 비어 있으면(이전 자유 입력과 같은 형태) 검사하지 않는다."""
     if "vendor" not in f and "model" not in f:
+        return
+    if f.get("kind", (current or {}).get("kind", "agent")) == "chat":
         return
     import model_catalog
     vendor = f.get("vendor", (current or {}).get("vendor", ""))
@@ -241,7 +247,7 @@ async def create_agent(request: Request):
         raise HTTPException(400, "이름이 필요해요.")
     _check_catalog(f)
     try:
-        agent, key = auth.create_agent(f["name"], f.get("vendor", ""), f.get("model", ""))
+        agent, key = auth.create_agent(f["name"], f.get("vendor", ""), f.get("model", ""), f.get("kind", "agent"))
     except sqlite3.IntegrityError:
         raise HTTPException(409, "같은 이름의 에이전트가 있어요.")
     return {"agent": agent, "key": key}
@@ -256,18 +262,21 @@ async def update_agent(agent_id: int, request: Request):
         f["enabled"] = 1 if body["enabled"] else 0
     if not f:
         raise HTTPException(400, "바꿀 내용이 없어요.")
-    with db.connect() as c:
-        cur = c.execute("SELECT vendor, model FROM agents WHERE id=?", (agent_id,)).fetchone()
-    _check_catalog(f, dict(cur) if cur else None)
     try:
         with db.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            cur = c.execute("SELECT vendor, model, kind FROM agents WHERE id=?", (agent_id,)).fetchone()
+            _check_catalog(f, dict(cur) if cur else None)
             n = c.execute(f"UPDATE agents SET {', '.join(k + '=?' for k in f)} WHERE id=?", (*f.values(), agent_id)).rowcount
+            cleared = 0
+            if n and f.get("kind") == "chat":
+                cleared = c.execute("UPDATE issues SET assignee_agent_id=NULL WHERE assignee_agent_id=?", (agent_id,)).rowcount
             row = c.execute("SELECT * FROM agents WHERE id=?", (agent_id,)).fetchone()
     except sqlite3.IntegrityError:
         raise HTTPException(409, "같은 이름의 에이전트가 있어요.")
     if not n:
         raise HTTPException(404, "없는 에이전트예요.")
-    return {"agent": auth.public_agent(row)}
+    return {"agent": auth.public_agent(row), "cleared_assignees": cleared}
 
 
 @app.post("/api/agents/{agent_id}/rotate")
