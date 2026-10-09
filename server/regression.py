@@ -27,6 +27,9 @@ def catalog():
 
 def values():
     with db.connect() as c:
+        # 프롬프트 생성·독립 Git 검사는 DB 초기화 전에도 기본 설정으로 동작한다.
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_settings'").fetchone():
+            return {}
         return {r['key'][11:]: r['value'] == 'true' for r in c.execute(
             "SELECT key,value FROM app_settings WHERE key LIKE 'regression:%'")}
 

@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 import app as A
 import auth, db, execute, orchestrate, regression
 
+assert regression.values() == {}
+assert regression.enabled('agent_capture')
 db.init()
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(
     200, json={'user': {'username': 'admin', 'role': 'admin'}})))

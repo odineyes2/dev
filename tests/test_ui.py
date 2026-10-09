@@ -454,7 +454,7 @@ def check_settings_navigation(page, shots):
         page.wait_for_selector(selector)
         assert page.locator('[data-nav=settings]').get_attribute('class').endswith('active')
         assert page.locator('#settings-nav [aria-current=page]').get_attribute('data-settings') == tab
-        assert page.locator('#settings-nav a').count() == 2
+        assert page.locator('#settings-nav a').count() == 3
         assert page.locator('#view > .panel #settings-nav').is_visible()
         assert page.locator('#shell > #settings-nav').count() == 0
         assert page.locator('#view > .panel > h2').text_content() == 'Settings'
