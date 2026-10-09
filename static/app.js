@@ -379,7 +379,7 @@ function completionTimeHtml(i){
 }
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
-    <td class="title-cell">${(i.labels || []).includes('goal') ? '<span class="label goal-badge">Goal</span> ' : ''}${titleHtml(i)}<div class="issue-badges">${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i)}</div>${i.parent_id ? '<div class="sub">Task</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)}</div></td>
+    <td class="title-cell">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}<div class="issue-badges">${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)}</div></td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td>
     <td class="hide-m">${processingAgentsHtml(i)}</td><td class="hide-m">${completionTimeHtml(i)}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
@@ -1822,8 +1822,9 @@ async function renderSettings(){
 }
 
 // 종류는 Labels와 독립적으로 안정 ID를 사용한다.
-function typesHtml(it){
-  return `<span class="issue-types">${(it.types || []).length ? it.types.map(t => `<span class="type-badge" title="${t.source === 'agent' ? '자동 분류' : t.source === 'human' ? '사람 선택' : '문서 생성 요청'}">${esc(t.name)}${t.active ? '' : ' · 비활성'}</span>`).join('') : '<span class="dim">미분류</span>'}</span>`;
+function typesHtml(it, showUnclassified = true){
+  if(!(it.types || []).length) return showUnclassified ? '<span class="dim">미분류</span>' : '';
+  return `<span class="issue-types">${it.types.map(t => `<span class="type-badge" title="${t.source === 'agent' ? '자동 분류' : t.source === 'human' ? '사람 선택' : '문서 생성 요청'}${t.active ? '' : ' · 비활성'}">#${esc(t.name).replace(/\s+/g, '')}</span>`).join('')}</span>`;
 }
 function typePicker(types, selected = []){
   return `<fieldset class="type-picker"><legend>종류 (복수 선택)</legend><div>${types.filter(t => t.active || selected.includes(t.id)).map(t => `<button type="button" data-type="${t.id}" aria-pressed="${selected.includes(t.id)}">${esc(t.name)}${t.active ? '' : ' · 비활성'}</button>`).join('')}</div><p class="dim">비워 두면 검토를 맡길 때 Agent가 자동 분류해요.</p></fieldset>`;

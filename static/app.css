@@ -201,7 +201,8 @@ table.issues.tasks td:nth-child(2){ overflow-wrap:anywhere; }
 table.issues:not(.tasks) .title-cell{ width:100%; min-width:240px; overflow-wrap:anywhere; padding-top:8px; padding-bottom:8px; }
 .issue-badges:empty{ display:none; }
 .issue-badges .label:first-child{ margin-left:0; }
-.title-cell .goal-badge{ margin-left:0; }
+.goal-badge{ color:var(--accent); font-size:12px; font-weight:500; white-space:nowrap; }
+.issue-badges{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }
 .title-cell .sub{ font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:var(--track-label); color:var(--faint); font-weight:500; }
 .list-more{ min-height:1px; padding:14px; text-align:center; color:var(--dim); font-size:13px; }
 .empty{ padding:64px var(--sp-4); text-align:center; color:var(--dim); background:var(--panel); border:1px dashed var(--border); border-radius:var(--r-md); }
@@ -491,8 +492,8 @@ body:has(.composer:not([hidden])) .toast{ bottom:auto; top:72px; }
 @media(prefers-reduced-motion:reduce){ .switch-track::before{ transition:none; } }
 
 /* 종류 — DESIGN 2~4·7·8·11절의 칩과 터치·포커스 규칙을 따른다. */
-.issue-types{ display:inline-flex; flex-wrap:wrap; gap:var(--sp-1); max-width:100%; font-size:12px; }
-.type-badge{ border:1px solid var(--border); border-radius:999px; padding:var(--sp-1) var(--sp-2); overflow-wrap:anywhere; background:var(--panel-2); }
+.issue-types{ display:inline-flex; flex-wrap:wrap; gap:var(--sp-2); max-width:100%; font-size:12px; color:var(--dim); font-weight:400; }
+.type-badge{ overflow-wrap:anywhere; }
 .type-picker{ min-width:0; margin:0; padding:var(--sp-3); border:1px solid var(--border); border-radius:8px; }
 .type-picker legend{ font:600 12px var(--mono); }
 .type-picker > div{ display:flex; flex-wrap:wrap; gap:var(--sp-2); }
