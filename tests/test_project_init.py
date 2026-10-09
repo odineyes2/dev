@@ -84,6 +84,7 @@ class InitializationTest(unittest.TestCase):
     def test_review_creates_missing_project_before_starting(self):
         import review
         self.request()
+        issues.create_issue(H, 'NEW', '기존 검토 작업')
         with db.connect() as c:
             c.execute("UPDATE project_initializations SET status='failed'")
         with patch.object(review, 'start') as start:
@@ -98,6 +99,7 @@ class InitializationTest(unittest.TestCase):
     def test_cancelled_initialization_is_not_restarted_by_review(self):
         import review
         self.request()
+        issues.create_issue(H, 'NEW', '기존 검토 작업')
         pi.cancel(H, 'NEW')
         with patch.object(review, 'start') as start:
             self.assertTrue(jobs.enqueue(H, 'NEW-1', 'review', 'codex')['queued'])
@@ -148,6 +150,8 @@ class InitializationTest(unittest.TestCase):
             self.assertTrue(pi._git(target, 'ls-files', '--', path), path)
         self.assertEqual(project_docs.read_document('NEW', 'docs/project/01_PRD.md')['status'], 'available')
         parent = issues.get_issue(status['refs'][0])
+        self.assertEqual(parent['ref'], 'NEW-1')
+        self.assertNotIn('goal', parent['labels'])
         self.assertIsNone(parent['approval'])
         self.assertEqual(len(parent['children']), 2)
         child = issues.get_issue(parent['children'][1]['ref'])
@@ -163,7 +167,7 @@ class InitializationTest(unittest.TestCase):
         self.request()
         self.request()
         self.assertEqual(len(issues.list_projects()), 1)
-        self.assertEqual(len(issues.list_issues(project='NEW')), 1)
+        self.assertEqual(len(issues.list_issues(project='NEW')), 0)
         self.assertEqual(self.client.patch('/api/projects/NEW', json={'local_path': '/elsewhere'}, headers=HEADERS).status_code, 409)
         self.assertFalse(issues.check_project_deletion(H, 'NEW')['can_delete'])
 
@@ -256,11 +260,11 @@ class InitializationTest(unittest.TestCase):
                 self.assertIn('--strict-mcp-config', command)
                 self.assertIn('--restricted', command)
 
-    def test_issue_deletion_cancels_and_unlocks_project(self):
+    def test_project_cancellation_unlocks_project_without_goal_issue(self):
         self.request()
-        goal = issues.list_issues(project='NEW')[0]
-        response = self.client.delete('/api/issues/' + goal['ref'], headers=HEADERS)
-        self.assertEqual(response.status_code, 204, response.text)
+        self.assertEqual(issues.list_issues(project='NEW'), [])
+        response = self.client.post('/api/projects/NEW/initialization/cancel', headers=HEADERS)
+        self.assertEqual(response.status_code, 202, response.text)
         self.assertEqual(pi.status('NEW')['status'], 'cancelled')
         response = self.client.patch('/api/projects/NEW', json={'name': '오타 수정'}, headers=HEADERS)
         self.assertEqual(response.status_code, 200, response.text)
@@ -270,23 +274,21 @@ class InitializationTest(unittest.TestCase):
         response = self.client.request('DELETE', '/api/projects/NEW', json={'confirmation_token': check['confirmation_token']}, headers=HEADERS)
         self.assertEqual(response.status_code, 204, response.text)
 
-    def test_issue_hold_only_affects_linked_goal(self):
+    def test_issue_hold_and_deletion_do_not_cancel_initialization(self):
         self.request()
         unrelated = issues.create_issue(H, 'NEW', '다른 작업')
         issues.set_status(H, unrelated['ref'], 'on_hold')
         self.assertEqual(pi.status('NEW')['status'], 'queued')
-        goal = next(i for i in issues.list_issues(project='NEW') if 'goal' in i['labels'])
-        issues.set_status(H, goal['ref'], 'on_hold')
-        self.assertEqual(pi.status('NEW')['status'], 'cancelled')
-        self.assertEqual(self.client.post('/api/projects/NEW/initialization/retry', headers=HEADERS).status_code, 409)
+        issues.delete_issue(H, unrelated['ref'])
+        self.assertEqual(pi.status('NEW')['status'], 'queued')
 
-    def test_goal_review_queue_cancellation_also_cancels_initialization(self):
+    def test_review_queue_cancellation_does_not_cancel_initialization(self):
         self.request()
-        goal = issues.list_issues(project='NEW')[0]
+        goal = issues.create_issue(H, 'NEW', '별도 검토')
         with patch.object(jobs, 'start_block', return_value='검사 중 대기'):
             job = jobs.enqueue(H, goal['ref'], 'review', 'codex')
         jobs.cancel(H, job['job_id'])
-        self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+        self.assertEqual(pi.status('NEW')['status'], 'queued')
 
     def test_cancellation_ignores_late_result(self):
         self.request()
@@ -298,7 +300,7 @@ class InitializationTest(unittest.TestCase):
             pi._run('NEW')
         self.assertEqual(pi.status('NEW')['status'], 'cancelled')
         self.assertFalse((self.projects / 'new-product').exists())
-        self.assertEqual(len(issues.list_issues(project='NEW')), 1)
+        self.assertEqual(len(issues.list_issues(project='NEW')), 0)
 
     def test_cancellation_after_git_creation_preserves_files_without_publishing(self):
         self.request()
@@ -312,7 +314,7 @@ class InitializationTest(unittest.TestCase):
         target = self.projects / 'new-product'
         self.assertTrue((target / 'PROJECT_SPEC.md').is_file())
         self.assertEqual(pi._git(target, 'rev-list', '--count', 'HEAD'), '1')
-        self.assertEqual(len(issues.list_issues(project='NEW')), 1)
+        self.assertEqual(len(issues.list_issues(project='NEW')), 0)
 
     def test_real_analysis_process_is_terminated_on_cancel(self):
         self.request()
@@ -377,8 +379,31 @@ class InitializationTest(unittest.TestCase):
         with patch.object(config, 'DB_PATH', old):
             db.init()
             pi.recover()
-            self.assertEqual(pi.status('OLD')['status'], 'cancelled')
+            self.assertEqual(pi.status('OLD')['status'], 'failed')
             self.assertEqual(issues.update_project(H, 'OLD', {'name': '수정'})['name'], '수정')
+
+    def test_legacy_goal_is_retired_without_losing_history_or_development_numbers(self):
+        old = config.DATA_DIR / 'legacy-goal.db'
+        with sqlite3.connect(old) as c:
+            for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+                c.executescript(sql + f'PRAGMA user_version={version};')
+        c.close()
+        with patch.object(config, 'DB_PATH', old):
+            issues.create_project(H, 'OLD', '기존 제품')
+            upload = self.client.post('/api/attachments', files={'file': ('old.md', b'# original', 'text/markdown')}, headers=HEADERS).json()
+            goal = issues.create_issue(H, 'OLD', '제품 목표', body='사용자가 제공한 원본 기획서: PROJECT_SPEC.md\n원본', labels=['goal'], attachment_ids=[upload['id']])
+            development = issues.create_issue(H, 'OLD', '개발 단계')
+            issues.post_plan(H, goal['ref'], '기존 검토 기록')
+            with db.connect() as c:
+                now = db.now_iso()
+                c.execute("INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,status,created_at,updated_at,issue_id) VALUES(?,?,'human:admin','codex','원본','complete',?,?,?)", (goal['project_id'], str(uuid.uuid4()), now, now, goal['id']))
+            db.init()
+            retired = issues.get_issue(goal['ref'])
+            self.assertEqual(retired['status'], 'closed')
+            self.assertEqual(retired['plan']['body'], '기존 검토 기록')
+            self.assertEqual(len(retired['attachments']), 1)
+            self.assertEqual(issues.get_issue(development['ref'])['ref'], 'OLD-2')
+            self.assertEqual(pi.status('OLD')['status'], 'complete')
 
     def test_failed_project_can_be_renamed_and_cancel_requires_human(self):
         self.request()

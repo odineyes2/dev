@@ -594,6 +594,28 @@ MIGRATIONS.append("""
 ALTER TABLE agents ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent' CHECK (kind IN ('agent','chat'));
 """)
 
+MIGRATIONS.append("""
+CREATE TEMP TABLE retired_initialization_goals AS
+SELECT i.id FROM issues i JOIN project_initializations r ON r.issue_id=i.id
+WHERE i.body LIKE '사용자가 제공한 원본 기획서: PROJECT_SPEC.md%'
+AND EXISTS(SELECT 1 FROM json_each(i.labels_json) WHERE value='goal')
+AND NOT EXISTS(SELECT 1 FROM issues child WHERE child.parent_id=i.id)
+AND NOT EXISTS(SELECT 1 FROM runs WHERE issue_id=i.id AND (status='running' OR mode='execute'))
+AND i.status<>'closed';
+INSERT INTO events(issue_id,actor,kind,body,data_json,created_at)
+SELECT id,'system:project_initialization','status',
+    '초기 생성의 제품 목표 Issue를 종료하고 기록으로 보존해요. 생성 상태와 기획서는 프로젝트에서 관리해요.',
+    json_object('from',status,'to','closed'),strftime('%Y-%m-%dT%H:%M:%S+00:00','now')
+FROM issues WHERE id IN (SELECT id FROM retired_initialization_goals);
+UPDATE jobs SET status='cancelled',cancellation_reason='initialization_goal_retired'
+WHERE status='queued' AND issue_id IN (SELECT id FROM retired_initialization_goals);
+UPDATE issues SET status='closed',claimed_by=NULL,lease_until=NULL,
+    closed_at=strftime('%Y-%m-%dT%H:%M:%S+00:00','now'),updated_at=strftime('%Y-%m-%dT%H:%M:%S+00:00','now')
+WHERE id IN (SELECT id FROM retired_initialization_goals);
+DROP TABLE retired_initialization_goals;
+ALTER TABLE project_initializations DROP COLUMN issue_id;
+""")
+
 STATUSES += ("waiting",)
 
 

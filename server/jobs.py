@@ -237,9 +237,6 @@ def cancel(actor: dict, job_id: int) -> dict:
         if not c.execute("UPDATE jobs SET status='cancelled',cancellation_reason='human_cancel' WHERE id=? AND status='queued'", (job_id,)).rowcount:
             raise issues.StoreError("대기 중인 항목이 아니에요.", 404)
         _restore(c, j)
-        import project_init
-        project_init.cancel_for_issue(c, issues._find(c, j['issue_id']), actor)
-    project_init.stop_cancelled()
     return {"cancelled": job_id}
 
 

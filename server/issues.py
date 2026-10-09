@@ -532,8 +532,6 @@ def repair_terminal_children():
             _set_status(c, actor, row, ancestor["status"], "부모가 끝나 있어 함께 종결했어요",
                         {"tree_from": ancestor["ref"], "repair": True})
             count += 1
-    import project_init
-    project_init.stop_cancelled()
     return count
 
 
@@ -655,13 +653,10 @@ def update_issue(actor, ref, fields: dict) -> dict:
 def delete_issue(actor, ref) -> None:
     if not _is_human(actor):
         raise _forbidden("이슈는 사람만 지울 수 있어요.")
-    import project_init
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         row = _find(c, ref)
-        project_init.cancel_for_issue(c, row, actor)
         c.execute("DELETE FROM issues WHERE id=?", (row["id"],))
-    project_init.stop_cancelled()
     _cleanup_attachments()
 
 
@@ -698,9 +693,6 @@ def _set_status(c, actor, row, status, note="", data=None):
                now if status == 'in_progress' else None,
                status == 'done' and row['status'] != 'done', now, row["id"]))
     _event(c, row["id"], actor, "status", note, {"from": row["status"], "to": status, **(data or {})})
-    if status in ('on_hold', 'closed'):
-        import project_init
-        project_init.cancel_for_issue(c, row, actor)
 
 
 def _terminal_change(actor, ref, rejecting):
@@ -760,8 +752,6 @@ def set_status(actor, ref, status, note="", confirm_checks=False) -> dict:
                 "SELECT 1 FROM runs WHERE issue_id=? AND status='running'", (row["id"],)).fetchone():
             notify.send(row["ref"], "✅ 확인해 주세요(in_review)", note)
         result = _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
-    import project_init
-    project_init.stop_cancelled()
     return result
 
 
@@ -953,8 +943,6 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
         _record_plan_decision(c, row, latest, verdict, note, actor)
         if verdict == "reject":
             _sync_terminal_status(c, actor, row, "closed", f"거절 (계획서 v{latest}): {note.strip()}")
-    import project_init
-    project_init.stop_cancelled()
     return get_issue(ref)
 
 

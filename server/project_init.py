@@ -32,18 +32,9 @@ class Cancelled(Exception):
 
 def _checkpoint(row):
     with db.connect() as c:
-        current = c.execute('SELECT r.status,r.issue_id,i.status AS issue_status FROM project_initializations r LEFT JOIN issues i ON i.id=r.issue_id WHERE r.request_id=?', (row['request_id'],)).fetchone()
-    if not current or current['status'] != 'running' or current['issue_id'] is None or current['issue_status'] in ('closed', 'on_hold'):
+        current = c.execute('SELECT status FROM project_initializations WHERE request_id=?', (row['request_id'],)).fetchone()
+    if not current or current['status'] != 'running':
         raise Cancelled()
-
-
-def cancel_for_issue(c, row, actor):
-    """Issue 변경과 취소 요청을 같은 트랜잭션에 기록한다. 프로세스 중단은 커밋 뒤에 한다."""
-    # 구판 DB를 업그레이드하기 전에도 기존 Issue 동작은 유지한다.
-    if actor['kind'] == 'human' and c.execute("SELECT 1 FROM pragma_table_info('project_initializations') WHERE name='issue_id'").fetchone():
-        c.execute("""UPDATE project_initializations SET status='cancelling',phase='초기 생성 중단 중',
-            error='연결된 Issue를 중단하거나 삭제하여 초기 생성을 취소했어요.',updated_at=?
-            WHERE issue_id=? AND status IN ('queued','running','failed')""", (db.now_iso(), row['id']))
 
 
 def stop_cancelled():
@@ -143,14 +134,8 @@ def request(actor, body):
             if c.execute('SELECT 1 FROM projects WHERE lower(local_path)=lower(?)', (str(target),)).fetchone():
                 raise issues.StoreError('이미 등록되거나 생성 중인 경로예요.', 409)
             pid = c.execute('INSERT INTO projects(key,name,repo_url,local_path,created_at) VALUES(?,?,?,?,?)', (key, name, repo_url, str(target), now)).lastrowid
-            proj = c.execute('SELECT * FROM projects WHERE id=?', (pid,)).fetchone()
-            number, _, _ = issues._next_number(c, proj, None)
-            iid = c.execute('''INSERT INTO issues(project_id,number,title,body,labels_json,reporter,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?)''', (pid, number, '제품 목표 · ' + name, '사용자가 제공한 원본 기획서: PROJECT_SPEC.md\n\n' + spec,
-                '["goal"]', issues.actor_label(actor), now, now)).lastrowid
-            attachments.link(c, actor, iid, [a['id']])
-            c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,status,phase,created_at,updated_at,issue_id)
-                VALUES(?,?,?,?,?,'queued','기획서 분석 대기',?,?,?)''', (pid, request_id, issues.actor_label(actor), provider, spec, now, now, iid))
+            c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,status,phase,created_at,updated_at)
+                VALUES(?,?,?,?,?,'queued','기획서 분석 대기',?,?)''', (pid, request_id, issues.actor_label(actor), provider, spec, now, now))
     except sqlite3.IntegrityError:
         with db.connect() as c:
             old = c.execute('SELECT p.key,r.owner FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE request_id=?', (request_id,)).fetchone()
@@ -176,8 +161,6 @@ def retry(actor, key):
             raise issues.StoreError('생성 요청을 찾을 수 없어요.', 404)
         if row['status'] != 'failed':
             raise issues.StoreError('실패한 생성 요청만 재시도할 수 있어요.', 409)
-        if row['issue_id'] is None or c.execute("SELECT 1 FROM issues WHERE id=? AND status IN ('closed','on_hold')", (row['issue_id'],)).fetchone():
-            raise issues.StoreError('연결된 Issue가 중단되거나 삭제됐어요. 새 프로젝트로 다시 생성해 주세요.', 409)
         c.execute("UPDATE project_initializations SET status='queued',error='',updated_at=? WHERE project_id=?", (db.now_iso(), row['project_id']))
     start(str(key).upper())
     return status(key)
@@ -195,9 +178,6 @@ def recover():
     with db.connect() as c:
         c.execute("UPDATE project_initializations SET status='failed',error='서버 재시작으로 중단됐어요. 다시 시도해 주세요.' WHERE status='running'")
         c.execute("UPDATE project_initializations SET status='cancelled',phase='초기 생성 취소',updated_at=? WHERE status='cancelling'", (db.now_iso(),))
-        c.execute("""UPDATE project_initializations SET status='cancelled',phase='초기 생성 취소',
-            error='연결된 Issue가 중단되거나 삭제되어 초기 생성을 취소했어요.',updated_at=?
-            WHERE status IN ('queued','failed') AND (issue_id IS NULL OR issue_id IN (SELECT id FROM issues WHERE status IN ('closed','on_hold')))""", (db.now_iso(),))
         keys = [r[0] for r in c.execute("SELECT p.key FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE r.status='queued'")]
     for key in keys:
         start(key)
