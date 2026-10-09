@@ -102,6 +102,7 @@ def request(actor, body):
         raise issues.StoreError('생성 요청 ID가 필요해요.')
     key = str(body.get('key') or '').strip().upper()
     name = issues._text(body.get('name'), '이름', 100, required=True).strip()
+    repo_url = issues._text(body.get('repo_url', ''), '저장소 주소', 500).strip()
     folder = str(body.get('folder') or '').strip()
     if not re.fullmatch(r'[A-Z][A-Z0-9]{0,9}', key):
         raise issues.StoreError('Key는 영문으로 시작하는 10자 이하 영문·숫자예요.')
@@ -140,7 +141,7 @@ def request(actor, body):
             c.execute('BEGIN IMMEDIATE')
             if c.execute('SELECT 1 FROM projects WHERE lower(local_path)=lower(?)', (str(target),)).fetchone():
                 raise issues.StoreError('이미 등록되거나 생성 중인 경로예요.', 409)
-            pid = c.execute('INSERT INTO projects(key,name,local_path,created_at) VALUES(?,?,?,?)', (key, name, str(target), now)).lastrowid
+            pid = c.execute('INSERT INTO projects(key,name,repo_url,local_path,created_at) VALUES(?,?,?,?,?)', (key, name, repo_url, str(target), now)).lastrowid
             proj = c.execute('SELECT * FROM projects WHERE id=?', (pid,)).fetchone()
             number, _, _ = issues._next_number(c, proj, None)
             iid = c.execute('''INSERT INTO issues(project_id,number,title,body,labels_json,reporter,created_at,updated_at)

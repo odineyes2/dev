@@ -218,7 +218,7 @@ with db.connect() as c:
     c.execute("UPDATE runs SET status='ok' WHERE status='running'")
 issues.set_status(me, ref, 'in_review')
 
-# 사람이 상태를 바꾸거나 종결·goal인 이슈는 펌프가 시작하지 않는다.
+# 사람이 상태를 바꾸거나 종결한 이슈는 펌프가 시작하지 않는다.
 issues.set_status(me, ref, 'backlog')
 jid = queued()
 issues.set_status(me, ref, 'done')
@@ -226,12 +226,24 @@ with patch.object(review, 'start') as start:
     jobs.pump(); start.assert_not_called()
 assert issues.get_issue(ref)['status'] == 'done'
 goal = issues.create_issue(me, 'WT', 'goal', labels=['goal'])
-try:
-    jobs.enqueue(me, goal['ref'], 'review')
-    raise AssertionError('goal must not enter waiting')
-except issues.StoreError as e:
-    assert e.status == 409
-assert issues.get_issue(goal['ref'])['status'] == 'backlog' and not jobs.list_jobs()
+for provider in ('claude', 'codex'):
+    with patch.object(jobs, 'start_block', return_value='대기'):
+        jid = jobs.enqueue(me, goal['ref'], 'review', provider)['job_id']
+    with patch.object(review, 'start') as start:
+        jobs.pump()
+        start.assert_called_once()
+        assert issues.get_issue(goal['ref'])['status'] == 'waiting'
+    issues.set_status(me, goal['ref'], 'backlog')
+    assert issues.get_issue(goal['ref'])['status'] == 'backlog' and not jobs.list_jobs()
+with patch.object(jobs, 'start_block', return_value='대기'):
+    jobs.enqueue(me, goal['ref'], 'review', 'codex')
+with patch.object(jobs, 'start_block', return_value=None):
+    _, run_id = review.begin(me, issues.get_issue(goal['ref']), 'review', 'codex')
+with db.connect() as c:
+    review.finish_codex_status(c, {'kind': 'agent', 'id': 1}, goal['ref'], run_id, 'ok', '검토')
+    c.execute("UPDATE runs SET status='ok' WHERE id=?", (run_id,))
+assert issues.get_issue(goal['ref'])['status'] == 'in_progress'
+assert '아래 triage 전환 단계는 생략' in review.prompt_for(goal['ref'])
 print("OK")
 
 # 실행 프로세스 종료 후에도 DB 후처리가 대기열을 막고, 완료 뒤 한 번만 착수한다.

@@ -61,6 +61,21 @@ class InitializationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 202, r.text)
         return r.json()
 
+    def test_repository_save_during_initialization(self):
+        self.body['repo_url'] = 'https://github.com/example/initial.git'
+        self.request()
+        self.assertEqual(issues.list_projects()[0]['repo_url'], self.body['repo_url'])
+        with db.connect() as c:
+            c.execute("UPDATE project_initializations SET status='running'")
+        project = next(p for p in issues.list_projects() if p['key'] == 'NEW')
+        fields = {k: project[k] for k in ('name', 'local_path', 'description')}
+        fields['repo_url'] = 'https://github.com/example/new-product.git'
+        response = self.client.patch('/api/projects/NEW', json=fields, headers=HEADERS)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(issues.list_projects()[0]['repo_url'], fields['repo_url'])
+        fields['name'] = '변경'
+        self.assertEqual(self.client.patch('/api/projects/NEW', json=fields, headers=HEADERS).status_code, 409)
+
     def execute(self):
         with patch.object(pi, 'generate', return_value=fixture()) as generate:
             pi._run('NEW')
