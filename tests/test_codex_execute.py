@@ -166,7 +166,7 @@ orchestrate.SETTINGS.write_text('{"EX":{"auto_merge":true}}')
 os.environ['DEV_CODEX_AGENT_KEY'] = 'test-secret'
 auto_task = issues.create_issue(base.me, 'EX', 'codex auto', parent='EX-1')
 fake.write_text(output_script(result).replace('codex.txt', 'codex-auto.txt'), 'utf-8')
-def inspect_auto(path):
+def inspect_auto(path, **kwargs):
     if 'merge-worktrees' not in str(path):   # 완료 등록 전 Task worktree 전체 검사
         return None
     assert issues.get_issue(auto_task['ref'])['status'] == 'in_progress'
