@@ -378,8 +378,8 @@ function completionTimeHtml(i){
 }
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
-    <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${typesHtml(i)}${i.parent_id ? '<div class="sub">Task</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)}</div></td>
-    <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
+    <td class="title-cell">${titleHtml(i)}<div class="issue-badges">${labelsHtml(i.labels)}${typesHtml(i)}</div>${i.parent_id ? '<div class="sub">Task</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)}</div></td>
+    <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td>
     <td class="hide-m">${processingAgentsHtml(i)}</td><td class="hide-m">${completionTimeHtml(i)}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
 // Task는 부모 바로 아래에 들여써서 붙이고(부모가 아직 안 왔으면 오는 순간 끌어온다) 접고 펼 수 있다. 접힘은 부모 ref별로 기억한다.
@@ -538,8 +538,8 @@ async function loadMoreIssues(){
   L.done = !data.has_more;   // 예전 서버(has_more 없음)면 한 번으로 끝
   L.busy = false;
   if(!body.querySelector('table, .empty')){
-    body.innerHTML = items.length ? `<table class="issues"><thead><tr><th aria-sort="${L.qs.sort === 'id_asc' ? 'ascending' : L.qs.sort === 'id_desc' ? 'descending' : 'none'}"><button type="button" id="list-id-sort" class="list-sort" title="${L.qs.sort === 'id_asc' ? 'ID 내림차순으로 정렬해요' : L.qs.sort === 'id_desc' ? '최근 고친 순으로 정렬해요' : 'ID 오름차순으로 정렬해요'}">ID${L.qs.sort ? `<svg class="ico${L.qs.sort === 'id_desc' ? ' sort-desc' : ''}" aria-hidden="true"><use href="#i-arrow-up"/></svg>` : ''}</button></th><th>Title</th><th>Status</th><th class="hide-m">Priority</th>
-      <th class="hide-m history-heading">처리 에이전트</th><th class="hide-m history-heading">소요 시간</th><th class="hide-m">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
+    body.innerHTML = items.length ? `<table class="issues"><thead><tr><th aria-sort="${L.qs.sort === 'id_asc' ? 'ascending' : L.qs.sort === 'id_desc' ? 'descending' : 'none'}"><button type="button" id="list-id-sort" class="list-sort" title="${L.qs.sort === 'id_asc' ? 'ID 내림차순으로 정렬해요' : L.qs.sort === 'id_desc' ? '최근 고친 순으로 정렬해요' : 'ID 오름차순으로 정렬해요'}">ID${L.qs.sort ? `<svg class="ico${L.qs.sort === 'id_desc' ? ' sort-desc' : ''}" aria-hidden="true"><use href="#i-arrow-up"/></svg>` : ''}</button></th><th>Title</th><th>Status</th>
+      <th class="hide-m history-heading">AGENT</th><th class="hide-m history-heading">TIME</th><th class="hide-m">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
   }
   const tbody = body.querySelector('tbody');
   if(tbody){ items.forEach(i => placeRow(tbody, i)); bindActions(tbody, L.actions, loadList); }
@@ -597,7 +597,7 @@ async function renderBoard(){
     const mine = items.filter(i => i.status === s);
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
-        <div class="t">${titleHtml(i)}</div><div class="meta">${prioHtml(i.priority)}${approvalHtml(i.approval)}${labelsHtml(i.labels)}${typesHtml(i)}
+        <div class="t">${titleHtml(i)}</div><div class="meta">${approvalHtml(i.approval)}${labelsHtml(i.labels)}${typesHtml(i)}
         ${processingAgentsHtml(i)}${completionTimeHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
     </div></div>`;
   }).join('')}</div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
@@ -864,11 +864,11 @@ async function renderIssue(ref, background = false){
       <aside class="side panel">
         <div class="field"><span>Status</span><select id="status">${STATUSES.map(s => `<option value="${s}"${s === it.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}</select>
           ${it.children.length || it.parent_ref ? '<button class="complete-tree" title="최상위 이슈와 모든 Task를 한 번에 Done으로">전체 완료</button>' : ''}</div>
-        <div class="field"><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
+        <div class="field" hidden><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
         <div class="field"><span>Assignee</span><select id="assignee">${agentOpts}</select></div>
         <div class="field" id="issue-type-editor">${typePicker(catalog.types, it.type_ids || [])}<p class="dim">${(it.types || []).some(t => t.source === 'agent') ? '자동 분류 결과예요.' : '종류를 선택하거나 비울 수 있어요.'}</p><button id="save-types" type="button">종류 저장</button><p id="types-status" role="status"></p></div><div class="field"><span>Labels (쉼표로)</span><input id="labels" value="${esc(it.labels.join(', '))}"></div>
-        <div class="field"><span>처리 에이전트</span>${processingAgentsHtml(it)}</div>
-        ${['done', 'closed'].includes(it.status) ? `<div class="field"><span>소요 시간</span>${completionTimeHtml(it)}</div>` : ''}
+        <div class="field"><span>AGENT</span>${processingAgentsHtml(it)}</div>
+        ${['done', 'closed'].includes(it.status) ? `<div class="field"><span>TIME</span>${completionTimeHtml(it)}</div>` : ''}
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Agent</span>
           ${it.job && it.job.mode === 'review' ? jobHtml(it.job) : `${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}
@@ -1137,7 +1137,7 @@ async function renderNew(params){
     <h2 style="margin:0">${parent ? `New task · <span class="ref">${esc(parent)}</span>` : 'New issue'}</h2>
     <div class="line"><label>Project<select id="n-project"${parent ? ' disabled' : ''}>${projects.filter(p => !p.archived).map(p =>
       `<option value="${esc(p.key)}"${p.key === proj ? ' selected' : ''}>${esc(p.key)} · ${esc(p.name)}</option>`).join('')}</select></label>
-      <label>Priority<select id="n-priority">${PRIORITIES.map(p => `<option${p === 'none' ? ' selected' : ''}>${p}</option>`).join('')}</select></label>
+      <label hidden>Priority<select id="n-priority">${PRIORITIES.map(p => `<option${p === 'none' ? ' selected' : ''}>${p}</option>`).join('')}</select></label>
       <label>Status<select id="n-status"><option>backlog</option><option>triage</option></select></label></div>
     <label>Title<input id="n-title" maxlength="300" placeholder="비워 두면 이슈를 맡은 에이전트가 본문을 보고 지어요"></label>
     <label>Description (마크다운)<textarea id="n-body" style="min-height:260px"></textarea></label>
