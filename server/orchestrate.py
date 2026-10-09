@@ -181,7 +181,7 @@ def merge(repo: str, ref: str, after: list[str] = ()) -> tuple[str, str]:
         return _merge(repo, ref, after)
 
 
-def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task=None) -> tuple[str, str]:
+def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task=None, reuse_tests=True) -> tuple[str, str]:
     head = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if head != BASE_BRANCH:
         return "on_hold", f"저장소가 {BASE_BRANCH}가 아니라 {head}에 있어 병합 보류 — {BASE_BRANCH}로 돌려 놓은 뒤 재개해 주세요."
@@ -220,7 +220,7 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
         # 시험 병합 트리가 검사한 Task 트리와 같으니 같은 검사를 또 돌리지 않는다(test_ui만 수 분).
         import regression
         # 설정을 조정한 경우 완료 당시와 검사 구성이 같다는 증거가 없으므로 병합 검사를 생략하지 않는다.
-        same = expected_task and not regression.values() and _git(repo, 'rev-parse', f'{sha}^{{tree}}').stdout.strip() == _git(repo, 'rev-parse', f'{task_sha}^{{tree}}').stdout.strip()
+        same = reuse_tests and expected_task and not regression.values() and _git(repo, 'rev-parse', f'{sha}^{{tree}}').stdout.strip() == _git(repo, 'rev-parse', f'{task_sha}^{{tree}}').stdout.strip()
         failed = None if same else run_tests(str(worktree))
         if failed:
             return 'changes_requested', f'시험 병합 전체 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
@@ -259,6 +259,69 @@ def completion(ref):
     with db.connect() as c:
         r = c.execute("SELECT e.* FROM execution_completion e WHERE ref=? AND run_id=(SELECT MAX(id) FROM runs WHERE issue_id=e.issue_id)", (ref,)).fetchone()
         return dict(r) if r else None
+
+
+def retry_available(issue, record=None):
+    record = record if record is not None else completion(issue['ref'])
+    return bool(issue.get('parent_ref') and issue['status'] in ('backlog', 'on_hold', 'changes_requested')
+                and record and record['auto_merge'] and record['phase'] in ('held', 'failed') and not record['merge_sha'])
+
+
+def retry_merge(actor, ref):
+    """미반영된 검증 완료 커밋을 에이전트 호출 없이 후처리로 다시 넘긴다."""
+    import execute
+    import jobs
+    if actor['kind'] != 'human':
+        raise issues.StoreError('병합 재시도는 사람만 할 수 있어요.', 403)
+    if not _lock.acquire(blocking=False):
+        raise issues.StoreError('다른 병합이 진행 중이에요. 끝난 뒤 다시 시도해 주세요.', 409)
+    try:
+        issue = issues.get_issue(ref)
+        ref = issue['ref']
+        record = completion(ref)
+        if not retry_available(issue, record):
+            raise issues.StoreError('미반영된 구현 완료 기록이 있는 보류·실패 Task만 병합 재시도할 수 있어요.', 409)
+        parent = issues.get_issue(issue['parent_ref'])
+        why = execute._eligibility_reason(issue, parent)
+        if why:
+            raise issues.StoreError(why, 409)
+        repo = next((p['local_path'] for p in issues.list_projects() if p['key'] == issue['project_key']), '')
+        if not repo or not Path(repo).is_dir():
+            raise issues.StoreError('프로젝트 저장소를 찾을 수 없어요.', 409)
+        if _git(repo, 'rev-parse', branch_name(ref)).stdout.strip() != record['task_sha']:
+            raise issues.StoreError('완료 등록 후 Task 커밋이 바뀌었어요. 구현 결과를 다시 확인해 주세요.', 409)
+        if not _git(repo, 'merge-base', '--is-ancestor', record['task_sha'], BASE_BRANCH).returncode:
+            raise issues.StoreError('이미 반영된 커밋이에요. 병합 재시도를 하지 않았어요.', 409)
+        wt = execute.worktree_path(ref)
+        if wt.exists() and (_git(str(wt), 'status', '--porcelain').stdout.strip() or execute.merge_unfinished(wt)):
+            raise issues.StoreError('Task worktree에 미커밋 변경이나 해결하지 않은 병합이 있어요.', 409)
+        cfg = settings(issue['project_key'])
+        if not cfg.get('auto_merge'):
+            raise issues.StoreError('프로젝트 자동 병합이 꺼져 있어요.', 409)
+        with db.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            row = issues._find(c, ref)
+            current = c.execute('SELECT * FROM execution_completion WHERE run_id=?', (record['run_id'],)).fetchone()
+            latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (row['id'],)).fetchone()[0]
+            result = c.execute('SELECT plan_version FROM task_execution_results WHERE run_id=?', (record['run_id'],)).fetchone()
+            if not result or result['plan_version'] != parent['approval']['plan_version']:
+                raise issues.StoreError('구현 당시 승인 계획과 현재 계획이 달라요. 구현 결과를 다시 확인해 주세요.', 409)
+            if row['status'] != issue['status'] or latest != record['run_id'] or current['phase'] != record['phase']:
+                raise issues.StoreError('Task 상태나 실행 기록이 바뀌었어요. 새로고침해 주세요.', 409)
+            if c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND status='queued' UNION ALL SELECT 1 FROM runs WHERE issue_id=? AND status='running'", (row['id'], row['id'])).fetchone():
+                raise issues.StoreError('대기 중이거나 실행 중인 작업이 있어요.', 409)
+            issues._set_status(c, actor, row, 'in_progress', '기존 구현 커밋으로 병합 재시도 — 에이전트 재실행 없음')
+            event = c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status'", (row['id'],)).fetchone()[0]
+            c.execute("UPDATE execution_completion SET phase='ready',worker_id=?,owner_event=?,actor=?,cfg_json=?,updated_at=? WHERE run_id=?",
+                      (PROCESS_ID, event, issues.actor_label(actor), json.dumps({**cfg, 'retry_merge': True}), db.now_iso(), record['run_id']))
+        try:
+            threading.Thread(target=jobs.run_then_pump, args=(handle, actor, ref), daemon=True).start()
+        except Exception as error:
+            _finish(actor, completion(ref), 'on_hold', '병합 재시도 스레드를 시작하지 못했어요: ' + str(error))
+            raise issues.StoreError('병합 재시도를 시작하지 못했어요.', 409) from error
+        return {'ref': ref, 'task_sha': record['task_sha'], 'status': 'checking'}
+    finally:
+        _lock.release()
 
 
 def pending():
@@ -397,7 +460,7 @@ def handle(actor: dict, ref: str) -> str | None:
                 _save(record, 'checking')
                 def checkpoint(sha):
                     _save(record, 'applying', merge_sha=sha)
-                status, note = _merge(repo, ref, [b['ref'] for b in issue['blocked_by']], checkpoint, record['task_sha'])
+                status, note = _merge(repo, ref, [b['ref'] for b in issue['blocked_by']], checkpoint, record['task_sha'], reuse_tests=not cfg.get('retry_merge'))
                 if status != 'merged':
                     return _finish(actor, record, status, note)
                 _save(record, 'deployed', merge_sha=note)

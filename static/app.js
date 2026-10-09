@@ -749,6 +749,7 @@ function executeHtml(it, liveMode, liveProvider){
   return `<div class="exec">${job ? jobHtml(job) : `<button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>${provider === 'claude' ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
     <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>${provider === 'codex' ? '실행 중…' : 'Codex에게 실행 맡기기'}</button>
     <div class="dim hint">${hint}</div><div class="dim hint">Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음.</div>`}
+    ${x.retry_merge_available && !running && !job ? '<button id="retry-merge">병합 재시도</button><div class="dim hint">기존 구현 커밋으로 서버 검사·병합만 다시 진행해요. 회귀검사 설정과 자동 병합·재시작 정책이 적용돼요.</div>' : ''}
     ${b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
       ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}</div>`;
 }
@@ -1001,6 +1002,14 @@ ${QUEUE_LINE}`)) return;
     }
   }));
   // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게
+  if($('retry-merge')) $('retry-merge').onclick = async e => {
+    e.currentTarget.disabled = true;
+    try{
+      await api('POST', `/api/issues/${R}/retry-merge`, {});
+      toast('기존 커밋으로 병합 재시도를 시작했어요.');
+    }catch(e){ /* api()가 오류를 알린다. */ }
+    finally{ if(location.hash === `#/issue/${it.ref}`) await reload(); }
+  };
   for(const [id, provider] of [['ask-execute', 'claude'], ['ask-codex-execute', 'codex']]) {
     if($(id)) $(id).addEventListener('click', async (e) => {
     if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;

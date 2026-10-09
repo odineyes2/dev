@@ -638,4 +638,6 @@ def panel(issue: dict) -> dict | None:
         branch = branch_info(repo, issue["ref"])
     except issues.StoreError:
         branch = None
-    return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC}
+    import orchestrate
+    return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC,
+            "retry_merge_available": orchestrate.retry_available(issue)}

@@ -636,6 +636,11 @@ async def api_review(ref: str, request: Request):
     return jobs.enqueue(me, ref, "review", b.get("provider"))
 
 
+@app.post('/api/issues/{ref}/retry-merge')
+async def api_retry_merge(ref: str, request: Request):
+    return await run_in_threadpool(orchestrate.retry_merge, human_only(request), ref)
+
+
 @app.get("/api/jobs")
 def api_jobs():
     return {"jobs": jobs.list_jobs(), "in_progress": jobs.list_in_progress()}
