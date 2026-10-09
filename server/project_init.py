@@ -219,9 +219,9 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
     cwd = config.DATA_DIR / 'project-initializations' / row['request_id']
     cwd.mkdir(parents=True, exist_ok=True)
     if row['provider'] == 'codex':
-        cmd = review.codex_command('-', [], 'read-only')
+        cmd = review.codex_command('-', [])
         cmd = ['mcp_servers={}' if x.startswith('mcp_servers=') else x for x in cmd]
-        cmd = cmd[:-1] + ['-c', 'features.shell_tool=false', '-c', 'features.unified_exec=false', '--output-schema', str(SCHEMA), '-']
+        cmd = cmd[:-1] + ['--output-schema', str(SCHEMA), '-']
     else:
         empty = cwd / 'empty-mcp.json'
         empty.write_text('{"mcpServers":{}}', encoding='utf-8')

@@ -1,5 +1,6 @@
 """Codex 검토 — 실제 계정 호출 없이 API·대기열·JSONL·실패 처리를 검증한다."""
 import json, os, sys, tempfile, time, tomllib
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ['DEV_DATA_DIR'] = tempfile.mkdtemp()
@@ -12,19 +13,11 @@ from fastapi.testclient import TestClient
 
 cmd = review.codex_command_for('CX-1')
 assert '--ignore-user-config' in cmd and '--ignore-rules' in cmd
-assert cmd[cmd.index('--sandbox') + 1] == 'read-only'
+assert cmd[cmd.index('--sandbox') + 1] == 'danger-full-access'
 assert 'approval_policy="never"' in cmd and '--json' in cmd
-if os.name == 'nt':
-    assert 'windows.sandbox="elevated"' in cmd
-    os.environ['DEV_CODEX_WINDOWS_SANDBOX'] = 'unelevated'
-    assert 'windows.sandbox="unelevated"' in review.codex_command_for('CX-1')
-    os.environ['DEV_CODEX_WINDOWS_SANDBOX'] = 'invalid'
-    try:
-        review.codex_command_for('CX-1')
-        raise AssertionError('Invalid Windows sandbox was accepted')
-    except review.issues.StoreError as e:
-        assert e.status == 400
-    del os.environ['DEV_CODEX_WINDOWS_SANDBOX']
+assert not any(v.startswith('windows.sandbox=') for v in cmd)
+with patch.dict(os.environ, DEV_CODEX_WINDOWS_SANDBOX='invalid'):
+    assert review.codex_command_for('CX-1') == cmd
 assert 'test-secret' not in ' '.join(cmd)
 mcp = next(v for v in cmd if v.startswith('mcp_servers='))
 assert 'list_issue_types' in mcp and 'classify_issue' in mcp and 'create_issue_type' not in mcp
@@ -167,14 +160,14 @@ with TestClient(A.app) as c:
     wait_idle()
     assert review.list_runs('CX-3')[0]['status'] == 'ok'
     assert issues.get_issue('CX-3')['status'] == 'on_hold'
-    # 계획서만 등록하고 분류를 생략하면 실패하고, 다음 검토에서 재시도한다.
+    # 선택적 분류가 빠져도 새 계획서가 등록되면 검토는 성공한다.
     retry_ref = c.post('/api/issues', json={'project': 'CX', 'title': 'Classification retry'}, headers=H).json()['ref']
     no_classification = success_script.split("current = issues.get_issue")[0]
     fake.write_text(no_classification + 'print(' + repr(events) + ')\n', 'utf-8')
     c.post('/api/issues/' + retry_ref + '/review', json={'provider': 'codex'}, headers=H)
     wait_idle()
-    assert review.list_runs(retry_ref)[0]['status'] == 'failed'
-    assert '자동 분류' in review.list_runs(retry_ref)[0]['note']
+    assert review.list_runs(retry_ref)[0]['status'] == 'ok'
+    assert issues.get_issue(retry_ref)['status'] == 'triage'
     fake.write_text(success_script + 'print(' + repr(events) + ')\n', 'utf-8')
     c.post('/api/issues/' + retry_ref + '/review', json={'provider': 'codex'}, headers=H)
     wait_idle()

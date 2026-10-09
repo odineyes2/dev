@@ -13,14 +13,16 @@
 
 이슈 발행은 저장만 한다. 사용자가 Claude 또는 Codex 검토 버튼을 눌러 검토를 요청한다. 승인된 Task 상세에서 Claude 또는 Codex 실행을 선택한다.
 Codex 검토는 서버 계정의 `codex login`과 `DEV_CODEX_AGENT_KEY`(Agents에서 발급한 Codex용 dev 키)가 필요하다.
-`codex exec`의 읽기 전용 sandbox, 승인 요청 금지, dev MCP 도구 허용 목록을 사용한다.
+Codex 검토·실행·프로젝트 생성은 `--sandbox danger-full-access`와 승인 요청 금지를 사용한다.
+OS 파일·프로세스·네트워크 격리는 없으며 dev MCP 도구 허용 목록은 유지한다.
 허용된 검토 도구에만 `approval_mode="approve"`를 지정한다. 새 계획서 등록과 빈 제목 채우기를 확인한 뒤 성공으로 기록한다.
 개인 설정·실행 규칙은 로드하지 않는다. CLI는 `--ignore-user-config`, `--ignore-rules`, `--ephemeral`을 지원해야 한다.
-Windows에서는 개인 설정을 제외해도 native sandbox가 활성화되도록 `windows.sandbox="elevated"`를 직접 지정한다.
-서버 계정에서 Windows sandbox 설정이 완료되어 있어야 한다. 관리자 설정을 사용할 수 없으면 `DEV_CODEX_WINDOWS_SANDBOX=unelevated`로 명시할 수 있다.
+Windows native sandbox를 사용하지 않는다. 기존 `DEV_CODEX_WINDOWS_SANDBOX` 설정은 실행에 영향을 주지 않는다.
+Codex 검토·실행은 웹 검색을 허용한다. 에이전트는 Task의 필수·관련 검사만 수행하고 서버는 전체 검사를 한 번씩 수행한다.
+실패 후 수정 재시도는 실패한 검사만 에이전트가 확인하며, 전체 재검증은 서버가 담당한다. 선택적 종류 분류 누락은 정상 검토를 실패시키지 않는다.
 대기열과 실행 기록에 제공자를 저장하며 Codex JSONL에서 토큰을 읽는다. 비용은 CLI가 제공하지 않아 비워 둔다.
 설정이 없으면 Codex 요청은 대기열에서 사유를 표시하고 기다린다.
-Codex 실행은 같은 키·로그인을 사용한다. worktree 안의 `workspace-write` sandbox에서 구현·검사하고,
+Codex 실행은 같은 키·로그인을 사용한다. Task worktree에서 OS sandbox 없이 구현·검사하고,
 구조화된 성공 결과를 확인한 서버가 해당 worktree만 커밋·이슈 연결·`in_review` 전환한다.
 Task는 한 프로젝트의 변경만 담는다. 변경 파일에 다른 등록 저장소 경로가 있으면 모델 실행 전에 거절한다.
 여러 서비스의 수정은 프로젝트별 이슈로 나누며, 실기기 검사는 자동 검사와 사람의 후속 확인을 구분한다.

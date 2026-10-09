@@ -16,11 +16,9 @@ assert scope('**바꿀 파일**: static/style.css\n참고: nightshift/CLAUDE.md'
 assert scope('파일: my-nightshift/style.css') is None
 assert scope('파일: dev/static/style.css') is None
 cmd = execute.codex_command_for('EX-1-2', 'EX-1')
-assert cmd[cmd.index('--sandbox') + 1] == 'workspace-write'
+assert cmd[cmd.index('--sandbox') + 1] == 'danger-full-access'
 assert '--output-schema' in cmd and '--dangerously-bypass-approvals-and-sandbox' not in cmd
-assert 'sandbox_workspace_write.network_access=false' in cmd
-if os.name == 'nt':
-    assert 'windows.sandbox="elevated"' in cmd
+assert not any(v.startswith(('windows.sandbox=', 'sandbox_workspace_write.')) for v in cmd)
 assert 'test-secret' not in ' '.join(cmd)
 mcp = tomllib.loads(next(v for v in cmd if v.startswith('mcp_servers=')))['mcp_servers']['dev']
 assert 'mcp__dev__read_attachment' in execute.ALLOWED_TOOLS

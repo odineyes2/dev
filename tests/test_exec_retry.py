@@ -34,6 +34,9 @@ def run(results):
 status, prompts, registered = run(["test_x.py: 종료 코드 1", None])
 assert status == "ok" and registered and len(prompts) == 2, (status, prompts)
 assert prompts[0] == "원래 지시" and prompts[1].startswith("원래 지시") and "test_x.py: 종료 코드 1" in prompts[1]
+assert '전체 검사는 서버가 다시 수행한다' in prompts[1]
+with patch.object(orchestrate, 'settings', return_value={'auto_merge': False}):
+    assert '전체 검사' in execute.test_scope(task) and '직접 돌리지 않는다' in execute.test_scope(task)
 
 # 두 번 다 실패 → 완료 등록 없이 failed
 status, prompts, registered = run(["a 실패", "b 실패"])
@@ -81,7 +84,7 @@ assert 'web_search="cached"' in review.codex_command_for("NS-1")
 ec = execute.command_for("NS-1-1", "NS-1", "mock")
 assert not any(t.startswith(("WebFetch", "WebSearch")) for t in ec[ec.index("--allowedTools") + 1:ec.index("--disallowedTools")])
 assert {"WebFetch", "WebSearch"} <= set(ec[ec.index("--disallowedTools") + 1:])
-assert 'web_search="disabled"' in execute.codex_command_for("NS-1-1", "NS-1") and "sandbox_workspace_write.network_access=false" in execute.codex_command_for("NS-1-1", "NS-1")
+assert 'web_search="cached"' in execute.codex_command_for("NS-1-1", "NS-1") and "danger-full-access" in execute.codex_command_for("NS-1-1", "NS-1")
 print("ok web policy")
 
 # 두 실행기의 화면 확인 계약과 캡처만의 실패 예외를 보존한다.

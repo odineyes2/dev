@@ -191,7 +191,9 @@ class InitializationTest(unittest.TestCase):
             command = launch.call_args.args[0]
             if provider == 'codex':
                 self.assertIn('mcp_servers={}', command)
-                self.assertIn('features.shell_tool=false', command)
+                self.assertNotIn('features.shell_tool=false', command)
+                self.assertNotIn('features.unified_exec=false', command)
+                self.assertIn('danger-full-access', command)
                 self.assertIn('--output-schema', command)
                 self.assertEqual(command[-1], '-')
             else:
