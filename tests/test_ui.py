@@ -266,9 +266,9 @@ def check_issue_types(page, shots):
                 if name == 'new': assert page.locator(f'[data-type="{a["id"]}"]').count() == 0
                 if name == 'detail':
                     assert page.locator(f'[data-type="{a["id"]}"]').get_attribute('aria-pressed') == 'true'
-                    assert '비활성' in page.locator('.byline').inner_text()
+                    assert '비활성' in page.locator('.byline .type-badge').first.get_attribute('title')
                 if name in ('list','board'):
-                    assert '이름 수정 확인' in page.locator('#view').inner_text()
+                    assert '#이름수정확인' in page.locator('#view').inner_text()
                 page.locator('#toast').evaluate('e => e.hidden = true')
                 page.screenshot(path=str(shots / f'types_{name}_{scheme}_{width}.png'), full_page=True)
     page.goto(BASE + '/#/issue/' + ref); page.wait_for_selector('#save-types')
@@ -1899,6 +1899,100 @@ def check_project_initialization(page, shots):
         page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
 
 
+def check_new_issue_fields(page):
+    """숨긴 Priority의 기본값을 유지하며 보이는 입력으로 발행한다."""
+    r = page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
+                          data={'key': 'FIELDS', 'name': '발행 필드 검사'})
+    assert r.ok, r.text()
+    page.goto(BASE + '/#/new'); page.reload(); page.wait_for_selector('#new-form')
+    page.select_option('#n-project', 'FIELDS')
+    assert page.locator('#n-priority').is_hidden()
+    assert page.input_value('#n-priority') == 'none'
+    page.fill('#n-title', '보드 카드 복사')
+    page.fill('#n-body', '## 요구\n- 우클릭 메뉴\n- `Ctrl+C`')
+    page.fill('#n-labels', 'board, ui')
+    page.click('#new-form button[type=submit]')
+    page.wait_for_selector('h1#title')
+    issue = page.request.get(BASE + '/api/issues/FIELDS-1').json()
+    assert issue['priority'] == 'none' and issue['labels'] == ['board', 'ui']
+    assert '<h2>요구</h2>' in page.inner_html('#body')
+
+
+def check_chat_connections(page, shots):
+    """Chat 키 발급·옮기기·재발급과 선택 목록 분리를 실제 UI로 검사한다."""
+    H = {'X-Requested-With': 'dev'}
+    def post(path, body):
+        r = page.request.post(BASE + path, headers=H, data=body)
+        assert r.ok, r.text()
+        return r.json()
+    post('/api/projects', {'key': 'CHATUI', 'name': 'Chat UI'})
+    catalog = page.request.get(BASE + '/api/model-catalog').json()['vendors'][0]
+    worker = post('/api/agents', {'name': 'chat-ui-worker', 'vendor': catalog['vendor'], 'model': catalog['models'][0]['id']})['agent']
+    issue = post('/api/issues', {'project': 'CHATUI', 'title': 'Chat 선택 검사', 'assignee_agent_id': worker['id']})
+    page.goto(BASE + '/#/agents'); page.wait_for_selector('#chat-form')
+    page.fill('#chat-name', 'chat-ui-connection'); page.click('#chat-form button')
+    page.wait_for_selector('#key')
+    chat = next(a for a in page.request.get(BASE + '/api/agents').json()['agents'] if a['name'] == 'chat-ui-connection')
+    assert chat['kind'] == 'chat' and not chat['vendor'] and not chat['model']
+    row = page.locator(f'#chat-connections [data-agent="{chat["id"]}"]')
+    assert row.count() == 1 and row.locator('select').count() == 0
+    assert page.locator(f'#execution-agents [data-agent="{chat["id"]}"]').count() == 0
+    old_prefix = chat['key_prefix']
+    row.locator('[data-rotate]').click()
+    page.wait_for_function('(old) => document.querySelector("#key")?.textContent && !document.querySelector("#key").textContent.startsWith(old)', arg=old_prefix)
+    page.locator(f'[data-toggle="{chat["id"]}"]').click()
+    page.wait_for_function('(id) => document.querySelector(`[data-toggle="${id}"]`).getAttribute("aria-checked") === "false"', arg=chat['id'])
+    page.locator(f'[data-move-kind="chat"][data-id="{worker["id"]}"]').click()
+    page.wait_for_selector(f'#chat-connections [data-agent="{worker["id"]}"]')
+    assert page.request.get(BASE + '/api/issues/' + issue['ref']).json()['assignee_agent_id'] is None
+    page.locator(f'[data-move-kind="agent"][data-id="{worker["id"]}"]').click()
+    page.wait_for_selector(f'#execution-agents [data-agent="{worker["id"]}"]')
+    # 이름만으로 만든 Chat도 Agent로 옮기고 기존 모델 선택 UI에서 설정할 수 있다.
+    page.locator(f'[data-move-kind="agent"][data-id="{chat["id"]}"]').click()
+    page.wait_for_selector(f'#execution-agents [data-agent="{chat["id"]}"]')
+    page.locator(f'[data-move-kind="chat"][data-id="{chat["id"]}"]').click()
+    page.wait_for_selector(f'#chat-connections [data-agent="{chat["id"]}"]')
+    for theme in ('light', 'dark'):
+        for width in (1300, 390):
+            page.emulate_media(color_scheme=theme)
+            page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}', theme)
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.wait_for_function('document.getElementById("toast").hidden')
+            page.wait_for_timeout(150)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path=str(shots / f'chat-agents-{theme}-{width}.png'), full_page=True)
+    page.goto(BASE + '/#/issue/' + issue['ref']); page.wait_for_selector('#assignee')
+    assert page.locator(f'#assignee option[value="{chat["id"]}"]').count() == 0
+    assert page.locator(f'#assignee option[value="{worker["id"]}"]').count() == 1
+    for theme in ('light', 'dark'):
+        for width in (1300, 390):
+            page.emulate_media(color_scheme=theme)
+            page.evaluate('s => {document.documentElement.dataset.theme=s}', theme)
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.wait_for_timeout(150)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path=str(shots / f'chat-assignee-{theme}-{width}.png'), full_page=True)
+    # 서버가 이전 데이터의 Chat Assignee를 돌려주는 경우도 표시만 유지한다.
+    current = page.request.get(BASE + '/api/issues/' + issue['ref']).json()
+    page.route('**/api/issues/' + issue['ref'], lambda route: route.fulfill(json={**current, 'assignee_agent_id': chat['id']}))
+    page.reload(); page.wait_for_selector('#assignee')
+    assert page.input_value('#assignee') == str(chat['id'])
+    assert '(Chat)' in page.locator('#assignee option:checked').inner_text()
+    page.unroute('**/api/issues/' + issue['ref'])
+    page.goto(BASE + '/#/'); page.wait_for_selector('#project-filter')
+    page.evaluate('openComposer()')
+    page.wait_for_selector(f'#cmp-agent option[value="{worker["id"]}"]', state='attached')
+    assert page.locator(f'#cmp-agent option[value="{chat["id"]}"]').count() == 0
+    page.select_option('#cmp-agent', str(worker['id']))
+    r = page.request.patch(BASE + f'/api/agents/{worker["id"]}', headers=H, data={'kind': 'chat'})
+    assert r.ok
+    page.evaluate('openComposer()')
+    page.wait_for_function('document.getElementById("cmp-agent").value === ""')
+    assert page.locator(f'#cmp-agent option[value="{worker["id"]}"]').count() == 0
+    page.evaluate('closeComposer()')
+    page.set_viewport_size({'width': 1300, 'height': 850})
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 (tmp / "capture_app.py").write_text(BOOTSTRAP, "utf-8")
@@ -1928,6 +2022,14 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--new-issue-fields-only' in sys.argv:
+            check_new_issue_fields(page)
+            assert not errs, errs
+            print('OK: new issue fields'); sys.exit(0)
+        if '--chat-connections-only' in sys.argv:
+            check_chat_connections(page, shots)
+            assert not errs, errs
+            print('OK: chat connections'); sys.exit(0)
         if '--list-sort-only' in sys.argv:
             check_list_sort(page, shots)
             assert not errs, errs
@@ -2056,7 +2158,8 @@ try:
         page.click("a[href=\"#/new\"]")
         page.fill("#n-title", "보드 카드 복사")
         page.fill("#n-body", "## 요구\n- 우클릭 메뉴\n- `Ctrl+C`\n\n<script>alert(1)</script> NS-1 참고")
-        page.select_option("#n-priority", "high")
+        assert page.locator('#n-priority').is_hidden()
+        assert page.input_value('#n-priority') == 'none'
         page.fill("#n-labels", "board, ui")
         page.click("#new-form button[type=submit]")
         page.wait_for_selector("h1#title:text('보드 카드 복사')")
@@ -2614,6 +2717,7 @@ try:
 
         check_progress_refresh(page, shots)
         # 로그아웃(사용자 메뉴 안)
+        check_chat_connections(page, shots)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert page.locator('#open-jupyter').get_attribute('hidden') is not None
         assert not errs, errs
