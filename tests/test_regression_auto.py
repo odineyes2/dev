@@ -38,6 +38,8 @@ assert not ui['checks']['agent_api']['enabled'] and not ui['checks']['server_com
 high = regression.resolve(ref, repo, ['server/auth.py'])
 assert high['level'] == 'high' and high['checks']['file:test_ui.py']['enabled']
 assert '서버 보강' in high['checks']['agent_api']['reason']
+manual = issues.create_issue(me, 'AUTO', 'legacy task', body='tests/test_ui.py', parent=parent['ref'])
+assert regression.resolve(manual['ref'], repo, ['static/app.css'])['checks']['file:test_ui.py']['enabled']
 regression.update(me, {'agent_api': 'off', 'file:test_ui.py': 'on'})
 assert not regression.resolve(ref, repo, ['server/auth.py'])['checks']['agent_api']['enabled']
 assert regression.resolve(ref, repo, ['README.md'])['checks']['server_completion']['enabled']

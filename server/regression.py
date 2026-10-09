@@ -140,6 +140,7 @@ def resolve(ref=None, repo=None, changed=None):
         if not changed and issue:
             changed = list(execute.task_files(issue))
     changed = sorted(set(p.replace('\\', '/') for p in changed))
+    named_tests = set(re.findall(r'tests/(test_[A-Za-z0-9_]+\.py)', (issue or {}).get('body', '')))
     critical = {'auth', 'db', 'issues', 'execute', 'review', 'jobs', 'orchestrate', 'rollback', 'regression'}
     modules = {Path(p).stem for p in changed if p.endswith('.py') and not p.startswith('tests/')}
     high = bool(modules & critical) or any(re.search(r'(^|/)(auth|migrations|security)(/|\.)', p) for p in changed)
@@ -162,7 +163,7 @@ def resolve(ref=None, repo=None, changed=None):
                             imports.add(node.module.split('.')[0])
                 except (SyntaxError, UnicodeError):
                     pass
-            auto = level == 'high' or 'tests/' + name in changed or bool(modules & imports) or name == 'test_ui.py' and ui and level != 'light'
+            auto = level == 'high' or name in named_tests or 'tests/' + name in changed or bool(modules & imports) or name == 'test_ui.py' and ui and level != 'light'
         else:
             auto = {'agent_related': level != 'light' or any(p.startswith('tests/') for p in changed), 'agent_api': 'app' in modules or high,
                     'agent_capture': ui, 'server_api_warning': 'app' in modules or high}.get(key, level != 'light')
