@@ -98,6 +98,19 @@ async def main():
         assert (await call("whoami")).data["model"] == "claude-opus-5-5"
         lst = (await call("list_issues", status="backlog")).structured_content["result"]
         assert 'NS-1' in [i['ref'] for i in lst] and "body" not in lst[0]
+        # MCP도 저장소 정렬 인자를 그대로 전달하고 잘못된 값은 거절한다.
+        issues.create_project(HUMAN, 'MSORT', 'MCP 정렬 검사')
+        for title in ('첫째', '둘째', '셋째'):
+            issues.create_issue(HUMAN, 'MSORT', title)
+        for direction, reverse in (('id_asc', False), ('id_desc', True)):
+            ordered = (await call('list_issues', project='MSORT', sort=direction)).structured_content['result']
+            assert len(ordered) == 3
+            assert [i['id'] for i in ordered] == sorted([i['id'] for i in ordered], reverse=reverse)
+        try:
+            await call('list_issues', sort='invalid')
+            raise AssertionError('invalid sort accepted')
+        except ToolError:
+            pass
         it = (await call("get_issue", ref="NS-1")).data
         assert it["body"] == "사람이 쓴 지시"
         assert len(it['attachments']) == len(samples)

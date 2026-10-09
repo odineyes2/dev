@@ -10,6 +10,8 @@ import review, jobs, db, auth, issues, app as A
 import httpx
 from fastapi.testclient import TestClient
 
+# 기본값 검사는 실행 환경의 sandbox 선택과 분리한다.
+os.environ.pop('DEV_CODEX_WINDOWS_SANDBOX', None)
 cmd = review.codex_command_for('CX-1')
 assert '--ignore-user-config' in cmd and '--ignore-rules' in cmd
 assert cmd[cmd.index('--sandbox') + 1] == 'read-only'

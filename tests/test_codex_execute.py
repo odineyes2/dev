@@ -15,6 +15,8 @@ assert 'NS' in scope(r'파일: C:\Projects\nightshift\static\style.css | 확인:
 assert scope('**바꿀 파일**: static/style.css\n참고: nightshift/CLAUDE.md') is None
 assert scope('파일: my-nightshift/style.css') is None
 assert scope('파일: dev/static/style.css') is None
+# 기본값 검사는 실행 환경의 sandbox 선택과 분리한다.
+os.environ.pop('DEV_CODEX_WINDOWS_SANDBOX', None)
 cmd = execute.codex_command_for('EX-1-2', 'EX-1')
 assert cmd[cmd.index('--sandbox') + 1] == 'workspace-write'
 assert '--output-schema' in cmd and '--dangerously-bypass-approvals-and-sandbox' not in cmd
