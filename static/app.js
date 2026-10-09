@@ -1471,13 +1471,18 @@ function renderProjects(editKey, projectTab = 'manage'){
         const result = await api('GET', `/api/projects/${encodeURIComponent(ed.key)}/initialization`);
         if(!panel.isConnected) return;
         panel.hidden = false;
-        panel.innerHTML = `<h3>초기 프로젝트 생성</h3><p>${esc(result.phase)}</p><p class="dim">${esc(result.local_path)}</p>${result.error ? `<p class="error" role="alert">${esc(result.error)}</p>` : ''}${result.status === 'failed' ? '<button type="button" id="p-init-retry">다시 생성</button>' : ''}${result.refs.length ? `<p>${result.refs.map(ref => `<a href="#/issue/${esc(ref)}">${esc(ref)}</a>`).join(' · ')}</p><p class="dim">생성된 Plan과 Task는 초안이에요. 검토 후 승인하여 실행해 주세요.</p>` : ''}`;
+        panel.innerHTML = `<h3>초기 프로젝트 생성</h3><p>${esc(result.phase)}</p><p class="dim">${esc(result.local_path)}</p>${result.error ? `<p class="error" role="alert">${esc(result.error)}</p>` : ''}${['queued', 'running', 'failed'].includes(result.status) ? '<button type="button" id="p-init-stop">초기 생성 취소</button>' : ''}${result.status === 'failed' ? '<button type="button" id="p-init-retry">다시 생성</button>' : ''}${result.status === 'cancelled' ? '<p class="dim">초기 생성을 취소했어요. 프로젝트 이름 변경이나 삭제가 가능해요. 이미 만든 파일은 보존해요.</p>' : ''}${result.refs.length ? `<p>${result.refs.map(ref => `<a href="#/issue/${esc(ref)}">${esc(ref)}</a>`).join(' · ')}</p><p class="dim">생성된 Plan과 Task는 초안이에요. 검토 후 승인하여 실행해 주세요.</p>` : ''}`;
+        const stop = panel.querySelector('#p-init-stop');
+        if(stop) stop.onclick = () => whileBusy(stop, async () => {
+          await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/initialization/cancel`);
+          await refreshInitialization();
+        });
         const retry = panel.querySelector('#p-init-retry');
         if(retry) retry.onclick = () => whileBusy(retry, async () => {
           await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/initialization/retry`);
           await refreshInitialization();
         });
-        if(['queued', 'running'].includes(result.status)) setTimeout(refreshInitialization, 2000);
+        if(['queued', 'running', 'cancelling'].includes(result.status)) setTimeout(refreshInitialization, 2000);
       }catch(error){
         if(panel.isConnected && !panel.hidden) panel.textContent = `${error.message} 새로고침해 주세요.`;
       }

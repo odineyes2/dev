@@ -22,6 +22,59 @@ REQUIRED = {'README.md', '.env.example', 'AGENTS.md'} | {p for p, _ in project_d
 _lock = threading.Lock()
 _active = set()
 _generation_lock = threading.Lock()
+_processes = {}
+
+
+class Cancelled(Exception):
+    pass
+
+
+def _checkpoint(row):
+    with db.connect() as c:
+        current = c.execute('SELECT r.status,r.issue_id,i.status AS issue_status FROM project_initializations r LEFT JOIN issues i ON i.id=r.issue_id WHERE r.request_id=?', (row['request_id'],)).fetchone()
+    if not current or current['status'] != 'running' or current['issue_id'] is None or current['issue_status'] in ('closed', 'on_hold'):
+        raise Cancelled()
+
+
+def cancel_for_issue(c, row, actor):
+    """Issue 변경과 취소 요청을 같은 트랜잭션에 기록한다. 프로세스 중단은 커밋 뒤에 한다."""
+    # 구판 DB를 업그레이드하기 전에도 기존 Issue 동작은 유지한다.
+    if actor['kind'] == 'human' and c.execute("SELECT 1 FROM pragma_table_info('project_initializations') WHERE name='issue_id'").fetchone():
+        c.execute("""UPDATE project_initializations SET status='cancelling',phase='초기 생성 중단 중',
+            error='연결된 Issue를 중단하거나 삭제하여 초기 생성을 취소했어요.',updated_at=?
+            WHERE issue_id=? AND status IN ('queued','running','failed')""", (db.now_iso(), row['id']))
+
+
+def stop_cancelled():
+    with db.connect() as c:
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_initializations'").fetchone():
+            return
+        rows = c.execute("SELECT r.request_id,p.key FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE r.status='cancelling'").fetchall()
+    for row in rows:
+        with _lock:
+            proc = _processes.get(row['request_id'])
+            active = row['key'] in _active
+        if proc is not None and proc.poll() is None:
+            review._kill_tree(proc)
+        if not active:
+            with db.connect() as c:
+                c.execute("UPDATE project_initializations SET status='cancelled',phase='초기 생성 취소',updated_at=? WHERE request_id=? AND status='cancelling'", (db.now_iso(), row['request_id']))
+
+
+def cancel(actor, key):
+    if actor['kind'] != 'human':
+        raise issues.StoreError('초기 생성은 관리자만 취소할 수 있어요.', 403)
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        row = c.execute('SELECT r.* FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE p.key=?', (str(key).upper(),)).fetchone()
+        if not row:
+            raise issues.StoreError('초기 생성 요청을 찾을 수 없어요.', 404)
+        if row['status'] == 'complete':
+            raise issues.StoreError('이미 초기 생성이 완료됐어요.', 409)
+        if row['status'] != 'cancelled':
+            c.execute("UPDATE project_initializations SET status='cancelling',phase='초기 생성 중단 중',error='사용자가 초기 생성을 취소했어요.',updated_at=? WHERE project_id=?", (db.now_iso(), row['project_id']))
+    stop_cancelled()
+    return status(key)
 
 
 def get(key):
@@ -94,8 +147,8 @@ def request(actor, body):
                 VALUES(?,?,?,?,?,?,?,?)''', (pid, number, '제품 목표 · ' + name, '사용자가 제공한 원본 기획서: PROJECT_SPEC.md\n\n' + spec,
                 '["goal"]', issues.actor_label(actor), now, now)).lastrowid
             attachments.link(c, actor, iid, [a['id']])
-            c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,status,phase,created_at,updated_at)
-                VALUES(?,?,?,?,?,'queued','기획서 분석 대기',?,?)''', (pid, request_id, issues.actor_label(actor), provider, spec, now, now))
+            c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,status,phase,created_at,updated_at,issue_id)
+                VALUES(?,?,?,?,?,'queued','기획서 분석 대기',?,?,?)''', (pid, request_id, issues.actor_label(actor), provider, spec, now, now, iid))
     except sqlite3.IntegrityError:
         with db.connect() as c:
             old = c.execute('SELECT p.key,r.owner FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE request_id=?', (request_id,)).fetchone()
@@ -121,6 +174,8 @@ def retry(actor, key):
             raise issues.StoreError('생성 요청을 찾을 수 없어요.', 404)
         if row['status'] != 'failed':
             raise issues.StoreError('실패한 생성 요청만 재시도할 수 있어요.', 409)
+        if row['issue_id'] is None or c.execute("SELECT 1 FROM issues WHERE id=? AND status IN ('closed','on_hold')", (row['issue_id'],)).fetchone():
+            raise issues.StoreError('연결된 Issue가 중단되거나 삭제됐어요. 새 프로젝트로 다시 생성해 주세요.', 409)
         c.execute("UPDATE project_initializations SET status='queued',error='',updated_at=? WHERE project_id=?", (db.now_iso(), row['project_id']))
     start(str(key).upper())
     return status(key)
@@ -137,6 +192,10 @@ def start(key):
 def recover():
     with db.connect() as c:
         c.execute("UPDATE project_initializations SET status='failed',error='서버 재시작으로 중단됐어요. 다시 시도해 주세요.' WHERE status='running'")
+        c.execute("UPDATE project_initializations SET status='cancelled',phase='초기 생성 취소',updated_at=? WHERE status='cancelling'", (db.now_iso(),))
+        c.execute("""UPDATE project_initializations SET status='cancelled',phase='초기 생성 취소',
+            error='연결된 Issue가 중단되거나 삭제되어 초기 생성을 취소했어요.',updated_at=?
+            WHERE status IN ('queued','failed') AND (issue_id IS NULL OR issue_id IN (SELECT id FROM issues WHERE status IN ('closed','on_hold')))""", (db.now_iso(),))
         keys = [r[0] for r in c.execute("SELECT p.key FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE r.status='queued'")]
     for key in keys:
         start(key)
@@ -170,12 +229,23 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
     env = {k: v for k, v in os.environ.items() if k.upper() in {'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'PATHEXT'}}
     env['PYTHONIOENCODING'] = 'utf-8'
     proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+    with _lock:
+        _processes[row['request_id']] = proc
     try:
-        out, _ = proc.communicate(prompt, timeout=review.TIMEOUT_SEC)
-    except subprocess.TimeoutExpired:
-        review._kill_tree(proc)
-        proc.communicate()
-        raise issues.StoreError('기획서 분석 시간이 초과됐어요. 다시 시도해 주세요.', 409)
+        _checkpoint(row)
+        try:
+            out, _ = proc.communicate(prompt, timeout=review.TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:
+            review._kill_tree(proc)
+            proc.communicate()
+            raise issues.StoreError('기획서 분석 시간이 초과됐어요. 다시 시도해 주세요.', 409)
+        _checkpoint(row)
+    finally:
+        if proc.poll() is None:
+            review._kill_tree(proc)
+            proc.communicate()
+        with _lock:
+            _processes.pop(row['request_id'], None)
     if proc.returncode:
         raise issues.StoreError('에이전트 분석에 실패했어요. CLI 로그인과 설정을 확인하고 다시 시도해 주세요.', 409)
     if row['provider'] == 'claude':
@@ -270,6 +340,7 @@ def materialize(row, result):
     files['PROJECT_SPEC.md'] = row['spec']
     files['.gitignore'] = files.get('.gitignore', '') + '\n.env\n.env.*\n!.env.example\nnode_modules/\n.venv/\n__pycache__/\n.ui-captures/\n'
     for relative, content in files.items():
+        _checkpoint(row)
         path = stage / relative
         if any(p.is_symlink() or p.is_junction() for p in (path, *path.parents)):
             raise issues.StoreError('임시 저장소에 링크가 있어요.', 409)
@@ -287,15 +358,20 @@ def materialize(row, result):
     sha = _git(stage, 'rev-parse', '--verify', 'HEAD')
     _git(stage, 'config', '--local', 'dev.initializationSha', sha)
     # 같은 볼륨의 새 경로로만 이동한다. Windows rename은 기존 대상에 덮어쓰지 않는다.
-    stage.rename(target)
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        current = c.execute('SELECT status FROM project_initializations WHERE request_id=?', (row['request_id'],)).fetchone()
+        if not current or current['status'] != 'running':
+            raise Cancelled()
+        stage.rename(target)
 
 
 def publish(row, result):
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         current = c.execute('SELECT status FROM project_initializations WHERE project_id=?', (row['project_id'],)).fetchone()
-        if not current or current['status'] == 'complete':
-            return
+        if not current or current['status'] != 'running':
+            raise Cancelled()
         proj = c.execute('SELECT * FROM projects WHERE id=?', (row['project_id'],)).fetchone()
         if proj['archived']:
             raise issues.StoreError('보관된 프로젝트에는 생성 결과를 등록할 수 없어요.', 409)
@@ -318,25 +394,43 @@ def publish(row, result):
 
 
 def _run(key):
+    row = None
+    failure = None
     try:
+        row = get(key)
         with db.connect() as c:
-            changed = c.execute("UPDATE project_initializations SET status='running',phase='기획서 분석 중',updated_at=? WHERE project_id=(SELECT id FROM projects WHERE key=?) AND status='queued'", (db.now_iso(), key)).rowcount
+            changed = c.execute("UPDATE project_initializations SET status='running',phase='기획서 분석 중',updated_at=? WHERE request_id=? AND status='queued'", (db.now_iso(), row['request_id'])).rowcount
         if not changed:
             return
-        row = get(key)
+        _checkpoint(row)
         if row['result_json']:
             result = json.loads(row['result_json'])
         else:
-            with _generation_lock:
+            while not _generation_lock.acquire(timeout=0.2):
+                _checkpoint(row)
+            try:
+                _checkpoint(row)
                 result = generate(row)
+            finally:
+                _generation_lock.release()
+        _checkpoint(row)
         validate(result, Path(row['local_path']))
         _update(key, result_json=json.dumps(result, ensure_ascii=False), phase='문서·골격·Git 생성 중')
         materialize(row, result)
+        _checkpoint(row)
         _update(key, phase='Issue·Task 등록 중')
         publish(row, result)
+    except Cancelled:
+        if row:
+            with db.connect() as c:
+                c.execute("UPDATE project_initializations SET status='cancelling',error='초기 생성이 중단됐어요.' WHERE request_id=? AND status='running'", (row['request_id'],))
     except Exception as e:
-        message = str(e) if isinstance(e, issues.StoreError) else '생성 결과를 적용하지 못했어요. 에이전트 출력이나 저장소 상태를 확인하고 다시 시도해 주세요.'
-        _update(key, status='failed', error=message, phase='생성 중단')
+        failure = str(e) if isinstance(e, issues.StoreError) else '생성 결과를 적용하지 못했어요. 에이전트 출력이나 저장소 상태를 확인하고 다시 시도해 주세요.'
     finally:
         with _lock:
             _active.discard(key)
+        if row:
+            with db.connect() as c:
+                if failure:
+                    c.execute("UPDATE project_initializations SET status='failed',error=?,phase='생성 중단',updated_at=? WHERE request_id=? AND status='running'", (failure, db.now_iso(), row['request_id']))
+                c.execute("UPDATE project_initializations SET status='cancelled',phase='초기 생성 취소',updated_at=? WHERE request_id=? AND status='cancelling'", (db.now_iso(), row['request_id']))

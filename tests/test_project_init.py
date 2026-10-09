@@ -5,6 +5,9 @@ import sys
 import tempfile
 import unittest
 import uuid
+import sqlite3
+import threading
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,6 +21,7 @@ import db
 import issues
 import project_init as pi
 import project_docs
+import jobs
 
 H = {'kind': 'human', 'name': 'admin'}
 HEADERS = {'X-Requested-With': 'dev'}
@@ -153,10 +157,12 @@ class InitializationTest(unittest.TestCase):
 
     def test_provider_adapters_use_stdin_and_no_tools_or_server_secrets(self):
         self.request()
+        pi._update('NEW', status='running')
         row = pi.get('NEW')
         for provider in ('codex', 'claude'):
             row['provider'] = provider
             proc = MagicMock(returncode=0)
+            proc.poll.return_value = 0
             output = json.dumps({'structured_output': fixture()}) if provider == 'claude' else '\n'.join([
                 json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': '중간 설명'}}),
                 json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(fixture())}})])
@@ -177,6 +183,138 @@ class InitializationTest(unittest.TestCase):
                 self.assertEqual(command[command.index('--tools') + 1], '')
                 self.assertIn('--strict-mcp-config', command)
                 self.assertIn('--restricted', command)
+
+    def test_issue_deletion_cancels_and_unlocks_project(self):
+        self.request()
+        goal = issues.list_issues(project='NEW')[0]
+        response = self.client.delete('/api/issues/' + goal['ref'], headers=HEADERS)
+        self.assertEqual(response.status_code, 204, response.text)
+        self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+        response = self.client.patch('/api/projects/NEW', json={'name': '오타 수정'}, headers=HEADERS)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['name'], '오타 수정')
+        check = self.client.get('/api/projects/NEW/delete-check').json()
+        self.assertTrue(check['can_delete'])
+        response = self.client.request('DELETE', '/api/projects/NEW', json={'confirmation_token': check['confirmation_token']}, headers=HEADERS)
+        self.assertEqual(response.status_code, 204, response.text)
+
+    def test_issue_hold_only_affects_linked_goal(self):
+        self.request()
+        unrelated = issues.create_issue(H, 'NEW', '다른 작업')
+        issues.set_status(H, unrelated['ref'], 'on_hold')
+        self.assertEqual(pi.status('NEW')['status'], 'queued')
+        goal = next(i for i in issues.list_issues(project='NEW') if 'goal' in i['labels'])
+        issues.set_status(H, goal['ref'], 'on_hold')
+        self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+        self.assertEqual(self.client.post('/api/projects/NEW/initialization/retry', headers=HEADERS).status_code, 409)
+
+    def test_goal_review_queue_cancellation_also_cancels_initialization(self):
+        self.request()
+        goal = issues.list_issues(project='NEW')[0]
+        with patch.object(jobs, 'start_block', return_value='검사 중 대기'):
+            job = jobs.enqueue(H, goal['ref'], 'review', 'codex')
+        jobs.cancel(H, job['job_id'])
+        self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+
+    def test_cancellation_ignores_late_result(self):
+        self.request()
+        def late_result(row):
+            response = self.client.post('/api/projects/NEW/initialization/cancel', headers=HEADERS)
+            self.assertEqual(response.status_code, 202)
+            return fixture()
+        with patch.object(pi, 'generate', side_effect=late_result):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+        self.assertFalse((self.projects / 'new-product').exists())
+        self.assertEqual(len(issues.list_issues(project='NEW')), 1)
+
+    def test_cancellation_after_git_creation_preserves_files_without_publishing(self):
+        self.request()
+        publish = pi.publish
+        def cancel_before_publish(row, result):
+            pi.cancel(H, 'NEW')
+            publish(row, result)
+        with patch.object(pi, 'generate', return_value=fixture()), patch.object(pi, 'publish', side_effect=cancel_before_publish):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+        target = self.projects / 'new-product'
+        self.assertTrue((target / 'PROJECT_SPEC.md').is_file())
+        self.assertEqual(pi._git(target, 'rev-list', '--count', 'HEAD'), '1')
+        self.assertEqual(len(issues.list_issues(project='NEW')), 1)
+
+    def test_real_analysis_process_is_terminated_on_cancel(self):
+        self.request()
+        script = 'import sys,time; sys.stdin.read(); time.sleep(30)'
+        worker = threading.Thread(target=pi._run, args=('NEW',))
+        with pi._lock:
+            pi._active.add('NEW')
+        with patch.object(pi.review, 'codex_command', return_value=[sys.executable, '-c', script, '-']):
+            worker.start()
+            try:
+                deadline = time.monotonic() + 5
+                proc = None
+                while time.monotonic() < deadline:
+                    with pi._lock:
+                        proc = pi._processes.get(self.body['request_id'])
+                    if proc is not None:
+                        break
+                    time.sleep(0.02)
+                self.assertIsNotNone(proc)
+                response = self.client.post('/api/projects/NEW/initialization/cancel', headers=HEADERS)
+                self.assertEqual(response.status_code, 202, response.text)
+                worker.join(5)
+                self.assertFalse(worker.is_alive())
+                self.assertIsNotNone(proc.poll())
+                self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+                self.assertFalse((self.projects / 'new-product').exists())
+            finally:
+                if worker.is_alive():
+                    pi.cancel(H, 'NEW')
+                    worker.join(5)
+
+    def test_waiting_analysis_cancels_without_starting_provider(self):
+        self.request()
+        with pi._lock:
+            pi._active.add('NEW')
+        worker = threading.Thread(target=pi._run, args=('NEW',))
+        pi._generation_lock.acquire()
+        try:
+            with patch.object(pi, 'generate') as generate:
+                worker.start()
+                deadline = time.monotonic() + 5
+                while pi.status('NEW')['status'] != 'running' and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                pi.cancel(H, 'NEW')
+                worker.join(3)
+                self.assertFalse(worker.is_alive())
+                generate.assert_not_called()
+                self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+        finally:
+            pi._generation_lock.release()
+            worker.join(5)
+
+    def test_legacy_deleted_goal_is_recovered(self):
+        old = config.DATA_DIR / 'legacy.db'
+        with sqlite3.connect(old) as c:
+            for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+                c.executescript(sql + f'PRAGMA user_version={version};')
+            now = db.now_iso()
+            c.execute("INSERT INTO projects(key,name,created_at) VALUES('OLD','오타',?)", (now,))
+            c.execute("INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,status,phase,created_at,updated_at) VALUES(1,?,'human:admin','codex','원본','running','분석 중',?,?)", (str(uuid.uuid4()), now, now))
+        c.close()
+        with patch.object(config, 'DB_PATH', old):
+            db.init()
+            pi.recover()
+            self.assertEqual(pi.status('OLD')['status'], 'cancelled')
+            self.assertEqual(issues.update_project(H, 'OLD', {'name': '수정'})['name'], '수정')
+
+    def test_failed_project_can_be_renamed_and_cancel_requires_human(self):
+        self.request()
+        pi._update('NEW', status='failed')
+        self.assertEqual(self.client.patch('/api/projects/NEW', json={'name': '수정'}, headers=HEADERS).status_code, 200)
+        self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+        self.auth.return_value = ({'kind': 'agent', 'id': 1}, '')
+        self.assertEqual(self.client.post('/api/projects/NEW/initialization/cancel', headers=HEADERS).status_code, 403)
 
 
 if __name__ == '__main__':

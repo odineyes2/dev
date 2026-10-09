@@ -1782,10 +1782,14 @@ def check_project_initialization(page, shots):
     def retry(route):
         state.update(status='complete', phase='초기 생성 완료', error='', refs=['INIT-2'])
         route.fulfill(status=202, json={'key': 'INIT', **state})
+    def cancel_initialization(route):
+        state.update(status='cancelling', phase='초기 생성 중단 중', error='', refs=[])
+        route.fulfill(status=202, json={'key': 'INIT', **state})
     page.on('response', observe)
     page.route('**/api/projects/initialize', initialize)
     page.route('**/api/projects/INIT/initialization', progress)
     page.route('**/api/projects/INIT/initialization/retry', retry)
+    page.route('**/api/projects/INIT/initialization/cancel', cancel_initialization)
     try:
         page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create'); page.click('#project-create')
         page.fill('#p-key', 'INIT'); page.fill('#p-name', '기획서 생성 검사'); page.fill('#p-folder', 'init-demo')
@@ -1810,11 +1814,27 @@ def check_project_initialization(page, shots):
         page.wait_for_selector('#p-init-retry'); page.click('#p-init-retry')
         page.wait_for_function('document.querySelector("#project-initialization").textContent.includes("초기 생성 완료")')
         assert page.locator('#project-initialization a').get_attribute('href') == '#/issue/INIT-2'
+        state.update(status='running', phase='기획서 분석 중', refs=[])
+        page.reload(); page.wait_for_selector('#p-init-stop')
+        for theme in ('light', 'dark'):
+            page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}', theme)
+            for width in (1300, 390):
+                page.set_viewport_size({'width': width, 'height': 900})
+                page.wait_for_timeout(150)
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.locator('#project-initialization').screenshot(path=str(shots / f'project-initialization-cancel-{theme}-{width}.png'))
+        page.click('#p-init-stop')
+        page.wait_for_function('document.querySelector("#project-initialization").textContent.includes("초기 생성 중단 중")')
+        assert page.locator('#p-init-stop').count() == 0
+        state.update(status='cancelled', phase='초기 생성 취소')
+        page.wait_for_function('document.querySelector("#project-initialization").textContent.includes("이름 변경이나 삭제")')
+        assert page.locator('#p-init-retry').count() == 0
     finally:
         page.remove_listener('response', observe)
         page.unroute('**/api/projects/initialize', initialize)
         page.unroute('**/api/projects/INIT/initialization', progress)
         page.unroute('**/api/projects/INIT/initialization/retry', retry)
+        page.unroute('**/api/projects/INIT/initialization/cancel', cancel_initialization)
         page.request.delete(BASE + '/api/projects/INIT', headers={'X-Requested-With': 'dev'})
         page.set_viewport_size({'width': 1300, 'height': 850})
         page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')

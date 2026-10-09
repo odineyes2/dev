@@ -566,6 +566,30 @@ CREATE TABLE project_initializations (
 );
 """)
 
+MIGRATIONS.append("""
+CREATE TABLE project_initializations_new (
+    project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    request_id TEXT NOT NULL UNIQUE,
+    owner TEXT NOT NULL,
+    provider TEXT NOT NULL CHECK(provider IN ('codex','claude')),
+    spec TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('queued','running','failed','complete','cancelling','cancelled')),
+    phase TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    result_json TEXT,
+    refs_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    issue_id INTEGER REFERENCES issues(id) ON DELETE SET NULL
+);
+INSERT INTO project_initializations_new
+SELECT r.*, (SELECT i.id FROM issues i WHERE i.project_id=r.project_id
+    AND i.body LIKE '사용자가 제공한 원본 기획서: PROJECT_SPEC.md%' ORDER BY i.id LIMIT 1)
+FROM project_initializations r;
+DROP TABLE project_initializations;
+ALTER TABLE project_initializations_new RENAME TO project_initializations;
+""")
+
 STATUSES += ("waiting",)
 
 

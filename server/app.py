@@ -417,6 +417,12 @@ def api_retry_project_initialization(key: str, request: Request):
     return project_init.retry(human_only(request), key)
 
 
+@app.post('/api/projects/{key}/initialization/cancel', status_code=202)
+def api_cancel_project_initialization(key: str, request: Request):
+    import project_init
+    return project_init.cancel(human_only(request), key)
+
+
 @app.patch("/api/projects/{key}")
 async def api_update_project(key: str, request: Request):
     return issues.update_project(actor(request), key.upper(), await json_body(request))

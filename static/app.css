@@ -397,6 +397,8 @@ body:has(.composer:not([hidden])) .toast{ bottom:auto; top:72px; }
 .project-scope nav [aria-current="page"]{ color:var(--accent); border-bottom:2px solid var(--accent); }
 .form .line .project-description{ flex:1 0 100%; min-width:0; grid-column:1 / -1; }
 .form .project-description textarea{ font-family:var(--sans); font-size:14px; }
+#project-initialization{ min-width:0; overflow-wrap:anywhere; }
+#project-initialization button{ min-height:40px; }
 .project-docs{ min-width:0; }
 .project-docs .line{ display:flex; gap:var(--sp-2); flex-wrap:wrap; }
 .project-docs button, .project-docs select{ min-height:40px; max-width:100%; }

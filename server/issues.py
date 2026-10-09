@@ -214,8 +214,14 @@ def update_project(actor, key, fields: dict) -> dict:
     if not sets:
         raise StoreError("바꿀 내용이 없어요.")
     with db.connect() as c:
-        if c.execute("SELECT 1 FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE p.key=? AND r.status!='complete'", (key,)).fetchone():
+        c.execute('BEGIN IMMEDIATE')
+        if c.execute("SELECT 1 FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE p.key=? AND r.status IN ('queued','running','cancelling')", (key,)).fetchone():
             raise StoreError('초기 생성이 끝나기 전에는 프로젝트 정보를 바꿀 수 없어요.', 409)
+        previous = c.execute('SELECT * FROM projects WHERE key=?', (key,)).fetchone()
+        if previous and any(k in sets and sets[k] != previous[k] for k in ('name', 'local_path')):
+            c.execute("""UPDATE project_initializations SET status='cancelled',phase='초기 생성 취소',
+                error='프로젝트 이름이나 경로가 바뀌어 기존 분석을 취소했어요.',result_json=NULL,updated_at=?
+                WHERE project_id=? AND status='failed'""", (db.now_iso(), previous['id']))
         n = c.execute(f"UPDATE projects SET {', '.join(k + '=?' for k in sets)} WHERE key=?", (*sets.values(), key)).rowcount
         if not n:
             raise _not_found("프로젝트")
@@ -239,7 +245,7 @@ def _project_deletion(c, key):
     snapshot["dependencies"] = deps
     ids = {r["id"] for r in rows}
     blockers = []
-    if c.execute("SELECT 1 FROM project_initializations WHERE project_id=? AND status IN ('queued','running')", (project['id'],)).fetchone():
+    if c.execute("SELECT 1 FROM project_initializations WHERE project_id=? AND status IN ('queued','running','cancelling')", (project['id'],)).fetchone():
         blockers.append('초기 프로젝트 생성이 진행 중이에요.')
     if any(_lease_active(r) for r in rows):
         blockers.append("유효한 작업 점유가 있어요.")
@@ -577,8 +583,13 @@ def update_issue(actor, ref, fields: dict) -> dict:
 def delete_issue(actor, ref) -> None:
     if not _is_human(actor):
         raise _forbidden("이슈는 사람만 지울 수 있어요.")
+    import project_init
     with db.connect() as c:
-        c.execute("DELETE FROM issues WHERE id=?", (_find(c, ref)["id"],))
+        c.execute('BEGIN IMMEDIATE')
+        row = _find(c, ref)
+        project_init.cancel_for_issue(c, row, actor)
+        c.execute("DELETE FROM issues WHERE id=?", (row["id"],))
+    project_init.stop_cancelled()
     _cleanup_attachments()
 
 
@@ -615,6 +626,9 @@ def _set_status(c, actor, row, status, note="", data=None):
                now if status == 'in_progress' else None,
                status == 'done' and row['status'] != 'done', now, row["id"]))
     _event(c, row["id"], actor, "status", note, {"from": row["status"], "to": status, **(data or {})})
+    if status in ('on_hold', 'closed'):
+        import project_init
+        project_init.cancel_for_issue(c, row, actor)
 
 
 def _terminal_change(actor, ref, rejecting):
@@ -663,17 +677,18 @@ def set_status(actor, ref, status, note="", confirm_checks=False) -> dict:
             if status == "done":
                 _checks_gate(c, [row], confirm_checks)
             _sync_terminal_status(c, actor, row, status, note)
-            return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
-        if row["status"] == status:
-            return _issue_dict(row)
-        _set_status(c, actor, row, status, note)
+        elif row["status"] != status:
+            _set_status(c, actor, row, status, note)
         # 에이전트가 사람을 부를 때 폰 알림 — 헤드리스 실행 중의 in_review는 실행이 끝날 때 한 번만 보낸다
-        if not _is_human(actor) and status == "on_hold":
+        if row['status'] != status and not _is_human(actor) and status == "on_hold":
             notify.send(row["ref"], "❓ 사람의 답이 필요해요", note)
-        elif not _is_human(actor) and status == "in_review" and not c.execute(
+        elif row['status'] != status and not _is_human(actor) and status == "in_review" and not c.execute(
                 "SELECT 1 FROM runs WHERE issue_id=? AND status='running'", (row["id"],)).fetchone():
             notify.send(row["ref"], "✅ 확인해 주세요(in_review)", note)
-        return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
+        result = _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
+    import project_init
+    project_init.stop_cancelled()
+    return result
 
 
 def _complete_auto_task(c, row, provenance):
@@ -862,6 +877,8 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
         _record_plan_decision(c, row, latest, verdict, note, actor)
         if verdict == "reject":
             _sync_terminal_status(c, actor, row, "closed", f"거절 (계획서 v{latest}): {note.strip()}")
+    import project_init
+    project_init.stop_cancelled()
     return get_issue(ref)
 
 
