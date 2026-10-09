@@ -215,9 +215,10 @@ def update_project(actor, key, fields: dict) -> dict:
         raise StoreError("바꿀 내용이 없어요.")
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
-        if c.execute("SELECT 1 FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE p.key=? AND r.status IN ('queued','running','cancelling')", (key,)).fetchone():
-            raise StoreError('초기 생성이 끝나기 전에는 프로젝트 정보를 바꿀 수 없어요.', 409)
         previous = c.execute('SELECT * FROM projects WHERE key=?', (key,)).fetchone()
+        changes_setup = previous and any(k in sets and sets[k] != previous[k] for k in ('name', 'local_path', 'archived'))
+        if changes_setup and c.execute("SELECT 1 FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE p.key=? AND r.status IN ('queued','running','cancelling')", (key,)).fetchone():
+            raise StoreError('초기 생성이 끝나기 전에는 프로젝트 정보를 바꿀 수 없어요.', 409)
         if previous and any(k in sets and sets[k] != previous[k] for k in ('name', 'local_path')):
             c.execute("""UPDATE project_initializations SET status='cancelled',phase='초기 생성 취소',
                 error='프로젝트 이름이나 경로가 바뀌어 기존 분석을 취소했어요.',result_json=NULL,updated_at=?

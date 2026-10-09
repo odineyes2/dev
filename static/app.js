@@ -1418,7 +1418,7 @@ function renderProjects(editKey, projectTab = 'manage'){
           const data = new FormData(); data.append('file', file);
           const attachment = await api('POST', '/api/attachments', data);
           initRequest = {request_id: crypto.randomUUID(), attachment_id: attachment.id,
-            key: val('#p-key'), name: val('#p-name'), folder, provider: val('#p-init-provider')};
+            key: val('#p-key'), name: val('#p-name'), repo_url: val('#p-repo'), folder, provider: val('#p-init-provider')};
         }
         const result = await api('POST', '/api/projects/initialize', initRequest);
         await loadProjects();

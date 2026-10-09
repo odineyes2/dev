@@ -133,7 +133,7 @@ def _waiting(c, j):
     row = c.execute("SELECT * FROM issues WHERE id=?", (j["issue_id"],)).fetchone()
     if c.execute("SELECT 1 FROM execution_completion WHERE issue_id=? AND phase IN ('ready','checking','applying','deployed','restart_requested','rollback_requested','rollback_applied')", (j['issue_id'],)).fetchone():
         return
-    if j["previous_status"] is not None or row["status"] in ("done", "closed") or "goal" in json.loads(row["labels_json"]):
+    if j["previous_status"] is not None or row["status"] in ("done", "closed"):
         return
     prior = row["status"]
     if prior == "waiting":
