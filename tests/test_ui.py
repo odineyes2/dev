@@ -1111,6 +1111,64 @@ def check_execute_buttons(page, shots, answers):
     page.set_viewport_size({'width': 1300, 'height': 850})
 
 
+def check_list_sort(page, shots):
+    """정렬 요청·저장·페이지 합류와 Task 재배치를 검사한다."""
+    page.wait_for_selector('#list-body[aria-busy="false"]')
+    requests = []
+    parent = {"id": 100, "project_key": "TEST", "ref": "TEST-61", "title": "순서를 유지하는 Issue", "status": "backlog", "labels": []}
+    def child(n):
+        return {**parent, "id": 100 + n, "ref": f"TEST-61-{n}", "title": f"순서를 유지하는 Task {n}", "parent_ref": parent['ref'], "parent_id": 100}
+    def respond(route):
+        from urllib.parse import parse_qs, urlsplit
+        query = parse_qs(urlsplit(route.request.url).query)
+        requests.append(query)
+        # Task가 먼저 오고 부모가 다음 페이지에 도착하는 경우도 확인한다.
+        items = [child(3), child(1)] if query.get('offset') == ['0'] else [parent, child(2)]
+        route.fulfill(json={'issues': items, 'has_more': query.get('offset') == ['0']})
+    page.route('**/api/issues?*', respond)
+    page.route('**/api/projects/TEST/auto-settings', lambda route: route.fulfill(json={}))
+    def settled(direction='ascending'):
+        expected = ['TEST-61'] + [f'TEST-61-{n}' for n in ([3, 2, 1] if direction == 'descending' else [1, 2, 3])]
+        page.wait_for_function("expected => JSON.stringify([...document.querySelectorAll('#list-body tr.row')].map(r => r.dataset.ref)) === JSON.stringify(expected)", arg=expected)
+        assert page.locator('#list-body').get_attribute('aria-busy') == 'false'
+    try:
+        page.evaluate("localStorage.removeItem('dev.list'); localStorage.removeItem('dev.collapsed'); loadList()")
+        settled()
+        assert page.locator('th[aria-sort]').get_attribute('aria-sort') == 'none'
+        for sort, aria in [('id_asc', 'ascending'), ('id_desc', 'descending'), ('', 'none')]:
+            requests.clear()
+            page.locator('#list-id-sort').focus()
+            page.keyboard.press('Enter')
+            settled(aria)
+            assert requests and all(q.get('sort', [''])[0] == sort for q in requests), requests
+            assert page.locator('th[aria-sort]').get_attribute('aria-sort') == aria
+            assert page.evaluate("JSON.parse(localStorage.getItem('dev.list')).sort") == sort
+            # 실시간 갱신과 같은 재작성에서도 고친 순과 무관하게 정렬한다.
+            page.evaluate("items => {const t=document.querySelector('#list-body tbody');t.innerHTML='';items.forEach(i=>placeRow(t,i));}", [child(2), parent, child(3), child(1)])
+            settled(aria)
+        page.click('#list-id-sort'); settled()
+        page.reload(); settled()
+        assert page.locator('th[aria-sort]').get_attribute('aria-sort') == 'ascending'
+        page.click('.tog')
+        assert page.locator('tr.child:visible').count() == 0
+        page.evaluate('loadList()'); settled()
+        assert page.locator('tr.child:visible').count() == 0
+        page.click('.tog')
+        assert page.locator('tr.child:visible').count() == 3
+        for theme in ('light', 'dark'):
+            for width in (1300, 390):
+                page.evaluate("s => {document.documentElement.dataset.theme=s}", theme)
+                page.set_viewport_size({'width': width, 'height': 850})
+                page.wait_for_timeout(150)
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.screenshot(path=str(shots / f'list-sort-{theme}-{width}.png'), full_page=True)
+    finally:
+        page.unroute('**/api/issues?*')
+        page.unroute('**/api/projects/TEST/auto-settings')
+        page.evaluate("localStorage.removeItem('dev.list');localStorage.removeItem('dev.collapsed')")
+        page.set_viewport_size({'width': 1300, 'height': 850})
+
+
 def check_list_loading(page, shots):
     """응답을 보류하여 요청 수명·경합·시각 상태를 검사한다."""
     # 로그인은 shell 표시 뒤에도 초기 조회와 route가 이어진다. 이전 요청을 가로채지 않는다.
@@ -1870,6 +1928,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--list-sort-only' in sys.argv:
+            check_list_sort(page, shots)
+            assert not errs, errs
+            print('OK: list sort'); sys.exit(0)
         if '--initialization-only' in sys.argv:
             check_project_initialization(page, shots)
             assert not errs, errs
@@ -1917,6 +1979,8 @@ try:
             print('OK: account menu')
             sys.exit(0)
         if '--project-flows-only' not in sys.argv:
+            check_list_sort(page, shots)
+            page.evaluate('loadList()')
             check_list_loading(page, shots)
         if '--list-loading-only' in sys.argv:
             assert not errs, errs

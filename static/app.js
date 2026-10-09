@@ -363,7 +363,7 @@ function disposeList(){
   listObserver = null;
 }
 function issueRowHtml(i){
-  return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
+  return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
     <td class="title-cell">${titleHtml(i)} ${labelsHtml(i.labels)}${typesHtml(i)}${i.parent_id ? '<div class="sub">Task</div>' : ''}</td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td><td class="hide-m">${prioHtml(i.priority)}</td>
     <td class="hide-m">${i.claimed_by ? esc(actorName(i.claimed_by)) : ''}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
@@ -383,20 +383,23 @@ function refreshKids(tbody, parentTr){
   parentTr.querySelector('.kids').textContent = `Tasks ${kids.length}`;
   kids.forEach(k => { k.hidden = !open; });
 }
+function orderKids(tbody, parentTr){
+  const direction = listLoad?.qs.sort === 'id_desc' ? -1 : 1;
+  const kids = kidRows(tbody, parentTr.dataset.ref).sort((a, b) => direction * (Number(a.dataset.id) - Number(b.dataset.id)));
+  let anchor = parentTr;
+  for(const kid of kids){
+    anchor.after(kid);
+    anchor = orderKids(tbody, kid);
+  }
+  refreshKids(tbody, parentTr);
+  return anchor;
+}
 function placeRow(tbody, i){
   const tr = document.createElement('tbody'); tr.innerHTML = issueRowHtml(i);
   const row = tr.firstElementChild;
-  const parentTr = i.parent_ref && [...tbody.children].find(r => r.dataset.ref === i.parent_ref);
-  if(parentTr){
-    const sibs = kidRows(tbody, i.parent_ref);
-    (sibs.length ? sibs[sibs.length - 1] : parentTr).after(row);
-    refreshKids(tbody, parentTr);
-    return;
-  }
   tbody.append(row);
-  const kids = kidRows(tbody, i.ref);
-  kids.reverse().forEach(k => row.after(k));
-  refreshKids(tbody, row);
+  const parentTr = i.parent_ref && [...tbody.children].find(r => r.dataset.ref === i.parent_ref);
+  orderKids(tbody, parentTr || row);
 }
 async function renderList(){
   const st = listState();
@@ -427,6 +430,11 @@ async function renderList(){
     localStorage.setItem('dev.project', e.target.value); projectSel.value = e.target.value; loadList();
   });
   view.querySelector('#list-body').addEventListener('click', (e) => {
+    if(e.target.closest('#list-id-sort')){
+      const sort = listState().sort;
+      save({ sort: sort === 'id_asc' ? 'id_desc' : sort === 'id_desc' ? '' : 'id_asc' });
+      return;
+    }
     if(e.target.closest('[data-action]')) return;
     const tog = e.target.closest('.tog');
     if(tog){
@@ -472,7 +480,7 @@ async function loadList(){
   if(listLoad){ clearTimeout(listLoad.timer); listLoad.loading?.remove(); }
   const st = listState();
   const statuses = st.statuses.length ? st.statuses : (st.closed ? [] : OPEN_STATUSES);
-  listLoad = { body, more, qs: { project: currentProject(), status: statuses.join(','), q: st.q, ...(st.approved ? { approved: 'true' } : {}) }, offset: 0, done: false, busy: false, seen: new Set() };
+  listLoad = { body, more, qs: { project: currentProject(), status: statuses.join(','), q: st.q, ...(['id_asc', 'id_desc'].includes(st.sort) ? { sort: st.sort } : {}), ...(st.approved ? { approved: 'true' } : {}) }, offset: 0, done: false, busy: false, seen: new Set() };
   listLoad.actions = beginActions(() => listLoad === L && body === view.querySelector('#list-body'));
   const L = listLoad;
   body.innerHTML = ''; more.textContent = '';
@@ -516,7 +524,7 @@ async function loadMoreIssues(){
   L.done = !data.has_more;   // 예전 서버(has_more 없음)면 한 번으로 끝
   L.busy = false;
   if(!body.querySelector('table, .empty')){
-    body.innerHTML = items.length ? `<table class="issues"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th class="hide-m">Priority</th>
+    body.innerHTML = items.length ? `<table class="issues"><thead><tr><th aria-sort="${L.qs.sort === 'id_asc' ? 'ascending' : L.qs.sort === 'id_desc' ? 'descending' : 'none'}"><button type="button" id="list-id-sort" class="list-sort" title="${L.qs.sort === 'id_asc' ? 'ID 내림차순으로 정렬해요' : L.qs.sort === 'id_desc' ? '최근 고친 순으로 정렬해요' : 'ID 오름차순으로 정렬해요'}">ID${L.qs.sort ? `<svg class="ico${L.qs.sort === 'id_desc' ? ' sort-desc' : ''}" aria-hidden="true"><use href="#i-arrow-up"/></svg>` : ''}</button></th><th>Title</th><th>Status</th><th class="hide-m">Priority</th>
       <th class="hide-m">Claimed</th><th class="hide-m">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
   }
   const tbody = body.querySelector('tbody');
