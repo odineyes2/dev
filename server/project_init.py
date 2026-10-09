@@ -435,3 +435,6 @@ def _run(key):
                 if failure:
                     c.execute("UPDATE project_initializations SET status='failed',error=?,phase='생성 중단',updated_at=? WHERE request_id=? AND status='running'", (failure, db.now_iso(), row['request_id']))
                 c.execute("UPDATE project_initializations SET status='cancelled',phase='초기 생성 취소',updated_at=? WHERE request_id=? AND status='cancelling'", (db.now_iso(), row['request_id']))
+        if row:
+            import jobs
+            jobs.pump()

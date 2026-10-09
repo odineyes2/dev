@@ -81,6 +81,29 @@ class InitializationTest(unittest.TestCase):
             pi._run('NEW')
         return generate
 
+    def test_review_creates_missing_project_before_starting(self):
+        import review
+        self.request()
+        with db.connect() as c:
+            c.execute("UPDATE project_initializations SET status='failed'")
+        with patch.object(review, 'start') as start:
+            result = jobs.enqueue(H, 'NEW-1', 'review', 'codex')
+            self.assertTrue(result['queued'])
+            self.assertEqual(pi.status('NEW')['status'], 'queued')
+            start.assert_not_called()
+            self.execute()
+            self.assertTrue((self.projects / 'new-product' / 'PROJECT_SPEC.md').exists())
+            start.assert_called_once()
+
+    def test_cancelled_initialization_is_not_restarted_by_review(self):
+        import review
+        self.request()
+        pi.cancel(H, 'NEW')
+        with patch.object(review, 'start') as start:
+            self.assertTrue(jobs.enqueue(H, 'NEW-1', 'review', 'codex')['queued'])
+            start.assert_not_called()
+        self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+
     def test_complete_http_git_documents_tasks(self):
         self.request()
         self.execute()

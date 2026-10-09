@@ -190,6 +190,13 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None) -> di
         raise issues.StoreError("지원하지 않는 작업이에요.", 400)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
+    if mode == 'review':
+        import project_init
+        from pathlib import Path
+        with db.connect() as c:
+            initialization = c.execute("SELECT r.status,p.local_path FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE p.key=?", (issue['project_key'],)).fetchone() if c.execute("SELECT 1 FROM sqlite_master WHERE name='project_initializations'").fetchone() else None
+        if initialization and not Path(initialization['local_path']).exists() and initialization['status'] == 'failed':
+            project_init.retry(actor, issue['project_key'])
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         issue = issues.get_issue(ref)
@@ -353,6 +360,12 @@ def pump() -> None:
             queued, waits = schedule(c, _rows(c))
         for j in queued:
             actor = _actor(j["actor"])
+            if j['mode'] == 'review':
+                with db.connect() as c:
+                    initialization = c.execute("SELECT r.status,r.error FROM project_initializations r JOIN issues i ON i.project_id=r.project_id WHERE i.id=?", (j['issue_id'],)).fetchone() if c.execute("SELECT 1 FROM sqlite_master WHERE name='project_initializations'").fetchone() else None
+                if initialization and initialization['status'] != 'complete':
+                    _note(j['id'], '초기 프로젝트 생성 완료를 기다려요.' if initialization['status'] in ('queued', 'running') else '초기 생성을 완료한 뒤 검토할 수 있어요. ' + initialization['error'])
+                    continue
             with db.connect() as c:
                 block = start_block(c, j["ref"].split("-")[0], j["mode"])
             if block:   # 그 줄의 진짜 이유만 적는다 — 다른 줄 항목은 계속 본다. 실행은 자기 사정(선행·겹치는 파일)이 있으면 그것이 더 쓸모 있다.
