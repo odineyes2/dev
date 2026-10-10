@@ -67,7 +67,7 @@ def whoami() -> dict:
 
 @mcp.tool
 def list_projects() -> list[dict]:
-    """프로젝트 목록(key, name, repo_url, local_path, description)."""
+    """프로젝트 목록(key, name, repo_url, local_path, description, service_domain, service_port, service_app)."""
     _actor()
     return issues.list_projects()
 

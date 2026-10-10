@@ -1,5 +1,18 @@
 # dev
 
+Projects 생성·관리에서 서비스 도메인(예: `app.lomebrote.com`), 로컬 HTTP 포트와 선택적인 PM2 앱 이름을 저장한다.
+기획서 생성과 실행 에이전트는 이 값을 참고해 `127.0.0.1:<포트>`와 공개 `/api/health`(200), 필요한 `ecosystem.config.js`를 준비한다.
+구현·병합 후 관리 화면의 **서비스 연결**을 누르면 서버가 지정 앱을 PM2 `startOrRestart`로 실행하고 로컬 health, DNS 등록, 터널 반영·재시작, 외부 HTTPS health를 확인한다.
+PM2 앱 이름을 비우면 이미 실행 중인 앱을 연결한다. Dev 자신의 PM2 앱(`dev`)은 이 작업에서 재시작하지 않는다.
+관리자 세션·기존 CSRF 검사를 사용하며 별도의 비밀번호 확인은 하지 않는다. 에이전트는 운영 터널을 직접 수정하지 않는다.
+
+로컬 관리 터널만 지원한다. `.env.example`의 `DEV_TUNNEL_CONFIG`는 **실제 서비스가 사용하는 파일**이어야 하며,
+Dev 실행 계정에 그 파일의 읽기·쓰기와 Cloudflared 서비스 시작·중지 권한이 필요하다. DNS CLI 등록에는 해당 계정의 Cloudflare 인증 인증서가 필요하다.
+Windows 기본 설정 경로는 `C:/Windows/System32/config/systemprofile/.cloudflared/config.yml`이다.
+기존 도메인 충돌·연결 중 정보 변경·삭제를 차단하고, 설정 백업(`data/tunnel-backups/`)과 동시 변경 검사를 거쳐 실패 시 복구한다.
+설정 직렬화 시 YAML 주석은 유지하지 않으며 기존 규칙·옵션 값은 보존한다. 공용 터널 재시작은 연결된 서비스에 잠시 영향을 줄 수 있다.
+**연결 해제는 터널 규칙만 제거한다. 앱과 DNS 레코드는 남는다.** 도메인 변경·실패 후 남은 DNS는 Cloudflare에서 확인·정리한다.
+
 Issue의 처리 에이전트는 보존된 실행·활동 이력과 하위 Task를 합쳐 Claude·Codex·협업 아이콘으로 표시한다. 임시 점유인 Claimed와는 별개다.
 Done/Closed의 소요 시간은 최초 작업 시작부터 종결까지의 경과 시간이며 대기·검토를 포함한다. 시작 기록이 없는 이슈는 미계측으로 표시한다.
 

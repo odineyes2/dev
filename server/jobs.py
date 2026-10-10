@@ -109,6 +109,8 @@ def busy() -> bool:
 
 def start_block(c, project_key: str, mode: str) -> str | None:
     """이 줄에서 지금 새로 시작하면 안 되는 이유. 없으면 None."""
+    if c.execute("SELECT 1 FROM project_services WHERE status='running'").fetchone():
+        return '공용 터널의 서비스 연결이 끝나면 시작해요.'
     import orchestrate
     import project_activity
     import rollback

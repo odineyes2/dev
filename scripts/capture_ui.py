@@ -56,7 +56,8 @@ def seed_fixture(request, base, fixture):
         return response.json()
     if fixture == 'projects-empty':
         return
-    post('/api/projects', {'key': 'DEV', 'name': 'UI 캡처', 'description': '임시 화면 확인용 프로젝트'})
+    post('/api/projects', {'key': 'DEV', 'name': 'UI 캡처', 'description': '임시 화면 확인용 프로젝트',
+                          **({'service_domain': 'app.example.com', 'service_port': 8400, 'service_app': 'myapp'} if fixture == 'project-service' else {})})
     if fixture == 'detail':
         issue = post('/api/issues', {'project': 'DEV', 'title': '화면 확인용 Issue',
                                    'body': '임시 데이터로 Description, Plan, Tasks를 확인한다.'})
@@ -136,6 +137,14 @@ def capture(route='#/', fixture='empty'):
                             page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
                             page.goto(base + '/' + route)
                             wait_screen(page, route)
+                            if fixture == 'project-service':
+                                page.fill('#p-domain', 'app.example.com')
+                                page.fill('#p-port', '8500')
+                                page.click('#project-form button[type="submit"]')
+                                page.wait_for_function("document.querySelector('#project-form')?.getAttribute('aria-busy') !== 'true'")
+                                saved = context.request.get(base + '/api/projects').json()['projects'][0]
+                                assert saved['service_domain'] == 'app.example.com' and saved['service_port'] == 8500
+                                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                             if fixture == 'projects-input':
                                 page.click('#project-add')
                                 page.wait_for_selector('#project-dialog[open]')
@@ -188,7 +197,7 @@ def capture(route='#/', fixture='empty'):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--route', default='#/')
-    parser.add_argument('--fixture', choices=('empty', 'detail', 'projects-empty', 'projects-input'), default='empty', help='detail fixture의 Issue는 DEV-1이다')
+    parser.add_argument('--fixture', choices=('empty', 'detail', 'projects-empty', 'projects-input', 'project-service'), default='empty', help='detail fixture의 Issue는 DEV-1이다')
     args = parser.parse_args()
     try:
         directory, manifest = capture(args.route, args.fixture)

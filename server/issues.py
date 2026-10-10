@@ -183,21 +183,25 @@ def list_projects() -> list[dict]:
         return [_project_row(r) for r in c.execute("SELECT * FROM projects ORDER BY archived, key")]
 
 
-def create_project(actor, key, name, repo_url="", local_path="", description="") -> dict:
+def create_project(actor, key, name, repo_url="", local_path="", description="", service_domain="", service_port=0, service_app="") -> dict:
     if not _is_human(actor):
         raise _forbidden("프로젝트는 사람만 만들 수 있어요.")
     key = str(key or "").strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9]{0,9}", key):
         raise StoreError("키는 영문 대문자로 시작하는 10자 이하 영문·숫자예요(예: NS).")
     name = _text(name, "이름", 100, required=True).strip()
+    from project_service import validate_fields
+    service = validate_fields(service_domain, service_port, service_app)
     try:
         with db.connect() as c:
             pid = c.execute("INSERT INTO projects(key, name, repo_url, local_path, description, created_at) VALUES(?,?,?,?,?,?)",
                             (key, name, _text(repo_url, "저장소 주소", 500), _text(local_path, "로컬 경로", 500),
                              _text(description, "프로젝트 설명"), db.now_iso())).lastrowid
+            if any(service.values()):
+                c.execute('UPDATE projects SET service_domain=?,service_port=?,service_app=? WHERE id=?', (*service.values(), pid))
             return _project_row(c.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone())
     except sqlite3.IntegrityError:
-        raise StoreError("같은 키의 프로젝트가 있어요.", 409)
+        raise StoreError("같은 키 또는 서비스 도메인의 프로젝트가 있어요.", 409)
 
 
 def update_project(actor, key, fields: dict) -> dict:
@@ -211,11 +215,23 @@ def update_project(actor, key, fields: dict) -> dict:
         sets["archived"] = 1 if fields["archived"] else 0
     if "description" in fields:
         sets["description"] = _text(fields["description"], "프로젝트 설명")
-    if not sets:
+    if not sets and not any(k in fields for k in ('service_domain', 'service_port', 'service_app')):
         raise StoreError("바꿀 내용이 없어요.")
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         previous = c.execute('SELECT * FROM projects WHERE key=?', (key,)).fetchone()
+        if not previous:
+            raise _not_found('프로젝트')
+        if any(k in fields for k in ('service_domain', 'service_port', 'service_app')) and previous:
+            from project_service import validate_fields
+            sets.update(validate_fields(*(fields.get(k, previous[k]) for k in ('service_domain', 'service_port', 'service_app'))))
+        service = c.execute("SELECT * FROM project_services WHERE project_id=?", (previous['id'],)).fetchone() if previous else None
+        if service and service['status'] == 'running':
+            raise StoreError('서비스 연결이 끝난 뒤 변경해 주세요.', 409)
+        if service and (service['domain'] or service['backup_path']) and sets.get('archived'):
+            raise StoreError('서비스 연결을 해제한 뒤 보관해 주세요.', 409)
+        if previous and sets.get('service_domain') and c.execute('SELECT 1 FROM projects WHERE service_domain=? AND id<>?', (sets['service_domain'], previous['id'])).fetchone():
+            raise StoreError('다른 프로젝트가 사용하는 서비스 도메인이에요.', 409)
         changes_setup = previous and any(k in sets and sets[k] != previous[k] for k in ('name', 'local_path', 'archived'))
         if changes_setup and c.execute("SELECT 1 FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE p.key=? AND r.status IN ('queued','running','cancelling')", (key,)).fetchone():
             raise StoreError('초기 생성이 끝나기 전에는 프로젝트 정보를 바꿀 수 없어요.', 409)
@@ -249,6 +265,9 @@ def _project_deletion(c, key):
             f"SELECT * FROM {table} WHERE project_id=? ORDER BY rowid", (project["id"],))]
     ids = {r["id"] for r in rows}
     blockers = []
+    service = c.execute('SELECT * FROM project_services WHERE project_id=?', (project['id'],)).fetchone()
+    if service and (service['domain'] or service['backup_path'] or service['status'] == 'running'):
+        blockers.append('서비스 연결을 해제한 뒤 프로젝트를 삭제해 주세요.')
     if any(r['status'] in ('preparing', 'running', 'cancelling') for r in snapshot['project_audits']):
         blockers.append('프로젝트 점검이 진행 중이에요.')
     if c.execute("SELECT 1 FROM project_initializations WHERE project_id=? AND status IN ('queued','running','cancelling')", (project['id'],)).fetchone():

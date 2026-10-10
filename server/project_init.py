@@ -95,6 +95,8 @@ def request(actor, body):
     key = str(body.get('key') or '').strip().upper()
     name = issues._text(body.get('name'), '이름', 100, required=True).strip()
     repo_url = issues._text(body.get('repo_url', ''), '저장소 주소', 500).strip()
+    from project_service import validate_fields
+    service = validate_fields(body.get('service_domain', ''), body.get('service_port', 0), body.get('service_app', ''))
     folder = str(body.get('folder') or '').strip()
     if not re.fullmatch(r'[A-Z][A-Z0-9]{0,9}', key):
         raise issues.StoreError('Key는 영문으로 시작하는 10자 이하 영문·숫자예요.')
@@ -133,14 +135,14 @@ def request(actor, body):
             c.execute('BEGIN IMMEDIATE')
             if c.execute('SELECT 1 FROM projects WHERE lower(local_path)=lower(?)', (str(target),)).fetchone():
                 raise issues.StoreError('이미 등록되거나 생성 중인 경로예요.', 409)
-            pid = c.execute('INSERT INTO projects(key,name,repo_url,local_path,created_at) VALUES(?,?,?,?,?)', (key, name, repo_url, str(target), now)).lastrowid
+            pid = c.execute('INSERT INTO projects(key,name,repo_url,local_path,created_at,service_domain,service_port,service_app) VALUES(?,?,?,?,?,?,?,?)', (key, name, repo_url, str(target), now, *service.values())).lastrowid
             c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,status,phase,created_at,updated_at)
                 VALUES(?,?,?,?,?,'queued','기획서 분석 대기',?,?)''', (pid, request_id, issues.actor_label(actor), provider, spec, now, now))
     except sqlite3.IntegrityError:
         with db.connect() as c:
             old = c.execute('SELECT p.key,r.owner FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE request_id=?', (request_id,)).fetchone()
         if not old or old['key'] != key or old['owner'] != issues.actor_label(actor):
-            raise issues.StoreError('같은 Key의 프로젝트가 있어요.', 409)
+            raise issues.StoreError('같은 Key 또는 서비스 도메인의 프로젝트가 있어요.', 409)
     start(key)
     return status(key)
 
@@ -206,6 +208,10 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
 <기획서>\n{row['spec']}\n</기획서>'''
     if correction:
         prompt += '\n앞선 생성 결과가 다음 검증에서 실패했다. 이 오류를 수정하여 전체 JSON을 다시 반환한다: ' + correction
+    with db.connect() as c:
+        service = dict(c.execute('SELECT service_domain,service_port,service_app FROM projects WHERE id=?', (row['project_id'],)).fetchone())
+    if service['service_domain']:
+        prompt += '\n서비스 연결 목표(배포는 Dev 관리 화면에서 별도로 실행): ' + json.dumps(service, ensure_ascii=False) + '\n지정 포트에 127.0.0.1로 바인딩하고 /api/health에서 200을 반환하는 실행 설정을 준비한다. PM2 앱 이름이 있으면 ecosystem.config.js에 해당 앱을 정의한다. DNS·터널·운영 서비스는 변경하지 않는다.'
     cwd = config.DATA_DIR / 'project-initializations' / row['request_id']
     cwd.mkdir(parents=True, exist_ok=True)
     if row['provider'] == 'codex':

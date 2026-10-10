@@ -691,6 +691,28 @@ END;
 
 STATUSES += ("waiting",)
 
+MIGRATIONS.append("""
+ALTER TABLE projects ADD COLUMN service_domain TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN service_port INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE projects ADD COLUMN service_app TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX project_service_domain ON projects(service_domain) WHERE service_domain<>'';
+CREATE TABLE project_services (
+    project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    domain TEXT NOT NULL DEFAULT '',
+    port INTEGER NOT NULL DEFAULT 0,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    backup_path TEXT NOT NULL DEFAULT '',
+    config_path TEXT NOT NULL DEFAULT '',
+    applied_hash TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX one_tunnel_change ON project_services(status) WHERE status='running';
+""")
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
