@@ -1453,14 +1453,42 @@ function renderProjects(editKey, projectTab = 'manage'){
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td><a class="project-title" data-project-link="${esc(p.key)}" href="#/projects?project=${encodeURIComponent(p.key)}&tab=manage">${esc(p.name)}</a></td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
         <td><button class="danger" data-delete-project="${esc(p.key)}" title="프로젝트 삭제" aria-label="${esc(p.name)} 프로젝트 삭제"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg></button></td></tr>`).join('')}
-      ${projects.length ? '' : '<tr><td colspan="6"><div class="empty">프로젝트가 없어요. 아래에서 등록해 주세요.</div></td></tr>'}
-      <tr class="project-create-row"><td colspan="6">${projectForm}</td></tr></tbody></table>` : ''}</div>`;
+      ${projects.length ? '' : '<tr><td colspan="6"><div class="empty">프로젝트가 없어요. 아래 + 버튼으로 등록해 주세요.</div></td></tr>'}
+      <tr class="project-create-row"><td colspan="6"><button type="button" id="project-add" title="프로젝트 추가" aria-label="프로젝트 추가"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button></td></tr></tbody></table><dialog id="project-dialog" aria-labelledby="project-create-title"><button type="button" id="project-close" title="닫기" aria-label="닫기"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>${projectForm}</dialog>` : ''}</div>`;
   const val = (s) => view.querySelector(s).value;
   const form = view.querySelector('#project-form');
   let saving = false;
   let initRequest = null;
   let suggestion = null;
   const clearSuggestion = () => { suggestion = null; form.querySelector('#project-suggestion')?.remove(); };
+  const dialog = view.querySelector('#project-dialog');
+  const add = view.querySelector('#project-add');
+  const close = view.querySelector('#project-close');
+  const closeCreation = () => {
+    if(saving || !dialog?.open) return;
+    form.reset(); clearSuggestion(); initRequest = null;
+    form.querySelectorAll('details').forEach(el => { el.open = false; });
+    form.querySelector('#project-error').textContent = '';
+    form.querySelector('#p-init-message').textContent = '';
+    dialog.close(); add.focus();
+  };
+  if(dialog){
+    add.onclick = () => { dialog.showModal(); form.querySelector('#p-key').focus(); };
+    close.onclick = closeCreation;
+    dialog.addEventListener('cancel', e => { e.preventDefault(); closeCreation(); });
+    dialog.addEventListener('keydown', e => {
+      if(e.key !== 'Tab') return;
+      const targets = [...dialog.querySelectorAll('button, input, textarea, select, summary, [tabindex="0"]')].filter(el => !el.disabled && el.getClientRects().length);
+      const first = targets[0], last = targets.at(-1);
+      if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+      else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+    });
+    // 창 안 여백은 유지하고 실제 배경 클릭만 닫는다.
+    dialog.addEventListener('click', e => {
+      const rect = dialog.getBoundingClientRect();
+      if(e.target === dialog && (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom)) closeCreation();
+    });
+  }
   form.addEventListener('input', () => { clearSuggestion(); if(!saving) initRequest = null; });
   const initialize = view.querySelector('#p-initialize');
   if(initialize) initialize.onclick = () => {
@@ -1473,6 +1501,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     const button = submitBtn(e), cancel = view.querySelector('#p-cancel');
     const original = button.textContent;
     button.disabled = cancel.disabled = true;
+    if(close) close.disabled = true;
     form.querySelectorAll('input, textarea, select, button').forEach(el => { if(!el.disabled){ el.dataset.savingDisabled = '1'; el.disabled = true; } });
     button.textContent = '저장 중…'; form.setAttribute('aria-busy', 'true');
     view.querySelector('#project-error').textContent = '';
@@ -1487,12 +1516,14 @@ function renderProjects(editKey, projectTab = 'manage'){
           view.querySelector('#p-init-message').textContent = '기획서를 업로드하고 생성 요청을 등록하고 있어요…';
           const data = new FormData(); data.append('file', file);
           const attachment = await api('POST', '/api/attachments', data);
+          if(!form.isConnected) return;
           initRequest = {request_id: crypto.randomUUID(), attachment_id: attachment.id,
             key: val('#p-key'), name: val('#p-name'), repo_url: val('#p-repo'), folder, provider: val('#p-init-provider')};
         }
         const result = await api('POST', '/api/projects/initialize', initRequest);
         await loadProjects();
         if(!form.isConnected) return;
+        dialog?.close();
         renderProjects(result.key);
         toast('초기 프로젝트 생성을 시작했어요. 진행 상태를 확인해 주세요.');
         return;
@@ -1521,7 +1552,8 @@ function renderProjects(editKey, projectTab = 'manage'){
       else await api('POST', '/api/projects', { key: val('#p-key'), ...fields });
       await loadProjects();
       if(!form.isConnected) return;
-      renderProjects(ed?.key); view.querySelector(ed ? '#p-name' : '#p-key').focus();
+      dialog?.close();
+      renderProjects(ed?.key); view.querySelector(ed ? '#p-name' : '#project-add').focus();
       toast(ed ? '고쳤어요' : '만들었어요');
     }catch(error){
       if(form.isConnected) view.querySelector('#project-error').textContent = `${error.message} 입력을 확인하고 다시 시도해 주세요.`;
@@ -1529,6 +1561,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       saving = false;
       form.querySelectorAll('[data-saving-disabled]').forEach(el => { el.disabled = false; delete el.dataset.savingDisabled; });
       button.disabled = cancel.disabled = false; button.textContent = original;
+      if(close) close.disabled = false;
       form.removeAttribute('aria-busy');
     }
   });
@@ -1559,9 +1592,9 @@ function renderProjects(editKey, projectTab = 'manage'){
     refreshInitialization();
   }
   view.querySelector('#p-cancel').addEventListener('click', () => {
-    if(ed) renderProjects();
-    else { form.reset(); clearSuggestion(); initRequest = null; view.querySelector('#project-error').textContent = ''; view.querySelector('#p-init-message').textContent = ''; }
-    view.querySelector('#p-key').focus();
+    if(saving) return;
+    if(ed){ renderProjects(); view.querySelector('#project-add').focus(); }
+    else closeCreation();
   });
   const descRequest = view.querySelector('#p-description-request');
   if(descRequest) descRequest.addEventListener('click', () => {

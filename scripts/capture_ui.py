@@ -137,18 +137,28 @@ def capture(route='#/', fixture='empty'):
                             page.goto(base + '/' + route)
                             wait_screen(page, route)
                             if fixture == 'projects-input':
+                                page.click('#project-add')
+                                page.wait_for_selector('#project-dialog[open]')
                                 page.fill('#p-key', 'DEMO')
                                 page.fill('#p-name', '새 프로젝트')
                                 page.fill('#p-description', '입력 중인 프로젝트 설명을 확인해요.')
                                 page.click('.project-spec summary')
                                 page.fill('#p-folder', 'demo')
+                                page.locator('#project-dialog').evaluate('e => {e.scrollTop = 0}')
                                 page.evaluate('window.scrollTo(0, 0)')
                                 page.wait_for_timeout(150)
                             page.wait_for_selector('#toast', state='hidden')
                             filename = f'{theme}-{width}.png'
                             page.screenshot(path=str(directory / filename), full_page=True)
+                            if fixture == 'projects-input':
+                                dialog = page.locator('#project-dialog')
+                                assert dialog.evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+                                page.locator('#p-cancel').scroll_into_view_if_needed()
+                                assert page.locator('#p-cancel').evaluate('e => {const r=e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight}')
+                                page.screenshot(path=str(directory / f'{theme}-{width}-bottom.png'), full_page=True)
                             manifest['captures'].append({'path': (directory / filename).relative_to(ROOT).as_posix(),
-                                                         'theme': theme, 'width': width, 'height': height})
+                                                         'theme': theme, 'width': width, 'height': height,
+                                                         'project_dialog_open': page.locator('#project-dialog[open]').count() == 1})
                         except Exception as exc:
                             manifest['errors'].append({'stage': stage, 'reason': type(exc).__name__ + ': ' + str(exc)[:1200]})
             finally:

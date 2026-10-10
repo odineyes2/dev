@@ -103,6 +103,7 @@ class CaptureTests(unittest.TestCase):
             _, manifest = capture_ui.capture(route, fixture)
             self.assertEqual(manifest['status'], 'ok', manifest['errors'])
             self.assertEqual(len(manifest['captures']), 4)
+            self.assertTrue(all(c['project_dialog_open'] == (fixture == 'projects-input') for c in manifest['captures']))
 
     def test_login_failure(self):
         bad_ns = capture_ui.FAKE_NS.replace('!= "pw"', '!= "different"')
