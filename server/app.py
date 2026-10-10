@@ -440,6 +440,47 @@ async def api_update_project(key: str, request: Request):
     return issues.update_project(actor(request), key.upper(), await json_body(request))
 
 
+@app.get('/api/projects/{key}/audits/preflight')
+def api_audit_preflight(key: str, request: Request, provider: str = 'claude', model: str | None = None):
+    import project_audit_runner
+    return project_audit_runner.preflight(human_only(request), key, provider, model)
+
+
+@app.get('/api/projects/{key}/audits')
+def api_audits(key: str, request: Request):
+    import project_audit
+    return {'audits': project_audit.list_audits(project_audit.project_id(human_only(request), key))}
+
+
+@app.post('/api/projects/{key}/audits')
+async def api_start_audit(key: str, request: Request):
+    import project_audit_runner
+    a = human_only(request)
+    b = await json_body(request)
+    return await run_in_threadpool(project_audit_runner.start, a, key, b.get('request_id'),
+                                   b.get('provider', 'claude'), b.get('model'))
+
+
+@app.get('/api/projects/{key}/audits/{audit_id}')
+def api_audit(key: str, audit_id: int, request: Request):
+    import project_audit
+    return project_audit.detail(human_only(request), key, audit_id)
+
+
+@app.post('/api/projects/{key}/audits/{audit_id}/cancel')
+def api_cancel_audit(key: str, audit_id: int, request: Request):
+    import project_audit_runner
+    return project_audit_runner.cancel(human_only(request), key, audit_id)
+
+
+@app.post('/api/projects/{key}/audits/{audit_id}/publish')
+async def api_publish_audit(key: str, audit_id: int, request: Request):
+    import project_audit
+    a = human_only(request)
+    b = await json_body(request)
+    return await run_in_threadpool(project_audit.publish, a, key, audit_id, b.get('candidate_ids'))
+
+
 @app.get("/api/projects/{key}/documents")
 def api_project_documents(key: str):
     import project_docs
