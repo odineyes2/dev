@@ -856,22 +856,51 @@ def check_settings_navigation(page, shots):
     page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
 
 
+def open_project_creation(page):
+    page.click('#project-add')
+    page.wait_for_selector('#project-dialog[open]')
+    assert page.locator('#p-key').evaluate('e => e === document.activeElement')
+
+
 def check_project_row(page, shots):
-    """생성 행의 키보드·오류 복구·경합과 네 화면을 브라우저에서 검사한다."""
+    """생성 창의 키보드·닫기·오류 복구·중복 제출을 확인한다."""
     form = page.locator('#project-form')
-    assert page.locator('#project-dialog, #project-create, [data-edit]').count() == 0
-    assert page.locator('.projects-table tbody > tr:last-child #project-form').count() == 1
+    assert page.locator('#project-create, [data-edit]').count() == 0
+    assert page.locator('.projects-table tbody > tr:last-child button').count() == 1
+    assert not form.is_visible()
+    for key in ('Enter', 'Space'):
+        page.focus('#project-add'); page.keyboard.press(key)
+        assert form.is_visible()
+        page.keyboard.press('Shift+Tab')
+        assert page.locator('#project-close').evaluate('e => e === document.activeElement')
+        page.keyboard.press('Shift+Tab')
+        assert page.locator('#project-dialog').evaluate('e => e.contains(document.activeElement)')
+        page.keyboard.press('Tab'); page.keyboard.press('Tab')
+        assert page.locator('#p-key').evaluate('e => e === document.activeElement')
+        page.keyboard.press('Escape')
+        assert not form.is_visible()
+        assert page.locator('#project-add').evaluate('e => e === document.activeElement')
     for scheme in ('light', 'dark'):
         page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
         for width in (1300, 390):
             page.set_viewport_size({'width':width,'height':850})
-            page.fill('#p-name', '입력 상태 확인')
+            open_project_creation(page)
+            page.fill('#p-name', 'draft')
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             page.screenshot(path=str(shots / f'project-row-{scheme}-{width}.png'), full_page=True)
             page.click('#p-cancel')
             assert page.input_value('#p-name') == ''
-            assert page.locator('#p-key').evaluate('e => e === document.activeElement')
+            assert page.locator('#project-add').evaluate('e => e === document.activeElement')
     page.set_viewport_size({'width':1300,'height':850})
+    for closer in ('close', 'backdrop'):
+        open_project_creation(page)
+        if closer == 'close':
+            page.click('#project-close')
+        else:
+            page.mouse.click(2, 2)
+        assert not form.is_visible()
+        assert page.locator('#project-add').evaluate('e => e === document.activeElement')
+    open_project_creation(page)
     values = {'#p-key': 'BAD', '#p-name': '입력 보존', '#p-repo': 'https://example.com/repo.git', '#p-path': '/tmp/repo'}
     for selector, value in values.items():
         page.fill(selector, value)
@@ -890,6 +919,8 @@ def check_project_row(page, shots):
     assert len(pending) == 1 and page.is_disabled('#p-cancel')
     page.evaluate("document.querySelector('#project-form').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}))")
     page.keyboard.press('Escape'); page.wait_for_timeout(100)
+    page.mouse.click(2, 2)
+    page.evaluate("document.querySelector('#project-close').click();document.querySelector('#p-cancel').click()")
     assert form.is_visible() and len(pending) == 1
     pending.pop().fulfill(status=400, content_type='application/json', body=json.dumps({'detail': '검사 오류'}))
     page.wait_for_selector('#project-error:text("검사 오류")')
@@ -897,9 +928,9 @@ def check_project_row(page, shots):
     assert page.is_enabled('#p-cancel') and page.is_enabled('#project-form button[type=submit]')
     page.unroute('**/api/projects', hold)
     page.click('#p-cancel')
-    assert page.locator('#p-key').evaluate('e => e === document.activeElement')
+    assert page.locator('#project-add').evaluate('e => e === document.activeElement')
     assert page.input_value('#p-key') == ''
-    page.click('#p-cancel')
+    assert not form.is_visible()
     page.goto(BASE + '/#/new'); page.wait_for_selector('text=먼저')
     assert page.locator('#project-create').count() == 0
     page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
@@ -931,6 +962,9 @@ def check_project_navigation(page):
         page.locator('[data-archive="NAV"]').set_checked(archived)
         page.wait_for_function("v => projects.find(p => p.key === 'NAV').archived === v", arg=archived)
         assert page.url.endswith('#/projects')
+        page.wait_for_selector('#project-dialog', state='attached')
+        assert page.locator('#project-dialog').is_hidden()
+        assert page.locator('#project-dialog[open]').count() == 0
     page.click('[data-project-link="NAV"]')
     page.wait_for_selector('#p-key:disabled')
     assert page.input_value('#p-name') == '변경한 제목'
@@ -943,6 +977,7 @@ def check_project_navigation(page):
 
 def check_project_documents(page, shots):
     """설명 저장과 문서 요청·재시도·원문 안전성·반응형 화면을 검사한다."""
+    open_project_creation(page)
     page.fill('#p-key', 'DOC'); page.fill('#p-name', '문서 프로젝트')
     page.fill('#p-path', '/mock/docs'); page.fill('#p-description', '제품 의도 <script>')
     page.click('#project-form button[type=submit]')
@@ -1084,6 +1119,7 @@ def check_project_flows(page, shots, answers, asked):
     def refresh():
         page.reload(); page.wait_for_selector('.projects-page')
     def empty_form(key, name):
+        open_project_creation(page)
         page.fill('#p-key', key); page.fill('#p-name', name)
         page.click('#project-form button[type=submit]')
     create('REF', repo_url='https://example.com/team/old.git', local_path='/work/old/')
@@ -2176,6 +2212,7 @@ def check_project_initialization(page, shots):
     page.route('**/api/projects/INIT/initialization/cancel', cancel_initialization)
     try:
         page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+        open_project_creation(page)
         page.click('.project-spec summary'); page.fill('#p-key', 'INIT'); page.fill('#p-name', '기획서 생성 검사'); page.fill('#p-folder', 'init-demo')
         page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("첨부")')
         assert not requests
@@ -2495,10 +2532,12 @@ try:
             assert not errs, errs
             print('OK: project flows')
             sys.exit(0)
+        open_project_creation(page)
         page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button[type=submit]")
         page.wait_for_selector("td.ref:text('NS')")
         assert page.get_attribute("#p-path", "placeholder").startswith("C:\\Users\\")
-        assert page.locator('[data-edit], #project-create, #project-dialog').count() == 0
+        assert page.locator('[data-edit], #project-create').count() == 0
+        assert page.locator('#project-dialog').is_hidden()
         link = page.locator('[data-project-link="NS"]')
         assert link.get_attribute('href') == '#/projects?project=NS&tab=manage'
         link.focus(); page.keyboard.press('Enter')
@@ -2531,7 +2570,9 @@ try:
         page.wait_for_selector('[data-archive="NS"]:checked')
         page.uncheck('[data-archive="NS"]')
         page.wait_for_function("!projects.find(p => p.key === 'NS').archived")
-        assert page.locator("#project-dialog").count() == 0
+        page.wait_for_selector('#project-dialog', state='attached')
+        assert page.locator('#project-dialog').is_hidden()
+        assert page.locator('#project-dialog[open]').count() == 0
 
         page.click("a[href=\"#/new\"]")
         page.fill("#n-title", "보드 카드 복사")
