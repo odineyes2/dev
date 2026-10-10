@@ -641,6 +641,114 @@ def check_auto_settings(page, shots):
     page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
 
 
+def check_font_settings(page, shots):
+    """실제 글리프·독립 선택·첫 렌더·저장 실패를 확인한다."""
+    route = BASE + '/#/settings/fonts'
+    page.goto(route); page.wait_for_selector('#font-english')
+    cdp = page.context.new_cdp_session(page)
+    cdp.send('DOM.enable'); cdp.send('CSS.enable')
+    def styles():
+        return page.evaluate("() => ['sans','mono'].map(r => getComputedStyle(document.querySelector('.font-preview-' + r)).fontFamily)")
+    def glyphs(role, text, weight=400):
+        width = page.evaluate("""async ({role,text,weight}) => {
+            document.getElementById('font-probe')?.remove();
+            const e = document.createElement('span'); e.id = 'font-probe'; e.textContent = text;
+            e.style.cssText = `font:${weight} 16px var(--${role});position:fixed;visibility:hidden;white-space:pre`;
+            document.body.append(e);
+            // 미설치 local Apple face의 로드 거절 뒤 실제 폴백 글리프를 검사한다.
+            try { await document.fonts.load(getComputedStyle(e).font, text); }
+            catch(error){ if(error.name !== 'NetworkError') throw error; }
+            await document.fonts.ready; return e.getBoundingClientRect().width;
+        }""", {'role':role,'text':text,'weight':weight})
+        root = cdp.send('DOM.getDocument')['root']['nodeId']
+        node = cdp.send('DOM.querySelector', {'nodeId':root,'selector':'#font-probe'})['nodeId']
+        fonts = cdp.send('CSS.getPlatformFontsForNode', {'nodeId':node})['fonts']
+        assert sum(f['glyphCount'] for f in fonts) > 0
+        return width, fonts
+    original = styles()
+    assert original[0].startswith('"Pretendard Variable"') and original[1].startswith('"IBM Plex Mono"')
+    base = {(r,t):glyphs(r,t) for r in ('sans','mono') for t in ('Hello 123','안녕하세요')}
+    assert all('Pretendard' in f['familyName'] for f in base['sans','Hello 123'][1])
+    assert all('IBM Plex Mono' in f['familyName'] for f in base['mono','Hello 123'][1])
+    for english, family in (('plex','IBM Plex Mono'),('pretendard','Pretendard')):
+        page.select_option('#font-english', english)
+        assert '저장했어요' in page.inner_text('#font-status')
+        for role in ('sans','mono'):
+            assert all(family in f['familyName'] for f in glyphs(role,'Hello 123')[1])
+            assert abs(glyphs(role,'안녕하세요')[0] - base[role,'안녕하세요'][0]) < .1
+    page.select_option('#font-korean','apple')
+    assert page.input_value('#font-english') == 'pretendard'
+    for role in ('sans','mono'):
+        assert all('Pretendard' in f['familyName'] for f in glyphs(role,'Hello 123')[1])
+        for weight in (400,500,600,650):
+            assert all('Apple' in f['familyName'] or 'Pretendard' in f['familyName'] for f in glyphs(role,'한글',weight)[1])
+    page.select_option('#font-english','apple')
+    for role in ('sans','mono'):
+        fonts = glyphs(role,'안녕하세요')[1]
+        if not any('Apple' in f['familyName'] for f in fonts):
+            assert all('Pretendard' in f['familyName'] for f in fonts)
+            assert abs(glyphs(role,'안녕하세요')[0] - base[role,'안녕하세요'][0]) < .1
+        for text in ('Hello 안녕하세요 123','가','ㄱㄴㄷ','ꥠힰ'):
+            assert glyphs(role,text)[0] > 0
+    page.locator('#font-english').focus(); page.keyboard.press('Home'); page.keyboard.press('ArrowDown'); page.keyboard.press('Tab')
+    assert page.locator('#font-korean').evaluate('e => e === document.activeElement')
+    assert page.input_value('#font-english') == 'pretendard'
+    page.fill('#font-sample','Hello 한글 123')
+    page.reload(); page.wait_for_selector('#font-english')
+    assert page.input_value('#font-english') == 'pretendard' and page.input_value('#font-korean') == 'apple'
+    direct_context = page.context.browser.new_context(storage_state=page.context.storage_state())
+    direct = direct_context.new_page()
+    direct.add_init_script("""new MutationObserver((_,o) => { if(document.body){
+        window.firstFont = document.documentElement.style.getPropertyValue('--mono'); o.disconnect();
+    }}).observe(document,{childList:true,subtree:true});""")
+    direct.goto(route); direct.wait_for_selector('#font-english')
+    assert 'Dev Apple Hangul' in direct.evaluate('window.firstFont'); direct_context.close()
+    H = {'X-Requested-With':'dev'}
+    for key in ('FONTAA','FONTBB'):
+        assert page.request.post(BASE + '/api/projects',headers=H,data={'key':key,'name':key}).ok
+    page.reload(); page.wait_for_selector('#font-english')
+    for key in ('FONTAA','FONTBB'):
+        page.select_option('#project-filter',key); page.wait_for_selector('#font-english')
+        assert page.input_value('#font-korean') == 'apple' and 'Dev Apple Hangul' in styles()[0]
+    issue = page.request.post(BASE + '/api/issues',headers=H,data={'project':'FONTAA','title':'Hello 한글 글꼴 123','body':'Issue와 Task를 확인해요. Apple fallback 123.'}).json()
+    page.evaluate("document.getElementById('font-probe')?.remove()")
+    for theme in ('light','dark'):
+        page.emulate_media(color_scheme=theme)
+        page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}',theme)
+        for width in (1300,390):
+            page.set_viewport_size({'width':width,'height':850})
+            for name,url,selector in (('fonts',route,'#font-english'),('font-issue',BASE + '/#/issue/' + issue['ref'],'#title')):
+                page.goto(url); page.wait_for_selector(selector); page.evaluate('() => document.fonts.ready')
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.screenshot(path=str(shots / f'{name}-{theme}-{width}.png'),full_page=True)
+    page.goto(route); page.wait_for_selector('#font-reset')
+    page.locator('#font-reset').focus(); page.keyboard.press('Enter'); assert styles() == original
+    assert page.evaluate('document.documentElement.style.getPropertyValue("--mono")') == ''
+    page.reload(); page.wait_for_selector('#font-english'); assert styles() == original
+    for broken in ('{','null','[]','{"english":"url(evil)","korean":"bad"}'):
+        page.evaluate('s => localStorage.setItem("dev.fonts",s)',broken)
+        page.reload(); page.wait_for_selector('#font-english'); assert styles() == original
+    page.evaluate('localStorage.removeItem("dev.fonts")')
+    faulty_context = page.context.browser.new_context(storage_state=page.context.storage_state())
+    faulty = faulty_context.new_page()
+    faulty.add_init_script("""const get = Storage.prototype.getItem, set = Storage.prototype.setItem;
+        Storage.prototype.getItem = function(k){if(k === 'dev.fonts') throw new Error('read blocked'); return get.call(this,k)};
+        Storage.prototype.setItem = function(k,v){if(k === 'dev.fonts') throw new Error('write blocked'); return set.call(this,k,v)};""")
+    faulty.goto(route); faulty.wait_for_selector('#font-english'); assert faulty.input_value('#font-english') == 'default'
+    faulty.select_option('#font-english','plex'); assert '저장하지 못했어요' in faulty.inner_text('#font-status')
+    assert 'IBM Plex Mono' in faulty.locator('.font-preview-sans').evaluate('e => getComputedStyle(e).fontFamily')
+    faulty.reload(); faulty.wait_for_selector('#font-english'); assert faulty.input_value('#font-english') == 'default'
+    faulty_context.close(); cdp.detach()
+    page.reload(); page.wait_for_selector('#font-english')
+    page.set_viewport_size({'width':1300,'height':850}); page.select_option('#project-filter','')
+    for key in ('FONTAA','FONTBB'):
+        token = page.request.get(BASE + '/api/projects/' + key + '/delete-check').json()['confirmation_token']
+        assert page.request.delete(BASE + '/api/projects/' + key, headers=H, data={'confirmation_token':token}).ok
+    page.evaluate("localStorage.setItem('dev.theme','light');document.documentElement.dataset.theme='light'")
+    page.emulate_media(color_scheme='light')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
+
+
 def check_settings_navigation(page, shots):
     """설정 하위 주소·이력·범위와 조회/저장 응답 격리를 확인한다."""
     H = {'X-Requested-With': 'dev'}
@@ -653,7 +761,7 @@ def check_settings_navigation(page, shots):
         page.wait_for_selector(selector)
         assert page.locator('[data-nav=settings]').get_attribute('class').endswith('active')
         assert page.locator('#settings-nav [aria-current=page]').get_attribute('data-settings') == tab
-        assert page.locator('#settings-nav a').count() == 3
+        assert page.locator('#settings-nav a').count() == 4
         assert page.locator('#view > .panel #settings-nav').is_visible()
         assert page.locator('#shell > #settings-nav').count() == 0
         assert page.locator('#view > .panel > .management-header > h2').text_content() == 'Settings'
@@ -2242,6 +2350,11 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--fonts-only' in sys.argv:
+            check_font_settings(page, shots)
+            check_settings_navigation(page, shots)
+            assert not errs, errs
+            print('OK: fonts and Settings navigation'); sys.exit(0)
         if '--project-registration-only' in sys.argv:
             page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
             check_project_row(page, shots)
@@ -2367,6 +2480,8 @@ try:
         page.click("a[href=\"#/new\"]")
         page.wait_for_selector("text=먼저")
         page.goto(BASE + "/#/projects")
+        if len(sys.argv) == 1:
+            check_font_settings(page, shots)
         check_project_row(page, shots)
         check_project_flows(page, shots, answers, asked)
         check_project_documents(page, shots)
