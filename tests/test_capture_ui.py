@@ -97,6 +97,13 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(len(partial['captures']), 3)
         self.assertEqual(partial['errors'][0]['stage'], 'route/dark/390')
 
+    def test_project_routes(self):
+        for route, fixture in (('#/projects', 'projects-empty'), ('#/projects', 'projects-input'),
+                               ('#/projects?project=DEV&tab=manage', 'detail')):
+            _, manifest = capture_ui.capture(route, fixture)
+            self.assertEqual(manifest['status'], 'ok', manifest['errors'])
+            self.assertEqual(len(manifest['captures']), 4)
+
     def test_login_failure(self):
         bad_ns = capture_ui.FAKE_NS.replace('!= "pw"', '!= "different"')
         with patch.object(capture_ui, 'FAKE_NS', bad_ns):
