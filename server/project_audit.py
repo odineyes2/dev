@@ -448,3 +448,154 @@ def list_audits(project_id):
         return [dict(r) for r in c.execute('''SELECT id,provider,model,actual_model,status,phase,error,
             base_sha,created_at,started_at,ended_at,updated_at FROM project_audits
             WHERE project_id=? ORDER BY id DESC''', (project_id,))]
+
+
+def project_id(actor, key):
+    import project_audit_runner
+    project_audit_runner._human(actor)
+    with db.connect() as c:
+        return project_audit_runner._project(c, key)['id']
+
+
+def _baseline(snapshot):
+    return {k: snapshot.get(k) for k in ('repo_path', 'base_branch', 'base_sha')} | {
+        'goals': [s for s in snapshot['sources'] if s['kind'] in ('document', 'initial_spec')]}
+
+
+def detail(actor, key, audit_id):
+    row = get_audit(project_id(actor, key), audit_id)
+    row['stale'] = False
+    row['stale_reason'] = ''
+    if row['snapshot']:
+        try:
+            current = collect_snapshot(key, base_branch=row['base_branch'])
+            row['stale'] = _baseline(current) != _baseline(row['snapshot'])
+            if row['stale']:
+                row['stale_reason'] = '기준 자료가 변경됐어요. 다시 점검해 주세요.'
+        except issues.StoreError:
+            row['stale'] = True
+            row['stale_reason'] = '현재 기준 자료를 확인할 수 없어요.'
+    return row
+
+
+def _candidate_identity(candidate, report):
+    # 실행별 ID와 설명 표현이 달라도 같은 요구·범위의 이전 발행을 재사용한다.
+    requirements = {r['id']: r['title'] for r in report['requirements']}
+    return fingerprint({'requirements': sorted(requirements[r] for r in candidate['requirement_ids']),
+                        'scope': candidate['scope']})
+
+
+def _validate_draft(candidate, snapshot):
+    import regression
+    draft = issues._text(candidate['plan_draft'], '계획서', required=True)
+    regression.parse_plan(draft)
+    tasks = issues.parse_tasks(draft)
+    known = {s.get('path') for s in snapshot['sources'] if s['kind'] in ('code', 'document')}
+    restricted = [s['source_id'][4:] for s in snapshot['omissions']
+                  if s['source_id'].startswith('git:') and s['reason'] == 'non_regular_blob']
+    if not tasks or any(t['n'] < 1 for t in tasks) or len({t['n'] for t in tasks}) != len(tasks):
+        raise issues.StoreError('발행할 Plan에 구현 Task가 필요해요.', 409)
+    for task in tasks:
+        paths = [p.strip().strip('`') for p in task['files'].split(',')]
+        if (not task['title'] or not task['check'] or not paths or
+            any(not p or not _allowed_path(p) or ':' in p or p.startswith('/') or
+                '..' in p.split('/') or '\\' in p or '*' in p or '?' in p or p.endswith('/') or
+                (p not in known and not PurePosixPath(p).suffix) or
+                any(p == blocked or p.startswith(blocked + '/') for blocked in restricted) for p in paths) or
+            any(n >= task['n'] or n not in {t['n'] for t in tasks} for n in task['after'])):
+            raise issues.StoreError('저장소 내부 구현 범위와 검사를 확인할 수 없는 Plan이에요.', 409)
+        if (re.search(r'조사|분석|검토|research|investigat', task['title'], re.I) and
+            not re.search(r'구현|수정|추가|개선|implement|fix|add', task['title'], re.I)):
+            raise issues.StoreError('조사만 하는 Task는 개발 Issue로 발행할 수 없어요.', 409)
+    if candidate['prerequisites'] or issues.human_checks(draft):
+        raise issues.StoreError('선행 조건은 사람이 확인한 뒤 다시 점검해 주세요.', 409)
+    return draft
+
+
+def publish(actor, key, audit_id, candidate_ids):
+    pid = project_id(actor, key)
+    if (not isinstance(candidate_ids, list) or not candidate_ids or len(candidate_ids) > 3 or
+        any(not isinstance(i, str) for i in candidate_ids) or len(set(candidate_ids)) != len(candidate_ids)):
+        raise issues.StoreError('발행할 후보를 선택해 주세요.', 400)
+    # Git 조회 중 DB 쓰기 잠금을 길게 잡지 않고 잠금 안에서 프로젝트·이력을 다시 확인한다.
+    old = get_audit(pid, audit_id)
+    published_ids = {p['candidate_id'] for p in old['publications']}
+    current = (collect_snapshot(key, base_branch=old['base_branch'])
+               if old['snapshot'] and any(i not in published_ids for i in candidate_ids) else None)
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        project = c.execute('SELECT * FROM projects WHERE id=?', (pid,)).fetchone()
+        row = c.execute('SELECT * FROM project_audits WHERE id=? AND project_id=?', (audit_id, pid)).fetchone()
+        if not row or row['status'] != 'complete':
+            raise issues.StoreError('완료된 점검만 발행할 수 있어요.', 409)
+        report = json.loads(row['report_json'])
+        snapshot = json.loads(row['snapshot_json'])
+        initial = c.execute('SELECT spec FROM project_initializations WHERE project_id=?', (pid,)).fetchone()
+        original_spec = next((s['content'] for s in snapshot['sources'] if s['kind'] == 'initial_spec'), None)
+        results = []
+        pending = []
+        identities = set()
+        for cid in candidate_ids:
+            candidate = c.execute('SELECT * FROM project_audit_candidates WHERE audit_id=? AND candidate_id=?', (audit_id, cid)).fetchone()
+            if not candidate:
+                raise issues.StoreError('점검 후보를 찾을 수 없어요.', 404)
+            mapped = c.execute('SELECT * FROM project_audit_publications WHERE audit_id=? AND candidate_id=?', (audit_id, cid)).fetchone()
+            if mapped:
+                results.append(dict(mapped))
+                continue
+            data = json.loads(candidate['data_json'])
+            if candidate['disposition'] != 'new_work':
+                raise issues.StoreError('새 개발 후보만 발행할 수 있어요.', 409)
+            if (not current or _baseline(current) != _baseline(snapshot) or
+                (initial['spec'] if initial else None) != original_spec or
+                str(Path(project['local_path']).resolve()) != snapshot['repo_path'] or
+                _git(project['local_path'], 'rev-parse', '--verify', 'refs/heads/' + row['base_branch'] + '^{commit}').decode('ascii').strip() != row['base_sha']):
+                raise issues.StoreError('기준 자료가 변경됐어요. 다시 점검해 주세요.', 409)
+            identity = _candidate_identity(data, report)
+            if identity in identities:
+                raise issues.StoreError('선택한 후보의 요구와 범위가 겹쳐요. 사람이 확인해 주세요.', 409)
+            identities.add(identity)
+            previous = None
+            ambiguous = False
+            for published in c.execute('''SELECT p.*,a.report_json,c.data_json FROM project_audit_publications p
+                JOIN project_audits a ON a.id=p.audit_id JOIN project_audit_candidates c
+                ON c.audit_id=p.audit_id AND c.candidate_id=p.candidate_id WHERE p.project_id=?''', (pid,)):
+                if _candidate_identity(json.loads(published['data_json']), json.loads(published['report_json'])) == identity:
+                    previous = dict(published)
+                    break
+                prior = json.loads(published['data_json'])
+                if (prior['scope'] == data['scope'] and
+                    {e['source_id'] for e in prior['evidence']} & {e['source_id'] for e in data['evidence']}):
+                    ambiguous = True
+            if previous:
+                pending.append((cid, data, None, previous))
+                continue
+            if ambiguous:
+                raise issues.StoreError('이전 발행 후보와 근거·범위가 겹쳐요. 사람이 확인해 주세요.', 409)
+            # 최신 이력 전체를 대조한다. 변경의 의미를 확정할 수 없으면 유사 후보를 발행하지 않는다.
+            if fingerprint(_history(c, project)) != row['history_fingerprint'] or data['related_issues']:
+                refs = [issues._issue_dict(r)['ref'] for r in c.execute(issues._ISSUE_SELECT + ' WHERE i.project_id=?', (pid,))]
+                raise issues.StoreError('Issue 이력이 변경됐거나 관련 작업이 있어요. 기존 Issue를 확인하고 다시 점검해 주세요: ' + ', '.join(refs), 409)
+            draft = _validate_draft(data, snapshot)
+            files = {p.strip().strip('`') for t in issues.parse_tasks(draft) for p in t['files'].split(',')}
+            for existing in c.execute('SELECT id,title,body FROM issues WHERE project_id=?', (pid,)):
+                plans = '\n'.join(r[0] for r in c.execute('SELECT body FROM plans WHERE issue_id=?', (existing['id'],)))
+                text = existing['body'] + '\n' + plans
+                if existing['title'] == data['title'] or any(p in text for p in files):
+                    raise issues.StoreError('기존 Issue와 구현 범위가 겹쳐요. 기존 작업을 확인해 주세요.', 409)
+            pending.append((cid, data, draft, None))
+        for cid, data, draft, previous in pending:
+            if previous:
+                iid, ref = previous['issue_id'], previous['issue_ref']
+            else:
+                body = '\n\n'.join([data['scope'], data['gap'], '완료 기준: ' + '\n'.join(data['completion_criteria']),
+                                    '점검 근거: ' + _json(data['evidence'])])
+                issue = issues._create_issue(c, actor, key, data['title'], body, data['priority'])
+                iid, ref = issue['id'], issue['ref']
+                issues._post_plan(c, actor, issue, draft, row['base_sha'], link_review=False)
+                issues._event(c, iid, actor, 'comment', '목표 대비 현황 점검에서 발행한 Plan 초안이에요.',
+                              data={'audit_id': audit_id, 'candidate_id': cid})
+            c.execute('INSERT INTO project_audit_publications VALUES(?,?,?,?,?,?)',
+                      (audit_id, cid, pid, iid, ref, db.now_iso()))
+            results.append(dict(c.execute('SELECT * FROM project_audit_publications WHERE audit_id=? AND candidate_id=?', (audit_id, cid)).fetchone()))
+        return {'publications': results}

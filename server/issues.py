@@ -244,8 +244,13 @@ def _project_deletion(c, key):
         f"SELECT * FROM issue_deps WHERE issue_id IN ({target}) OR blocked_by_id IN ({target}) ORDER BY issue_id, blocked_by_id",
         (project["id"], project["id"]))]
     snapshot["dependencies"] = deps
+    for table in ("project_audits", "project_audit_candidates", "project_audit_publications"):
+        snapshot[table] = [dict(r) for r in c.execute(
+            f"SELECT * FROM {table} WHERE project_id=? ORDER BY rowid", (project["id"],))]
     ids = {r["id"] for r in rows}
     blockers = []
+    if any(r['status'] in ('preparing', 'running', 'cancelling') for r in snapshot['project_audits']):
+        blockers.append('프로젝트 점검이 진행 중이에요.')
     if c.execute("SELECT 1 FROM project_initializations WHERE project_id=? AND status IN ('queued','running','cancelling')", (project['id'],)).fetchone():
         blockers.append('초기 프로젝트 생성이 진행 중이에요.')
     if any(_lease_active(r) for r in rows):
@@ -258,9 +263,9 @@ def _project_deletion(c, key):
     token = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return {"project": _project_row(project), "issue_count": len(rows),
             "external_dependency_count": sum(d["issue_id"] not in ids for d in deps),
-            "confirmation_required": bool(rows), "confirmation_token": token,
+            "confirmation_required": bool(rows or snapshot["project_audits"]), "confirmation_token": token,
             "can_delete": not blockers, "blockers": blockers,
-            "warning": "모든 Issue·Task와 계획서·댓글·결정·실행·대기열 기록 및 다른 프로젝트의 의존 연결도 함께 삭제돼요." if rows else ""}
+            "warning": "모든 Issue·Task와 계획서·댓글·결정·실행·대기열·점검 보고서·발행 링크 및 다른 프로젝트의 의존 연결도 함께 삭제돼요." if rows or snapshot['project_audits'] else ""}
 
 
 def check_project_deletion(actor, key):
@@ -283,6 +288,8 @@ def delete_project(actor, key, confirmation_token=None):
         if state["confirmation_required"] and confirmation_token != state["confirmation_token"]:
             raise StoreError("프로젝트 내용이 있어요. 삭제 사전 확인을 다시 하고 동의해 주세요.", 409)
         pid = state["project"]["id"]
+        c.execute("DELETE FROM project_audit_publications WHERE project_id=?", (pid,))
+        c.execute("DELETE FROM project_audits WHERE project_id=?", (pid,))
         c.execute("DELETE FROM issues WHERE project_id=?", (pid,))
         c.execute("DELETE FROM projects WHERE id=?", (pid,))
     _cleanup_attachments()
@@ -549,6 +556,15 @@ def _check_assignee(c, aid):
 
 def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None,
                  assignee_agent_id=None) -> dict:
+    with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        return _create_issue(c, actor, project, title, body, priority, labels, parent, status,
+                             type_ids, attachment_ids, assignee_agent_id)
+
+
+def _create_issue(c, actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None,
+                 assignee_agent_id=None) -> dict:
+    """호출자가 연 트랜잭션에서 Issue를 저장한다."""
     # 제목은 비워도 된다 — 본문만 쓰면 이슈를 처리하는 에이전트가 제목을 지어 채운다(DEV-8). 둘 다 비면 안 된다.
     title = _text(title, "제목", 300).strip()
     body = _text(body, "본문")
@@ -558,36 +574,34 @@ def create_issue(actor, project, title, body="", priority="none", labels=None, p
     if status not in ("backlog", "triage"):
         raise StoreError("새 이슈는 backlog나 triage로만 만들어요.")
     now = db.now_iso()
-    with db.connect() as c:
-        c.execute("BEGIN IMMEDIATE")
-        proj = c.execute("SELECT * FROM projects WHERE key=?", (str(project or "").upper(),)).fetchone()
-        if proj is None:
-            raise _not_found("프로젝트")
-        parent_id, par = None, None
-        if parent:
-            par = _find(c, parent)
-            if par["project_id"] != proj["id"]:
-                raise StoreError("하위 이슈는 부모와 같은 프로젝트여야 해요.")
-            _guard_terminal_parent(c, par, include_self=True)
-            parent_id = par["id"]
-        ids = _type_ids(c, type_ids if type_ids is not None else [])
-        # 빠른 발행(DEV-93)은 만들 때 Assignee를 같이 정한다 — 없는 에이전트면 아무것도 만들지 않는다.
-        if assignee_agent_id is not None:
-            try:
-                assignee_agent_id = int(assignee_agent_id)
-            except (TypeError, ValueError):
-                raise StoreError("에이전트 id는 숫자여야 해요.")
-            _check_assignee(c, assignee_agent_id)
-        number, sub_of, sub = _next_number(c, proj, par)
-        iid = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
-                        "assignee_agent_id, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (proj["id"], number, sub_of, sub, parent_id, title, body, status, _priority(priority), _labels(labels),
-                         actor_label(actor), assignee_agent_id, now, now)).lastrowid
-        _replace_types(c, iid, ids, actor)
-        if attachment_ids is not None:
-            import attachments
-            attachments.link(c, actor, iid, attachment_ids)
-        return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (iid,)).fetchone())
+    proj = c.execute("SELECT * FROM projects WHERE key=?", (str(project or "").upper(),)).fetchone()
+    if proj is None:
+        raise _not_found("프로젝트")
+    parent_id, par = None, None
+    if parent:
+        par = _find(c, parent)
+        if par["project_id"] != proj["id"]:
+            raise StoreError("하위 이슈는 부모와 같은 프로젝트여야 해요.")
+        _guard_terminal_parent(c, par, include_self=True)
+        parent_id = par["id"]
+    ids = _type_ids(c, type_ids if type_ids is not None else [])
+    # 빠른 발행(DEV-93)은 만들 때 Assignee를 같이 정한다 — 없는 에이전트면 아무것도 만들지 않는다.
+    if assignee_agent_id is not None:
+        try:
+            assignee_agent_id = int(assignee_agent_id)
+        except (TypeError, ValueError):
+            raise StoreError("에이전트 id는 숫자여야 해요.")
+        _check_assignee(c, assignee_agent_id)
+    number, sub_of, sub = _next_number(c, proj, par)
+    iid = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
+                    "assignee_agent_id, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (proj["id"], number, sub_of, sub, parent_id, title, body, status, _priority(priority), _labels(labels),
+                     actor_label(actor), assignee_agent_id, now, now)).lastrowid
+    _replace_types(c, iid, ids, actor)
+    if attachment_ids is not None:
+        import attachments
+        attachments.link(c, actor, iid, attachment_ids)
+    return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (iid,)).fetchone())
 
 
 def update_issue(actor, ref, fields: dict) -> dict:
@@ -809,17 +823,21 @@ def post_plan(actor, ref, body) -> dict:
     base = execute.base_sha(repo)   # 에이전트가 적는 값이 아니라 서버가 지금 base를 적는다
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = _find(c, ref)
-        version = c.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM plans WHERE issue_id=?", (row["id"],)).fetchone()[0]
-        now = db.now_iso()
-        pid = c.execute("INSERT INTO plans(issue_id, version, body, author, created_at, base_sha) VALUES(?,?,?,?,?,?)",
-                        (row["id"], version, body, actor_label(actor), now, base)).lastrowid
-        run = c.execute("SELECT id, mode, status FROM runs WHERE issue_id=? ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
-        if run and run["mode"] == "review" and run["status"] == "running":
-            c.execute("INSERT INTO review_plan_runs(plan_id,run_id) VALUES(?,?)", (pid, run["id"]))
-        c.execute("UPDATE issues SET updated_at=? WHERE id=?", (now, row["id"]))
-        _event(c, row["id"], actor, "plan", data={"version": version})
-        return dict(c.execute("SELECT * FROM plans WHERE id=?", (pid,)).fetchone())
+        return _post_plan(c, actor, _find(c, ref), body, base)
+
+
+def _post_plan(c, actor, row, body, base, *, link_review=True):
+    """호출자가 검증한 초안을 같은 트랜잭션에서 저장한다."""
+    version = c.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM plans WHERE issue_id=?", (row["id"],)).fetchone()[0]
+    now = db.now_iso()
+    pid = c.execute("INSERT INTO plans(issue_id, version, body, author, created_at, base_sha) VALUES(?,?,?,?,?,?)",
+                    (row["id"], version, body, actor_label(actor), now, base)).lastrowid
+    run = c.execute("SELECT id, mode, status FROM runs WHERE issue_id=? ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
+    if link_review and run and run["mode"] == "review" and run["status"] == "running":
+        c.execute("INSERT INTO review_plan_runs(plan_id,run_id) VALUES(?,?)", (pid, run["id"]))
+    c.execute("UPDATE issues SET updated_at=? WHERE id=?", (now, row["id"]))
+    _event(c, row["id"], actor, "plan", data={"version": version})
+    return dict(c.execute("SELECT * FROM plans WHERE id=?", (pid,)).fetchone())
 
 
 VERDICT_LABEL = {"approve": "승인", "approve_notes": "조건부 승인", "reject": "거절"}

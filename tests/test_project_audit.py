@@ -312,5 +312,218 @@ class AuditTests(unittest.TestCase):
         self.denied(lambda: audit.collect_snapshot('AUD'), 409)
 
 
+class PublicationTests(unittest.TestCase):
+    setUp = AuditTests.setUp
+    git = AuditTests.git
+    write = AuditTests.write
+    commit = AuditTests.commit
+    denied = AuditTests.denied
+    report = AuditTests.report
+    actor = {'kind': 'human', 'id': 1, 'name': 'admin'}
+
+    def completed(self, request='publish', count=1):
+        report = self.report()
+        report['candidates'][0]['plan_draft'] = '## Tasks\n1. 검색 구현 | 파일: app.py | 확인: 검색 결과 검사 | 선행: 없음'
+        if count == 2:
+            report['requirements'].append(dict(report['requirements'][0], id='r2', title='정렬'))
+            report['candidates'].append(dict(report['candidates'][0], id='c2', title='정렬 구현', requirement_ids=['r2']))
+        snapshot = audit.collect_snapshot('AUD')
+        row = audit.create_audit(self.pid, request, 'codex', 'human:admin')
+        audit.save_snapshot(row['id'], snapshot)
+        audit.finish_audit(row['id'], 'complete', report=report)
+        return row['id']
+
+    def test_concurrent_multi_publish_is_atomic_and_has_no_automation(self):
+        aid = self.completed(count=2)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            outputs = list(pool.map(lambda _: audit.publish(self.actor, 'AUD', aid, ['c1', 'c2']), range(4)))
+        self.assertTrue(all(o == outputs[0] for o in outputs))
+        with db.connect() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM issues').fetchone()[0], 2)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM plans WHERE version=1').fetchone()[0], 2)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM issues WHERE status='backlog' AND parent_id IS NULL").fetchone()[0], 2)
+            for table in ('decisions', 'runs', 'jobs', 'review_plan_runs', 'project_auto_settings_events'):
+                self.assertEqual(c.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0], 0)
+
+    def test_publication_rollback_on_second_plan_failure(self):
+        aid = self.completed(count=2)
+        original = issues._post_plan
+        calls = []
+        def fail(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                raise issues.StoreError('injected', 409)
+            return original(*args, **kwargs)
+        with patch.object(issues, '_post_plan', side_effect=fail):
+            self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1', 'c2']), 409)
+        with db.connect() as c:
+            for table in ('issues', 'plans', 'events', 'project_audit_publications'):
+                self.assertEqual(c.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0], 0)
+
+    def test_closed_deleted_and_other_audit_reuse_mapping(self):
+        aid = self.completed()
+        first = audit.publish(self.actor, 'AUD', aid, ['c1'])['publications'][0]
+        issues.set_status(self.actor, first['issue_ref'], 'closed')
+        second = self.completed('second')
+        self.assertEqual(audit.publish(self.actor, 'AUD', second, ['c1'])['publications'][0]['issue_ref'], first['issue_ref'])
+        issues.delete_issue(self.actor, first['issue_ref'])
+        third = self.completed('third')
+        self.assertIsNone(audit.publish(self.actor, 'AUD', third, ['c1'])['publications'][0]['issue_id'])
+        self.assertEqual(audit.publish(self.actor, 'AUD', aid, ['c1'])['publications'][0]['issue_ref'], first['issue_ref'])
+        with db.connect() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM issues').fetchone()[0], 0)
+
+    def test_changed_history_baseline_and_invalid_selection(self):
+        aid = self.completed()
+        self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['foreign']), 404)
+        self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1', 'foreign']), 404)
+        self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1', 'c1']))
+        issue = issues.create_issue(self.actor, 'AUD', 'unrelated', 'history changed')
+        self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1']), 409)
+        issues.delete_issue(self.actor, issue['ref'])
+        self.write('app.py', 'changed baseline')
+        self.commit()
+        self.assertTrue(audit.detail(self.actor, 'AUD', aid)['stale'])
+        self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1']), 409)
+
+    def test_project_deletion_includes_audits_and_blocks_active(self):
+        aid = self.completed()
+        before = issues.check_project_deletion(self.actor, 'AUD')
+        self.assertTrue(before['confirmation_required'])
+        active = audit.create_audit(self.pid, 'active-delete', 'codex', 'human:admin')
+        self.denied(lambda: issues.delete_project(self.actor, 'AUD', before['confirmation_token']), 409)
+        audit.finish_audit(active['id'], 'cancelled')
+        self.denied(lambda: issues.delete_project(self.actor, 'AUD', before['confirmation_token']), 409)
+        audit.publish(self.actor, 'AUD', aid, ['c1'])
+        state = issues.check_project_deletion(self.actor, 'AUD')
+        issues.delete_project(self.actor, 'AUD', state['confirmation_token'])
+        with db.connect() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM project_audits').fetchone()[0], 0)
+
+    def test_latest_issue_body_status_plan_and_dependencies_are_rechecked(self):
+        issue = issues.create_issue(self.actor, 'AUD', '기존 작업', '다른 범위')
+        dependency = issues.create_issue(self.actor, 'AUD', '선행 작업', '다른 범위')
+        for field in ('body', 'status', 'plan', 'dependency'):
+            with self.subTest(field=field):
+                aid = self.completed('history-' + field)
+                with db.connect() as c:
+                    if field == 'body':
+                        c.execute('UPDATE issues SET body=? WHERE id=?', ('검색 변경', issue['id']))
+                    elif field == 'status':
+                        c.execute("UPDATE issues SET status='closed' WHERE id=?", (issue['id'],))
+                    elif field == 'plan':
+                        c.execute('INSERT INTO plans(issue_id,version,body,author,created_at) VALUES(?,1,?,?,?)',
+                                  (issue['id'], '검색 계획 변경', 'human:admin', db.now_iso()))
+                    else:
+                        c.execute('INSERT INTO issue_deps VALUES(?,?)', (issue['id'], dependency['id']))
+                self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1']), 409)
+        with db.connect() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM project_audit_publications').fetchone()[0], 0)
+
+    def test_invalid_drafts_dispositions_and_existing_duplicate_block_publication(self):
+        aid = self.completed()
+        original = audit.get_audit(self.pid, aid)['report']['candidates'][0]
+        for draft in ('조사만 한다.', '## Tasks\n1. 조사 | 파일: app.py | 확인: 검사',
+                      '## Tasks\n1. 구현 | 파일: ../external.py | 확인: 검사',
+                      '## Tasks\n1. 구현 | 파일: app.py | 확인: 검사\n## 검사 선택\n```json\n{}invalid\n```'):
+            with self.subTest(draft=draft):
+                data = dict(original, plan_draft=draft)
+                with db.connect() as c:
+                    c.execute('UPDATE project_audit_candidates SET data_json=? WHERE audit_id=?', (audit._json(data), aid))
+                self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1']), 409 if 'invalid' not in draft else 400)
+        with db.connect() as c:
+            c.execute("UPDATE project_audit_candidates SET disposition='human_confirmation' WHERE audit_id=?", (aid,))
+        self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1']), 409)
+        issues.create_issue(self.actor, 'AUD', '검색 결과 구현', 'app.py 구현')
+        newer = self.completed('duplicate-before-snapshot')
+        self.denied(lambda: audit.publish(self.actor, 'AUD', newer, ['c1']), 409)
+
+    def test_replay_survives_missing_repo_and_snapshot_collection_races(self):
+        aid = self.completed()
+        result = audit.publish(self.actor, 'AUD', aid, ['c1'])
+        with patch.object(audit, 'collect_snapshot', side_effect=AssertionError('replay must not read Git')):
+            self.assertEqual(audit.publish(self.actor, 'AUD', aid, ['c1']), result)
+        newer = self.completed('race')
+        original = audit.collect_snapshot
+        def moved(*args, **kwargs):
+            snapshot = original(*args, **kwargs)
+            self.write('app.py', 'new commit after collection')
+            self.commit()
+            return snapshot
+        with patch.object(audit, 'collect_snapshot', side_effect=moved):
+            self.denied(lambda: audit.publish(self.actor, 'AUD', newer, ['c1']), 409)
+
+    def test_stored_initial_spec_and_project_path_change_block_publication(self):
+        aid = self.completed()
+        with db.connect() as c:
+            c.execute('UPDATE projects SET local_path=? WHERE id=?', (str(self.root / 'absent'), self.pid))
+        self.assertTrue(audit.detail(self.actor, 'AUD', aid)['stale'])
+        self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1']), 409)
+        with db.connect() as c:
+            c.execute('UPDATE projects SET local_path=? WHERE id=?', (str(self.repo), self.pid))
+        # 기존 초기 생성 저장 계약으로 기획서를 추가하면 Git SHA가 같아도 오래된 결과다.
+        with db.connect() as c:
+            c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,spec,provider,status,created_at,updated_at)
+                VALUES(?,'changed-spec','human:admin',?,?,'failed',?,?)''',
+                (self.pid, '새 목표 기획서', 'codex', db.now_iso(), db.now_iso()))
+        self.assertTrue(audit.detail(self.actor, 'AUD', aid)['stale'])
+        self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['c1']), 409)
+
+    def test_new_repository_file_is_a_valid_implementation_draft(self):
+        aid = self.completed()
+        with db.connect() as c:
+            data = json.loads(c.execute('SELECT data_json FROM project_audit_candidates WHERE audit_id=?', (aid,)).fetchone()[0])
+            data['plan_draft'] = '## Tasks\n1. 검색 구현 | 파일: search.py | 확인: 검색 결과 검사 | 선행: 없음'
+            c.execute('UPDATE project_audit_candidates SET data_json=? WHERE audit_id=?', (audit._json(data), aid))
+        self.assertEqual(len(audit.publish(self.actor, 'AUD', aid, ['c1'])['publications']), 1)
+
+    def test_actual_app_all_routes_auth_csrf_and_project_boundaries(self):
+        import app
+        import auth
+        import project_audit_runner as runner
+        from fastapi.testclient import TestClient
+        aid = self.completed()
+        base = '/api/projects/AUD/audits'
+        routes = [('GET', base), ('GET', base + '/preflight'), ('GET', base + f'/{aid}'),
+                  ('POST', base), ('POST', base + f'/{aid}/cancel'), ('POST', base + f'/{aid}/publish')]
+        async def user(cookie):
+            return {'id': 1, 'username': 'admin', 'role': 'admin' if cookie == 'admin' else 'user'} if cookie else None
+        with patch.object(auth, 'nightshift_user', side_effect=user), TestClient(app.app) as client:
+            for method, path in routes:
+                self.assertEqual(client.request(method, path, headers={'X-Requested-With': 'dev'}).status_code, 401)
+            client.cookies.set('ns_session', 'member')
+            self.assertEqual(client.get(base).status_code, 403)
+            client.cookies.set('ns_session', 'admin')
+            for method, path in routes:
+                if method == 'POST':
+                    self.assertEqual(client.post(path, json={}).status_code, 403)
+            with patch.object(auth, 'agent_for_key', return_value={'id': 1, 'name': 'agent', 'model': ''}):
+                for method, path in routes:
+                    self.assertEqual(client.request(method, path, headers={'Authorization': 'Bearer fake'}).status_code, 403)
+            self.assertEqual(client.get(base).status_code, 200)
+            self.assertEqual(client.get(base + '/preflight?provider=codex').status_code, 200)
+            self.assertEqual(client.get(base + '/preflight?provider=unknown').status_code, 400)
+            self.assertEqual(client.get(base + f'/{aid}').status_code, 200)
+            issues.create_project(self.actor, 'OTHER', 'other')
+            for suffix, method in [(f'/{aid}', 'GET'), (f'/{aid}/cancel', 'POST'), (f'/{aid}/publish', 'POST')]:
+                self.assertEqual(client.request(method, '/api/projects/OTHER/audits' + suffix,
+                    headers={'X-Requested-With': 'dev'}, json={'candidate_ids': ['c1']}).status_code, 404)
+            def fake_run(project, row):
+                with runner._lock:
+                    runner._workers.discard(row['id'])
+            with patch.object(runner, '_run', side_effect=fake_run):
+                response = client.post(base, headers={'X-Requested-With': 'dev'},
+                    json={'request_id': 'api-start', 'provider': 'codex'})
+                self.assertEqual(response.status_code, 200, response.text)
+                running = response.json()['id']
+                repeated = client.post(base, headers={'X-Requested-With': 'dev'},
+                    json={'request_id': 'api-start', 'provider': 'codex'})
+                self.assertEqual(repeated.status_code, 200, repeated.text)
+                self.assertEqual(repeated.json()['id'], running)
+            self.assertEqual(client.post(base + f'/{running}/cancel', headers={'X-Requested-With': 'dev'}).status_code, 200)
+            response = client.post(base + f'/{aid}/publish', headers={'X-Requested-With': 'dev'}, json={'candidate_ids': ['c1']})
+            self.assertEqual(response.status_code, 200, response.text)
+
+
 if __name__ == '__main__':
     unittest.main()
