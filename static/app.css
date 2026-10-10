@@ -681,6 +681,8 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .service-diagnostic{ margin-top:16px; padding:16px; border:1px solid var(--border); border-radius:8px; background:var(--panel); min-width:0; }
 .service-diagnostic-head{ display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
 .service-diagnostic-head h4{ margin:0; font-size:13px; font-weight:600; }
+#p-service-copy{ display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; padding:0; flex-shrink:0; }
+#p-service-copy .ico{ width:15px; height:15px; }
 .service-diagnostic-row{ font-size:14px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; min-width:0; }
 .service-diagnostic-row + .service-diagnostic-row{ margin-top:8px; }
 #p-service-copy-message:empty{ display:none; }

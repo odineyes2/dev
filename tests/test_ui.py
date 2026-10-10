@@ -142,6 +142,15 @@ def check_service_diagnostic(page, shots):
     page.goto(BASE + '/#/projects?project=DIAG&tab=manage')
     page.wait_for_function("document.querySelector('#p-service-status')?.textContent === '미연결'")
     assert page.locator('.service-diagnostic-row').count() == 1
+    copy_button = page.get_by_role('button', name='연결 진단 전체 내용 복사하기', exact=True)
+    assert copy_button.get_attribute('title') == '복사하기'
+    assert copy_button.inner_text() == ''
+    assert copy_button.locator('svg[aria-hidden="true"] use').get_attribute('href') == '#i-copy'
+    assert page.locator('symbol#i-copy rect').count() == 1
+    assert copy_button.locator('svg').evaluate('e => e.getBBox().width > 0 && getComputedStyle(e).strokeWidth === "2px"')
+    copy_button.hover()
+    page.wait_for_timeout(1000)
+    assert copy_button.evaluate('e => e.matches(":hover") && e.title === "복사하기"')
     page.evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.serviceCopied=text}}})")
 
     def refresh(value, expected):
@@ -185,7 +194,8 @@ def check_service_diagnostic(page, shots):
         for width in (1300, 390):
             page.set_viewport_size({'width': width, 'height': 850})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-            assert page.locator('#p-service-copy').bounding_box()['height'] >= (40 if width == 390 else 1)
+            copy_bounds = page.locator('#p-service-copy').bounding_box()
+            assert min(copy_bounds['height'], copy_bounds['width']) >= (40 if width == 390 else 32)
             page.evaluate('window.scrollTo(0, 0)')
             bounds = page.locator('.service-diagnostic').bounding_box()
             page.screenshot(path=str(shots / f'service_diagnostic_{scheme}_{width}.png'), full_page=True, clip=bounds)
