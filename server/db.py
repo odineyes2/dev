@@ -616,6 +616,79 @@ DROP TABLE retired_initialization_goals;
 ALTER TABLE project_initializations DROP COLUMN issue_id;
 """)
 
+# 점검은 가짜 Issue나 기존 runs 모드를 만들지 않고 독립적으로 보존한다.
+MIGRATIONS.append("""
+CREATE TABLE project_audits (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    request_id TEXT NOT NULL UNIQUE,
+    input_fingerprint TEXT NOT NULL,
+    provider TEXT NOT NULL CHECK(provider IN ('claude','codex')),
+    model TEXT NOT NULL DEFAULT '',
+    actual_model TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'preparing'
+        CHECK(status IN ('preparing','running','cancelling','complete','failed','timeout','cancelled')),
+    phase TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    base_branch TEXT NOT NULL DEFAULT '',
+    base_sha TEXT NOT NULL DEFAULT '',
+    repo_path TEXT NOT NULL DEFAULT '',
+    history_fingerprint TEXT NOT NULL DEFAULT '',
+    snapshot_json TEXT,
+    report_json TEXT,
+    limits_json TEXT NOT NULL DEFAULT '{}',
+    usage_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    ended_at TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE(id,project_id)
+);
+CREATE UNIQUE INDEX project_audits_active ON project_audits(project_id)
+    WHERE status IN ('preparing','running','cancelling');
+CREATE INDEX project_audits_history ON project_audits(project_id,id);
+CREATE TABLE project_audit_requirements (
+    audit_id INTEGER NOT NULL REFERENCES project_audits(id) ON DELETE CASCADE,
+    requirement_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('complete','partial','missing','needs_confirmation')),
+    data_json TEXT NOT NULL,
+    PRIMARY KEY(audit_id,requirement_id)
+);
+CREATE TABLE project_audit_candidates (
+    audit_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    candidate_id TEXT NOT NULL,
+    disposition TEXT NOT NULL CHECK(disposition IN ('new_work','reuse_issue','human_confirmation')),
+    fingerprint TEXT NOT NULL,
+    data_json TEXT NOT NULL,
+    PRIMARY KEY(audit_id,candidate_id),
+    UNIQUE(audit_id,candidate_id,project_id),
+    FOREIGN KEY(audit_id,project_id) REFERENCES project_audits(id,project_id) ON DELETE CASCADE
+);
+CREATE TABLE project_audit_publications (
+    audit_id INTEGER NOT NULL,
+    candidate_id TEXT NOT NULL,
+    project_id INTEGER NOT NULL,
+    issue_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+    issue_ref TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(audit_id,candidate_id),
+    FOREIGN KEY(audit_id,candidate_id,project_id)
+        REFERENCES project_audit_candidates(audit_id,candidate_id,project_id)
+);
+CREATE TRIGGER project_audit_publication_project_insert BEFORE INSERT ON project_audit_publications
+WHEN NEW.issue_id IS NOT NULL BEGIN
+    SELECT RAISE(ABORT,'점검 후보와 발행 Issue의 프로젝트가 달라요') WHERE NOT EXISTS(
+        SELECT 1 FROM issues WHERE id=NEW.issue_id AND project_id=NEW.project_id);
+END;
+CREATE TRIGGER project_audit_publication_project_update BEFORE UPDATE ON project_audit_publications
+WHEN NEW.issue_id IS NOT NULL BEGIN
+    SELECT RAISE(ABORT,'점검 후보와 발행 Issue의 프로젝트가 달라요') WHERE NOT EXISTS(
+        SELECT 1 FROM issues WHERE id=NEW.issue_id AND project_id=NEW.project_id);
+END;
+""")
+
 STATUSES += ("waiting",)
 
 

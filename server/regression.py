@@ -127,7 +127,7 @@ def resolve(ref=None, repo=None, changed=None):
                 choice = choices.get(str(task['n']), {}) if task else {}
     if changed is None:
         changed = []
-        if repo:
+        if repo and Path(repo).is_dir():
             result = execute._run_git(str(repo), 'diff', '--name-only', f'{execute.BASE_BRANCH}...HEAD')
             if result.returncode == 0:
                 changed = result.stdout.splitlines()
@@ -197,6 +197,8 @@ def resolve(ref=None, repo=None, changed=None):
 
 def tree_identity(repo):
     import execute
+    if not Path(repo).is_dir():
+        return None
     status = execute._run_git(str(repo), 'status', '--porcelain', '--untracked-files=no')
     tree = execute._run_git(str(repo), 'rev-parse', 'HEAD^{tree}')
     added = execute._run_git(str(repo), 'ls-files', '--others', '--exclude-standard')

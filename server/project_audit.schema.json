@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project audit report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "requirements", "candidates"],
+  "properties": {
+    "summary": {"type": "string", "minLength": 1},
+    "requirements": {"type": "array", "items": {"$ref": "#/$defs/requirement"}},
+    "candidates": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/candidate"}}
+  },
+  "$defs": {
+    "strings": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "evidence": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["source_id"],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "line_start": {"type": "integer", "minimum": 1},
+          "line_end": {"type": "integer", "minimum": 1},
+          "section": {"type": "string", "minLength": 1}
+        },
+        "dependentRequired": {"line_start": ["line_end"], "line_end": ["line_start"]}
+      }
+    },
+    "requirement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title", "status", "assessment", "evidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "status": {"enum": ["complete", "partial", "missing", "needs_confirmation"]},
+        "assessment": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "candidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title", "requirement_ids", "evidence", "gap", "priority", "scope", "completion_criteria", "prerequisites", "plan_draft", "disposition", "related_issues"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "requirement_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "gap": {"type": "string", "minLength": 1},
+        "priority": {"enum": ["urgent", "high", "medium", "low", "none"]},
+        "scope": {"type": "string", "minLength": 1},
+        "completion_criteria": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "prerequisites": {"$ref": "#/$defs/strings"},
+        "plan_draft": {"type": "string", "minLength": 1},
+        "disposition": {"enum": ["new_work", "reuse_issue", "human_confirmation"]},
+        "related_issues": {"$ref": "#/$defs/strings"}
+      }
+    }
+  }
+}
