@@ -9,6 +9,131 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_service_diagnostic(page, shots):
+    """서비스 요청은 모의 처리하고 진단 표시와 복사 원문을 함께 검사한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers, data={
+        'key': 'DIAG', 'name': '서비스 진단 검사', 'service_domain': 'app.example.com',
+        'service_port': 8400, 'service_app': 'myapp'}).ok
+    state = {'value': {}, 'error': '', 'posts': [], 'post_error': ''}
+    def handle(route):
+        if route.request.method == 'POST':
+            state['posts'].append(route.request.post_data_json)
+            if state['post_error']:
+                route.fulfill(status=400, json={'detail': state['post_error']}); return
+        if state['error']:
+            route.fulfill(status=500, json={'detail': state['error']})
+        else:
+            route.fulfill(json=state['value'])
+    page.route('**/api/projects/DIAG/service', handle)
+    page.goto(BASE); page.reload()
+    page.wait_for_selector('#shell:not([hidden])')
+    page.goto(BASE + '/#/projects?project=DIAG&tab=manage')
+    page.wait_for_function("document.querySelector('#p-service-status')?.textContent === '미연결'")
+    assert page.locator('.service-diagnostic-row').count() == 1
+    page.evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.serviceCopied=text}}})")
+
+    def refresh(value, expected):
+        state['value'] = value
+        page.evaluate("document.querySelector('#p-service-copy-message').textContent='refresh pending'")
+        page.click('#p-service-refresh')
+        page.wait_for_function("document.querySelector('#p-service-copy-message').textContent === ''")
+        page.wait_for_function("text => document.querySelector('#p-service-status').textContent.includes(text)", arg=expected)
+
+    def copied(expected):
+        page.locator('#p-service-copy').focus(); page.keyboard.press('Enter')
+        page.wait_for_function("document.querySelector('#p-service-copy-message').textContent === '복사했어요'")
+        assert page.evaluate('window.serviceCopied') == expected
+
+    failure = {'online': False, 'status': 'failed', 'phase': '연결 실패', 'observed_port': 8400,
+               'changed': True, 'error': 'Local path의 ecosystem.config.js에서 지정 PM2 앱을 준비해 주세요.',
+               'setup_error': '<img src=x onerror="window.serviceXSS=1">' + 'long-error-' * 16,
+               'url': 'https://app.example.com/' + 'long-path-' * 20}
+    refresh(failure, '연결 실패')
+    expected = '\n'.join(['접속 확인 실패', failure['phase'], '로컬 포트 8400',
+                          '저장한 도메인·포트는 아직 반영되지 않았어요.', failure['error'],
+                          failure['setup_error'], failure['url']])
+    copied(expected)
+    assert state['posts'] == []
+    assert page.locator('#p-service-status a').get_attribute('href') == failure['url']
+    assert page.locator('#p-service-status img').count() == 0
+    assert page.evaluate('window.serviceXSS') is None
+    for mode in ('reject', 'unsupported'):
+        page.evaluate("mode => Object.defineProperty(navigator,'clipboard',{configurable:true,value:mode==='reject'?{writeText:async()=>{throw Error('denied')}}:undefined})", mode)
+        page.click('#p-service-copy')
+        page.wait_for_selector('#p-service-copy-text:not([hidden])')
+        assert page.input_value('#p-service-copy-text') == expected
+        assert page.inner_text('#p-service-status') == expected
+        assert page.locator('#p-service-copy-text').evaluate('e => e === document.activeElement && e.selectionStart === 0 && e.selectionEnd === e.value.length')
+        assert '직접 복사' in page.inner_text('#p-service-copy-message')
+    page.wait_for_selector('#toast', state='hidden')
+    for scheme in ('light', 'dark'):
+        page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
+        page.emulate_media(color_scheme=scheme)
+        page.wait_for_timeout(200)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            assert page.locator('#p-service-copy').bounding_box()['height'] >= (40 if width == 390 else 1)
+            page.evaluate('window.scrollTo(0, 0)')
+            bounds = page.locator('.service-diagnostic').bounding_box()
+            page.screenshot(path=str(shots / f'service_diagnostic_{scheme}_{width}.png'), full_page=True, clip=bounds)
+    page.evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.serviceCopied=text}}})")
+    refresh({'online': True, 'phase': '연결 완료', 'observed_port': 8500, 'url': 'https://new.example.com'}, '8500')
+    copied('서비스 중\n연결 완료\n로컬 포트 8500\nhttps://new.example.com')
+    assert page.locator('#p-service-copy-text').is_hidden()
+    refresh({'online': True, 'phase': '서비스 중'}, '서비스 중')
+    copied('서비스 중')
+    refresh({'status': 'running', 'phase': 'DNS 연결 중'}, 'DNS 연결 중')
+    copied('DNS 연결 중')
+    assert page.locator('#p-service-connect').is_disabled()
+    assert page.locator('.service-diagnostic-row').count() == 1
+    state['error'] = '모의 조회 오류'
+    page.click('#p-service-refresh')
+    page.wait_for_function("document.querySelector('#p-service-status').textContent.includes('모의 조회 오류')")
+    copied('상태 확인 실패\n모의 조회 오류')
+    state['error'] = ''
+    refresh({'status': 'disconnected', 'managed': True}, '연결 해제')
+    copied('연결 해제')
+    # 저장 안내와 요청 실패에도 예전 진단이 남지 않는다.
+    page.fill('#p-domain', 'unsaved.example.com'); page.click('#p-service-connect')
+    copied('변경한 서비스 정보와 Local path를 먼저 저장해 주세요.')
+    assert state['posts'] == []
+    page.fill('#p-domain', 'app.example.com')
+    state['post_error'] = '모의 요청 실패'; page.click('#p-service-connect')
+    page.wait_for_function("document.querySelector('#p-service-status').textContent.includes('모의 요청 실패')")
+    copied('서비스 요청 실패\n모의 요청 실패')
+    state['post_error'] = ''; page.click('#p-service-connect')
+    page.wait_for_function("document.querySelector('#p-service-status').textContent === '연결 해제'")
+    page.click('#p-service-disconnect')
+    page.wait_for_function("document.querySelector('#p-service-status').textContent === '연결 해제'")
+    assert [p['action'] for p in state['posts']] == ['connect', 'connect', 'disconnect']
+    # 진행 요청의 응답을 기다리는 동안에도 시작 안내가 복사 원문이다.
+    page.unroute('**/api/projects/DIAG/service', handle)
+    pending = []
+    def hold(route):
+        if route.request.method == 'POST': pending.append(route)
+        else: route.fulfill(json={'managed': True})
+    page.route('**/api/projects/DIAG/service', hold)
+    for action, text in (('connect', '서비스 연결을 시작하고 있어요…'), ('disconnect', '연결 해제를 시작하고 있어요…')):
+        page.click('#p-service-' + action)
+        page.wait_for_function("text => document.querySelector('#p-service-status').textContent === text", arg=text)
+        copied(text)
+        pending.pop().fulfill(json={})
+        page.wait_for_function("document.querySelector('#p-service-status').textContent === '미연결'")
+    page.unroute('**/api/projects/DIAG/service', hold)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    # 임시 프로젝트가 다음 검사의 새 Issue 기본 프로젝트로 남지 않게 정리한다.
+    token = page.request.get(BASE + '/api/projects/DIAG/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/DIAG', headers=headers,
+                               data={'confirmation_token': token}).ok
+    page.emulate_media(color_scheme='light')
+    page.evaluate("localStorage.setItem('dev.theme','light');localStorage.removeItem('dev.project')")
+    page.goto(BASE + '/#/projects'); page.reload()
+    page.wait_for_selector('#project-filter')
+    page.wait_for_function("!projects.some(p => p.key === 'DIAG')")
+
+
 def check_project_audits(page, shots):
     """점검 탭의 전체 사용자 흐름을 모의 API로 격리해서 확인한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -2387,6 +2512,20 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--service-diagnostic-only' in sys.argv:
+            check_service_diagnostic(page, shots)
+            # 진단 검사 뒤 기존 NS 새 Issue 흐름의 프로젝트와 번호를 유지한다.
+            assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
+                                     data={'key': 'NS', 'name': 'nightshift'}).ok
+            page.reload(); page.wait_for_selector('#shell:not([hidden])')
+            page.goto(BASE + '/#/new'); page.wait_for_selector('#n-title')
+            assert page.input_value('#n-project') == 'NS'
+            page.fill('#n-title', '진단 검사 후 새 Issue')
+            page.click('#new-form button[type=submit]')
+            page.wait_for_selector("h1#title:text('진단 검사 후 새 Issue')")
+            assert page.url.endswith('#/issue/NS-1')
+            assert not errs, errs
+            print('OK: service diagnostic'); sys.exit(0)
         if '--fonts-only' in sys.argv:
             check_font_settings(page, shots)
             check_settings_navigation(page, shots)
@@ -2523,6 +2662,7 @@ try:
         check_project_flows(page, shots, answers, asked)
         check_project_documents(page, shots)
         check_project_usage(page, shots)
+        check_service_diagnostic(page, shots)
         check_project_audits(page, shots)
         check_auto_settings(page, shots)
         check_attachments(page, shots)

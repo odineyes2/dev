@@ -1449,7 +1449,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'documents', 'usage', 'audits'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '문서', '사용량', '목표 대비 현황 점검'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
     ${ed ? projectForm : ''}
     ${ed ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
-    ${ed && projectTab === 'manage' ? `<section class="panel project-service"><h3>서비스 연결</h3><p class="dim">도메인과 포트를 저장한 뒤 연결해 주세요. 앱의 /api/health가 200을 반환해야 해요. 연결하면 DNS·공용 터널을 반영하고 터널을 재시작해요.</p><div class="line"><button type="button" id="p-service-connect" disabled>서비스 연결</button><button type="button" id="p-service-disconnect" disabled>연결 해제</button><button type="button" id="p-service-refresh">새로고침</button></div><p id="p-service-status" role="status" aria-live="polite">연결 상태를 확인하고 있어요…</p><p class="dim">연결 해제는 터널 경로만 제거해요. 앱과 DNS 레코드는 유지해요. 도메인을 바꾸면 이전 DNS 레코드는 Cloudflare에서 정리해 주세요.</p></section>` : ''}
+    ${ed && projectTab === 'manage' ? `<section class="panel project-service"><h3>서비스 연결</h3><p class="dim">도메인과 포트를 저장한 뒤 연결해 주세요. 앱의 /api/health가 200을 반환해야 해요. 연결하면 DNS·공용 터널을 반영하고 터널을 재시작해요.</p><div class="line"><button type="button" id="p-service-connect" disabled>서비스 연결</button><button type="button" id="p-service-disconnect" disabled>연결 해제</button><button type="button" id="p-service-refresh">새로고침</button></div><section class="service-diagnostic" aria-labelledby="service-diagnostic-title"><div class="service-diagnostic-head"><h4 id="service-diagnostic-title">연결 진단</h4><button type="button" id="p-service-copy" aria-label="연결 진단 전체 내용 복사하기">복사하기</button></div><div id="p-service-status" role="status" aria-live="polite"></div><p id="p-service-copy-message" role="status" aria-live="polite" class="dim"></p><textarea id="p-service-copy-text" aria-label="직접 복사할 연결 진단 전체 내용" readonly hidden></textarea></section><p class="dim">연결 해제는 터널 경로만 제거해요. 앱과 DNS 레코드는 유지해요. 도메인을 바꾸면 이전 DNS 레코드는 Cloudflare에서 정리해 주세요.</p></section>` : ''}
     ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg><span>Codex로 문서 생성</span></button><button type="button" data-doc-provider="claude"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg><span>Claude로 문서 생성</span></button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'audits' ? `<section class="panel project-audits" aria-labelledby="audit-title"><div class="audit-toolbar"><h3 id="audit-title">목표 대비 현황 점검</h3><button type="button" id="audit-refresh">새로고침</button></div><p class="dim">기준 문서와 현재 코드·검사·Issue 이력을 비교해요. 후보 발행 후 Plan 승인과 Task 실행은 기존 절차를 따라요.</p><div class="audit-toolbar"><label>분석 도구 <select id="audit-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><button type="button" class="primary" id="audit-start" disabled>유료 점검 시작</button></div><div id="audit-preflight" aria-live="polite"></div><p id="audit-message" role="status" aria-live="polite"></p><div class="audit-layout"><section aria-labelledby="audit-history-title"><h4 id="audit-history-title">점검 이력</h4><div id="audit-history"></div></section><section id="audit-detail" aria-label="점검 보고서"></section></div></section>` : ''}
@@ -1479,6 +1479,49 @@ function renderProjects(editKey, projectTab = 'manage'){
   if(ed && projectTab === 'manage'){
     const section = view.querySelector('.project-service'), message = section.querySelector('#p-service-status');
     const connect = section.querySelector('#p-service-connect'), disconnect = section.querySelector('#p-service-disconnect');
+    const copy = section.querySelector('#p-service-copy'), feedback = section.querySelector('#p-service-copy-message');
+    const manual = section.querySelector('#p-service-copy-text');
+    let diagnosticText = '', diagnosticVersion = 0;
+    function paintDiagnostic(state = {}, notice = ''){
+      const label = notice || serviceLabel(state);
+      const rows = [label, state.phase !== label ? state.phase : '',
+        state.observed_port ? `로컬 포트 ${state.observed_port}` : '',
+        state.changed ? '저장한 도메인·포트는 아직 반영되지 않았어요.' : '',
+        state.error, state.setup_error, state.url].filter(Boolean);
+      diagnosticText = rows.join('\n'); diagnosticVersion++;
+      feedback.textContent = ''; manual.hidden = true; manual.value = diagnosticText;
+      message.replaceChildren();
+      rows.forEach((text, index) => {
+        const row = document.createElement('div'); row.className = 'service-diagnostic-row';
+        if(index === 0){
+          row.classList.add('status');
+          const color = state.status === 'running' ? 'in_progress' : state.online === true ? 'done' : state.online === false || state.error || state.setup_error ? 'changes_requested' : 'backlog';
+          row.style.setProperty('--sc', `var(--s-${color})`);
+        }
+        if(text === state.url){
+          // 외부 주소는 표시하되 HTTP(S) 링크만 활성화한다.
+          const link = document.createElement('a');
+          try { const url = new URL(text); if(['http:', 'https:'].includes(url.protocol)) link.href = url.href; } catch {}
+          link.target = '_blank'; link.rel = 'noopener'; link.textContent = text; row.append(link);
+        } else row.textContent = text;
+        message.append(row);
+      });
+    }
+    copy.onclick = async () => {
+      const version = diagnosticVersion, text = diagnosticText;
+      copy.disabled = true;
+      try{
+        if(!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+        await navigator.clipboard.writeText(text);
+        if(section.isConnected && version === diagnosticVersion) feedback.textContent = '복사했어요';
+      }catch{
+        if(section.isConnected && version === diagnosticVersion){
+          feedback.textContent = '복사하지 못했어요. 아래 내용을 선택해 직접 복사해 주세요.';
+          manual.hidden = false; manual.focus(); manual.select();
+        }
+      }finally{ copy.disabled = false; }
+    };
+    paintDiagnostic({}, '연결 상태를 확인하고 있어요…');
     let serviceBusy = false, serviceTimer;
     async function refreshService(){
       clearTimeout(serviceTimer);
@@ -1489,21 +1532,20 @@ function renderProjects(editKey, projectTab = 'manage'){
         connect.disabled = serviceBusy || !!ed.archived || !ed.service_domain || !ed.service_port || !!state.setup_error;
         disconnect.disabled = serviceBusy || !state.managed || !!state.setup_error;
         connect.textContent = serviceBusy ? '처리 중…' : (state.managed ? '연결 변경 반영' : '서비스 연결');
-        message.textContent = [serviceLabel(state), state.phase, state.observed_port ? `로컬 포트 ${state.observed_port}` : '', state.changed ? '저장한 도메인·포트는 아직 반영되지 않았어요.' : '', state.error, state.setup_error].filter(Boolean).join(' ');
+        paintDiagnostic(state);
         if(!ed.service_port && state.observed_port && !form.querySelector('#p-port').value) form.querySelector('#p-port').value = state.observed_port;
-        if(state.url){ const link = document.createElement('a'); link.href = state.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = state.url; message.append(' ', link); }
         if(serviceBusy) serviceTimer = setTimeout(() => { if(section.isConnected) refreshService(); }, 2000);
-      }catch(error){ if(section.isConnected){ message.textContent = error.message; if(serviceBusy) serviceTimer = setTimeout(() => { if(section.isConnected) refreshService(); }, 3000); } }
+      }catch(error){ if(section.isConnected){ paintDiagnostic({error:error.message}, '상태 확인 실패'); if(serviceBusy) serviceTimer = setTimeout(() => { if(section.isConnected) refreshService(); }, 3000); } }
     }
     async function serviceAction(action){
       if(serviceBusy) return;
       if(action === 'connect' && (form.querySelector('#p-domain').value.trim() !== ed.service_domain || Number(form.querySelector('#p-port').value || 0) !== ed.service_port || form.querySelector('#p-service-app').value.trim() !== ed.service_app || form.querySelector('#p-path').value !== ed.local_path)){
-        message.textContent = '변경한 서비스 정보와 Local path를 먼저 저장해 주세요.'; return;
+        paintDiagnostic({}, '변경한 서비스 정보와 Local path를 먼저 저장해 주세요.'); return;
       }
       serviceBusy = true; connect.disabled = disconnect.disabled = true;
-      message.textContent = action === 'connect' ? '서비스 연결을 시작하고 있어요…' : '연결 해제를 시작하고 있어요…';
+      paintDiagnostic({status:'running'}, action === 'connect' ? '서비스 연결을 시작하고 있어요…' : '연결 해제를 시작하고 있어요…');
       try{ await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/service`, {action}); }
-      catch(error){ if(section.isConnected){ message.textContent = error.message; connect.disabled = false; disconnect.disabled = false; } serviceBusy = false; return; }
+      catch(error){ if(section.isConnected){ paintDiagnostic({error:error.message}, '서비스 요청 실패'); connect.disabled = false; disconnect.disabled = false; } serviceBusy = false; return; }
       await refreshService();
     }
     connect.onclick = () => serviceAction('connect'); disconnect.onclick = () => serviceAction('disconnect');
