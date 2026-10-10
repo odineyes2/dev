@@ -411,6 +411,16 @@ async def api_create_project(request: Request):
     return issues.create_project(actor(request), b.get("key"), b.get("name"), b.get("repo_url", ""), b.get("local_path", ""), b.get("description", ""), b.get('service_domain', ''), b.get('service_port', 0), b.get('service_app', ''))
 
 
+@app.get('/api/projects/free-port')
+def project_free_port(request: Request):
+    import project_service
+    human_only(request)
+    try:
+        return JSONResponse({'port': project_service.find_free_port()}, headers={'Cache-Control': 'no-store'})
+    except issues.StoreError as error:
+        return JSONResponse({'detail': str(error)}, status_code=error.status, headers={'Cache-Control': 'no-store'})
+
+
 @app.get('/api/projects/{key}/service')
 def api_project_service(key: str):
     import project_service

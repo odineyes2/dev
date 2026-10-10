@@ -1,9 +1,11 @@
 """프로젝트 서비스 연결 — 공용 터널 변경은 서버에서 한 번에 하나씩 수행한다."""
 import hashlib
+import errno
 import os
 import re
 import shutil
 import sqlite3
+import socket
 import subprocess
 import tempfile
 import threading
@@ -17,6 +19,35 @@ import yaml
 import config
 import db
 import issues
+
+
+def find_free_port():
+    """등록 포트는 보관 여부와 무관하게 제외하고 루프백 TCP 후보만 검사한다."""
+    try:
+        with db.connect() as c:
+            reserved = {row[0] for row in c.execute(
+                'SELECT service_port FROM projects WHERE service_port > 0 '
+                'UNION SELECT port FROM project_services WHERE port > 0')}
+        reserved.add(config.PORT)
+        origin = urlsplit(config.NIGHTSHIFT_URL)
+        if origin.hostname in ('localhost', '127.0.0.1', '::1'):
+            reserved.add(origin.port or (443 if origin.scheme == 'https' else 80))
+        for port in range(8400, 9000):
+            if port in reserved:
+                continue
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+                    if os.name == 'nt' and hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+                        candidate.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                    candidate.bind(('127.0.0.1', port))
+                return port
+            except OSError as error:
+                if error.errno in (errno.EADDRINUSE, errno.EACCES) or getattr(error, 'winerror', None) in (10048, 10013):
+                    continue
+                raise
+    except (OSError, sqlite3.Error, ValueError):
+        raise issues.StoreError('빈 포트를 확인하지 못했어요. 직접 입력하거나 다시 시도해 주세요.', 503)
+    raise issues.StoreError('8400~8999에 빈 포트가 없어요. 다른 포트를 직접 입력해 주세요.', 503)
 
 
 def validate_fields(domain='', port=0, app=''):

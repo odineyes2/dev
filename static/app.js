@@ -1436,7 +1436,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       <label>Repository<input id="p-repo" placeholder="https://github.com/…" value="${esc(ed ? ed.repo_url : '')}"></label>
       <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
       <div class="project-description"><div class="line"><label>서비스 도메인<input id="p-domain" maxlength="253" placeholder="예: app.lomebrote.com" value="${esc(ed?.service_domain || '')}"></label>
-      <label>로컬 포트<input id="p-port" type="number" min="1" max="65535" step="1" placeholder="예: 8400" value="${ed?.service_port || ''}"></label>
+      <label class="project-port">로컬 포트<span class="project-port-controls"><input id="p-port" type="number" min="1" max="65535" step="1" placeholder="예: 8400" value="${ed?.service_port || ''}" aria-describedby="p-port-message"><button type="button" id="p-free-port">빈 포트</button></span><span id="p-port-message" role="status" aria-live="polite"></span></label>
       <label>PM2 앱 이름<input id="p-service-app" maxlength="80" placeholder="예: myapp (이미 실행 중이면 비워요)" value="${esc(ed?.service_app || '')}"></label></div><p class="dim">로컬 포트는 다른 서비스가 쓰지 않는 번호를 정하고 앱 실행 설정에도 같은 값을 사용해 주세요. 이 값을 저장해도 앱의 포트가 자동으로 바뀌지는 않아요.</p></div>
       <label class="project-description">프로젝트 설명<textarea id="p-description" maxlength="200000" placeholder="목적, 대상 사용자와 원하는 기능을 적어 주세요.">${esc(ed?.description || '')}</textarea></label>
       ${ed ? '<div class="project-description"><button type="button" id="p-description-request">현재 상태로 Description 작성</button><p id="p-description-status" role="status" aria-live="polite"></p></div>' : ''}
@@ -1461,6 +1461,35 @@ function renderProjects(editKey, projectTab = 'manage'){
       <tr class="project-create-row"><td colspan="6"><button type="button" id="project-add" title="프로젝트 추가" aria-label="프로젝트 추가"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button></td></tr></tbody></table><dialog id="project-dialog" aria-labelledby="project-create-title"><button type="button" id="project-close" title="닫기" aria-label="닫기"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>${projectForm}</dialog>` : ''}</div>`;
   const val = (s) => view.querySelector(s).value;
   const form = view.querySelector('#project-form');
+  const portInput = form.querySelector('#p-port'), freePort = form.querySelector('#p-free-port');
+  const portMessage = form.querySelector('#p-port-message');
+  let portTouched = false, portRevision = 0, portLookup = false;
+  const invalidatePort = () => { portTouched = true; portRevision++; portMessage.textContent = ''; };
+  portInput.addEventListener('input', invalidatePort);
+  portInput.addEventListener('change', invalidatePort);
+  freePort.onclick = async () => {
+    if(saving || portLookup) return;
+    portLookup = true; portTouched = true;
+    const revision = ++portRevision;
+    const locked = [...form.querySelectorAll('[type=submit], #p-initialize')].filter(el => !el.disabled);
+    locked.forEach(el => { el.disabled = true; });
+    freePort.disabled = true; freePort.textContent = '찾는 중…';
+    portMessage.textContent = '서버의 빈 포트를 확인하고 있어요…';
+    try{
+      const result = await api('GET', '/api/projects/free-port');
+      if(!form.isConnected || revision !== portRevision) return;
+      portInput.value = result.port;
+      portInput.dispatchEvent(new Event('input', {bubbles:true}));
+      portInput.dispatchEvent(new Event('change', {bubbles:true}));
+      portMessage.textContent = '빈 포트를 채웠어요. 저장해 주세요.';
+    }catch(error){
+      if(form.isConnected && revision === portRevision) portMessage.textContent = `${error.message} 직접 입력하거나 다시 시도해 주세요.`;
+    }finally{
+      portLookup = false;
+      freePort.disabled = saving; freePort.textContent = '빈 포트';
+      if(!saving) locked.forEach(el => { el.disabled = false; });
+    }
+  };
   function serviceLabel(state){
     if(state.status === 'running') return state.phase || '연결 중';
     if(state.online === true) return '서비스 중';
@@ -1533,7 +1562,7 @@ function renderProjects(editKey, projectTab = 'manage'){
         disconnect.disabled = serviceBusy || !state.managed || !!state.setup_error;
         connect.textContent = serviceBusy ? '처리 중…' : (state.managed ? '연결 변경 반영' : '서비스 연결');
         paintDiagnostic(state);
-        if(!ed.service_port && state.observed_port && !form.querySelector('#p-port').value) form.querySelector('#p-port').value = state.observed_port;
+        if(!ed.service_port && !portTouched && !portLookup && !saving && state.observed_port && !portInput.value) portInput.value = state.observed_port;
         if(serviceBusy) serviceTimer = setTimeout(() => { if(section.isConnected) refreshService(); }, 2000);
       }catch(error){ if(section.isConnected){ paintDiagnostic({error:error.message}, '상태 확인 실패'); if(serviceBusy) serviceTimer = setTimeout(() => { if(section.isConnected) refreshService(); }, 3000); } }
     }
@@ -1561,6 +1590,7 @@ function renderProjects(editKey, projectTab = 'manage'){
   const close = view.querySelector('#project-close');
   const closeCreation = () => {
     if(saving || !dialog?.open) return;
+    portRevision++; portTouched = false; portMessage.textContent = '';
     form.reset(); clearSuggestion(); initRequest = null;
     form.querySelectorAll('details').forEach(el => { el.open = false; });
     form.querySelector('#project-error').textContent = '';
@@ -1591,7 +1621,7 @@ function renderProjects(editKey, projectTab = 'manage'){
   };
   form.addEventListener('submit', async e => {
     e.preventDefault();
-    if(saving) return;
+    if(saving || portLookup) return;
     saving = true;
     const button = submitBtn(e), cancel = view.querySelector('#p-cancel');
     const original = button.textContent;
