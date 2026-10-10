@@ -190,3 +190,54 @@ with db.connect() as c:
     assert not c.execute('PRAGMA foreign_key_check').fetchall()
 db.config.DB_PATH = original_path
 print('OK lifecycle migration')
+
+# 점검 직전 판에서 기존 자료를 보존하고 FK·활성 점검·발행 매핑 제약을 검사한다.
+db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'audit-legacy.db'
+with sqlite3.connect(db.config.DB_PATH) as c:
+    audit_version = next(i for i, sql in enumerate(db.MIGRATIONS) if 'CREATE TABLE project_audits' in sql)
+    for version, sql in enumerate(db.MIGRATIONS[:audit_version], 1):
+        c.executescript(sql + f'PRAGMA user_version={version};')
+    c.execute("INSERT INTO projects(key,name,created_at) VALUES('AUD','점검',?)", (now,))
+    c.execute("INSERT INTO projects(key,name,created_at) VALUES('OTHER','다른 프로젝트',?)", (now,))
+    c.execute("INSERT INTO issues(project_id,number,title,reporter,created_at,updated_at) VALUES(1,1,'기존','human:admin',?,?)", (now,now))
+    c.execute("INSERT INTO issues(project_id,number,title,reporter,created_at,updated_at) VALUES(2,1,'다른 프로젝트','human:admin',?,?)", (now,now))
+    prior_issues = c.execute('SELECT * FROM issues').fetchall()
+assert db.init() == len(db.MIGRATIONS) and db.init() == len(db.MIGRATIONS)
+audit_insert = '''INSERT INTO project_audits(project_id,request_id,input_fingerprint,provider,actor,created_at,updated_at)
+    VALUES(?,?,'fingerprint','codex','human:admin',?,?)'''
+with db.connect() as c:
+    assert [tuple(r) for r in c.execute('SELECT * FROM issues')] == prior_issues
+    assert not c.execute('PRAGMA foreign_key_check').fetchall()
+    aid = c.execute(audit_insert, (1,'request',now,now)).lastrowid
+assert rejected(audit_insert, (999,'missing-project',now,now))
+assert rejected(audit_insert, (1,'other-active',now,now))
+assert rejected(audit_insert, (2,'request',now,now))
+assert rejected("UPDATE project_audits SET status='unknown' WHERE id=?", (aid,))
+assert rejected('DELETE FROM projects WHERE id=1')
+assert rejected("INSERT INTO project_audit_candidates VALUES(?,2,'c','new_work','hash','{}')", (aid,))
+with db.connect() as c:
+    c.execute("INSERT INTO project_audit_requirements VALUES(?,'r','partial','{}')", (aid,))
+    c.execute("INSERT INTO project_audit_candidates VALUES(?,1,'c','new_work','hash','{}')", (aid,))
+assert rejected("INSERT INTO project_audit_requirements VALUES(?,'r','missing','{}')", (aid,))
+assert rejected("INSERT INTO project_audit_candidates VALUES(?,1,'c','new_work','hash','{}')", (aid,))
+assert rejected("INSERT INTO project_audit_publications VALUES(?,'c',1,2,'OTHER-1',?)", (aid,now))
+assert rejected("INSERT INTO project_audit_publications VALUES(?,'c',2,2,'OTHER-1',?)", (aid,now))
+with db.connect() as c:
+    c.execute("INSERT INTO project_audit_publications VALUES(?,'c',1,1,'AUD-1',?)", (aid,now))
+assert rejected("INSERT INTO project_audit_publications VALUES(?,'c',1,1,'AUD-1',?)", (aid,now))
+assert rejected('UPDATE project_audit_publications SET issue_id=2 WHERE audit_id=?', (aid,))
+with db.connect() as c:
+    c.execute('DELETE FROM issues WHERE id=1')
+    publication = c.execute('SELECT * FROM project_audit_publications WHERE audit_id=?', (aid,)).fetchone()
+    assert publication['issue_id'] is None and publication['issue_ref'] == 'AUD-1'
+    c.execute("UPDATE project_audits SET status='complete' WHERE id=?", (aid,))
+    newer = c.execute(audit_insert, (1,'new-request',now,now)).lastrowid
+    c.execute("UPDATE project_audits SET status='cancelling' WHERE id=?", (newer,))
+assert rejected(audit_insert, (1,'cancel-not-finished',now,now))
+assert rejected('DELETE FROM project_audit_candidates WHERE audit_id=?', (aid,))
+with db.connect() as c:
+    c.execute("UPDATE project_audits SET status='cancelled' WHERE id=?", (newer,))
+    c.execute(audit_insert, (1,'after-cancel',now,now))
+    assert not c.execute('PRAGMA foreign_key_check').fetchall()
+db.config.DB_PATH = original_path
+print('OK project audit migration')

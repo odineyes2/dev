@@ -370,7 +370,9 @@ class InitializationTest(unittest.TestCase):
     def test_legacy_deleted_goal_is_recovered(self):
         old = config.DATA_DIR / 'legacy.db'
         with sqlite3.connect(old) as c:
-            for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+            # 이후 마이그레이션이 추가되어도 목표 Issue 종료 직전 스키마를 사용한다.
+            retirement = next(i for i, sql in enumerate(db.MIGRATIONS) if 'CREATE TEMP TABLE retired_initialization_goals' in sql)
+            for version, sql in enumerate(db.MIGRATIONS[:retirement], 1):
                 c.executescript(sql + f'PRAGMA user_version={version};')
             now = db.now_iso()
             c.execute("INSERT INTO projects(key,name,created_at) VALUES('OLD','오타',?)", (now,))
@@ -385,7 +387,8 @@ class InitializationTest(unittest.TestCase):
     def test_legacy_goal_is_retired_without_losing_history_or_development_numbers(self):
         old = config.DATA_DIR / 'legacy-goal.db'
         with sqlite3.connect(old) as c:
-            for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+            retirement = next(i for i, sql in enumerate(db.MIGRATIONS) if 'CREATE TEMP TABLE retired_initialization_goals' in sql)
+            for version, sql in enumerate(db.MIGRATIONS[:retirement], 1):
                 c.executescript(sql + f'PRAGMA user_version={version};')
         c.close()
         with patch.object(config, 'DB_PATH', old):
