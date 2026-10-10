@@ -6,7 +6,148 @@ import json
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
-from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP
+from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
+
+
+def check_project_audits(page, shots):
+    """점검 탭의 전체 사용자 흐름을 모의 API로 격리해서 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    response = page.request.post(BASE + '/api/projects', headers=headers, data={'key':'AUDIT', 'name':'목표 점검 검사'})
+    assert response.ok
+    issue = page.request.post(BASE + '/api/issues', headers=headers, data={'project':'AUDIT', 'title':'기존 작업'}).json()
+    state, handler = mock_audits(page, 'AUDIT')
+    route = BASE + '/#/projects?project=AUDIT&tab=audits'
+
+    def open_screen(rows=None):
+        if rows is not None:
+            state['audits'] = rows
+        page.goto(BASE); page.reload()
+        page.wait_for_selector('#project-filter option[value="AUDIT"]', state='attached')
+        page.wait_for_selector('#view .empty, #view .issues')
+        page.goto(route)
+        try:
+            page.wait_for_selector('#audit-preflight .audit-meta', timeout=10000)
+        except Exception:
+            print('audit route:', page.url, 'view:', page.inner_text('#view'))
+            raise
+        if state['audits']:
+            page.wait_for_selector('#audit-report-title')
+
+    def refresh():
+        page.click('#audit-refresh')
+        page.wait_for_function('!document.querySelector("#audit-refresh").disabled')
+
+    def posts(suffix):
+        return [r for r in state['requests'] if r[0] == 'POST' and r[1] == suffix]
+
+    open_screen([])
+    assert '금액 상한을 강제할 수 없어요' in page.inner_text('#audit-preflight')
+    assert '20분' in page.inner_text('#audit-preflight')
+    page.select_option('#audit-provider', 'claude')
+    page.wait_for_function('document.querySelector("#audit-preflight").textContent.includes("비용 상한 $2")')
+    assert 'claude-opus-5-5' in page.inner_text('#audit-preflight')
+    assert '대기 중 작업 1개' in page.inner_text('#audit-preflight')
+    for reason in ('초기 생성 중이에요.', '검토 중이에요.', '실행 중이에요.', '병합·운영 반영 중이에요.'):
+        state['blocked'] = reason; refresh()
+        assert page.locator('#audit-start').is_disabled()
+        assert reason in page.inner_text('#audit-preflight')
+    state['blocked'] = ''; state['available'] = False; refresh()
+    assert page.locator('#audit-start').is_disabled()
+    state['available'] = True; refresh()
+    # 전송 실패 재요청은 같은 request_id와 적용 모델을 유지한다.
+    state['start_lost'] = True
+    page.click('#audit-start')
+    page.wait_for_function('document.querySelector("#audit-start").textContent.includes("다시 보내기")')
+    first = posts('')[-1][2]
+    assert first['model'] == 'claude-opus-5-5'
+    page.locator('#audit-start').evaluate('b => {b.click();b.click()}')
+    page.wait_for_selector('#audit-cancel')
+    assert posts('')[-1][2] == first and len(posts('')) == 2
+    assert page.locator('#audit-start').is_disabled()
+    # 진행을 주기적으로 읽고 취소 중에도 점유와 버튼을 유지한다.
+    state['audits'][0]['phase'] = '모의 분석 진행 중이에요'
+    page.wait_for_function('document.querySelector("#audit-detail").textContent.includes("모의 분석 진행 중")', timeout=7000)
+    state['cancel_pending'] = True; page.click('#audit-cancel')
+    page.wait_for_function('document.querySelector("#audit-cancel")?.textContent.includes("취소 중")')
+    assert page.locator('#audit-cancel').is_disabled()
+    state['audits'][0]['status'] = 'cancelled'; refresh()
+    assert '취소됨' in page.inner_text('#audit-detail')
+    assert page.locator('#audit-start').is_enabled()
+    for status in ('failed', 'timeout'):
+        open_screen([audit_fixture(status)])
+        assert '분석을 완료하지 못했어요' in page.inner_text('#audit-detail')
+        assert page.locator('#audit-start').is_enabled()
+    # 근거 부족·차이 없음에서는 후보를 억지로 생성하지 않는다.
+    for variant in ('empty', 'insufficient', 'stale', 'confirmation'):
+        open_screen([audit_fixture(variant=variant)])
+        if variant in ('empty', 'insufficient'):
+            assert '후속 후보가 없어요' in page.inner_text('#audit-detail')
+            assert page.locator('[data-candidate-id]').count() == 0
+        if variant == 'stale':
+            assert '오래된 결과예요' in page.inner_text('#audit-detail')
+            assert page.locator('#audit-publish').is_disabled()
+        if variant == 'confirmation':
+            assert page.locator('[data-candidate="c1"] input').count() == 0
+            assert '사람 확인 필요' in page.inner_text('[data-candidate="c1"]')
+    # 보고서·Plan의 내용을 HTML로 실행하지 않는다.
+    row = audit_fixture()
+    row['report']['summary'] += '<img src=x onerror="window.auditXSS=1">'
+    row['report']['candidates'][0]['plan_draft'] += '\n<script>window.auditXSS=1</script>'
+    open_screen([row, audit_fixture('failed', audit_id=2)])
+    assert page.locator('[data-candidate-id]').count() == 2
+    assert page.locator('[data-candidate="c3"] input').count() == 0
+    page.locator('.audit-materials summary').click()
+    assert 'USER_GUIDE.md' in page.inner_text('.audit-materials')
+    assert 'static/app.js' in page.inner_text('#audit-detail')
+    page.locator('[data-candidate="c1"] summary').click()
+    assert '<script>' in page.inner_text('[data-candidate="c1"] pre')
+    assert page.evaluate('window.auditXSS') is None
+    page.locator('[data-audit-id="2"]').focus(); page.keyboard.press('Enter')
+    page.wait_for_function('document.querySelector("#audit-report-title")?.textContent.includes("#2")')
+    assert page.locator('#audit-report-title').evaluate('e => e === document.activeElement')
+    page.click('[data-audit-id="1"]'); page.wait_for_selector('[data-candidate-id="c1"]')
+    # 모바일/테마에서도 키보드로 후보를 선택하고 터치 영역·가로 넘침을 확인한다.
+    for scheme in ('light', 'dark'):
+        page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}', scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width':width, 'height':850})
+            page.locator('[data-candidate-id="c1"]').focus(); page.keyboard.press('Space')
+            page.keyboard.press('Space')
+            page.evaluate('window.scrollTo(0, 0)')
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            assert page.locator('.audit-choice').first.bounding_box()['height'] >= 40
+            page.screenshot(path=str(shots / f'audit_report_{scheme}_{width}.png'), full_page=True)
+    # 여러 후보 발행의 충돌은 선택을 보존하고 이유와 재점검을 안내한다.
+    page.check('[data-candidate-id="c1"]'); page.check('[data-candidate-id="c2"]')
+    state['publish_error'] = '기존 Issue와 구현 범위가 겹쳐요.'
+    page.click('#audit-publish')
+    page.wait_for_function('document.querySelector("#audit-message").textContent.includes("겹쳐요")')
+    page.wait_for_function('!document.querySelector("#audit-refresh").disabled')
+    assert page.locator('[data-candidate-id="c1"]').is_checked()
+    assert page.locator('[data-candidate-id="c2"]').is_checked()
+    state['publish_error'] = ''
+    # 서버 성공 후 응답 유실이어도 최신 보고서의 발행 링크를 읽는다.
+    state['publish_lost'] = True
+    page.locator('#audit-publish').evaluate('b => {b.click();b.click()}')
+    page.wait_for_function('document.querySelector("[data-candidate=c1]")?.textContent.includes("발행한 Issue")')
+    assert len(posts('/1/publish')) == 2
+    assert set(posts('/1/publish')[-1][2]['candidate_ids']) == {'c1','c2'}
+    assert page.locator('[data-candidate-id]').count() == 0
+    # 완료 링크는 실제 hash 라우팅으로 Issue 화면에 연결된다.
+    state['audits'][0]['publications'][0]['issue_ref'] = issue['ref']; refresh()
+    page.locator('[data-candidate="c1"] a').filter(has_text=issue['ref']).click()
+    page.wait_for_selector('h1#title')
+    assert page.inner_text('h1#title') == '기존 작업'
+    page.unroute('**/api/projects/AUDIT/audits**', handler)
+    # 뒤의 새 Issue 검사가 임시 AUDIT 프로젝트를 기본값으로 고르지 않게 정리한다.
+    token = page.request.get(BASE + '/api/projects/AUDIT/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/AUDIT', headers=headers,
+                               data={'confirmation_token': token}).ok
+    page.goto(BASE + '/#/projects'); page.reload()
+    page.wait_for_selector('#project-create')
+    assert page.locator('[data-edit="AUDIT"]').count() == 0
+    page.set_viewport_size({'width':1300, 'height':850})
 
 
 def check_attachments(page, shots):
@@ -2042,6 +2183,20 @@ try:
             check_project_usage(page, shots)
             assert not errs, errs
             print('OK: project usage'); sys.exit(0)
+        if '--audits-only' in sys.argv:
+            check_project_audits(page, shots)
+            # 전체 흐름에서 점검 검사 다음에 생성하는 첫 NS Issue의 프로젝트·번호를 유지한다.
+            assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
+                                     data={'key': 'NS', 'name': '점검 이후 발행 검사'}).ok
+            page.reload(); page.wait_for_selector('[data-edit="NS"]')
+            page.click('a[href="#/new"]'); page.wait_for_selector('#new-form')
+            assert page.input_value('#n-project') == 'NS'
+            page.fill('#n-title', '점검 이후 첫 Issue')
+            page.click('#new-form button[type=submit]')
+            page.wait_for_selector('h1#title:text("점검 이후 첫 Issue")')
+            assert page.url.endswith('#/issue/NS-1')
+            assert not errs, errs
+            print('OK: project audits'); sys.exit(0)
         if '--attachments-only' in sys.argv:
             check_attachments(page, shots)
             assert not errs, errs
@@ -2097,6 +2252,7 @@ try:
         check_project_flows(page, shots, answers, asked)
         check_project_documents(page, shots)
         check_project_usage(page, shots)
+        check_project_audits(page, shots)
         check_auto_settings(page, shots)
         check_attachments(page, shots)
         check_published_notice(page, shots)
