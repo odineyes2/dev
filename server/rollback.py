@@ -73,6 +73,9 @@ def terminal_change(actor, ref, rejecting):
 
 def prepare(c, actor, root, rows, note):
     """운영 사본은 검사 성공 전까지 건드리지 않는다. 반환값이 있으면 배포 확인이 남았다."""
+    import project_activity
+    if project_activity.audit_active(c, root['project_key']):
+        raise RollbackError('프로젝트 점검이 끝난 뒤 다시 거절해 주세요.', 409)
     for record in _records():
         if record['ref'] == root['ref'] and record['phase'] not in ('complete', 'failed'):
             return record
@@ -88,6 +91,8 @@ def prepare(c, actor, root, rows, note):
     merges = active_merges(repo, refs)
     if not merges:
         return None
+    if project_activity.audit_active(c):
+        raise RollbackError('프로젝트 점검이 끝난 뒤 다시 거절해 주세요.', 409)
     if orchestrate._git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip() != orchestrate.BASE_BRANCH:
         raise RollbackError('기준 브랜치가 아니라 롤백하지 않았어요.', 409)
     if orchestrate._git(repo, 'status', '--porcelain', '--untracked-files=no').stdout.strip():

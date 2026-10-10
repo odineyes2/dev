@@ -97,7 +97,8 @@ def _active_lanes(c) -> set[tuple]:
     lanes = {(r["key"], r["mode"]) for r in c.execute(
         "SELECT p.key, r.mode FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id WHERE r.status='running'")}
     lanes |= {(m["ref"].split("-")[0], "execute") for m in _pending_merges(c)}
-    return lanes | {lane for lane, n in _threads.items() if n and lane}
+    import project_activity
+    return lanes | project_activity.lanes(c) | {lane for lane, n in _threads.items() if n and lane}
 
 
 def busy() -> bool:
@@ -109,10 +110,22 @@ def busy() -> bool:
 def start_block(c, project_key: str, mode: str) -> str | None:
     """이 줄에서 지금 새로 시작하면 안 되는 이유. 없으면 None."""
     import orchestrate
+    import project_activity
+    import rollback
+    if any(r['project_key'] == project_key or
+           orchestrate.settings(r['project_key']).get('pm2_app') == SELF_PM2_APP
+           for r in rollback._records() if r['phase'] not in ('complete', 'failed')):
+        return '롤백·운영 반영이 끝나면 시작해요.'
+    if project_activity.audit_active(c, project_key):
+        return '프로젝트 목표 대비 점검이 진행 중이에요. 끝난 뒤 시작해 주세요.'
     for m in _pending_merges(c):
         if orchestrate.settings(m["ref"].split("-")[0]).get("pm2_app") == SELF_PM2_APP:
             return f"{m['ref']} 병합 뒤 dev 재시작을 기다려요 — 재시작하면 도는 작업이 모두 끊겨서 그동안은 새로 시작하지 않아요."
     lanes = _active_lanes(c)
+    if (project_key, 'initialization') in lanes and mode != 'initialization':
+        return '프로젝트 초기 생성이 끝나면 시작해요.'
+    if mode in ('audit', 'initialization') and any(lane[0] == project_key for lane in lanes):
+        return '프로젝트 작업이 끝난 뒤 시작해 주세요.'
     if (project_key, mode) in lanes:
         merging = next((m["ref"] for m in _pending_merges(c) if mode == "execute" and m["ref"].split("-")[0] == project_key), None)
         if merging:

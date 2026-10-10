@@ -71,6 +71,9 @@ def _busy(cfg, exclude_run: int | None = None) -> bool:
     # 다른 병합은 기다리지 않는다: 병합은 _lock으로 줄 서 있어 기다리면 교착이고, 끊겨도 재시작 뒤 recover가 이어받는다.
     if cfg.get("pm2_app") == jobs.SELF_PM2_APP:
         with db.connect() as c:
+            import project_activity
+            if project_activity.lanes(c):
+                return True
             if c.execute("SELECT 1 FROM runs WHERE status='running' AND id<>?", (exclude_run or 0,)).fetchone():
                 return True
     if not cfg.get("busy_url"):
@@ -317,6 +320,9 @@ def retry_merge(actor, ref):
         with db.connect() as c:
             c.execute('BEGIN IMMEDIATE')
             row = issues._find(c, ref)
+            import project_activity
+            if project_activity.audit_active(c, row['project_key']):
+                raise issues.StoreError('프로젝트 점검이 끝난 뒤 병합을 다시 시도해 주세요.', 409)
             current = c.execute('SELECT * FROM execution_completion WHERE run_id=?', (record['run_id'],)).fetchone()
             latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (row['id'],)).fetchone()[0]
             result = c.execute('SELECT plan_version FROM task_execution_results WHERE run_id=?', (record['run_id'],)).fetchone()

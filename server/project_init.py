@@ -161,6 +161,9 @@ def retry(actor, key):
             raise issues.StoreError('생성 요청을 찾을 수 없어요.', 404)
         if row['status'] != 'failed':
             raise issues.StoreError('실패한 생성 요청만 재시도할 수 있어요.', 409)
+        import project_activity
+        if project_activity.audit_active(c, str(key).upper()):
+            raise issues.StoreError('프로젝트 점검이 끝난 뒤 다시 생성해 주세요.', 409)
         c.execute("UPDATE project_initializations SET status='queued',error='',updated_at=? WHERE project_id=?", (db.now_iso(), row['project_id']))
     start(str(key).upper())
     return status(key)
@@ -301,7 +304,8 @@ def validate(result, root):
 
 
 def _git(path, *args):
-    r = subprocess.run(['git', '-c', 'core.hooksPath=' + os.devnull, '-c', 'commit.gpgsign=false', *args], cwd=path, capture_output=True, timeout=30, text=True, encoding='utf-8', errors='replace')
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith('GIT_')}
+    r = subprocess.run(['git', '-c', 'core.hooksPath=' + os.devnull, '-c', 'commit.gpgsign=false', *args], cwd=path, capture_output=True, timeout=30, text=True, encoding='utf-8', errors='replace', env=env)
     if r.returncode:
         raise issues.StoreError('Git 초기화에 실패했어요. Git 설치와 폴더 권한을 확인해 주세요.', 409)
     return r.stdout.strip()
@@ -390,6 +394,12 @@ def _run(key):
     try:
         row = get(key)
         with db.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            import jobs
+            block = jobs.start_block(c, key, 'initialization')
+            if block:
+                c.execute("UPDATE project_initializations SET status='failed',error=?,updated_at=? WHERE request_id=? AND status='queued'", (block, db.now_iso(), row['request_id']))
+                return
             changed = c.execute("UPDATE project_initializations SET status='running',phase='기획서 분석 중',updated_at=? WHERE request_id=? AND status='queued'", (db.now_iso(), row['request_id'])).rowcount
         if not changed:
             return
