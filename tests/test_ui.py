@@ -150,6 +150,64 @@ def check_project_audits(page, shots):
     page.set_viewport_size({'width':1300, 'height':850})
 
 
+def check_management_agents(page, shots):
+    """실행 Agent 추가와 변경 후에도 탭과 일회성 키를 보존한다."""
+    page.goto(BASE + '/#/agents?tab=execution'); page.wait_for_selector('#agent-form')
+    page.select_option('#a-vendor', 'openai')
+    page.select_option('#a-model', 'gpt-6.1-sol')
+    page.fill('#a-name', 'management-worker'); page.click('#agent-form button')
+    page.wait_for_selector('#key')
+    key = page.inner_text('#key')
+    agent = next(a for a in page.request.get(BASE + '/api/agents').json()['agents'] if a['name'] == 'management-worker')
+    page.select_option(f'[data-model="{agent["id"]}"]', 'gpt-6-luna')
+    page.wait_for_function('(id) => document.querySelector(`[data-model="${id}"]`)?.value === "gpt-6-luna"', arg=agent['id'])
+    assert page.inner_text('#key') == key
+    page.click(f'[data-toggle="{agent["id"]}"]')
+    page.wait_for_function('(id) => document.querySelector(`[data-toggle="${id}"]`)?.getAttribute("aria-checked") === "false"', arg=agent['id'])
+    assert page.inner_text('#key') == key and page.url.endswith('tab=execution')
+    page.click('[data-agent-tab=chat]'); page.wait_for_selector('#chat-form')
+    assert page.inner_text('#key') == key
+    page.click('[data-agent-tab=execution]'); page.wait_for_selector('#agent-form')
+    page.goto(BASE + '/#/'); page.wait_for_selector('#project-filter')
+    page.goto(BASE + '/#/agents'); page.wait_for_selector('#agent-form')
+    assert page.locator('#key').count() == 0
+    check_chat_connections(page, shots)
+
+
+def check_management_layout(page, shots):
+    """바뀐 관리 화면만 네 환경에서 캡처하고 탭 주소와 공통 구조를 확인한다."""
+    assert page.locator('[data-nav=board]').count() == 0
+    page.goto(BASE + '/#/board'); page.wait_for_selector('.kanban')
+    r = page.request.post(BASE + '/api/projects', headers={'X-Requested-With':'dev'}, data={'key':'LAYOUT', 'name':'관리 화면 확인'})
+    assert r.ok
+    page.reload(); page.wait_for_selector('#shell:not([hidden])')
+    routes = ['agents?tab=execution', 'agents?tab=chat', 'projects']
+    routes += ['projects?project=LAYOUT&tab=' + t for t in ('manage','documents','usage','audits')]
+    routes += ['settings/' + t for t in ('auto','types','regression')]
+    for route in routes:
+        page.goto(BASE + '/#/' + route)
+        page.wait_for_selector('.management-card .management-header')
+        page.wait_for_function("!document.querySelector('#view [aria-busy=true]')")
+        page.wait_for_function('document.getElementById("toast").hidden')
+        assert page.locator('.management-header [aria-current=page]').count() == 1
+        active = page.locator('.management-header [aria-current=page]')
+        active.focus()
+        assert active.evaluate('e => e === document.activeElement')
+        for theme in ('light','dark'):
+            for width in (1300,390):
+                page.set_viewport_size({'width':width,'height':850})
+                page.evaluate('t => document.documentElement.dataset.theme=t', theme)
+                page.wait_for_timeout(150)
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), route
+                name = route.replace('?','-').replace('&','-').replace('=','-').replace('/','-')
+                page.screenshot(path=str(shots / f'management-{name}-{theme}-{width}.png'), full_page=True)
+    page.goto(BASE + '/#/agents?tab=chat'); page.wait_for_selector('#chat-form')
+    page.reload(); page.wait_for_selector('#chat-form')
+    page.click('[data-agent-tab=execution]'); page.wait_for_selector('#agent-form')
+    page.go_back(); page.wait_for_selector('#chat-form')
+    page.go_forward(); page.wait_for_selector('#agent-form')
+
+
 def check_attachments(page, shots):
     """혼합 첨부·실패 재시도·취소·미리보기와 네 화면을 확인한다."""
     import base64, io, wave
@@ -598,7 +656,7 @@ def check_settings_navigation(page, shots):
         assert page.locator('#settings-nav a').count() == 3
         assert page.locator('#view > .panel #settings-nav').is_visible()
         assert page.locator('#shell > #settings-nav').count() == 0
-        assert page.locator('#view > .panel > h2').text_content() == 'Settings'
+        assert page.locator('#view > .panel > .management-header > h2').text_content() == 'Settings'
 
     page.goto(BASE + '/#/settings'); selected('auto', '#settings-body .empty')
     assert page.url.endswith('/#/settings/auto')
@@ -1041,7 +1099,7 @@ def check_project_usage(page, shots):
     page.wait_for_selector('#usage-body[aria-busy="false"]')
     pending.pop().fulfill(status=401, json={'detail': '이전 화면 응답'})
     page.wait_for_timeout(100)
-    assert page.locator('#shell').is_visible() and '빈 프로젝트' in page.inner_text('.project-scope')
+    assert page.locator('#shell').is_visible() and '빈 프로젝트' in page.inner_text('.management-header')
     page.unroute('**/api/projects/USAGE/usage?*', hold)
     def fail(route): route.fulfill(status=500, json={'detail': '임시 실패'})
     page.route('**/api/projects/USAGE/usage?*', fail)
@@ -2070,7 +2128,7 @@ def check_chat_connections(page, shots):
     catalog = page.request.get(BASE + '/api/model-catalog').json()['vendors'][0]
     worker = post('/api/agents', {'name': 'chat-ui-worker', 'vendor': catalog['vendor'], 'model': catalog['models'][0]['id']})['agent']
     issue = post('/api/issues', {'project': 'CHATUI', 'title': 'Chat 선택 검사', 'assignee_agent_id': worker['id']})
-    page.goto(BASE + '/#/agents'); page.wait_for_selector('#chat-form')
+    page.goto(BASE + '/#/agents?tab=chat'); page.wait_for_selector('#chat-form')
     page.fill('#chat-name', 'chat-ui-connection'); page.click('#chat-form button')
     page.wait_for_selector('#key')
     chat = next(a for a in page.request.get(BASE + '/api/agents').json()['agents'] if a['name'] == 'chat-ui-connection')
@@ -2083,11 +2141,13 @@ def check_chat_connections(page, shots):
     page.wait_for_function('(old) => document.querySelector("#key")?.textContent && !document.querySelector("#key").textContent.startsWith(old)', arg=old_prefix)
     page.locator(f'[data-toggle="{chat["id"]}"]').click()
     page.wait_for_function('(id) => document.querySelector(`[data-toggle="${id}"]`).getAttribute("aria-checked") === "false"', arg=chat['id'])
+    page.click('[data-agent-tab=execution]'); page.wait_for_selector('#agent-form')
     page.locator(f'[data-move-kind="chat"][data-id="{worker["id"]}"]').click()
     page.wait_for_selector(f'#chat-connections [data-agent="{worker["id"]}"]')
     assert page.request.get(BASE + '/api/issues/' + issue['ref']).json()['assignee_agent_id'] is None
     page.locator(f'[data-move-kind="agent"][data-id="{worker["id"]}"]').click()
     page.wait_for_selector(f'#execution-agents [data-agent="{worker["id"]}"]')
+    page.click('[data-agent-tab=chat]'); page.wait_for_selector('#chat-form')
     # 이름만으로 만든 Chat도 Agent로 옮기고 기존 모델 선택 UI에서 설정할 수 있다.
     page.locator(f'[data-move-kind="agent"][data-id="{chat["id"]}"]').click()
     page.wait_for_selector(f'#execution-agents [data-agent="{chat["id"]}"]')
@@ -2163,6 +2223,35 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--management-agents-only' in sys.argv:
+            check_management_agents(page, shots)
+            assert not errs, errs
+            print('OK: management agents'); sys.exit(0)
+        if '--management-layout-only' in sys.argv:
+            check_management_layout(page, shots)
+            assert not errs, errs
+            print('OK: management layout'); sys.exit(0)
+        if '--management-projects-only' in sys.argv:
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+            check_project_dialog(page, shots)
+            check_project_documents(page, shots)
+            check_project_usage(page, shots)
+            check_project_audits(page, shots)
+            assert not errs, errs
+            print('OK: management projects'); sys.exit(0)
+        if '--management-only' in sys.argv:
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+            check_project_dialog(page, shots)
+            check_management_layout(page, shots)
+            check_management_agents(page, shots)
+            check_settings_navigation(page, shots)
+            check_auto_settings(page, shots)
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+            check_project_documents(page, shots)
+            check_project_usage(page, shots)
+            check_project_audits(page, shots)
+            assert not errs, errs
+            print('OK: management UI'); sys.exit(0)
         if '--new-issue-fields-only' in sys.argv:
             check_new_issue_fields(page)
             assert not errs, errs
@@ -2375,7 +2464,7 @@ try:
         page.emulate_media(color_scheme="light"); page.set_viewport_size({"width": 1300, "height": 850})
 
         # 칸반 — 끌어서 상태 바꾸기
-        page.click("[data-nav=board]")
+        page.goto(BASE + "/#/board")
         page.wait_for_selector('.card[data-ref="NS-1-1"]')
         # 대기열 열(DEV-92)에 가려 in_progress 열은 왼쪽 끝만 보인다(main 최대 1320px) — 보이는 왼쪽 끝에 놓는다
         page.drag_and_drop('.card[data-ref="NS-1-1"]', '.col[data-col="in_progress"] .cards', target_position={"x": 20, "y": 20})
@@ -2469,9 +2558,9 @@ try:
         assert page.inner_text("#user-chip-name") == "admin"
         page.goto(BASE + "/#/"); page.wait_for_selector("tr.row")
         assert page.get_attribute('[data-nav="issues"]', "class") == "tab-btn active"
-        label_w = lambda: page.evaluate("document.querySelector('[data-nav=board] .tab-label').getBoundingClientRect().width")
+        label_w = lambda: page.evaluate("document.querySelector('[data-nav=projects] .tab-label').getBoundingClientRect().width")
         assert label_w() < 1
-        page.hover('[data-nav="board"]'); page.wait_for_timeout(400)
+        page.hover('[data-nav="projects"]'); page.wait_for_timeout(400)
         assert label_w() > 20
         page.screenshot(path=str(shots / "header.png"), clip={"x": 0, "y": 0, "width": 1300, "height": 160})
         # 사용자 칩 → 메뉴 → 바깥 누르면 닫힘
@@ -2873,7 +2962,8 @@ try:
 
         check_progress_refresh(page, shots)
         # 로그아웃(사용자 메뉴 안)
-        check_chat_connections(page, shots)
+        check_management_agents(page, shots)
+        check_management_layout(page, shots)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert page.locator('#open-jupyter').get_attribute('hidden') is not None
         assert not errs, errs

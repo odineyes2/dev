@@ -222,6 +222,7 @@ async function route(){
     history.replaceState(null, '', '#/' + h + (location.hash.includes('?') ? '?' + location.hash.split('?')[1] : ''));
   }
   const [name, arg] = h.split('/');
+  if(name !== 'agents') agentNewKey = null;
   const settingsTab = name === 'settings' ? (arg || 'auto') : null;
   const t0 = performance.now();
   perf.fetchMs = 0; perf.server = '';
@@ -1313,8 +1314,25 @@ composer.addEventListener('submit', async (e) => {
 });
 
 // ---- 에이전트 ----
-async function renderAgents(newKey){
+let agentNewKey = null;
+function managementHeader(title, tabs, back = ''){
+  const header = document.getElementById('management-header').content.cloneNode(true);
+  header.querySelector('h2').textContent = title;
+  header.querySelector('nav').innerHTML = tabs;
+  if(back) header.querySelector('h2').insertAdjacentHTML('beforebegin', back);
+  const container = document.createElement('div');
+  container.append(header);
+  return container.innerHTML;
+}
+async function renderAgents(newKey, selectedTab){
+  if(newKey) agentNewKey = newKey;
+  newKey = agentNewKey;
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const tab = selectedTab || (params.get('tab') === 'chat' ? 'chat' : 'execution');
+  const hash = `#/agents?tab=${tab}`;
+  history.replaceState(null, '', hash);
   const [list, catalog] = await Promise.all([loadAgents(), api('GET', '/api/model-catalog')]);
+  if(location.hash !== hash) return;
   const executionAgents = list.filter(a => a.kind === 'agent'), chats = list.filter(a => a.kind === 'chat');
   const vendorOf = (id) => catalog.vendors.find(v => v.vendor === id);
   const inCatalog = (a) => !!vendorOf(a.vendor)?.models.some(m => m.id === a.model);
@@ -1324,10 +1342,11 @@ async function renderAgents(newKey){
   // 목록 밖 Agent는 지금 값을 고를 수 없는 첫 항목으로 보여 주고, 드롭다운으로 다시 고르면 목록 안으로 들어간다
   const outside = (label) => `<option value="" selected disabled>${esc(label || '—')} (목록 밖)</option>`;
   const first = catalog.vendors[0]?.vendor || '';
-  view.innerHTML = `
+  view.innerHTML = `<section class="panel management-card agents-page">
+    ${managementHeader('Agents', ['execution', 'chat'].map(t => `<a href="#/agents?tab=${t}" data-agent-tab="${t}" aria-current="${tab === t ? 'page' : 'false'}">${t === 'execution' ? '실행 Agent' : 'Chat 연결'}</a>`).join(''))}
     ${newKey ? `<div class="keybox"><b>${esc(newKey.name)}</b>의 API 키예요. 지금 한 번만 보여 드려요 — 접속 설정에 넣어 주세요.<br>
       <code id="key">${esc(newKey.key)}</code> <button id="copy-key">복사</button></div>` : ''}
-    <section class="agents-section" aria-labelledby="execution-agents-title"><h2 id="execution-agents-title">실행 Agent</h2>
+    <section class="agents-section" ${tab !== 'execution' ? 'hidden' : ''} aria-labelledby="execution-agents-title"><h2 id="execution-agents-title">실행 Agent</h2>
     <form class="form panel" id="agent-form"><div class="line">
       <label>Name<input id="a-name" required placeholder="claude-main"></label>
       <label>Vendor<select id="a-vendor">${vendorOptions(first)}</select></label>
@@ -1341,14 +1360,14 @@ async function renderAgents(newKey){
         <td><button type="button" class="auto-switch" data-toggle="${a.id}" role="switch" aria-label="${esc(a.name)} Enabled" aria-checked="${!!a.enabled}"><span class="switch-track" aria-hidden="true"></span><span>${a.enabled ? '켜짐' : '꺼짐'}</span></button></td>
         <td class="agent-actions"><button data-rotate="${a.id}" class="ghost">키 재발급</button><button data-move-kind="chat" data-id="${a.id}" class="ghost">Chat으로 옮기기</button></td></tr>`; }).join('')}
       </tbody></table>` : '<div class="empty">등록된 에이전트가 없어요.</div>'}</section>
-    <section class="agents-section" aria-labelledby="chat-connections-title"><h2 id="chat-connections-title">Chat 연결</h2>
+    <section class="agents-section" ${tab !== 'chat' ? 'hidden' : ''} aria-labelledby="chat-connections-title"><h2 id="chat-connections-title">Chat 연결</h2>
       <p class="dim">Claude·ChatGPT 채팅에서 dev MCP에 접속할 때 쓰는 키예요. 실행·Assignee에는 나오지 않아요.</p>
       <form class="form panel" id="chat-form"><div class="line"><label>Name<input id="chat-name" required placeholder="예: claude-chat"></label><label class="actions"><button type="submit">Chat 연결 추가</button></label></div></form>
       ${chats.length ? `<table class="issues agents-table" id="chat-connections"><thead><tr><th>Name</th><th class="hide-m">Key</th><th class="hide-m">Last seen</th><th>Enabled</th><th></th></tr></thead><tbody>
         ${chats.map(a => `<tr data-agent="${a.id}"><td>${esc(a.name)}</td><td class="hide-m ref">${esc(a.key_prefix)}…</td><td class="hide-m dim">${a.last_seen_at ? fmtTime(a.last_seen_at) : '—'}</td>
           <td><button type="button" class="auto-switch" data-toggle="${a.id}" role="switch" aria-label="${esc(a.name)} Enabled" aria-checked="${!!a.enabled}"><span class="switch-track" aria-hidden="true"></span><span>${a.enabled ? '켜짐' : '꺼짐'}</span></button></td>
           <td class="agent-actions"><button data-rotate="${a.id}" class="ghost">키 재발급</button><button data-move-kind="agent" data-id="${a.id}" class="ghost">Agent로 옮기기</button></td></tr>`).join('')}
-      </tbody></table>` : '<div class="empty">등록된 Chat 연결이 없어요.</div>'}</section>`;
+      </tbody></table>` : '<div class="empty">등록된 Chat 연결이 없어요.</div>'}</section></section>`;
   const $ = (s) => view.querySelector(s);
   if(newKey) $('#copy-key').addEventListener('click', () => navigator.clipboard.writeText(newKey.key).then(() => toast('복사했어요')));
   $('#a-vendor').addEventListener('change', () => { $('#a-model').innerHTML = modelOptions($('#a-vendor').value); });
@@ -1362,7 +1381,7 @@ async function renderAgents(newKey){
   }); });
   view.querySelectorAll('[data-move-kind]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
     const r = await api('PATCH', `/api/agents/${b.dataset.id}`, {kind: b.dataset.moveKind});
-    await renderAgents();
+    await renderAgents(undefined, b.dataset.moveKind === 'chat' ? 'chat' : 'execution');
     toast(`${b.dataset.moveKind === 'chat' ? 'Chat 연결' : '실행 Agent'}으로 옮겼어요.${r.cleared_assignees ? ` Assignee ${r.cleared_assignees}개를 해제했어요.` : ''}`);
   })));
   view.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
@@ -1410,8 +1429,8 @@ function renderProjects(editKey, projectTab = 'manage'){
   if(!['manage', 'documents', 'usage', 'audits'].includes(projectTab)) projectTab = 'manage';
   history.replaceState(null, '', ed ? `#/projects?project=${encodeURIComponent(ed.key)}&tab=${projectTab}` : '#/projects');
   view.innerHTML = `
-    <div class="projects-page">
-    ${ed ? `<div class="project-scope"><h2>${esc(ed.name)} · ${esc(ed.key)}</h2><nav aria-label="프로젝트 화면"><button type="button" data-project-tab="manage" aria-current="${projectTab === 'manage' ? 'page' : 'false'}">관리</button><button type="button" data-project-tab="documents" aria-current="${projectTab === 'documents' ? 'page' : 'false'}">문서</button><button type="button" data-project-tab="usage" aria-current="${projectTab === 'usage' ? 'page' : 'false'}">사용량</button><button type="button" data-project-tab="audits" aria-current="${projectTab === 'audits' ? 'page' : 'false'}">목표 대비 현황 점검</button></nav></div>` : ''}
+    <div class="projects-page panel management-card">
+    ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'documents', 'usage', 'audits'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '문서', '사용량', '목표 대비 현황 점검'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
     <button class="${ed && projectTab === 'audits' ? '' : 'primary '}project-create${ed && ['usage', 'audits'].includes(projectTab) ? ' project-create-inline' : ''}" id="project-create" type="button" aria-haspopup="dialog"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>프로젝트 추가</button>
     ${ed ? '' : '<dialog class="project-dialog" id="project-dialog" aria-labelledby="project-dialog-title">'}
     <form class="form panel" id="project-form" ${ed && projectTab !== 'manage' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-dialog-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
@@ -1875,9 +1894,10 @@ function settingsHeader(tab){
   header.querySelectorAll('[data-settings]').forEach(a => {
     if(a.dataset.settings === tab){ a.classList.add('active'); a.setAttribute('aria-current', 'page'); }
   });
-  const container = document.createElement('div');
+  const container = document.createElement('header');
+  container.className = 'management-header';
   container.append(header);
-  return container.innerHTML;
+  return container.outerHTML;
 }
 // 대기열 동시 실행 상한 — 모든 프로젝트 공통. 줄은 프로젝트마다 검토·실행 하나씩이고, 동시에 도는 줄 수를 이 값까지로 막는다.
 async function renderQueueSettings(box, current){
@@ -1904,7 +1924,7 @@ async function renderRegressionSettings(){
   const session = {};
   settingsSession = session;
   const current = () => settingsSession === session && location.hash.split('?')[0] === '#/settings/regression';
-  view.innerHTML = `<section class="panel auto-settings">${settingsHeader('regression')}<h3>회귀검사</h3><p class="dim">모든 프로젝트와 Claude·Codex에 공통 적용해요. 기본은 Auto예요. On은 항상 실행, Off는 생략, Auto는 계획 에이전트의 선택을 서버가 변경 범위로 확인해요. 검사 판단이 없는 기존 Task는 서버가 선택해요. 서버는 다음 검사부터, 에이전트 지시는 다음 실행부터 적용돼요.</p><div id="regression-body"></div><p id="regression-status" role="status" aria-live="polite"></p><h3>항상 유지하는 기본 검증</h3><p class="dim">인증·권한·입력 검증, 승인된 작업 범위, Git 충돌·변경 중 반영 방지, 결과 형식과 커밋 연결, 운영 재시작 health 확인·실패 복구는 회귀 테스트와 별개로 유지해요. Off는 서버의 Auto 보강보다 우선해요. 꺼진 검사는 통과를 보장하지 않아요. 에이전트 설정은 실행 지시를 바꾸며 자체 확인까지 강제로 차단하지는 않아요.</p></section>`;
+  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('regression')}<h3>회귀검사</h3><p class="dim">모든 프로젝트와 Claude·Codex에 공통 적용해요. 기본은 Auto예요. On은 항상 실행, Off는 생략, Auto는 계획 에이전트의 선택을 서버가 변경 범위로 확인해요. 검사 판단이 없는 기존 Task는 서버가 선택해요. 서버는 다음 검사부터, 에이전트 지시는 다음 실행부터 적용돼요.</p><div id="regression-body"></div><p id="regression-status" role="status" aria-live="polite"></p><h3>항상 유지하는 기본 검증</h3><p class="dim">인증·권한·입력 검증, 승인된 작업 범위, Git 충돌·변경 중 반영 방지, 결과 형식과 커밋 연결, 운영 재시작 health 확인·실패 복구는 회귀 테스트와 별개로 유지해요. Off는 서버의 Auto 보강보다 우선해요. 꺼진 검사는 통과를 보장하지 않아요. 에이전트 설정은 실행 지시를 바꾸며 자체 확인까지 강제로 차단하지는 않아요.</p></section>`;
   const body = view.querySelector('#regression-body'), status = view.querySelector('#regression-status');
   let settings, busy = false;
   function paint(){
@@ -1929,7 +1949,7 @@ async function renderSettings(){
   settingsSession = session;
   const key = projectSel.value;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = `<section class="panel auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><h3>Auto 위임 설정</h3><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
+  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><h3>Auto 위임 설정</h3><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
   void renderQueueSettings(view.querySelector('#queue-settings'), current);
   const body = view.querySelector('#settings-body');
   if(!key){ body.innerHTML = '<div class="empty">위의 프로젝트 필터에서 설정할 프로젝트를 선택해 주세요.</div>'; return; }
@@ -2015,18 +2035,18 @@ async function renderTypes(){
   const session = {};
   settingsSession = session;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = `<section class="panel type-management">${settingsHeader('types')}<h3>이슈 종류 관리</h3><p class="dim">모든 프로젝트에서 함께 사용해요.</p><div class="settings-skeleton" aria-label="종류를 불러오는 중" aria-busy="true"></div></section>`;
+  view.innerHTML = `<section class="panel management-card type-management">${settingsHeader('types')}<h3>이슈 종류 관리</h3><p class="dim">모든 프로젝트에서 함께 사용해요.</p><div class="settings-skeleton" aria-label="종류를 불러오는 중" aria-busy="true"></div></section>`;
   let types;
   try{ ({types} = await api('GET', '/api/issue-types?include_inactive=true', undefined, current)); }
   catch(e){
     if(current()){
-      view.innerHTML = `<section class="panel type-management">${settingsHeader('types')}<h3>이슈 종류 관리</h3><p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="types-retry" type="button">다시 불러오기</button></section>`;
+      view.innerHTML = `<section class="panel management-card type-management">${settingsHeader('types')}<h3>이슈 종류 관리</h3><p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="types-retry" type="button">다시 불러오기</button></section>`;
       view.querySelector('#types-retry').onclick = renderTypes;
     }
     return;
   }
   if(!current()) return;
-  view.innerHTML = `<section class="panel type-management">${settingsHeader('types')}<h3>이슈 종류 관리</h3><p class="dim">모든 프로젝트에서 함께 사용해요. 비활성화해도 기존 Issue의 연결은 보존돼요.</p><form id="type-create"><label>새 종류 이름<input name="name" maxlength="100" required></label><button type="submit">추가</button></form><div>${types.map(t => `<form class="type-row" data-id="${t.id}"><label>종류 이름<input name="name" aria-label="${esc(t.name)} 이름" maxlength="100" required value="${esc(t.name)}"></label><button type="submit">이름 저장</button><button type="button" class="type-active auto-switch" role="switch" aria-label="${esc(t.name)} 활성" aria-checked="${t.active}"><span class="switch-track" aria-hidden="true"></span><span>${t.active ? '활성' : '비활성'}</span></button></form>`).join('')}</div><p id="type-status" role="status"></p></section>`;
+  view.innerHTML = `<section class="panel management-card type-management">${settingsHeader('types')}<h3>이슈 종류 관리</h3><p class="dim">모든 프로젝트에서 함께 사용해요. 비활성화해도 기존 Issue의 연결은 보존돼요.</p><form id="type-create"><label>새 종류 이름<input name="name" maxlength="100" required></label><button type="submit">추가</button></form><div>${types.map(t => `<form class="type-row" data-id="${t.id}"><label>종류 이름<input name="name" aria-label="${esc(t.name)} 이름" maxlength="100" required value="${esc(t.name)}"></label><button type="submit">이름 저장</button><button type="button" class="type-active auto-switch" role="switch" aria-label="${esc(t.name)} 활성" aria-checked="${t.active}"><span class="switch-track" aria-hidden="true"></span><span>${t.active ? '활성' : '비활성'}</span></button></form>`).join('')}</div><p id="type-status" role="status"></p></section>`;
   const root = view.querySelector('.type-management');
   async function save(form, method, url, data){
     const controls = [...form.querySelectorAll('input,button')];
