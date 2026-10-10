@@ -1,5 +1,7 @@
 """현재 보존된 직접 실행 기록을 프로젝트별로 집계한다."""
 from datetime import datetime, timezone
+import json
+import math
 
 import db
 import issues
@@ -67,8 +69,38 @@ def project_usage(key, limit=50, offset=0, *, as_of=None):
                 summary['completed_issue_count'] += 1
                 summary['unmeasured_completed_issue_count'] += row['elapsed_seconds'] is None
                 summary['completed_elapsed_seconds'] += row['elapsed_seconds'] or 0
-        summary['partial'] = bool(summary['unmeasured_run_count'] or summary['running_run_count'])
+        audits = []
+        audit_summary = _empty()
+        audit_summary.update(cost_usd=0, unmeasured_cost_run_count=0)
+        for record in c.execute('SELECT * FROM project_audits WHERE project_id=? ORDER BY id DESC', (project['id'],)):
+            run = dict(record)
+            usage = json.loads(run['usage_json'])
+            active = run['status'] in ('preparing', 'running', 'cancelling')
+            counts = [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')]
+            cost = usage.get('cost_usd')
+            measured = type(cost) in (int, float) and math.isfinite(cost) and cost >= 0
+            duration = _seconds(run['started_at'], as_of if active else run['ended_at'])
+            audit_summary['run_count'] += 1
+            audit_summary['running_run_count'] += active
+            audit_summary['unmeasured_run_count'] += any(v is None for v in counts)
+            audit_summary['unmeasured_cost_run_count'] += not measured
+            audit_summary['cost_usd'] += cost if measured else 0
+            audit_summary['agent_seconds'] += duration or 0
+            audit_summary['unmeasured_duration_run_count'] += duration is None
+            for k, value in zip(('input_tokens', 'output_tokens'), counts):
+                audit_summary[k] += value or 0
+            audits.append({k: run[k] for k in ('id', 'provider', 'model', 'actual_model', 'status',
+                'started_at', 'ended_at')} | {'input_tokens': counts[0], 'output_tokens': counts[1],
+                'cost_usd': cost if measured else None, 'cost_measured': measured, 'agent_seconds': duration})
+        audit_summary['total_tokens'] = audit_summary['input_tokens'] + audit_summary['output_tokens']
+        audit_summary['partial'] = bool(audit_summary['unmeasured_run_count'] or audit_summary['running_run_count'] or
+                                        audit_summary['unmeasured_cost_run_count'])
+        for k in _empty():
+            summary[k] += audit_summary[k]
+        summary['partial'] = bool(summary['unmeasured_run_count'] or summary['running_run_count'] or audit_summary['partial'])
         return dict(project=dict(project), as_of=as_of, summary=summary, issues=rows[offset:offset + limit],
+                    audits=audits[offset:offset + limit], audit_summary=audit_summary, audit_total=len(audits),
+                    audit_has_more=offset + limit < len(audits),
                     limit=limit, offset=offset, total=len(rows), has_more=offset + limit < len(rows),
                     notes=['실행 시간은 병렬 실행도 각각 합산해요.', 'orphaned는 서버가 기록한 종료 시각을 사용해요.',
                            '삭제된 이슈와 수집되지 않은 외부 실행은 포함하지 않아요.'])

@@ -24,6 +24,8 @@ from mcp_tools import mcp_app
 async def lifespan(app):
     db.init()
     issues.repair_terminal_children()
+    import project_audit_runner
+    project_audit_runner.recover()
     import rollback
     rollback.start_recovery(startup=True)
     orchestrate.take_over()

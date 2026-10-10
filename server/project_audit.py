@@ -364,6 +364,12 @@ def create_audit(project_id, request_id, provider, actor, *, model='', inputs=No
             if old['input_fingerprint'] != identity:
                 raise issues.StoreError('같은 요청 키의 입력이 달라요.', 409)
             return dict(old)
+        import project_activity
+        project = c.execute('SELECT key FROM projects WHERE id=?', (project_id,)).fetchone()
+        if project:
+            block = project_activity.audit_block(c, project['key'])
+            if block:
+                raise issues.StoreError(block, 409)
         now = db.now_iso()
         try:
             aid = c.execute('''INSERT INTO project_audits(project_id,request_id,input_fingerprint,
@@ -415,9 +421,10 @@ def finish_audit(audit_id, status, *, report=None, error='', actual_model='', us
                           (audit_id, row['project_id'], candidate['id'], candidate['disposition'],
                            fingerprint(candidate), _json(candidate)))
         now = db.now_iso()
-        c.execute('''UPDATE project_audits SET status=?,report_json=?,error=?,actual_model=?,
+        phase = {'complete': '점검 완료', 'failed': '점검 실패', 'timeout': '점검 시간 초과', 'cancelled': '점검 취소'}[status]
+        c.execute('''UPDATE project_audits SET status=?,phase=?,report_json=?,error=?,actual_model=?,
             usage_json=?,ended_at=?,updated_at=? WHERE id=?''', (status,
-            _json(report) if status == 'complete' else None, _safe(error)[:4000], _safe(actual_model)[:200],
+            phase, _json(report) if status == 'complete' else None, _safe(error)[:4000], _safe(actual_model)[:200],
             safe_usage, now, now, audit_id))
 
 
