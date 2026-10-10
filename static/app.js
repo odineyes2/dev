@@ -35,7 +35,7 @@ async function api(method, url, body, isCurrent = () => true){
   perf.server = res.headers.get('Server-Timing') || perf.server;
   if(res.status === 401){ if(isCurrent()) showLogin(); throw new Error('로그인이 필요해요.'); }
   const data = res.status === 204 ? null : await res.json().catch(() => null);
-  if(!res.ok){ const msg = (data && data.detail) || `요청이 실패했어요(${res.status}).`; if(isCurrent()) toast(msg); throw new Error(msg); }
+  if(!res.ok){ const msg = (data && data.detail) || `요청이 실패했어요(${res.status}).`; if(isCurrent()) toast(msg); const error = new Error(msg); error.status = res.status; throw error; }
   return data;
 }
 // 저장 버튼은 요청이 끝날 때까지 막는다 — 두 번 눌러(모바일 두 번 탭) 같은 이슈가 두 번 저장되던 문제(DEV-12).
@@ -234,6 +234,13 @@ async function route(){
     else if(name === 'agents') await renderAgents();
     else if(name === 'projects'){
       const params = new URLSearchParams(location.hash.split('?')[1] || '');
+      // 로그인 직후 프로젝트 목록보다 hash 이동이 먼저 와도 상세 주소를 보존한다.
+      if(params.get('project') && !projects.some(p => p.key === params.get('project'))){
+        const hash = location.hash;
+        view.innerHTML = '<div class="usage-loading" aria-busy="true">프로젝트를 불러와요…</div>';
+        await loadProjects();
+        if(location.hash !== hash) return;
+      }
       renderProjects(params.get('project'), params.get('tab') || 'manage');
     }
     else if(name === 'settings' && settingsTab === 'auto') await renderSettings();
@@ -1400,12 +1407,12 @@ function projectSuggestion(name){
 // 생성은 라이트박스, 수정은 기존 인라인 폼에서 한다.
 function renderProjects(editKey, projectTab = 'manage'){
   const ed = projects.find(p => p.key === editKey);
-  if(!['manage', 'documents', 'usage'].includes(projectTab)) projectTab = 'manage';
+  if(!['manage', 'documents', 'usage', 'audits'].includes(projectTab)) projectTab = 'manage';
   history.replaceState(null, '', ed ? `#/projects?project=${encodeURIComponent(ed.key)}&tab=${projectTab}` : '#/projects');
   view.innerHTML = `
     <div class="projects-page">
-    ${ed ? `<div class="project-scope"><h2>${esc(ed.name)} · ${esc(ed.key)}</h2><nav aria-label="프로젝트 화면"><button type="button" data-project-tab="manage" aria-current="${projectTab === 'manage' ? 'page' : 'false'}">관리</button><button type="button" data-project-tab="documents" aria-current="${projectTab === 'documents' ? 'page' : 'false'}">문서</button><button type="button" data-project-tab="usage" aria-current="${projectTab === 'usage' ? 'page' : 'false'}">사용량</button></nav></div>` : ''}
-    <button class="primary project-create${ed && projectTab === 'usage' ? ' project-create-inline' : ''}" id="project-create" type="button" aria-haspopup="dialog"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>프로젝트 추가</button>
+    ${ed ? `<div class="project-scope"><h2>${esc(ed.name)} · ${esc(ed.key)}</h2><nav aria-label="프로젝트 화면"><button type="button" data-project-tab="manage" aria-current="${projectTab === 'manage' ? 'page' : 'false'}">관리</button><button type="button" data-project-tab="documents" aria-current="${projectTab === 'documents' ? 'page' : 'false'}">문서</button><button type="button" data-project-tab="usage" aria-current="${projectTab === 'usage' ? 'page' : 'false'}">사용량</button><button type="button" data-project-tab="audits" aria-current="${projectTab === 'audits' ? 'page' : 'false'}">목표 대비 현황 점검</button></nav></div>` : ''}
+    <button class="${ed && projectTab === 'audits' ? '' : 'primary '}project-create${ed && ['usage', 'audits'].includes(projectTab) ? ' project-create-inline' : ''}" id="project-create" type="button" aria-haspopup="dialog"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>프로젝트 추가</button>
     ${ed ? '' : '<dialog class="project-dialog" id="project-dialog" aria-labelledby="project-dialog-title">'}
     <form class="form panel" id="project-form" ${ed && projectTab !== 'manage' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-dialog-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
       <label style="flex:0 0 90px">Key<input id="p-key" required placeholder="NS" maxlength="10" value="${esc(ed ? ed.key : '')}"${ed ? ' disabled' : ''}></label>
@@ -1421,6 +1428,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     ${ed ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
     ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg><span>Codex로 문서 생성</span></button><button type="button" data-doc-provider="claude"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg><span>Claude로 문서 생성</span></button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
+    ${ed && projectTab === 'audits' ? `<section class="panel project-audits" aria-labelledby="audit-title"><div class="audit-toolbar"><h3 id="audit-title">목표 대비 현황 점검</h3><button type="button" id="audit-refresh">새로고침</button></div><p class="dim">기준 문서와 현재 코드·검사·Issue 이력을 비교해요. 후보 발행 후 Plan 승인과 Task 실행은 기존 절차를 따라요.</p><div class="audit-toolbar"><label>분석 도구 <select id="audit-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><button type="button" class="primary" id="audit-start" disabled>유료 점검 시작</button></div><div id="audit-preflight" aria-live="polite"></div><p id="audit-message" role="status" aria-live="polite"></p><div class="audit-layout"><section aria-labelledby="audit-history-title"><h4 id="audit-history-title">점검 이력</h4><div id="audit-history"></div></section><section id="audit-detail" aria-label="점검 보고서"></section></div></section>` : ''}
     ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
       ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
@@ -1515,7 +1523,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       form.removeAttribute('aria-busy');
     }
   });
-  if(ed){
+  if(ed && projectTab !== 'audits'){
     const panel = view.querySelector('#project-initialization');
     const refreshInitialization = async () => {
       if(!panel.isConnected) return;
@@ -1563,6 +1571,7 @@ function renderProjects(editKey, projectTab = 'manage'){
   });
   if(ed && projectTab === 'documents') bindProjectDocuments(ed);
   if(ed && projectTab === 'usage') bindProjectUsage(ed);
+  if(ed && projectTab === 'audits') bindProjectAudits(ed);
   view.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { renderProjects(b.dataset.edit); window.scrollTo(0, 0); }));
   view.querySelectorAll('[data-delete-project]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
     const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;
@@ -1583,6 +1592,152 @@ function renderProjects(editKey, projectTab = 'manage'){
 }
 
 // 화면을 떠나면 이전 프로젝트의 응답과 인증 오류를 반영하지 않는다.
+function bindProjectAudits(project){
+  const panel = view.querySelector('.project-audits');
+  const provider = panel.querySelector('#audit-provider'), start = panel.querySelector('#audit-start');
+  const preflight = panel.querySelector('#audit-preflight'), history = panel.querySelector('#audit-history');
+  const detail = panel.querySelector('#audit-detail'), message = panel.querySelector('#audit-message');
+  const refresh = panel.querySelector('#audit-refresh'), url = `/api/projects/${encodeURIComponent(project.key)}/audits`;
+  const current = () => panel.isConnected;
+  const active = s => ['preparing', 'running', 'cancelling'].includes(s);
+  const states = {preparing:'준비 중', running:'진행 중', cancelling:'취소 중', complete:'완료', failed:'실패', timeout:'시간 초과', cancelled:'취소됨'};
+  const judgments = {complete:'완료', partial:'부분 구현', missing:'미구현', needs_confirmation:'확인 필요'};
+  const dispositions = {new_work:'새 개발 작업', reuse_issue:'기존 Issue 재사용', human_confirmation:'사람 확인 필요'};
+  const state = s => `<span class="audit-state audit-${esc(s)}"><span aria-hidden="true"></span>${esc(states[s] || s)}</span>`;
+  const time = v => v ? esc(new Date(v).toLocaleString()) : '미계측';
+  const link = ref => `<a href="#/issue/${encodeURIComponent(ref)}">${esc(ref)}</a>`;
+  const list = rows => `<ul>${(rows || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+  const limitsText = l => `시간 제한 ${formatDuration(l?.timeout_sec)} · ${l?.cost_enforced ? `비용 상한 $${l.budget_usd}` : '비용 미측정 · 금액 상한을 강제할 수 없어요'}`;
+  let settings = null, rows = [], selected = null, report = null, busy = false, loading = false;
+  let preflightToken = 0, detailToken = 0, request = null, timer;
+  const checked = new Set();
+  function controls(){
+    start.disabled = busy || loading || !settings || !settings.available || !!settings.blocked_reason || rows.some(r => active(r.status));
+    start.textContent = busy ? '처리 중…' : request ? '같은 점검 요청 다시 보내기' : '유료 점검 시작';
+    provider.disabled = busy || !!request;
+    refresh.disabled = busy || loading;
+  }
+  async function loadPreflight(){
+    const token = ++preflightToken;
+    settings = null; controls();
+    preflight.innerHTML = '<div class="usage-loading" role="status">실행 조건을 확인해요…<div class="audit-skeleton" aria-hidden="true"></div></div>';
+    const valid = () => current() && token === preflightToken;
+    try {
+      const data = await api('GET', `${url}/preflight?provider=${provider.value}`, undefined, valid);
+      if(!valid()) return null;
+      settings = data;
+      preflight.innerHTML = `<p class="audit-meta">${esc(data.provider)} · 적용 모델 ${esc(data.applied_model)}<br>${esc(limitsText(data.limits))}</p>${data.model !== data.applied_model ? `<p>선택 모델 ${esc(data.model)} 대신 위 모델을 적용해요.</p>` : ''}${(data.notes || []).map(n => `<p class="dim">${esc(n)}</p>`).join('')}${!data.available ? '<p class="error">분석 도구를 사용할 수 없어요. 도구 설정을 확인해 주세요.</p>' : ''}${data.blocked_reason ? `<p class="audit-notice">${esc(data.blocked_reason)}</p>` : ''}${data.queued_jobs?.length ? `<p class="dim">대기 중 작업 ${data.queued_jobs.length}개가 있어요.</p>` : ''}`;
+      return data;
+    } catch(e){ if(valid()) preflight.innerHTML = `<p class="error" role="alert">${esc(e.message)} 새로고침으로 다시 확인해 주세요.</p>`; return null; }
+    finally { if(valid()) controls(); }
+  }
+  function drawHistory(){
+    history.innerHTML = rows.length ? `<ul class="audit-history">${rows.map(r => `<li><button type="button" data-audit-id="${r.id}" aria-current="${r.id === selected ? 'true' : 'false'}"><span>점검 #${r.id} · ${esc(r.provider)}</span>${state(r.status)}<small>${time(r.created_at)}</small></button></li>`).join('')}</ul>` : '<div class="empty">아직 점검 기록이 없어요.</div>';
+    history.querySelectorAll('[data-audit-id]').forEach(b => b.onclick = () => select(Number(b.dataset.auditId), true));
+  }
+  function evidence(items, snapshot){
+    return `<ul class="audit-evidence">${(items || []).map(e => {
+      const source = snapshot?.sources?.find(s => s.id === e.source_id);
+      return `<li>${source?.issue_ref ? link(source.issue_ref) : esc(source?.path || e.source_id)}${e.section ? ` · ${esc(e.section)}` : ''}${e.line_start ? ` · ${e.line_start}–${e.line_end}행` : ''}${source?.hash ? `<small class="dim">${esc(source.hash)}</small>` : ''}</li>`;
+    }).join('')}</ul>`;
+  }
+  function drawReport(){
+    const r = report, snapshot = r.snapshot, publications = new Map((r.publications || []).map(p => [p.candidate_id, p.issue_ref]));
+    // 재조회에서 발행됐거나 발행 불가가 된 후보는 선택에서 제거한다.
+    const eligible = new Set((r.report?.candidates || []).filter(c => c.disposition === 'new_work' && !publications.has(c.id) && !r.stale).map(c => c.id));
+    for(const id of checked) if(!eligible.has(id)) checked.delete(id);
+    detail.innerHTML = `<h4 tabindex="-1" id="audit-report-title">점검 #${r.id} ${state(r.status)}</h4><p class="audit-meta">${esc(r.provider)} · 요청 모델 ${esc(r.model)} · 실제 모델 ${esc(r.actual_model || '아직 미확인')}<br>시작 ${time(r.started_at)} · 종료 ${time(r.ended_at)}<br>기준 ${esc(r.base_branch || '미확인')} · ${esc(r.base_sha || '미확인')}<br>${esc(limitsText(r.limits))}<br>측정 비용 ${r.usage?.cost_measured ? `$${esc(r.usage.cost_usd)}` : '미계측'} · 입력 토큰 ${esc(r.usage?.input_tokens ?? '미계측')} · 출력 토큰 ${esc(r.usage?.output_tokens ?? '미계측')}</p>${r.stale ? `<p class="audit-notice" role="status">오래된 결과예요. ${esc(r.stale_reason)} 새 후보 발행 전에 다시 점검해 주세요.</p>` : ''}${r.error ? `<p class="error" role="alert">${esc(r.error)} 도구와 실행 조건을 확인하고 새 점검을 시작해 주세요.</p>` : ''}${active(r.status) ? `<p role="status">${esc(r.phase || states[r.status])} · 진행 상태를 자동으로 확인해요.</p><button type="button" id="audit-cancel" ${r.status === 'cancelling' || busy ? 'disabled' : ''}>${r.status === 'cancelling' ? '취소 중…' : '점검 취소'}</button>` : ''}
+      ${snapshot ? `<details class="audit-materials"><summary>기준 자료와 누락 · 문서 ${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).length}개</summary>${list(snapshot.warnings)}<ul>${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).map(s => `<li>${esc(s.path || s.id)}<small class="dim">${esc(s.hash)}</small></li>`).join('')}</ul><ul>${(snapshot.omissions || []).map(o => `<li>${esc(o.source_id)} · ${esc(o.reason)}</li>`).join('')}</ul>${snapshot.omissions_truncated ? `<p>누락 ${snapshot.omitted_count}개 중 일부만 표시해요.</p>` : ''}</details>` : ''}
+      ${r.report ? `<p class="audit-summary">${esc(r.report.summary)}</p><h4>요구사항별 판단</h4>${r.report.requirements.map(q => `<article class="audit-card"><h5>${esc(q.title)} <span class="audit-judgment">${esc(judgments[q.status])}</span></h5><p>${esc(q.assessment)}</p>${evidence(q.evidence, snapshot)}</article>`).join('') || '<div class="empty">판단할 요구사항 근거가 없어요.</div>'}<h4>후속 Issue 후보</h4><p class="dim">선택한 후보만 같은 프로젝트에 발행해요. Plan은 초안이며 자동으로 승인하거나 실행하지 않아요.</p>${r.report.candidates.map(c => {
+        const published = publications.get(c.id), selectable = c.disposition === 'new_work' && !published && !r.stale;
+        return `<article class="audit-card" data-candidate="${esc(c.id)}"><h5>${selectable ? `<label class="audit-choice"><input type="checkbox" data-candidate-id="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''} ${busy ? 'disabled' : ''}><span>${esc(c.title)}</span></label>` : esc(c.title)}</h5><p class="audit-meta">${esc(dispositions[c.disposition])} · ${esc(c.priority)} · 요구사항 ${c.requirement_ids.map(esc).join(', ')}</p>${published ? `<p>발행한 Issue ${link(published)}</p>` : ''}<p>${esc(c.gap)}</p><p><b>범위</b> ${esc(c.scope)}</p><b>완료 기준</b>${list(c.completion_criteria)}<b>선행 조건</b>${c.prerequisites.length ? list(c.prerequisites) : '<p>없어요.</p>'}${c.related_issues.length ? `<p>관련 Issue ${c.related_issues.map(link).join(' · ')}</p>` : ''}${evidence(c.evidence, snapshot)}<details><summary>Plan 초안</summary><pre class="document-source">${esc(c.plan_draft)}</pre></details>${c.disposition === 'human_confirmation' ? '<p class="dim">사람이 근거와 선행 조건을 확인한 후 다시 점검해 주세요.</p>' : ''}</article>`;
+      }).join('') || '<div class="empty">후속 후보가 없어요. 차이가 없거나 근거가 부족하면 후보를 만들지 않아요.</div>'}${r.report.candidates.some(c => c.disposition === 'new_work' && !publications.has(c.id)) ? `<button type="button" id="audit-publish" ${busy || r.stale || !checked.size ? 'disabled' : ''}>${busy ? '발행 중…' : '선택한 후보 발행'}</button>` : ''}` : ''}`;
+    detail.querySelectorAll('[data-candidate-id]').forEach(input => input.onchange = () => {
+      input.checked ? checked.add(input.dataset.candidateId) : checked.delete(input.dataset.candidateId);
+      detail.querySelector('#audit-publish').disabled = !checked.size;
+    });
+    detail.querySelector('#audit-cancel')?.addEventListener('click', cancel);
+    detail.querySelector('#audit-publish')?.addEventListener('click', publish);
+  }
+  async function select(id, focus = false){
+    const token = ++detailToken;
+    if(selected !== id){ checked.clear(); report = null; }
+    selected = id; drawHistory();
+    if(!report) detail.innerHTML = '<div class="usage-loading" role="status">보고서를 불러와요…<div class="usage-skeleton" aria-hidden="true"></div></div>';
+    const valid = () => current() && token === detailToken;
+    try {
+      const data = await api('GET', `${url}/${id}`, undefined, valid);
+      if(!valid()) return;
+      report = data; drawReport();
+      if(focus) detail.querySelector('#audit-report-title').focus();
+    } catch(e){ if(valid()) detail.innerHTML = `<p class="error" role="alert">${esc(e.message)} 새로고침으로 다시 시도해 주세요.</p>`; }
+  }
+  async function load(){
+    if(!current() || loading || busy) return;
+    clearTimeout(timer); loading = true; controls();
+    try {
+      const data = await api('GET', url, undefined, current);
+      if(!current()) return;
+      rows = data.audits; drawHistory();
+      if(selected === null && rows.length) selected = rows[0].id;
+      await Promise.all([loadPreflight(), selected !== null ? select(selected) : Promise.resolve()]);
+      if(!rows.length) detail.innerHTML = '<div class="empty">점검을 시작하면 여기서 보고서를 확인할 수 있어요.</div>';
+    } catch(e){ if(current()) message.textContent = e.message; }
+    finally {
+      if(current()){
+        loading = false; controls();
+        if(rows.some(r => active(r.status))) timer = setTimeout(load, 3000);
+      }
+    }
+  }
+  start.onclick = async () => {
+    if(busy || start.disabled) return;
+    busy = true; controls(); message.textContent = '';
+    try {
+      const data = await loadPreflight();
+      if(!current() || !data || !data.available || data.blocked_reason) return;
+      if(!request){
+        if(!confirm(`${data.provider} · 적용 모델 ${data.applied_model}\n${limitsText(data.limits)}\n\n유료 점검을 시작할까요?`)) return;
+        request = {request_id:crypto.randomUUID(), provider:data.provider, model:data.applied_model};
+      }
+      const result = await api('POST', url, request, current);
+      if(!current()) return;
+      selected = result.id; request = null; checked.clear(); report = null;
+      message.textContent = '점검을 시작했어요. 진행 상태를 확인해 주세요.';
+    } catch(e){
+      if(current()){
+        if(e.status >= 400 && e.status < 500) request = null;
+        message.textContent = `${e.message} ${request ? '응답을 받지 못했으면 같은 요청을 다시 보낼 수 있어요.' : '실행 조건을 확인하고 다시 시도해 주세요.'}`;
+      }
+    }
+    finally { if(current()){ busy = false; controls(); await load(); } }
+  };
+  async function cancel(){
+    if(busy) return;
+    busy = true; controls(); drawReport();
+    try { await api('POST', `${url}/${selected}/cancel`, {}, current); if(current()) message.textContent = '취소를 요청했어요. 프로세스가 종료될 때까지 기다려 주세요.'; }
+    catch(e){ if(current()) message.textContent = e.message; }
+    finally { if(current()){ busy = false; await load(); } }
+  }
+  async function publish(){
+    if(busy || !checked.size || report.stale) return;
+    busy = true; controls(); drawReport();
+    try {
+      const data = await api('POST', `${url}/${selected}/publish`, {candidate_ids:[...checked]}, current);
+      if(!current()) return;
+      // 발행 성공 뒤 상세 조회가 실패해도 링크와 선택 해제를 즉시 반영한다.
+      report.publications = [...(report.publications || []), ...data.publications];
+      checked.clear(); drawReport();
+      message.textContent = '선택한 후보를 발행했어요. Issue에서 Plan 초안을 확인해 주세요.';
+    } catch(e){ if(current()) message.textContent = `${e.message} 기존 Issue와 기준 자료를 확인하고 다시 점검해 주세요.`; }
+    finally { if(current()){ busy = false; await load(); } }
+  }
+  provider.onchange = () => { request = null; loadPreflight(); };
+  refresh.onclick = load;
+  history.innerHTML = '<div class="usage-loading">이력을 불러와요…<div class="audit-skeleton" aria-hidden="true"></div></div>';
+  load();
+}
+
 function bindProjectUsage(project){
   const panel = view.querySelector('.project-usage'), body = panel.querySelector('#usage-body');
   const refresh = panel.querySelector('#usage-refresh');
