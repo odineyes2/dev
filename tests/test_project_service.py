@@ -39,6 +39,7 @@ class ServiceTest(unittest.TestCase):
         self.commands = patch.object(service, '_command').start()
         self.restart = patch.object(service, '_restart').start()
         self.health = patch.object(service, '_healthy').start()
+        self.reachable = patch.object(service, '_reachable', return_value=False).start()
 
     def queue(self, action='connect'):
         with patch.object(service.threading, 'Thread'):
@@ -67,6 +68,33 @@ class ServiceTest(unittest.TestCase):
         with self.assertRaises(issues.StoreError):
             issues.update_project(H, 'OTHER', {'service_domain': 'app.example.com'})
         self.assertEqual(next(p for p in issues.list_projects() if p['key'] == 'OTHER')['service_domain'], '')
+
+    def test_existing_service_is_reported_without_taking_ownership(self):
+        self.reachable.return_value = True
+        state = service.status('APP')
+        self.assertEqual(state['status'], 'external')
+        self.assertTrue(state['online'])
+        self.assertFalse(state['managed'])
+        self.assertEqual(state['port'], 8400)
+        with db.connect() as c:
+            self.assertFalse(c.execute('SELECT 1 FROM project_services').fetchone())
+        with self.assertRaises(issues.StoreError):
+            service.request(H, 'APP', 'disconnect')
+
+    def test_builtin_ports_are_detected_when_saved_port_is_empty(self):
+        issues.update_project(H, 'APP', {'local_path': str(config.REPO_ROOT), 'service_domain': '', 'service_port': 0})
+        self.reachable.return_value = True
+        state = service.status('APP')
+        self.assertEqual(state['observed_port'], config.PORT)
+        self.assertEqual(state['url'], config.PUBLIC_URL)
+        issues.update_project(H, 'APP', {'local_path': str(config.REPO_ROOT.parent / 'nightshift')})
+        self.assertEqual(service.status('APP')['observed_port'], 8000)
+
+    def test_configured_domain_with_failed_health_does_not_claim_service_is_down(self):
+        state = service.status('APP')
+        self.assertFalse(state['online'])
+        self.assertEqual(state['status'], 'idle')
+        self.assertEqual(state['url'], 'https://app.example.com')
 
     def test_connect_preserves_existing_rules_and_disconnect(self):
         self.connect()

@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import yaml
@@ -57,15 +58,57 @@ def _project(key):
     return dict(row)
 
 
+def _existing_service(project):
+    """저장된 값과 알려진 운영 주소로 조회한다. 기존 터널의 소유권은 가져오지 않는다."""
+    domain, port = project['service_domain'], project['service_port']
+    try:
+        repo = Path(project['local_path']).resolve() if project['local_path'] else None
+    except OSError:
+        repo = None
+    if repo == config.REPO_ROOT.resolve():
+        domain = domain or urlsplit(config.PUBLIC_URL).hostname
+        port = port or config.PORT
+    elif repo == (config.REPO_ROOT.parent / 'nightshift').resolve():
+        domain = domain or urlsplit(config.NIGHTSHIFT_PUBLIC_URL).hostname
+        port = port or urlsplit(config.NIGHTSHIFT_URL).port or 80
+    if domain and not port:
+        try:
+            data = yaml.safe_load(config_path().read_bytes()) or {}
+            for rule in data.get('ingress', []):
+                if str(rule.get('hostname', '')).lower().rstrip('.') != domain or rule.get('path'):
+                    continue
+                origin = urlsplit(rule.get('service', ''))
+                if origin.scheme == 'http' and origin.hostname in ('localhost', '127.0.0.1', '::1'):
+                    port = origin.port or 80
+                    break
+        except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+            pass
+    return domain or '', port
+
+
+def _reachable(url):
+    try:
+        return httpx.get(url + '/api/health', timeout=3, trust_env=False, follow_redirects=False).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 def status(key):
     project = _project(key)
     with db.connect() as c:
         row = c.execute('SELECT * FROM project_services WHERE project_id=?', (project['id'],)).fetchone()
     state = dict(row) if row else {'status': 'idle', 'domain': '', 'port': 0, 'phase': '', 'error': ''}
+    state['managed'] = bool(state['domain'])
+    domain, port = _existing_service(project)
+    domain, port = state['domain'] or domain, state['port'] or port
     for field in ('backup_path', 'config_path', 'applied_hash'):
         state.pop(field, None)
-    state['url'] = 'https://' + state['domain'] if state['domain'] else ''
-    state['changed'] = bool(state['domain'] and (state['domain'], state['port']) != (project['service_domain'], project['service_port']))
+    state['url'] = 'https://' + domain if domain else ''
+    state['observed_port'] = port
+    state['online'] = _reachable(state['url']) if domain and state['status'] != 'running' else None
+    if state['online'] and not state['managed']:
+        state.update(status='external', phase='기존 서비스 운영 중', domain=domain, port=port)
+    state['changed'] = bool(state['managed'] and (state['domain'], state['port']) != (project['service_domain'], project['service_port']))
     state['config_path'] = str(config_path())
     try:
         binary()

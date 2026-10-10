@@ -1437,7 +1437,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
       <div class="project-description"><div class="line"><label>서비스 도메인<input id="p-domain" maxlength="253" placeholder="예: app.lomebrote.com" value="${esc(ed?.service_domain || '')}"></label>
       <label>로컬 포트<input id="p-port" type="number" min="1" max="65535" step="1" placeholder="예: 8400" value="${ed?.service_port || ''}"></label>
-      <label>PM2 앱 이름<input id="p-service-app" maxlength="80" placeholder="예: myapp (이미 실행 중이면 비워요)" value="${esc(ed?.service_app || '')}"></label></div></div>
+      <label>PM2 앱 이름<input id="p-service-app" maxlength="80" placeholder="예: myapp (이미 실행 중이면 비워요)" value="${esc(ed?.service_app || '')}"></label></div><p class="dim">로컬 포트는 다른 서비스가 쓰지 않는 번호를 정하고 앱 실행 설정에도 같은 값을 사용해 주세요. 이 값을 저장해도 앱의 포트가 자동으로 바뀌지는 않아요.</p></div>
       <label class="project-description">프로젝트 설명<textarea id="p-description" maxlength="200000" placeholder="목적, 대상 사용자와 원하는 기능을 적어 주세요.">${esc(ed?.description || '')}</textarea></label>
       ${ed ? '<div class="project-description"><button type="button" id="p-description-request">현재 상태로 Description 작성</button><p id="p-description-status" role="status" aria-live="polite"></p></div>' : ''}
       ${ed ? '' : `<details class="project-description project-spec"><summary>기획서로 시작</summary><p class="dim">기획서로 공식 문서·최소 개발 골격·로컬 Git·Issue·Task를 만들어요. 선택한 에이전트의 유료 분석을 시작하며, 개발 Task 실행은 별도 승인이 필요해요.</p><div class="line"><label>기획서<input id="p-spec" type="file" accept=".md,text/markdown"></label><label>Projects 하위 폴더명<input id="p-folder" placeholder="예: moai" maxlength="80"></label><label>분석 도구<select id="p-init-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label></div><p class="dim">UTF-8 Markdown · 최대 200KB. 위 Repository와 Local path는 기존 저장소 등록에 사용해요.</p><button type="button" id="p-initialize">초기 프로젝트 생성</button><p id="p-init-message" role="status" aria-live="polite"></p></details>`}
@@ -1454,13 +1454,28 @@ function renderProjects(editKey, projectTab = 'manage'){
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'audits' ? `<section class="panel project-audits" aria-labelledby="audit-title"><div class="audit-toolbar"><h3 id="audit-title">목표 대비 현황 점검</h3><button type="button" id="audit-refresh">새로고침</button></div><p class="dim">기준 문서와 현재 코드·검사·Issue 이력을 비교해요. 후보 발행 후 Plan 승인과 Task 실행은 기존 절차를 따라요.</p><div class="audit-toolbar"><label>분석 도구 <select id="audit-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><button type="button" class="primary" id="audit-start" disabled>유료 점검 시작</button></div><div id="audit-preflight" aria-live="polite"></div><p id="audit-message" role="status" aria-live="polite"></p><div class="audit-layout"><section aria-labelledby="audit-history-title"><h4 id="audit-history-title">점검 이력</h4><div id="audit-history"></div></section><section id="audit-detail" aria-label="점검 보고서"></section></div></section>` : ''}
     ${!ed ? `<table class="issues projects-table"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
-      ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td><a class="project-title" data-project-link="${esc(p.key)}" href="#/projects?project=${encodeURIComponent(p.key)}&tab=manage">${esc(p.name)}</a></td><td class="hide-m">${esc(p.repo_url)}</td>
+      ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td><a class="project-title" data-project-link="${esc(p.key)}" href="#/projects?project=${encodeURIComponent(p.key)}&tab=manage">${esc(p.name)}</a><div class="sub"><span data-project-service="${esc(p.key)}">상태 확인 중…</span></div></td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
         <td><button class="danger" data-delete-project="${esc(p.key)}" title="프로젝트 삭제" aria-label="${esc(p.name)} 프로젝트 삭제"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg></button></td></tr>`).join('')}
       ${projects.length ? '' : '<tr><td colspan="6"><div class="empty">프로젝트가 없어요. 아래 + 버튼으로 등록해 주세요.</div></td></tr>'}
       <tr class="project-create-row"><td colspan="6"><button type="button" id="project-add" title="프로젝트 추가" aria-label="프로젝트 추가"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button></td></tr></tbody></table><dialog id="project-dialog" aria-labelledby="project-create-title"><button type="button" id="project-close" title="닫기" aria-label="닫기"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button>${projectForm}</dialog>` : ''}</div>`;
   const val = (s) => view.querySelector(s).value;
   const form = view.querySelector('#project-form');
+  function serviceLabel(state){
+    if(state.status === 'running') return state.phase || '연결 중';
+    if(state.online === true) return '서비스 중';
+    if(state.online === false) return '접속 확인 실패';
+    return state.status === 'disconnected' ? '연결 해제' : '미연결';
+  }
+  if(!ed) projects.forEach(async project => {
+    const target = view.querySelector(`[data-project-service="${project.key}"]`);
+    try{
+      const state = await api('GET', `/api/projects/${encodeURIComponent(project.key)}/service`);
+      if(!target?.isConnected) return;
+      target.className = 'status'; target.style.setProperty('--sc', `var(--s-${state.online ? 'done' : state.online === false ? 'changes_requested' : 'backlog'})`);
+      target.textContent = serviceLabel(state); target.title = state.url;
+    }catch(error){ if(target?.isConnected) target.textContent = '상태 확인 실패'; }
+  });
   if(ed && projectTab === 'manage'){
     const section = view.querySelector('.project-service'), message = section.querySelector('#p-service-status');
     const connect = section.querySelector('#p-service-connect'), disconnect = section.querySelector('#p-service-disconnect');
@@ -1472,9 +1487,10 @@ function renderProjects(editKey, projectTab = 'manage'){
         if(!section.isConnected) return;
         serviceBusy = state.status === 'running';
         connect.disabled = serviceBusy || !!ed.archived || !ed.service_domain || !ed.service_port || !!state.setup_error;
-        disconnect.disabled = serviceBusy || !state.domain || !!state.setup_error;
-        connect.textContent = serviceBusy ? '처리 중…' : (state.domain ? '연결 변경 반영' : '서비스 연결');
-        message.textContent = [state.phase || '미연결', state.changed ? '저장한 도메인·포트는 아직 반영되지 않았어요.' : '', state.error, state.setup_error].filter(Boolean).join(' ');
+        disconnect.disabled = serviceBusy || !state.managed || !!state.setup_error;
+        connect.textContent = serviceBusy ? '처리 중…' : (state.managed ? '연결 변경 반영' : '서비스 연결');
+        message.textContent = [serviceLabel(state), state.phase, state.observed_port ? `로컬 포트 ${state.observed_port}` : '', state.changed ? '저장한 도메인·포트는 아직 반영되지 않았어요.' : '', state.error, state.setup_error].filter(Boolean).join(' ');
+        if(!ed.service_port && state.observed_port && !form.querySelector('#p-port').value) form.querySelector('#p-port').value = state.observed_port;
         if(state.url){ const link = document.createElement('a'); link.href = state.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = state.url; message.append(' ', link); }
         if(serviceBusy) serviceTimer = setTimeout(() => { if(section.isConnected) refreshService(); }, 2000);
       }catch(error){ if(section.isConnected){ message.textContent = error.message; if(serviceBusy) serviceTimer = setTimeout(() => { if(section.isConnected) refreshService(); }, 3000); } }
