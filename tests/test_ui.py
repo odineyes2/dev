@@ -145,8 +145,8 @@ def check_project_audits(page, shots):
     assert page.request.delete(BASE + '/api/projects/AUDIT', headers=headers,
                                data={'confirmation_token': token}).ok
     page.goto(BASE + '/#/projects'); page.reload()
-    page.wait_for_selector('#project-create')
-    assert page.locator('[data-edit="AUDIT"]').count() == 0
+    page.wait_for_selector('.projects-page')
+    assert page.locator('[data-project-link="AUDIT"]').count() == 0
     page.set_viewport_size({'width':1300, 'height':850})
 
 
@@ -610,11 +610,11 @@ def check_auto_settings(page, shots):
     page.wait_for_function("document.querySelector('#auto_approve')?.getAttribute('aria-checked') === 'false'")
     page.select_option('#project-filter', 'AUTOA')
     page.wait_for_selector('.settings-skeleton')
-    page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+    page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
     assert len(held) == 1
     held.pop().fulfill(status=500, content_type='application/json', body='{"detail":"late load"}')
     page.wait_for_timeout(100)
-    assert page.locator('#project-create').is_visible()
+    assert page.locator('.project-create-row').is_visible()
     page.unroute('**/api/projects/AUTOA/auto-settings', hold)
     page.goto(BASE + '/#/settings'); page.wait_for_selector('#auto_review')
     page.wait_for_timeout(3200)  # 실패 토스트가 캡처의 도움말을 가리지 않도록 기다린다.
@@ -638,7 +638,7 @@ def check_auto_settings(page, shots):
     for key in ('AUTOA', 'AUTOB'):
         assert page.request.delete(BASE + '/api/projects/' + key, headers=H).ok
     page.evaluate("localStorage.removeItem('dev.project')")
-    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
 
 
 def check_settings_navigation(page, shots):
@@ -670,7 +670,7 @@ def check_settings_navigation(page, shots):
     assert page.url.endswith('/#/settings/types')
     page.select_option('#project-filter', 'NAVA'); selected('types', '#type-create')
     page.select_option('#project-filter', 'NAVB'); selected('types', '#type-create')
-    page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+    page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
     assert page.locator('#settings-nav').count() == 0
 
     # 같은 주소로 돌아와도 앞선 조회가 최신 화면을 덮지 않아야 한다.
@@ -745,40 +745,25 @@ def check_settings_navigation(page, shots):
     for key in ('NAVA', 'NAVB'):
         assert page.request.delete(BASE + '/api/projects/' + key, headers=H).ok
     page.evaluate("localStorage.removeItem('dev.project')")
-    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
 
 
-def check_project_dialog(page, shots):
-    """생성창의 키보드·오류 복구·경합과 네 화면을 브라우저에서 검사한다."""
-    opener = page.locator('#project-create')
-    dialog = page.locator('#project-dialog')
-    assert dialog.is_hidden()
+def check_project_row(page, shots):
+    """생성 행의 키보드·오류 복구·경합과 네 화면을 브라우저에서 검사한다."""
+    form = page.locator('#project-form')
+    assert page.locator('#project-dialog, #project-create, [data-edit]').count() == 0
+    assert page.locator('.projects-table tbody > tr:last-child #project-form').count() == 1
     for scheme in ('light', 'dark'):
-        page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
-        page.emulate_media(color_scheme=scheme)
-        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
-            page.set_viewport_size({'width': width, 'height': 850})
-            box = opener.bounding_box()
-            assert box['width'] >= 40 and box['height'] >= 40 and box['x'] >= 0
-            page.screenshot(path=str(shots / f'project_button_{scheme}_{tag}.png'), full_page=True)
-            opener.click()
+        page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width':width,'height':850})
+            page.fill('#p-name', '입력 상태 확인')
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path=str(shots / f'project-row-{scheme}-{width}.png'), full_page=True)
+            page.click('#p-cancel')
+            assert page.input_value('#p-name') == ''
             assert page.locator('#p-key').evaluate('e => e === document.activeElement')
-            box = dialog.bounding_box()
-            assert box['x'] >= 0 and box['x'] + box['width'] <= width
-            assert box['y'] >= 0 and box['y'] + box['height'] <= 850
-            assert dialog.evaluate('e => e.scrollWidth <= e.clientWidth + 1')
-            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
-            page.keyboard.press('Tab')
-            assert dialog.evaluate('e => e.contains(document.activeElement)')
-            page.screenshot(path=str(shots / f'project_dialog_{scheme}_{tag}.png'), full_page=True)
-            page.keyboard.press('Escape')
-            assert dialog.is_hidden() and opener.evaluate('e => e === document.activeElement')
-            opener.click(); page.click('#p-cancel')
-            assert dialog.is_hidden() and opener.evaluate('e => e === document.activeElement')
-    page.set_viewport_size({'width': 1300, 'height': 850})
-    page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
-    page.emulate_media(color_scheme='light')
-    opener.click()
+    page.set_viewport_size({'width':1300,'height':850})
     values = {'#p-key': 'BAD', '#p-name': '입력 보존', '#p-repo': 'https://example.com/repo.git', '#p-path': '/tmp/repo'}
     for selector, value in values.items():
         page.fill(selector, value)
@@ -797,31 +782,65 @@ def check_project_dialog(page, shots):
     assert len(pending) == 1 and page.is_disabled('#p-cancel')
     page.evaluate("document.querySelector('#project-form').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}))")
     page.keyboard.press('Escape'); page.wait_for_timeout(100)
-    assert dialog.is_visible() and len(pending) == 1
+    assert form.is_visible() and len(pending) == 1
     pending.pop().fulfill(status=400, content_type='application/json', body=json.dumps({'detail': '검사 오류'}))
     page.wait_for_selector('#project-error:text("검사 오류")')
     assert all(page.input_value(selector) == value for selector, value in values.items())
     assert page.is_enabled('#p-cancel') and page.is_enabled('#project-form button[type=submit]')
     page.unroute('**/api/projects', hold)
     page.click('#p-cancel')
-    assert opener.evaluate('e => e === document.activeElement')
-    opener.click()
+    assert page.locator('#p-key').evaluate('e => e === document.activeElement')
     assert page.input_value('#p-key') == ''
     page.click('#p-cancel')
     page.goto(BASE + '/#/new'); page.wait_for_selector('text=먼저')
     assert page.locator('#project-create').count() == 0
-    page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+    page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+
+
+def check_project_navigation(page):
+    """제목 탐색·범위 유지·보관과 개별 서브탭의 목록 부재를 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers,
+                             data={'key':'NAV', 'name':'제목 탐색'}).ok
+    page.goto(BASE + '/#/projects'); page.reload()
+    link = page.locator('[data-project-link="NAV"]')
+    link.wait_for()
+    assert link.get_attribute('href') == '#/projects?project=NAV&tab=manage'
+    link.focus(); page.keyboard.press('Enter')
+    page.wait_for_selector('#p-key:disabled')
+    assert page.input_value('#p-key') == 'NAV'
+    page.fill('#p-name', '변경한 제목')
+    with page.expect_response('**/api/projects/NAV'):
+        page.click('#project-form button[type=submit]')
+    page.wait_for_function("document.querySelector('#p-name').value === '변경한 제목' && !document.querySelector('#project-form').hasAttribute('aria-busy')")
+    assert page.url.endswith('project=NAV&tab=manage')
+    for tab in ('documents', 'usage', 'audits', 'manage'):
+        page.click(f'[data-project-tab="{tab}"]')
+        assert page.locator('.projects-table, .project-create-row, #project-create, #project-dialog, [data-project-link]').count() == 0
+    page.click('#p-cancel')
+    page.wait_for_selector('[data-archive="NAV"]')
+    for archived in (True, False):
+        page.locator('[data-archive="NAV"]').set_checked(archived)
+        page.wait_for_function("v => projects.find(p => p.key === 'NAV').archived === v", arg=archived)
+        assert page.url.endswith('#/projects')
+    page.click('[data-project-link="NAV"]')
+    page.wait_for_selector('#p-key:disabled')
+    assert page.input_value('#p-name') == '변경한 제목'
+    page.click('.management-back')
+    page.wait_for_selector('[data-delete-project="NAV"]')
+    page.click('[data-delete-project="NAV"]')
+    page.wait_for_selector('[data-project-link="NAV"]', state='detached')
+    assert page.url.endswith('#/projects')
 
 
 def check_project_documents(page, shots):
     """설명 저장과 문서 요청·재시도·원문 안전성·반응형 화면을 검사한다."""
-    page.click('#project-create')
     page.fill('#p-key', 'DOC'); page.fill('#p-name', '문서 프로젝트')
     page.fill('#p-path', '/mock/docs'); page.fill('#p-description', '제품 의도 <script>')
     page.click('#project-form button[type=submit]')
-    page.wait_for_selector('[data-edit="DOC"]')
+    page.wait_for_selector('[data-project-link="DOC"]')
     assert next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key'] == 'DOC')['description'] == '제품 의도 <script>'
-    page.click('[data-edit="DOC"]'); page.fill('#p-description', '수정한 설명')
+    page.click('[data-project-link="DOC"]'); page.wait_for_selector('#p-key:disabled'); page.fill('#p-description', '수정한 설명')
     page.click('#project-form button[type=submit]')
     page.wait_for_selector('#p-description')
     page.wait_for_function("document.querySelector('#p-description').value === '수정한 설명'")
@@ -922,7 +941,7 @@ def check_project_documents(page, shots):
     page.unroute('**/api/projects/DOC/documents/request', request)
     assert page.request.delete(BASE + '/api/projects/DOC', headers={'X-Requested-With':'dev'}).ok
     page.set_viewport_size({'width':1300,'height':850})
-    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
 
 
 def check_project_flows(page, shots, answers, asked):
@@ -955,9 +974,9 @@ def check_project_flows(page, shots, answers, asked):
         r = page.request.post(BASE + '/api/projects', headers=H, data={'key':key,'name':key,**fields})
         assert r.ok, r.text()
     def refresh():
-        page.reload(); page.wait_for_selector('#project-create')
+        page.reload(); page.wait_for_selector('.projects-page')
     def empty_form(key, name):
-        page.click('#project-create'); page.fill('#p-key', key); page.fill('#p-name', name)
+        page.fill('#p-key', key); page.fill('#p-name', name)
         page.click('#project-form button[type=submit]')
     create('REF', repo_url='https://example.com/team/old.git', local_path='/work/old/')
     refresh(); empty_form('NEW', 'new')
@@ -1048,7 +1067,7 @@ def check_project_usage(page, shots):
     def open_usage(key='USAGE'):
         page.goto(BASE + f'/#/projects?project={key}&tab=usage')
         page.wait_for_selector('#usage-body[aria-busy="false"]')
-    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('[data-edit="USAGE"]')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('[data-project-link="USAGE"]')
     open_usage()
     assert page.locator('#project-form').is_hidden() and page.locator('.project-docs').is_hidden()
     assert page.locator('[data-project-tab="usage"]').get_attribute('aria-current') == 'page'
@@ -1095,7 +1114,7 @@ def check_project_usage(page, shots):
     page.wait_for_selector('.usage-skeleton')
     assert page.locator('#usage-refresh').is_disabled()
     page.wait_for_timeout(100); assert pending
-    page.click('[data-edit="EMPTY"]'); page.click('[data-project-tab="usage"]')
+    page.goto(BASE + '/#/projects?project=EMPTY&tab=manage'); page.wait_for_selector('#p-key:disabled'); page.click('[data-project-tab="usage"]')
     page.wait_for_selector('#usage-body[aria-busy="false"]')
     pending.pop().fulfill(status=401, json={'detail': '이전 화면 응답'})
     page.wait_for_timeout(100)
@@ -1134,7 +1153,7 @@ def check_project_usage(page, shots):
         db.execute("DELETE FROM projects WHERE key IN ('USAGE','EMPTY')")
     page.evaluate("localStorage.setItem('dev.theme','light');document.documentElement.dataset.theme='light'")
     page.emulate_media(color_scheme='light')
-    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
 
 
 def check_account_menu(page, shots):
@@ -1394,7 +1413,7 @@ def check_list_loading(page, shots):
         assert page.locator('.list-loading').count() == 0
 
     page.goto(BASE + '/#/projects')
-    page.wait_for_selector('#project-create')
+    page.wait_for_selector('.projects-page')
     page.goto(BASE + '/#/')
     request_count(1)
     first = pending.pop(0)
@@ -1484,7 +1503,7 @@ def check_list_loading(page, shots):
     for status in (200, 500):
         old = reload_list()
         page.fill('#q', '나중 검색')
-        page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+        page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
         reply(old, [item(99)], more=True, status=status)
         page.wait_for_timeout(500)
         assert page.locator('#project-form').count() == 1
@@ -2015,7 +2034,7 @@ def check_board_actions(page, shots, answers, asked):
         page.unroute('**/api/issues?*',issues); page.unroute('**/api/projects/*/auto-settings',auto); page.unroute('**/api/issues/ACT-**',action)
         page.set_viewport_size({'width':1300,'height':850})
         page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
-        page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+        page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
 
 
 def check_project_initialization(page, shots):
@@ -2048,8 +2067,8 @@ def check_project_initialization(page, shots):
     page.route('**/api/projects/INIT/initialization/retry', retry)
     page.route('**/api/projects/INIT/initialization/cancel', cancel_initialization)
     try:
-        page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create'); page.click('#project-create')
-        page.fill('#p-key', 'INIT'); page.fill('#p-name', '기획서 생성 검사'); page.fill('#p-folder', 'init-demo')
+        page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+        page.click('.project-spec summary'); page.fill('#p-key', 'INIT'); page.fill('#p-name', '기획서 생성 검사'); page.fill('#p-folder', 'init-demo')
         page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("첨부")')
         assert not requests
         page.set_input_files('#p-spec', {'name': 'example.md', 'mimeType': 'text/markdown', 'buffer': '# 간단한 개인 도구\n기술 스택은 미정'.encode()})
@@ -2059,7 +2078,7 @@ def check_project_initialization(page, shots):
                 page.set_viewport_size({'width': width, 'height': 900})
                 page.wait_for_timeout(150)
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-                assert page.locator('#project-dialog').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+                assert page.locator('#project-form').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
                 page.screenshot(path=str(shots / f'project-initialization-{theme}-{width}.png'))
         page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("요청 확인 실패")')
         page.locator('#p-initialize').evaluate('e => {e.click();e.click()}')
@@ -2095,7 +2114,7 @@ def check_project_initialization(page, shots):
         page.request.delete(BASE + '/api/projects/INIT', headers={'X-Requested-With': 'dev'})
         page.set_viewport_size({'width': 1300, 'height': 850})
         page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
-        page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-create')
+        page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
 
 
 def check_new_issue_fields(page):
@@ -2223,6 +2242,17 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--project-registration-only' in sys.argv:
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+            check_project_row(page, shots)
+            check_project_navigation(page)
+            check_project_flows(page, shots, answers, asked)
+            check_project_documents(page, shots)
+            check_project_usage(page, shots)
+            check_project_audits(page, shots)
+            check_project_initialization(page, shots)
+            assert not errs, errs
+            print('OK: project registration'); sys.exit(0)
         if '--management-agents-only' in sys.argv:
             check_management_agents(page, shots)
             assert not errs, errs
@@ -2232,21 +2262,21 @@ try:
             assert not errs, errs
             print('OK: management layout'); sys.exit(0)
         if '--management-projects-only' in sys.argv:
-            page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
-            check_project_dialog(page, shots)
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+            check_project_row(page, shots)
             check_project_documents(page, shots)
             check_project_usage(page, shots)
             check_project_audits(page, shots)
             assert not errs, errs
             print('OK: management projects'); sys.exit(0)
         if '--management-only' in sys.argv:
-            page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
-            check_project_dialog(page, shots)
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+            check_project_row(page, shots)
             check_management_layout(page, shots)
             check_management_agents(page, shots)
             check_settings_navigation(page, shots)
             check_auto_settings(page, shots)
-            page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-create')
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
             check_project_documents(page, shots)
             check_project_usage(page, shots)
             check_project_audits(page, shots)
@@ -2277,7 +2307,7 @@ try:
             # 전체 흐름에서 점검 검사 다음에 생성하는 첫 NS Issue의 프로젝트·번호를 유지한다.
             assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
                                      data={'key': 'NS', 'name': '점검 이후 발행 검사'}).ok
-            page.reload(); page.wait_for_selector('[data-edit="NS"]')
+            page.reload(); page.wait_for_selector('[data-project-link="NS"]')
             page.click('a[href="#/new"]'); page.wait_for_selector('#new-form')
             assert page.input_value('#n-project') == 'NS'
             page.fill('#n-title', '점검 이후 첫 Issue')
@@ -2337,7 +2367,7 @@ try:
         page.click("a[href=\"#/new\"]")
         page.wait_for_selector("text=먼저")
         page.goto(BASE + "/#/projects")
-        check_project_dialog(page, shots)
+        check_project_row(page, shots)
         check_project_flows(page, shots, answers, asked)
         check_project_documents(page, shots)
         check_project_usage(page, shots)
@@ -2350,31 +2380,19 @@ try:
             assert not errs, errs
             print('OK: project flows')
             sys.exit(0)
-        page.click("#project-create")
         page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button[type=submit]")
         page.wait_for_selector("td.ref:text('NS')")
         assert page.get_attribute("#p-path", "placeholder").startswith("C:\\Users\\")
-        # Modify — 키는 잠기고, 이름·경로가 바뀐다
-        assert page.inner_text('[data-edit="NS"]').strip() == "Modify"
-        # 연필 아이콘 + 보조(테두리) 버튼
-        assert page.locator('[data-edit="NS"] use[href="#i-pencil"]').count() == 1
-        edit_btn = page.eval_on_selector('[data-edit="NS"]', """b => { const s = getComputedStyle(b);
-            return {ghost: b.classList.contains('ghost'), style: s.borderTopStyle, color: s.borderTopColor}; }""")
-        assert not edit_btn["ghost"] and edit_btn["style"] == "solid", edit_btn
-        assert edit_btn["color"] not in ("transparent", "rgba(0, 0, 0, 0)"), edit_btn
-        assert page.get_attribute('[data-edit="NS"]', 'aria-label') == 'Modify'
-        # 모바일은 연필 아이콘만, 테두리는 그대로
-        page.set_viewport_size({'width':390,'height':850})
-        assert page.eval_on_selector('[data-edit="NS"] .hide-m', "e => getComputedStyle(e).display") == "none"
-        assert page.locator('[data-edit="NS"] use[href="#i-pencil"]').is_visible()
-        assert page.eval_on_selector('[data-edit="NS"]', "b => getComputedStyle(b).borderTopStyle") == "solid"
-        page.set_viewport_size({'width':1300,'height':850})
-        page.click('[data-edit="NS"]')
+        assert page.locator('[data-edit], #project-create, #project-dialog').count() == 0
+        link = page.locator('[data-project-link="NS"]')
+        assert link.get_attribute('href') == '#/projects?project=NS&tab=manage'
+        link.focus(); page.keyboard.press('Enter')
+        page.wait_for_selector('#p-key:disabled')
+        assert page.locator('.projects-table, .project-create-row').count() == 0
         assert page.is_disabled("#p-key") and page.input_value("#p-name") == "nightshift"
         page.fill("#p-path", r"C:\Users\Simon Lomebrote\Projects\nightshift")
         page.click("#project-form button[type=submit]")
-        page.wait_for_function("p => [...document.querySelectorAll('td')].some(td => td.textContent === p)",
-                               arg=r"C:\Users\Simon Lomebrote\Projects\nightshift")
+        page.wait_for_function("document.querySelector('#p-path').value.includes('nightshift') && !document.querySelector('#project-form').hasAttribute('aria-busy')")
         assert page.is_disabled("#p-key")   # 저장 후에도 현재 프로젝트 관리 범위를 유지한다.
         # Description 자동 작성 — POST 요청, 저장 안 한 변경이면 확인 창, 결과 문구·Issue 링크(모의 응답)
         desc_posts = []
@@ -2392,13 +2410,13 @@ try:
             page.click("#p-description-request")
         assert len(asked) == 2 and desc_posts == ["POST", "POST"]
         page.unroute("**/api/projects/NS/description/request")
-        page.click('[data-edit="NS"]'); page.click("#p-cancel")
+        page.click("#p-cancel")
         page.check('[data-archive="NS"]')
         page.wait_for_function("projects.find(p => p.key === 'NS').archived")
         page.wait_for_selector('[data-archive="NS"]:checked')
         page.uncheck('[data-archive="NS"]')
         page.wait_for_function("!projects.find(p => p.key === 'NS').archived")
-        assert page.locator("#project-dialog").is_hidden()
+        assert page.locator("#project-dialog").count() == 0
 
         page.click("a[href=\"#/new\"]")
         page.fill("#n-title", "보드 카드 복사")

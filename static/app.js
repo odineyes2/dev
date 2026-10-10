@@ -1423,54 +1423,44 @@ function projectSuggestion(name){
   return fields.repo_url || fields.local_path ? fields : null;
 }
 
-// 생성은 라이트박스, 수정은 기존 인라인 폼에서 한다.
+// 목록의 마지막 행에서 생성하고 개별 관리 화면에서 수정한다.
 function renderProjects(editKey, projectTab = 'manage'){
   const ed = projects.find(p => p.key === editKey);
   if(!['manage', 'documents', 'usage', 'audits'].includes(projectTab)) projectTab = 'manage';
   history.replaceState(null, '', ed ? `#/projects?project=${encodeURIComponent(ed.key)}&tab=${projectTab}` : '#/projects');
-  view.innerHTML = `
-    <div class="projects-page panel management-card">
-    ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'documents', 'usage', 'audits'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '문서', '사용량', '목표 대비 현황 점검'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
-    <button class="${ed && projectTab === 'audits' ? '' : 'primary '}project-create${ed && ['usage', 'audits'].includes(projectTab) ? ' project-create-inline' : ''}" id="project-create" type="button" aria-haspopup="dialog"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>프로젝트 추가</button>
-    ${ed ? '' : '<dialog class="project-dialog" id="project-dialog" aria-labelledby="project-dialog-title">'}
-    <form class="form panel" id="project-form" ${ed && projectTab !== 'manage' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-dialog-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
+  const projectForm = `
+    <form class="form panel" id="project-form" ${ed && projectTab !== 'manage' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-create-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
       <label style="flex:0 0 90px">Key<input id="p-key" required placeholder="NS" maxlength="10" value="${esc(ed ? ed.key : '')}"${ed ? ' disabled' : ''}></label>
       <label>Name<input id="p-name" required placeholder="nightshift" value="${esc(ed ? ed.name : '')}"></label>
       <label>Repository<input id="p-repo" placeholder="https://github.com/…" value="${esc(ed ? ed.repo_url : '')}"></label>
       <label>Local path<input id="p-path" placeholder="C:\\Users\\…\\Projects\\…" value="${esc(ed ? ed.local_path : '')}"></label>
       <label class="project-description">프로젝트 설명<textarea id="p-description" maxlength="200000" placeholder="목적, 대상 사용자와 원하는 기능을 적어 주세요.">${esc(ed?.description || '')}</textarea></label>
       ${ed ? '<div class="project-description"><button type="button" id="p-description-request">현재 상태로 Description 작성</button><p id="p-description-status" role="status" aria-live="polite"></p></div>' : ''}
-      ${ed ? '' : `<div class="project-description"><h3>기획서로 시작</h3><p class="dim">기획서로 공식 문서·최소 개발 골격·로컬 Git·Issue·Task를 만들어요. 선택한 에이전트의 유료 분석을 시작하며, 개발 Task 실행은 별도 승인이 필요해요.</p><div class="line"><label>기획서<input id="p-spec" type="file" accept=".md,text/markdown"></label><label>Projects 하위 폴더명<input id="p-folder" placeholder="예: moai" maxlength="80"></label><label>분석 도구<select id="p-init-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label></div><p class="dim">UTF-8 Markdown · 최대 200KB. 위 Repository와 Local path는 기존 저장소 등록에 사용해요.</p><button type="button" id="p-initialize">초기 프로젝트 생성</button><p id="p-init-message" role="status" aria-live="polite"></p></div>`}
+      ${ed ? '' : `<details class="project-description project-spec"><summary>기획서로 시작</summary><p class="dim">기획서로 공식 문서·최소 개발 골격·로컬 Git·Issue·Task를 만들어요. 선택한 에이전트의 유료 분석을 시작하며, 개발 Task 실행은 별도 승인이 필요해요.</p><div class="line"><label>기획서<input id="p-spec" type="file" accept=".md,text/markdown"></label><label>Projects 하위 폴더명<input id="p-folder" placeholder="예: moai" maxlength="80"></label><label>분석 도구<select id="p-init-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label></div><p class="dim">UTF-8 Markdown · 최대 200KB. 위 Repository와 Local path는 기존 저장소 등록에 사용해요.</p><button type="button" id="p-initialize">초기 프로젝트 생성</button><p id="p-init-message" role="status" aria-live="polite"></p></details>`}
       <label class="actions">${ed ? '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">저장</button>'
-        : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">프로젝트 추가</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
-    ${ed ? '' : '</dialog>'}
+        : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">등록</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
+`;
+  view.innerHTML = `
+    <div class="projects-page panel management-card">
+    ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'documents', 'usage', 'audits'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '문서', '사용량', '목표 대비 현황 점검'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
+    ${ed ? projectForm : ''}
     ${ed ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
     ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg><span>Codex로 문서 생성</span></button><button type="button" data-doc-provider="claude"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg><span>Claude로 문서 생성</span></button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'audits' ? `<section class="panel project-audits" aria-labelledby="audit-title"><div class="audit-toolbar"><h3 id="audit-title">목표 대비 현황 점검</h3><button type="button" id="audit-refresh">새로고침</button></div><p class="dim">기준 문서와 현재 코드·검사·Issue 이력을 비교해요. 후보 발행 후 Plan 승인과 Task 실행은 기존 절차를 따라요.</p><div class="audit-toolbar"><label>분석 도구 <select id="audit-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><button type="button" class="primary" id="audit-start" disabled>유료 점검 시작</button></div><div id="audit-preflight" aria-live="polite"></div><p id="audit-message" role="status" aria-live="polite"></p><div class="audit-layout"><section aria-labelledby="audit-history-title"><h4 id="audit-history-title">점검 이력</h4><div id="audit-history"></div></section><section id="audit-detail" aria-label="점검 보고서"></section></div></section>` : ''}
-    ${projects.length ? `<table class="issues"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
-      ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td>${esc(p.name)}</td><td class="hide-m">${esc(p.repo_url)}</td>
+    ${!ed ? `<table class="issues projects-table"><thead><tr><th>Key</th><th>Name</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th>Archived</th><th></th></tr></thead><tbody>
+      ${projects.map(p => `<tr><td class="ref">${esc(p.key)}</td><td><a class="project-title" data-project-link="${esc(p.key)}" href="#/projects?project=${encodeURIComponent(p.key)}&tab=manage">${esc(p.name)}</a></td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
-        <td><button data-edit="${esc(p.key)}" title="Modify" aria-label="Modify"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg><span class="hide-m">Modify</span></button><button class="danger" data-delete-project="${esc(p.key)}" title="프로젝트 삭제" aria-label="${esc(p.name)} 프로젝트 삭제"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg></button></td></tr>`).join('')}
-      </tbody></table>` : '<div class="empty">프로젝트가 없어요.</div>'}</div>`;
+        <td><button class="danger" data-delete-project="${esc(p.key)}" title="프로젝트 삭제" aria-label="${esc(p.name)} 프로젝트 삭제"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg></button></td></tr>`).join('')}
+      ${projects.length ? '' : '<tr><td colspan="6"><div class="empty">프로젝트가 없어요. 아래에서 등록해 주세요.</div></td></tr>'}
+      <tr class="project-create-row"><td colspan="6">${projectForm}</td></tr></tbody></table>` : ''}</div>`;
   const val = (s) => view.querySelector(s).value;
-  const opener = view.querySelector('#project-create');
-  const dialog = view.querySelector('#project-dialog');
   const form = view.querySelector('#project-form');
   let saving = false;
   let initRequest = null;
   let suggestion = null;
   const clearSuggestion = () => { suggestion = null; form.querySelector('#project-suggestion')?.remove(); };
   form.addEventListener('input', () => { clearSuggestion(); if(!saving) initRequest = null; });
-  opener.addEventListener('click', () => {
-    if(ed){ renderProjects(); view.querySelector('#project-create').click(); return; }
-    form.reset(); clearSuggestion(); initRequest = null; view.querySelector('#project-error').textContent = '';
-    dialog.showModal(); view.querySelector('#p-key').focus();
-  });
-  if(dialog){
-    dialog.addEventListener('close', () => opener.focus());
-    dialog.addEventListener('cancel', e => { if(saving) e.preventDefault(); });
-  }
   const initialize = view.querySelector('#p-initialize');
   if(initialize) initialize.onclick = () => {
     if(form.reportValidity()) form.dispatchEvent(new SubmitEvent('submit', {bubbles:true, cancelable:true, submitter:initialize}));
@@ -1502,7 +1492,7 @@ function renderProjects(editKey, projectTab = 'manage'){
         const result = await api('POST', '/api/projects/initialize', initRequest);
         await loadProjects();
         if(!form.isConnected) return;
-        dialog.close(); renderProjects(result.key);
+        renderProjects(result.key);
         toast('초기 프로젝트 생성을 시작했어요. 진행 상태를 확인해 주세요.');
         return;
       }
@@ -1530,8 +1520,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       else await api('POST', '/api/projects', { key: val('#p-key'), ...fields });
       await loadProjects();
       if(!form.isConnected) return;
-      if(dialog) dialog.close();
-      renderProjects(ed?.key); view.querySelector(ed ? '#p-name' : '#project-create').focus();
+      renderProjects(ed?.key); view.querySelector(ed ? '#p-name' : '#p-key').focus();
       toast(ed ? '고쳤어요' : '만들었어요');
     }catch(error){
       if(form.isConnected) view.querySelector('#project-error').textContent = `${error.message} 입력을 확인하고 다시 시도해 주세요.`;
@@ -1569,8 +1558,9 @@ function renderProjects(editKey, projectTab = 'manage'){
     refreshInitialization();
   }
   view.querySelector('#p-cancel').addEventListener('click', () => {
-    if(ed){ renderProjects(); view.querySelector('#project-create').focus(); }
-    else dialog.close();
+    if(ed) renderProjects();
+    else { form.reset(); clearSuggestion(); initRequest = null; view.querySelector('#project-error').textContent = ''; view.querySelector('#p-init-message').textContent = ''; }
+    view.querySelector('#p-key').focus();
   });
   const descRequest = view.querySelector('#p-description-request');
   if(descRequest) descRequest.addEventListener('click', () => {
@@ -1591,7 +1581,6 @@ function renderProjects(editKey, projectTab = 'manage'){
   if(ed && projectTab === 'documents') bindProjectDocuments(ed);
   if(ed && projectTab === 'usage') bindProjectUsage(ed);
   if(ed && projectTab === 'audits') bindProjectAudits(ed);
-  view.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { renderProjects(b.dataset.edit); window.scrollTo(0, 0); }));
   view.querySelectorAll('[data-delete-project]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
     const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;
     const state = await api('GET', `${url}/delete-check`);

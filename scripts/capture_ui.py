@@ -54,6 +54,8 @@ def seed_fixture(request, base, fixture):
         if not response.ok:
             raise RuntimeError(f'fixture API 실패: {path} ({response.status})')
         return response.json()
+    if fixture == 'projects-empty':
+        return
     post('/api/projects', {'key': 'DEV', 'name': 'UI 캡처', 'description': '임시 화면 확인용 프로젝트'})
     if fixture == 'detail':
         issue = post('/api/issues', {'project': 'DEV', 'title': '화면 확인용 Issue',
@@ -65,7 +67,7 @@ def seed_fixture(request, base, fixture):
 def wait_screen(page, route):
     name = route[2:].split('?')[0]
     selector = {'': '#project-filter', 'board': '.kanban', 'new': '#new-form',
-                'agents': '#agent-form', 'projects': '#project-create',
+                'agents': '#agent-form', 'projects': '.projects-page',
                 'settings': '.auto-settings', 'settings/auto': '.auto-settings',
                 'types': '.type-management', 'settings/types': '.type-management'}.get(name, '#view')
     page.wait_for_selector(selector)
@@ -133,6 +135,15 @@ def capture(route='#/', fixture='empty'):
                             page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
                             page.goto(base + '/' + route)
                             wait_screen(page, route)
+                            if fixture == 'projects-input':
+                                page.fill('#p-key', 'DEMO')
+                                page.fill('#p-name', '새 프로젝트')
+                                page.fill('#p-description', '입력 중인 프로젝트 설명을 확인해요.')
+                                page.click('.project-spec summary')
+                                page.fill('#p-folder', 'demo')
+                                page.evaluate('window.scrollTo(0, 0)')
+                                page.wait_for_timeout(150)
+                            page.wait_for_selector('#toast', state='hidden')
                             filename = f'{theme}-{width}.png'
                             page.screenshot(path=str(directory / filename), full_page=True)
                             manifest['captures'].append({'path': (directory / filename).relative_to(ROOT).as_posix(),
@@ -166,7 +177,7 @@ def capture(route='#/', fixture='empty'):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--route', default='#/')
-    parser.add_argument('--fixture', choices=('empty', 'detail'), default='empty', help='detail fixture의 Issue는 DEV-1이다')
+    parser.add_argument('--fixture', choices=('empty', 'detail', 'projects-empty', 'projects-input'), default='empty', help='detail fixture의 Issue는 DEV-1이다')
     args = parser.parse_args()
     try:
         directory, manifest = capture(args.route, args.fixture)
