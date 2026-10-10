@@ -1,10 +1,12 @@
 """서비스 연결의 권한·저장·충돌·터널 보존·실패 복구를 실제 임시 DB와 파일로 검사한다."""
 import os
+import errno
+import socket
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ['DEV_DATA_DIR'] = tempfile.mkdtemp()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'server'))
@@ -68,6 +70,85 @@ class ServiceTest(unittest.TestCase):
         with self.assertRaises(issues.StoreError):
             issues.update_project(H, 'OTHER', {'service_domain': 'app.example.com'})
         self.assertEqual(next(p for p in issues.list_projects() if p['key'] == 'OTHER')['service_domain'], '')
+
+    def test_free_port_reservations_and_socket_cleanup(self):
+        issues.create_project(H, 'OLD', '보관', service_port=8401)
+        issues.update_project(H, 'OLD', {'archived': True})
+        with db.connect() as c:
+            c.execute("INSERT INTO project_services(project_id, port, status, actor, action, updated_at) VALUES (?, 8402, 'idle', 'test', 'connect', '')", (self.project['id'],))
+            before = [tuple(r) for r in c.execute('SELECT * FROM project_services')]
+        sockets = []
+        def factory(*args):
+            candidate = MagicMock()
+            candidate.__enter__.return_value = candidate
+            def bind(address):
+                if address[1] == 8405: raise OSError(errno.EADDRINUSE, 'occupied')
+                if address[1] == 8406: raise OSError(errno.EACCES, 'denied')
+            candidate.bind.side_effect = bind
+            sockets.append(candidate)
+            return candidate
+        with patch.object(config, 'PORT', 8403), patch.object(config, 'NIGHTSHIFT_URL', 'http://localhost:8404'), patch.object(service.socket, 'socket', side_effect=factory):
+            self.assertEqual(service.find_free_port(), 8407)
+        self.assertEqual([s.bind.call_args.args[0] for s in sockets], [('127.0.0.1', p) for p in (8405, 8406, 8407)])
+        for candidate in sockets:
+            candidate.__exit__.assert_called_once()
+            for call in candidate.setsockopt.call_args_list:
+                self.assertNotEqual(call.args[1], socket.SO_REUSEADDR)
+            if os.name == 'nt':
+                candidate.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        with db.connect() as c:
+            self.assertEqual(before, [tuple(r) for r in c.execute('SELECT * FROM project_services')])
+        self.assertEqual(self.path.read_bytes(), RAW)
+        self.commands.assert_not_called(); self.restart.assert_not_called()
+
+    def test_free_port_exhaustion_and_unexpected_error(self):
+        candidate = MagicMock(); candidate.__enter__.return_value = candidate
+        candidate.bind.side_effect = OSError(errno.EADDRINUSE, 'occupied')
+        with patch.object(service.socket, 'socket', return_value=candidate):
+            with self.assertRaises(issues.StoreError) as raised: service.find_free_port()
+        self.assertEqual(raised.exception.status, 503)
+        ports = [call.args[0][1] for call in candidate.bind.call_args_list]
+        self.assertEqual(ports, list(range(8401, 9000)))
+        self.assertEqual(candidate.__exit__.call_count, 599)
+        candidate.reset_mock(); candidate.bind.side_effect = OSError(errno.EMFILE, 'unexpected')
+        with patch.object(service.socket, 'socket', return_value=candidate):
+            with self.assertRaises(issues.StoreError) as raised: service.find_free_port()
+        self.assertEqual(raised.exception.status, 503)
+        candidate.__exit__.assert_called_once()
+        with patch.object(service.socket, 'socket', side_effect=OSError(errno.EMFILE, 'creation')):
+            with self.assertRaises(issues.StoreError): service.find_free_port()
+
+    def test_free_port_real_loopback_and_release(self):
+        # 실제 빈 후보를 찾고 점유한 동안 다음 후보를 추천하는지 확인한다.
+        port = service.find_free_port()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+            if os.name == 'nt': occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            occupied.bind(('127.0.0.1', port))
+            self.assertGreater(service.find_free_port(), port)
+        self.assertEqual(service.find_free_port(), port)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as released:
+            released.bind(('127.0.0.1', port))
+
+    def test_free_port_http_auth_routing_and_errors(self):
+        client = TestClient(app.app)
+        with patch.object(service, 'find_free_port', return_value=8401) as find:
+            for user, status in ((None, 401), ({'role': 'member'}, 403)):
+                with patch.object(auth, 'nightshift_user', AsyncMock(return_value=user)):
+                    self.assertEqual(client.get('/api/projects/free-port').status_code, status)
+            _, token = auth.create_agent('port-test')
+            self.assertEqual(client.get('/api/projects/free-port', headers={'Authorization': 'Bearer ' + token}).status_code, 403)
+            find.assert_not_called()
+            with patch.object(auth, 'nightshift_user', AsyncMock(return_value={'role': 'admin'})):
+                response = client.get('/api/projects/free-port')
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {'port': 8401})
+                self.assertEqual(response.headers['cache-control'], 'no-store')
+                for message in ('후보 고갈', '탐색 오류'):
+                    find.side_effect = issues.StoreError(message, 503)
+                    response = client.get('/api/projects/free-port')
+                    self.assertEqual(response.status_code, 503)
+                    self.assertEqual(response.json(), {'detail': message})
+                    self.assertEqual(response.headers['cache-control'], 'no-store')
 
     def test_existing_service_is_reported_without_taking_ownership(self):
         self.reachable.return_value = True

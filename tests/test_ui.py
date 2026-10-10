@@ -9,6 +9,117 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_free_port(page, shots):
+    """빈 포트 조회는 저장·운영 연결과 분리하고 비동기 폼 경합을 검사한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers, data={'key': 'PORT', 'name': '빈 포트 검사'}).ok
+    pending, calls, writes = [], [], []
+    def lookup(route):
+        calls.append(route.request.url); pending.append(route)
+    page.route('**/api/projects/free-port', lookup)
+    page.route('**/api/projects/PORT/service', lambda r: r.fulfill(json={}))
+    page.reload(); page.wait_for_selector('#shell:not([hidden])')
+    page.goto(BASE + '/#/projects?project=PORT&tab=manage'); page.wait_for_selector('#p-free-port')
+    def start():
+        page.locator('#p-free-port').focus(); page.keyboard.press('Enter')
+        page.wait_for_function("document.querySelector('#p-free-port').textContent === '찾는 중…'")
+        assert page.locator('#project-form [type=submit]').is_disabled()
+        page.wait_for_timeout(100)
+        assert pending
+    def answer(port=8490, error=''):
+        pending.pop(0).fulfill(status=503 if error else 200, json={'detail': error} if error else {'port': port})
+        page.wait_for_function("!document.querySelector('#p-free-port').disabled")
+    start()
+    # 프로그램 제출도 조회 중에는 저장하지 않는다. 중복 클릭도 요청 한 번이다.
+    page.evaluate("document.querySelector('#p-free-port').click(); document.querySelector('#project-form').dispatchEvent(new SubmitEvent('submit',{bubbles:true,cancelable:true,submitter:document.querySelector('#project-form [type=submit]')}))")
+    assert len(calls) == 1
+    answer()
+    assert page.input_value('#p-port') == '8490'
+    assert '저장해 주세요' in page.inner_text('#p-port-message')
+    assert next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key'] == 'PORT')['service_port'] == 0
+    start(); answer(error='빈 후보가 없어요.')
+    assert page.input_value('#p-port') == '8490'
+    assert '직접 입력' in page.inner_text('#p-port-message')
+    start(); page.fill('#p-port', '8555'); answer(8491)
+    assert page.input_value('#p-port') == '8555'
+    start(); page.fill('#p-port', ''); answer(8491)
+    assert page.input_value('#p-port') == ''
+    # 늦은 서비스 상태 자동 채움은 사용자가 비운 포트를 덮어쓰지 않는다.
+    page.unroute('**/api/projects/PORT/service')
+    page.route('**/api/projects/PORT/service', lambda r: r.fulfill(json={'observed_port': 8500}))
+    page.click('#p-service-refresh'); page.wait_for_function("document.querySelector('#p-service-status').textContent.includes('8500')")
+    assert page.input_value('#p-port') == ''
+    start(); answer(8492)
+    def save(route):
+        writes.append(route.request.post_data_json); pending.append(route)
+    page.route('**/api/projects/PORT', save)
+    page.click('#project-form [type=submit]')
+    page.wait_for_function("document.querySelector('#project-form').getAttribute('aria-busy') === 'true'")
+    assert page.locator('#p-free-port').is_disabled()
+    count = len(calls); page.evaluate("document.querySelector('#p-free-port').click()")
+    assert len(calls) == count
+    assert writes[-1]['service_port'] == '8492'
+    pending.pop(0).fulfill(status=409, json={'detail': '저장 충돌'})
+    page.wait_for_function("!document.querySelector('#p-free-port').disabled")
+    assert '저장 충돌' in page.inner_text('#project-error')
+    assert page.input_value('#p-port') == '8492'
+    page.unroute('**/api/projects/PORT', save)
+    page.click('#project-form [type=submit]')
+    page.wait_for_function("document.querySelector('#p-port').value === '8492' && !document.querySelector('#project-form').hasAttribute('aria-busy')")
+    assert next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key'] == 'PORT')['service_port'] == 8492
+    start(); page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-add')
+    pending.pop(0).fulfill(json={'port': 8493})
+    page.click('#project-add'); page.wait_for_selector('#project-dialog[open]')
+    assert page.input_value('#p-port') == ''
+    start(); page.click('#project-close'); page.click('#project-add'); answer(8494)
+    assert page.input_value('#p-port') == ''
+    start(); answer(8495)
+    assert page.input_value('#p-port') == '8495'
+    page.fill('#p-key', 'NEWPORT'); page.fill('#p-name', '새 빈 포트 검사'); page.fill('#p-path', 'temporary-project')
+    # 초기 생성 제출과 일반 등록 모두 조회·저장과 상호 배제한다.
+    start()
+    assert page.locator('#p-initialize').is_disabled()
+    page.evaluate("document.querySelector('#project-form').dispatchEvent(new SubmitEvent('submit',{bubbles:true,cancelable:true,submitter:document.querySelector('#p-initialize')}))")
+    answer(8496)
+    page.route('**/api/projects', lambda r: save(r) if r.request.method == 'POST' else r.continue_())
+    page.click('#project-form [type=submit]')
+    page.wait_for_function("document.querySelector('#project-form').hasAttribute('aria-busy')")
+    assert page.locator('#p-free-port').is_disabled()
+    assert writes[-1]['service_port'] == '8496'
+    pending.pop(0).fulfill(status=409, json={'detail': '등록 충돌'})
+    page.wait_for_function("!document.querySelector('#p-free-port').disabled")
+    page.unroute('**/api/projects')
+    page.click('#project-form [type=submit]'); page.wait_for_selector('#project-dialog', state='hidden')
+    assert next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key'] == 'NEWPORT')['service_port'] == 8496
+    # 파일 업로드 전 초기 생성의 입력 검증 실패 뒤에도 버튼을 복구한다.
+    page.click('#project-add'); page.fill('#p-key', 'INITPORT'); page.fill('#p-name', '초기 생성')
+    page.locator('.project-spec summary').click(); page.click('#p-initialize')
+    page.wait_for_function("document.querySelector('#project-error').textContent.includes('Markdown')")
+    assert page.locator('#p-free-port').is_enabled()
+    page.locator('#p-spec').set_input_files({'name': 'test.md', 'mimeType': 'text/markdown', 'buffer': b'# temporary spec'})
+    page.fill('#p-folder', 'temporary-init')
+    page.route('**/api/attachments', lambda r: r.fulfill(json={'id': 'temporary-attachment'}))
+    page.route('**/api/projects/initialize', save)
+    page.click('#p-initialize')
+    page.wait_for_function("document.querySelector('#p-initialize').textContent === '저장 중…'")
+    page.wait_for_timeout(100)
+    assert pending
+    assert page.locator('#p-free-port').is_disabled()
+    assert page.locator('#project-close').is_disabled()
+    pending.pop(0).fulfill(status=409, json={'detail': '초기 생성 충돌'})
+    page.wait_for_function("!document.querySelector('#p-free-port').disabled")
+    assert '초기 생성 충돌' in page.inner_text('#project-error')
+    page.unroute('**/api/attachments'); page.unroute('**/api/projects/initialize', save)
+    page.click('#project-close')
+    page.unroute('**/api/projects/free-port')
+    page.unroute('**/api/projects/PORT/service')
+    for key in ('PORT', 'NEWPORT'):
+        token = page.request.get(BASE + f'/api/projects/{key}/delete-check').json()['confirmation_token']
+        assert page.request.delete(BASE + f'/api/projects/{key}', headers=headers, data={'confirmation_token': token}).ok
+    page.evaluate("localStorage.removeItem('dev.project')")
+    page.reload(); page.wait_for_selector('#project-add')
+
+
 def check_service_diagnostic(page, shots):
     """서비스 요청은 모의 처리하고 진단 표시와 복사 원문을 함께 검사한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -2512,6 +2623,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--free-port-only' in sys.argv:
+            check_free_port(page, shots)
+            assert not errs, errs
+            print('OK: free port'); sys.exit(0)
         if '--service-diagnostic-only' in sys.argv:
             check_service_diagnostic(page, shots)
             # 진단 검사 뒤 기존 NS 새 Issue 흐름의 프로젝트와 번호를 유지한다.
@@ -2662,6 +2777,7 @@ try:
         check_project_flows(page, shots, answers, asked)
         check_project_documents(page, shots)
         check_project_usage(page, shots)
+        check_free_port(page, shots)
         check_service_diagnostic(page, shots)
         check_project_audits(page, shots)
         check_auto_settings(page, shots)
