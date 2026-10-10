@@ -201,6 +201,39 @@ class ServiceTest(unittest.TestCase):
         self.assertIn('DNS', state['error'])
         self.assertEqual(self.restart.call_count, 2)
         self.assertEqual(state['domain'], '')
+        self.assertEqual([s['status'] for s in state['steps']], ['done'] * 5 + ['failed'])
+
+    def test_missing_pm2_config_marks_the_exact_failed_step(self):
+        self.project = issues.update_project(H, 'APP', {'service_app': 'myapp'})
+        self.queue()
+        service._run(self.project, 'connect')
+        steps = service.status('APP')['steps']
+        self.assertEqual([s['status'] for s in steps], ['done', 'done', 'done', 'failed', 'pending', 'pending'])
+        self.assertIn('ecosystem.config.js', steps[3]['error'])
+        self.health.assert_not_called()
+
+    def test_running_and_successful_steps(self):
+        self.queue()
+        state = service.status('APP')
+        self.assertEqual([s['status'] for s in state['steps']], ['done', 'running', 'pending', 'pending', 'pending', 'pending'])
+        service._run(self.project, 'connect')
+        self.assertEqual([s['status'] for s in service.status('APP')['steps']], ['done'] * 6)
+        self.queue('disconnect')
+        self.assertEqual(service.status('APP')['steps'], [])
+
+    def test_legacy_missing_config_failure_keeps_its_step_after_migration(self):
+        import sqlite3
+        legacy = self.root / 'legacy.db'
+        with sqlite3.connect(legacy) as c:
+            for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+                c.executescript(sql + f'PRAGMA user_version={version};')
+            c.execute("INSERT INTO projects(key,name,service_domain,service_port,created_at) VALUES('OLD','기존','app.example.com',8400,?)", (db.now_iso(),))
+            c.execute("INSERT INTO project_services(project_id,status,error,actor,action,updated_at) VALUES(1,'failed',?,'human:admin','connect',?)",
+                      ('Local path의 ecosystem.config.js에서 지정 PM2 앱을 준비해 주세요.', db.now_iso()))
+        c.close()
+        with patch.object(config, 'DB_PATH', legacy):
+            db.init()
+            self.assertEqual([s['status'] for s in service.status('OLD')['steps']], ['done', 'done', 'done', 'failed', 'pending', 'pending'])
 
     def test_conflict_and_unhealthy_app_do_not_publish(self):
         self.project = issues.update_project(H, 'APP', {'service_domain': 'existing.example.com'})

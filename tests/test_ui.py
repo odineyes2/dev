@@ -187,6 +187,20 @@ def check_service_diagnostic(page, shots):
         assert page.locator('#p-service-copy-text').evaluate('e => e === document.activeElement && e.selectionStart === 0 && e.selectionEnd === e.value.length')
         assert '직접 복사' in page.inner_text('#p-service-copy-message')
     page.wait_for_selector('#toast', state='hidden')
+    labels = ('도메인·포트 저장', '터널 설정·재시작 권한 확인', '터널 규칙 사전 검사',
+              '앱 실행 준비·로컬 접속 확인', 'DNS 등록·터널 반영·재시작', '외부 HTTPS 접속 확인')
+    statuses = ('done', 'done', 'done', 'failed', 'pending', 'pending')
+    failure['steps'] = [{'number': n, 'label': label, 'status': statuses[n - 1],
+                         'error': failure['error'] if n == 4 else ''} for n, label in enumerate(labels, 1)]
+    refresh(failure, '앱 실행 준비·로컬 접속 확인')
+    assert page.locator('.service-steps li').count() == 6
+    assert page.locator('.service-steps .status').all_text_contents() == ['완료', '완료', '완료', '실패', '대기', '대기']
+    assert page.locator('.service-steps li').first.evaluate("e => { const s=getComputedStyle(e,'::before'); return s.borderLeftWidth==='1px' && parseFloat(s.height)>0; }")
+    assert page.locator('.service-steps li').nth(3).locator('.service-step-error').inner_text() == failure['error']
+    step_text = '\n'.join(f'{n}. {label} — {result}' for n, (label, result) in enumerate(zip(labels, ('완료', '완료', '완료', '실패', '대기', '대기')), 1))
+    page.evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.serviceCopied=text}}})")
+    copied(step_text + '\n' + expected)
+    refresh({**failure, 'changed': False, 'setup_error': '', 'url': 'https://moai.lomebrote.com'}, 'ecosystem.config.js')
     for scheme in ('light', 'dark'):
         page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
         page.emulate_media(color_scheme=scheme)

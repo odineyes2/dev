@@ -713,6 +713,13 @@ CREATE TABLE project_services (
 CREATE UNIQUE INDEX one_tunnel_change ON project_services(status) WHERE status='running';
 """)
 
+MIGRATIONS.append("""
+ALTER TABLE project_services ADD COLUMN step INTEGER NOT NULL DEFAULT 0 CHECK(step BETWEEN 0 AND 6);
+UPDATE project_services SET step=6 WHERE action='connect' AND status='connected';
+UPDATE project_services SET step=4 WHERE action='connect' AND status='failed'
+    AND error LIKE 'Local path의 ecosystem.config.js에서 지정 PM2 앱을 준비해 주세요.%';
+""")
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

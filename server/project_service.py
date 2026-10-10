@@ -124,11 +124,32 @@ def _reachable(url):
         return False
 
 
+def _steps(project, record):
+    labels = ('도메인·포트 저장', '터널 설정·재시작 권한 확인', '터널 규칙 사전 검사',
+              '앱 실행 준비·로컬 접속 확인', 'DNS 등록·터널 반영·재시작', '외부 HTTPS 접속 확인')
+    if record and record['action'] != 'connect':
+        return []
+    current = record['step'] if record else 0
+    result = []
+    for number, label in enumerate(labels, 1):
+        state = 'pending'
+        if number == 1 and (current or project['service_domain'] and project['service_port']):
+            state = 'done'
+        if (current and number < current) or (record and record['status'] == 'connected'):
+            state = 'done'
+        elif number == current and record['status'] in ('running', 'failed'):
+            state = 'running' if record['status'] == 'running' else 'failed'
+        result.append({'number': number, 'label': label, 'status': state,
+                       'error': record['error'] if state == 'failed' else ''})
+    return result
+
+
 def status(key):
     project = _project(key)
     with db.connect() as c:
         row = c.execute('SELECT * FROM project_services WHERE project_id=?', (project['id'],)).fetchone()
     state = dict(row) if row else {'status': 'idle', 'domain': '', 'port': 0, 'phase': '', 'error': ''}
+    state['steps'] = _steps(project, row)
     state['managed'] = bool(state['domain'])
     domain, port = _existing_service(project)
     domain, port = state['domain'] or domain, state['port'] or port
@@ -183,8 +204,8 @@ def request(actor, key, action='connect'):
                 raise issues.StoreError('연결된 서비스가 없어요.', 409)
             if c.execute("SELECT 1 FROM project_initializations WHERE project_id=? AND status IN ('queued','running','cancelling')", (project['id'],)).fetchone():
                 raise issues.StoreError('프로젝트 초기 생성이 끝난 뒤 연결해 주세요.', 409)
-            c.execute('''INSERT INTO project_services(project_id,status,actor,action,updated_at) VALUES(?,'running',?,?,?)
-                ON CONFLICT(project_id) DO UPDATE SET status='running',phase='연결 준비',error='',actor=excluded.actor,action=excluded.action,updated_at=excluded.updated_at''',
+            c.execute('''INSERT INTO project_services(project_id,status,actor,action,updated_at,step) VALUES(?,'running',?,?,?,2)
+                ON CONFLICT(project_id) DO UPDATE SET status='running',step=2,phase='연결 준비',error='',actor=excluded.actor,action=excluded.action,updated_at=excluded.updated_at''',
                 (project['id'], issues.actor_label(actor), action, db.now_iso()))
     except sqlite3.IntegrityError:
         raise issues.StoreError('다른 서비스 연결이 진행 중이에요.', 409)
@@ -315,6 +336,7 @@ def _run(project, action):
     pid = project['id']
     dns_attempted = False
     try:
+        _save(pid, step=2, phase='터널 설정·권한 확인')
         with db.connect() as c:
             old = dict(c.execute('SELECT * FROM project_services WHERE project_id=?', (pid,)).fetchone())
         if old['backup_path']:
@@ -325,10 +347,10 @@ def _run(project, action):
                 raise issues.StoreError('이전 실패의 터널 백업이 남아 있어요. 설정과 서비스를 복구한 뒤 다시 시도해 주세요.', 409)
         path, exe = config_path(), binary()
         _restart_permission()
-        _save(pid, phase='터널 설정 확인')
         raw = path.read_bytes()
         domain = project['service_domain'] if action == 'connect' else ''
         port = project['service_port'] if domain else 0
+        _save(pid, step=3, phase='터널 규칙 사전 검사')
         candidate, tunnel = _candidate(raw, old, domain, port)
         # 실제 설정과 같은 디렉터리에서 쓰기 권한과 ingress 유효성을 먼저 확인한다.
         fd, temp = tempfile.mkstemp(prefix='.dev-validate-', suffix='.yml', dir=path.parent)
@@ -339,6 +361,7 @@ def _run(project, action):
         finally:
             Path(temp).unlink(missing_ok=True)
         if domain:
+            _save(pid, step=4, phase='앱 실행 준비')
             app = project['service_app']
             if app and app != 'dev':
                 repo = Path(project['local_path'])
@@ -359,17 +382,17 @@ def _run(project, action):
                 _command(args, 'PM2 앱 시작', str(repo))
             _save(pid, phase='로컬 서비스 확인')
             _healthy(f'http://127.0.0.1:{port}/api/health')
-            _save(pid, phase='DNS 연결')
+            _save(pid, step=5, phase='DNS 연결')
             dns_attempted = True
             _command([exe, 'tunnel', '--config', str(path), 'route', 'dns', tunnel, domain], 'DNS 연결')
         backup = config.DATA_DIR / 'tunnel-backups' / (str(pid) + '-' + str(time.time_ns()) + '.yml')
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.write_bytes(raw)
-        _save(pid, phase='터널 반영', backup_path=str(backup), config_path=str(path), applied_hash=_hash(candidate))
+        _save(pid, step=5, phase='터널 반영', backup_path=str(backup), config_path=str(path), applied_hash=_hash(candidate))
         _replace(path, candidate, _hash(raw))
         _restart()
         if domain:
-            _save(pid, phase='외부 HTTPS 확인')
+            _save(pid, step=6, phase='외부 HTTPS 확인')
             _healthy('https://' + domain + '/api/health')
         _save(pid, status='connected' if domain else 'disconnected', phase='연결 완료' if domain else '연결 해제 완료', domain=domain, port=port, backup_path='', applied_hash='', error='')
     except Exception as e:

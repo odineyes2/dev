@@ -1517,10 +1517,13 @@ function renderProjects(editKey, projectTab = 'manage'){
         state.observed_port ? `로컬 포트 ${state.observed_port}` : '',
         state.changed ? '저장한 도메인·포트는 아직 반영되지 않았어요.' : '',
         state.error, state.setup_error, state.url].filter(Boolean);
-      diagnosticText = rows.join('\n'); diagnosticVersion++;
+      const stepLabels = {done:'완료', running:'진행 중', failed:'실패', pending:'대기'};
+      const steps = state.steps || [];
+      diagnosticText = [...steps.map(step => `${step.number}. ${step.label} — ${stepLabels[step.status] || '대기'}`), ...rows].join('\n'); diagnosticVersion++;
       feedback.textContent = ''; manual.hidden = true; manual.value = diagnosticText;
       message.replaceChildren();
       rows.forEach((text, index) => {
+        if(text === state.error && steps.some(step => step.status === 'failed')) return;
         const row = document.createElement('div'); row.className = 'service-diagnostic-row';
         if(index === 0){
           row.classList.add('status');
@@ -1534,6 +1537,23 @@ function renderProjects(editKey, projectTab = 'manage'){
           link.target = '_blank'; link.rel = 'noopener'; link.textContent = text; row.append(link);
         } else row.textContent = text;
         message.append(row);
+        if(index === 0 && steps.length){
+          const list = document.createElement('ol'); list.className = 'service-steps'; list.setAttribute('aria-label', '최근 연결 시도의 단계별 결과');
+          steps.forEach(step => {
+            const item = document.createElement('li');
+            const color = {done:'done', running:'in_progress', failed:'changes_requested', pending:'backlog'}[step.status] || 'backlog';
+            item.style.setProperty('--step-color', `var(--s-${color})`);
+            if(step.status === 'running') item.setAttribute('aria-current', 'step');
+            const number = document.createElement('span'); number.className = 'service-step-number'; number.textContent = step.number;
+            const line = document.createElement('div'); line.className = 'service-step-line';
+            const title = document.createElement('span'); title.textContent = step.label;
+            const badge = document.createElement('span'); badge.className = 'status'; badge.style.setProperty('--sc', `var(--s-${color})`); badge.textContent = stepLabels[step.status] || '대기';
+            line.append(title, badge); item.append(number, line);
+            if(step.error){ const error = document.createElement('p'); error.className = 'service-step-error'; error.textContent = step.error; item.append(error); }
+            list.append(item);
+          });
+          message.append(list);
+        }
       });
     }
     copy.onclick = async () => {

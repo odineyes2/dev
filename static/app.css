@@ -685,6 +685,15 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 #p-service-copy .ico{ width:15px; height:15px; }
 .service-diagnostic-row{ font-size:14px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; min-width:0; }
 .service-diagnostic-row + .service-diagnostic-row{ margin-top:8px; }
+.service-steps{ list-style:none; padding:0; margin:16px 0; }
+.service-steps li{ position:relative; padding:0 0 24px 44px; min-height:32px; }
+.service-steps li::before{ content:""; position:absolute; left:15px; top:32px; bottom:0; border-left:1px solid var(--dim); }
+.service-steps li:last-child{ padding-bottom:0; }
+.service-steps li:last-child::before{ display:none; }
+.service-step-number{ position:absolute; top:0; left:0; display:grid; place-items:center; width:32px; height:32px; border:1px solid var(--step-color); border-radius:999px; color:var(--text); font-family:var(--mono); font-size:13px; }
+.service-step-line{ display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 16px; min-height:32px; font-size:14px; }
+.service-step-line > span:first-child{ flex:1 1 160px; min-width:0; }
+.service-step-error{ margin:8px 0 0; font-size:14px; line-height:1.6; color:var(--dim); overflow-wrap:anywhere; }
 #p-service-copy-message:empty{ display:none; }
 #p-service-copy-text{ width:100%; min-height:160px; margin-top:8px; font-size:14px; }
 .project-service :focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
