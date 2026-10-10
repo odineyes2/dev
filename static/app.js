@@ -247,6 +247,7 @@ async function route(){
     else if(name === 'settings' && settingsTab === 'auto') await renderSettings();
     else if(name === 'settings' && settingsTab === 'types') await renderTypes();
     else if(name === 'settings' && settingsTab === 'regression') await renderRegressionSettings();
+    else if(name === 'settings' && settingsTab === 'fonts') renderFontSettings();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
   }catch(e){ if(!view.innerHTML) view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   perfReport(name || 'issues', t0);
@@ -1887,6 +1888,32 @@ function settingsHeader(tab){
   container.className = 'management-header';
   container.append(header);
   return container.outerHTML;
+}
+function renderFontSettings(){
+  const fonts = window.DevFonts;
+  const selected = fonts.get();
+  const options = language => fonts.catalog[language].map(o => `<option value="${o.id}"${selected[language] === o.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  view.innerHTML = `<section class="panel management-card font-settings">${settingsHeader('fonts')}
+    <h3>글꼴</h3><p class="dim" id="font-help">이 브라우저에 저장해요. 프로젝트를 바꿔도 유지돼요. 선택하면 바로 적용돼요.</p>
+    <div class="font-controls"><label for="font-english">영문<select id="font-english" aria-describedby="font-help">${options('english')}</select></label>
+    <label for="font-korean">한글<select id="font-korean" aria-describedby="font-help font-apple-help">${options('korean')}</select></label></div>
+    <p class="dim" id="font-apple-help">Apple 글꼴은 설치된 기기에서 사용해요. 없으면 기존 글꼴로 표시돼요. 기기와 브라우저에 따라 모양이 달라질 수 있어요.</p>
+    <section class="font-preview" aria-labelledby="font-preview-title"><h3 id="font-preview-title">미리보기</h3>
+    <p class="font-preview-mono">ISSUE DEV-107 · PLAN V1 · 2026</p>
+    <p class="font-preview-sans">Hello, 안녕하세요. Issue와 Task를 읽고 작업해요. 0123456789</p>
+    <p class="font-preview-mono">TASK 작업 상태 · ㄱㄴㄷ · 가 · ꥠힰ</p>
+    <label for="font-sample">입력 미리보기<input id="font-sample" value="Dev 프로젝트 · Apple 글꼴 123" autocomplete="off"></label></section>
+    <button type="button" id="font-reset">기본값으로 되돌리기</button><p id="font-status" role="status" aria-live="polite"></p></section>`;
+  const english = view.querySelector('#font-english'), korean = view.querySelector('#font-korean');
+  const save = () => {
+    const saved = fonts.save({english: english.value, korean: korean.value});
+    view.querySelector('#font-status').textContent = saved ? '이 브라우저에 저장했어요.' : '지금 화면에 적용했지만 저장하지 못했어요. 브라우저 저장 설정을 확인하고 다시 선택해 주세요.';
+  };
+  english.addEventListener('change', save);
+  korean.addEventListener('change', save);
+  view.querySelector('#font-reset').addEventListener('click', () => {
+    english.value = korean.value = 'default'; save();
+  });
 }
 // 대기열 동시 실행 상한 — 모든 프로젝트 공통. 줄은 프로젝트마다 검토·실행 하나씩이고, 동시에 도는 줄 수를 이 값까지로 막는다.
 async function renderQueueSettings(box, current){

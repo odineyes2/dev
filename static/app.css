@@ -8,6 +8,22 @@
 @font-face{ font-family:'IBM Plex Mono'; font-weight:400; font-style:normal; font-display:swap; src:url('/fonts/IBMPlexMono-400.woff2') format('woff2'); }
 @font-face{ font-family:'IBM Plex Mono'; font-weight:500; font-style:normal; font-display:swap; src:url('/fonts/IBMPlexMono-500.woff2') format('woff2'); }
 @font-face{ font-family:'IBM Plex Mono'; font-weight:600; font-style:normal; font-display:swap; src:url('/fonts/IBMPlexMono-600.woff2') format('woff2'); }
+/* 한글만 먼저 선택한다. 영문 시스템 글꼴의 한글 지원 여부와 무관하다. */
+@font-face{ font-family:'Dev Pretendard Hangul'; font-weight:45 920; font-style:normal; font-display:swap;
+  src:url('/fonts/PretendardVariable.woff2') format('woff2-variations');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
+@font-face{ font-family:'Dev Apple Hangul'; font-weight:400; font-style:normal; font-display:swap;
+  src:local('AppleSDGothicNeo-Regular'),local('Apple SD Gothic Neo Regular');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
+@font-face{ font-family:'Dev Apple Hangul'; font-weight:500; font-style:normal; font-display:swap;
+  src:local('AppleSDGothicNeo-Medium'),local('Apple SD Gothic Neo Medium');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
+@font-face{ font-family:'Dev Apple Hangul'; font-weight:600; font-style:normal; font-display:swap;
+  src:local('AppleSDGothicNeo-SemiBold'),local('Apple SD Gothic Neo SemiBold');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
+@font-face{ font-family:'Dev Apple Hangul'; font-weight:650; font-style:normal; font-display:swap;
+  src:local('AppleSDGothicNeo-Bold'),local('Apple SD Gothic Neo Bold');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
 
 :root{
   --sans:'Pretendard Variable', -apple-system, 'Segoe UI', sans-serif;
@@ -45,6 +61,17 @@
   }
 }
 :root[data-theme="light"]{ color-scheme:light; }
+
+/* DESIGN 2·4·7·8·10·11절: 역할별 미리보기와 기본 입력·간격을 공유한다. */
+.font-controls{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:var(--sp-4); }
+.font-controls label, .font-preview label{ display:flex; flex-direction:column; gap:var(--sp-2); min-width:0; font:600 12px/1.4 var(--mono); }
+.font-controls select, .font-preview input{ width:100%; min-width:0; min-height:40px; font:400 14px/1.6 var(--sans); }
+.font-preview{ margin:var(--sp-5) 0; padding:var(--sp-4); border:1px solid var(--border); border-radius:var(--r-md); background:var(--panel-2); overflow-wrap:anywhere; }
+.font-preview-mono{ font:600 14px/1.6 var(--mono); }
+.font-preview-sans{ font:400 16px/1.6 var(--sans); }
+.font-settings #font-reset{ min-height:40px; }
+.font-settings #font-status{ margin-top:var(--sp-3); }
+@media(max-width:800px){ .font-controls{ grid-template-columns:minmax(0,1fr); } }
 
 *{ box-sizing:border-box; }
 html{ overflow-x:hidden; scroll-padding-top:var(--tabbar-h); }
