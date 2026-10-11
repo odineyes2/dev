@@ -155,6 +155,27 @@ class PrepareTest(unittest.TestCase):
             else:
                 self.assertEqual(command[command.index('--tools') + 1], '')
 
+    def test_cli_failure_details_distinguish_budget_auth_and_private_output(self):
+        budget = json.dumps({'subtype': 'error_max_budget_usd', 'is_error': True, 'result': 'Budget exceeded'})
+        self.assertIn('비용 상한', prepare._failure_detail(budget, '', 'claude'))
+        codex = json.dumps({'type': 'turn.failed', 'error': {'message': 'Authentication failed'}})
+        self.assertIn('Authentication failed', prepare._failure_detail(codex, '', 'codex'))
+        self.assertIn('unknown option', prepare._failure_detail('', 'unknown option --restricted', 'claude'))
+        self.assertNotIn('private-password', prepare._failure_detail('', 'password=private-password', 'claude'))
+        self.assertNotIn('backend/bootstrap.py', prepare._failure_detail(json.dumps({'structured_output': result()}), '', 'claude'))
+
+    def test_nonzero_exit_reports_the_actual_error_instead_of_guessing_login(self):
+        snapshot = prepare.audit.collect_snapshot('APP')
+        directory = self.root / 'failed-agent'
+        directory.mkdir()
+        settings = {'provider_order': ['claude'], 'agent_orders': {'provider_order': []}}
+        proc = MagicMock(returncode=1)
+        proc.poll.return_value = 1
+        proc.communicate.return_value = (json.dumps({'subtype': 'error_max_budget_usd', 'is_error': True}), '')
+        with patch.object(prepare.auto_settings, 'get_settings', return_value=settings), patch.object(prepare.automation, 'provider_available', return_value=True), patch.object(prepare.subprocess, 'Popen', return_value=proc):
+            with self.assertRaisesRegex(issues.StoreError, 'claude, 종료 코드 1.*비용 상한'):
+                prepare._generate(self.project, snapshot, directory)
+
 
 if __name__ == '__main__':
     unittest.main()

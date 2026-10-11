@@ -20,6 +20,32 @@ import review
 SCHEMA = Path(__file__).with_suffix('.schema.json')
 
 
+def _failure_detail(out, err, provider):
+    parts = []
+    for line in ([out] if provider == 'claude' else out.splitlines()):
+        try:
+            event = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(event, dict) or not (event.get('is_error') or str(event.get('subtype', '')).startswith('error') or event.get('type') in ('error', 'turn.failed')):
+            continue
+        subtype = event.get('subtype')
+        if subtype:
+            parts.append('생성 비용 상한에 도달했어요.' if subtype == 'error_max_budget_usd' else str(subtype))
+        for field in ('message', 'error', 'errors', 'result'):
+            value = event.get(field)
+            if isinstance(value, dict):
+                value = value.get('message') or value.get('code')
+            if isinstance(value, list):
+                value = '\n'.join(v for v in value if isinstance(v, str))
+            if isinstance(value, str) and value:
+                parts.append(value)
+    if err.strip():
+        parts.append(err.strip())
+    # 오류 신호만 표시한다. 성공 결과의 생성 코드나 인증값은 진단에 넣지 않는다.
+    return '\n'.join(audit._safe(part)[:1000] for part in parts)[:2000] or '프로그램이 상세 오류를 반환하지 않았어요.'
+
+
 def _unchanged(repo, sha, branch):
     if audit._git(repo, 'rev-parse', 'HEAD').decode().strip() != sha or audit._git(repo, 'symbolic-ref', '--short', 'HEAD').decode().strip() != branch or audit._git(repo, 'status', '--porcelain'):
         raise issues.StoreError('프로젝트에 저장되지 않은 변경이 있거나 생성 도중 코드가 바뀌었어요. 변경을 커밋한 뒤 다시 연결해 주세요.', 409)
@@ -77,17 +103,19 @@ files는 신규 프로젝트 상대 경로이며 최대 12개이다. 확장자�
     (directory / 'agent-output.log').write_text(out, encoding='utf-8')
     (directory / 'agent-error.log').write_text(audit._safe(err), encoding='utf-8')
     if proc.returncode:
-        raise issues.StoreError('실행 파일 생성에 실패했어요. 에이전트 CLI 로그인과 설정을 확인해 주세요.', 409)
+        raise issues.StoreError(f'실행 파일 생성에 실패했어요({provider}, 종료 코드 {proc.returncode}). ' + _failure_detail(out, err, provider), 409)
     if provider == 'claude':
         envelope = json.loads(out)
-        if envelope.get('is_error'):
-            raise ValueError('에이전트 오류')
+        if envelope.get('is_error') or str(envelope.get('subtype', '')).startswith('error'):
+            raise issues.StoreError('실행 파일 생성에 실패했어요(claude). ' + _failure_detail(out, err, provider), 409)
         return envelope.get('structured_output') or json.loads(envelope.get('result', ''))
     messages = []
     for line in out.splitlines():
         event = json.loads(line)
         item = event.get('item') or {}
-        if event.get('type') in ('error', 'turn.failed') or item.get('type') in ('command_execution', 'mcp_tool_call', 'web_search', 'file_change'):
+        if event.get('type') in ('error', 'turn.failed'):
+            raise issues.StoreError('실행 파일 생성에 실패했어요(codex). ' + _failure_detail(out, err, provider), 409)
+        if item.get('type') in ('command_execution', 'mcp_tool_call', 'web_search', 'file_change'):
             raise ValueError('파일 생성 응답 형식 위반')
         if event.get('type') == 'item.completed' and item.get('type') == 'agent_message':
             messages.append(item['text'])
