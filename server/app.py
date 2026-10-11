@@ -506,14 +506,6 @@ async def api_publish_audit(key: str, audit_id: int, request: Request):
     return await run_in_threadpool(project_audit.publish, a, key, audit_id, b.get('candidate_ids'))
 
 
-@app.post('/api/projects/{key}/audits/{audit_id}/link')
-async def api_link_audit(key: str, audit_id: int, request: Request):
-    import project_audit
-    a = human_only(request)
-    b = await json_body(request)
-    return await run_in_threadpool(project_audit.link_existing, a, key, audit_id, b.get('candidate_id'), b.get('issue_ref'))
-
-
 @app.get("/api/projects/{key}/documents")
 def api_project_documents(key: str):
     import project_docs

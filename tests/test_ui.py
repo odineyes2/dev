@@ -368,43 +368,28 @@ def check_project_audits(page, shots):
         if variant == 'stale':
             assert '오래된 결과예요' in page.inner_text('#audit-detail')
             assert page.locator('#audit-publish').is_disabled()
-            assert page.locator('[data-link-candidate="c3"]').is_disabled()
+            assert page.locator('[data-candidate-id="c3"]').count() == 0
         if variant == 'confirmation':
             assert page.locator('[data-candidate="c1"] input').count() == 0
             assert '사람 확인 필요' in page.inner_text('[data-candidate="c1"]')
-            assert page.locator('[data-candidate="c1"] [data-link-candidate]').count() == 0
+            assert page.locator('[data-candidate="c1"] input').count() == 0
     row = audit_fixture()
-    row['report']['candidates'][2]['related_issues'] = ['DEV-1', issue['ref']]
     open_screen([row])
-    page.select_option('[data-link-target="c3"]', issue['ref'])
-    state['link_error'] = '기준 자료가 변경됐어요.'
-    page.click('[data-link-candidate="c3"]')
-    page.wait_for_function('document.querySelector("#audit-message").textContent.includes("기준 자료가 변경")')
-    assert page.locator('[data-link-candidate="c3"]').is_enabled()
-    for scheme in ('light', 'dark'):
-        page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
-        page.emulate_media(color_scheme=scheme)
-        for width in (1300, 390):
-            page.set_viewport_size({'width': width, 'height': 850})
-            page.wait_for_timeout(200)
-            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-            assert page.locator('[data-link-candidate="c3"]').bounding_box()['height'] >= 40
-            page.locator('[data-candidate="c3"]').screenshot(path=str(shots / f'audit_existing_link_{scheme}_{width}.png'))
-    state['link_error'] = ''
-    page.select_option('[data-link-target="c3"]', issue['ref'])
-    page.locator('[data-link-candidate="c3"]').evaluate('b=>{b.click();b.click()}')
-    page.wait_for_function('document.querySelector("#audit-message").textContent.includes("연결했어요")')
-    assert len(posts('/1/link')) == 2
-    assert posts('/1/link')[-1][2] == {'candidate_id': 'c3', 'issue_ref': issue['ref']}
-    assert page.locator('[data-link-candidate="c3"]').count() == 0
-    assert '연결한 Issue' in page.inner_text('[data-candidate="c3"]')
+    assert page.locator('[data-link-candidate]').count() == 0
+    page.check('[data-candidate-id="c3"]')
+    before = len(posts('/1/publish'))
+    page.locator('#audit-publish').evaluate('b=>{b.click();b.click()}')
+    page.wait_for_function('document.querySelector("#audit-message").textContent.includes("발행했어요")')
+    assert len(posts('/1/publish')) == before + 1
+    assert posts('/1/publish')[-1][2] == {'candidate_ids': ['c3']}
+    assert '발행한 Issue' in page.inner_text('[data-candidate="c3"]')
     # 보고서·Plan의 내용을 HTML로 실행하지 않는다.
     row = audit_fixture()
     row['report']['summary'] += '<img src=x onerror="window.auditXSS=1">'
     row['report']['candidates'][0]['plan_draft'] += '\n<script>window.auditXSS=1</script>'
     open_screen([row, audit_fixture('failed', audit_id=2)])
-    assert page.locator('[data-candidate-id]').count() == 2
-    assert page.locator('[data-candidate="c3"] input').count() == 0
+    assert page.locator('[data-candidate-id]').count() == 3
+    assert page.locator('[data-candidate="c3"] input').count() == 1
     page.locator('.audit-materials summary').click()
     assert 'USER_GUIDE.md' in page.inner_text('.audit-materials')
     assert 'static/app.js' in page.inner_text('#audit-detail')
@@ -427,8 +412,10 @@ def check_project_audits(page, shots):
             assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
             assert page.locator('.audit-choice').first.bounding_box()['height'] >= 40
             page.screenshot(path=str(shots / f'audit_report_{scheme}_{width}.png'), full_page=True)
+            page.locator('[data-candidate="c3"]').screenshot(path=str(shots / f'audit_followup_{scheme}_{width}.png'))
     # 여러 후보 발행의 충돌은 선택을 보존하고 이유와 재점검을 안내한다.
-    page.check('[data-candidate-id="c1"]'); page.check('[data-candidate-id="c2"]')
+    before = len(posts('/1/publish'))
+    page.check('[data-candidate-id="c1"]'); page.check('[data-candidate-id="c2"]'); page.check('[data-candidate-id="c3"]')
     state['publish_error'] = '기존 Issue와 구현 범위가 겹쳐요.'
     page.click('#audit-publish')
     page.wait_for_function('document.querySelector("#audit-message").textContent.includes("겹쳐요")')
@@ -440,8 +427,8 @@ def check_project_audits(page, shots):
     state['publish_lost'] = True
     page.locator('#audit-publish').evaluate('b => {b.click();b.click()}')
     page.wait_for_function('document.querySelector("[data-candidate=c1]")?.textContent.includes("발행한 Issue")')
-    assert len(posts('/1/publish')) == 2
-    assert set(posts('/1/publish')[-1][2]['candidate_ids']) == {'c1','c2'}
+    assert len(posts('/1/publish')) == before + 2
+    assert set(posts('/1/publish')[-1][2]['candidate_ids']) == {'c1','c2','c3'}
     assert page.locator('[data-candidate-id]').count() == 0
     # 완료 링크는 실제 hash 라우팅으로 Issue 화면에 연결된다.
     state['audits'][0]['publications'][0]['issue_ref'] = issue['ref']; refresh()

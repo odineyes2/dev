@@ -212,7 +212,8 @@ def analyze(row, snapshot):
 완료는 목표·실제 코드·성공한 검사 근거를 함께 요구한다. 종결 또는 파일 존재만으로 완료를 단정하지 않는다.
 목표 누락·충돌·생략·외부 확인 필요는 명시한다. 미완료·보류·실패 Issue 해결을 새 기능보다 우선한다.
 후보는 기본 1~3개, 차이/목표가 없으면 0개이다. 전체 기존 Issue·Task와 중복을 비교한다.
-기존 Issue 재사용/사람 확인/새 개발을 reuse_issue/human_confirmation/new_work로 구분한다.
+기존 Issue를 보완하는 후속 개발/사람 확인/새 개발을 reuse_issue/human_confirmation/new_work로 구분한다.
+개발 후보는 새 Issue로 발행한다. 기존 작업 보완이면 related_issues에 관련 Issue를 기록하고 남은 공백·선행 조건·Plan 제안을 포함한다.
 후보는 요구 근거·차이·범위·완료 기준·선행 조건·Plan 초안을 포함한다. 불명확한 유사 후보는 새 개발로 분류하지 않는다.
 Plan 초안은 저장소 내부 파일 변경 Task만 쓰며 승인·실행을 시작하지 않는다.
 근거 source_id와 실제 줄/절만 인용한다. JSON 스키마에 맞는 결과만 반환한다.

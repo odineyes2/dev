@@ -523,7 +523,7 @@ def publish(actor, key, audit_id, candidate_ids):
         raise issues.StoreError('발행할 후보를 선택해 주세요.', 400)
     # Git 조회 중 DB 쓰기 잠금을 길게 잡지 않고 잠금 안에서 프로젝트·이력을 다시 확인한다.
     old = get_audit(pid, audit_id)
-    published_ids = {p['candidate_id'] for p in old['publications']}
+    published_ids = {p['candidate_id'] for p in old['publications'] if p['mode'] == 'issue'}
     current = (collect_snapshot(key, base_branch=old['base_branch'])
                if old['snapshot'] and any(i not in published_ids for i in candidate_ids) else None)
     with db.connect() as c:
@@ -544,12 +544,15 @@ def publish(actor, key, audit_id, candidate_ids):
             if not candidate:
                 raise issues.StoreError('점검 후보를 찾을 수 없어요.', 404)
             mapped = c.execute('SELECT * FROM project_audit_publications WHERE audit_id=? AND candidate_id=?', (audit_id, cid)).fetchone()
-            if mapped:
+            if mapped and mapped['mode'] == 'issue':
                 results.append(dict(mapped))
                 continue
             data = json.loads(candidate['data_json'])
-            if candidate['disposition'] != 'new_work':
-                raise issues.StoreError('새 개발 후보만 발행할 수 있어요.', 409)
+            if candidate['disposition'] not in ('new_work', 'reuse_issue'):
+                raise issues.StoreError('개발·보완 후보만 발행할 수 있어요.', 409)
+            for ref in data['related_issues']:
+                if issues._find(c, ref)['project_id'] != pid:
+                    raise issues.StoreError('같은 프로젝트의 관련 Issue만 참조할 수 있어요.', 409)
             if (not current or _baseline(current) != _baseline(snapshot) or
                 (initial['spec'] if initial else None) != original_spec or
                 str(Path(project['local_path']).resolve()) != snapshot['repo_path'] or
@@ -563,7 +566,7 @@ def publish(actor, key, audit_id, candidate_ids):
             ambiguous = False
             for published in c.execute('''SELECT p.*,a.report_json,c.data_json FROM project_audit_publications p
                 JOIN project_audits a ON a.id=p.audit_id JOIN project_audit_candidates c
-                ON c.audit_id=p.audit_id AND c.candidate_id=p.candidate_id WHERE p.project_id=? AND c.disposition='new_work' ''', (pid,)):
+                ON c.audit_id=p.audit_id AND c.candidate_id=p.candidate_id WHERE p.project_id=? AND p.mode='issue' ''', (pid,)):
                 if _candidate_identity(json.loads(published['data_json']), json.loads(published['report_json'])) == identity:
                     previous = dict(published)
                     break
@@ -577,15 +580,16 @@ def publish(actor, key, audit_id, candidate_ids):
             if ambiguous:
                 raise issues.StoreError('이전 발행 후보와 근거·범위가 겹쳐요. 사람이 확인해 주세요.', 409)
             # 최신 이력 전체를 대조한다. 변경의 의미를 확정할 수 없으면 유사 후보를 발행하지 않는다.
-            if fingerprint(_history(c, project)) != row['history_fingerprint'] or data['related_issues']:
+            if data['disposition'] == 'new_work' and fingerprint(_history(c, project)) != row['history_fingerprint']:
                 refs = [issues._issue_dict(r)['ref'] for r in c.execute(issues._ISSUE_SELECT + ' WHERE i.project_id=?', (pid,))]
-                raise issues.StoreError('Issue 이력이 변경됐거나 관련 작업이 있어요. 기존 Issue를 확인하고 다시 점검해 주세요: ' + ', '.join(refs), 409)
-            draft = _validate_draft(data, snapshot)
-            files = {p.strip().strip('`') for t in issues.parse_tasks(draft) for p in t['files'].split(',')}
-            for existing in c.execute('SELECT id,title,body FROM issues WHERE project_id=?', (pid,)):
+                raise issues.StoreError('Issue 이력이 변경됐어요. 기존 Issue를 확인하고 다시 점검해 주세요: ' + ', '.join(refs), 409)
+            draft = _validate_draft(data, snapshot) if data['disposition'] == 'new_work' else None
+            files = {p.strip().strip('`') for t in issues.parse_tasks(draft or '') for p in t['files'].split(',')}
+            for existing in c.execute(issues._ISSUE_SELECT + ' WHERE i.project_id=?', (pid,)):
                 plans = '\n'.join(r[0] for r in c.execute('SELECT body FROM plans WHERE issue_id=?', (existing['id'],)))
                 text = existing['body'] + '\n' + plans
-                if existing['title'] == data['title'] or any(p in text for p in files):
+                ref = issues._issue_dict(existing)['ref']
+                if (existing['title'] == data['title'] or any(p in text for p in files)) and ref not in data['related_issues']:
                     raise issues.StoreError('기존 Issue와 구현 범위가 겹쳐요. 기존 작업을 확인해 주세요.', 409)
             pending.append((cid, data, draft, None))
         for cid, data, draft, previous in pending:
@@ -593,61 +597,19 @@ def publish(actor, key, audit_id, candidate_ids):
                 iid, ref = previous['issue_id'], previous['issue_ref']
             else:
                 body = '\n\n'.join([data['scope'], data['gap'], '완료 기준: ' + '\n'.join(data['completion_criteria']),
-                                    '점검 근거: ' + _json(data['evidence'])])
+                                    '관련 Issue: ' + (', '.join(data['related_issues']) or '없음'),
+                                    '선행 조건: ' + ('\n'.join(data['prerequisites']) or '없음'),
+                                    f'점검 #{audit_id} · 후보 {cid}\n기준 커밋: {row["base_sha"]}',
+                                    '점검 근거: ' + _json(data['evidence']), '참고용 Plan 제안:\n' + data['plan_draft']])
+                body = issues._text(body, '후속 Issue 내용', 50_000, required=True)
                 issue = issues._create_issue(c, actor, key, data['title'], body, data['priority'])
                 iid, ref = issue['id'], issue['ref']
-                issues._post_plan(c, actor, issue, draft, row['base_sha'], link_review=False)
-                issues._event(c, iid, actor, 'comment', '목표 대비 현황 점검에서 발행한 Plan 초안이에요.',
+                if draft:
+                    issues._post_plan(c, actor, issue, draft, row['base_sha'], link_review=False)
+                issues._event(c, iid, actor, 'comment', '목표 대비 현황 점검에서 발행한 후속 Issue예요.',
                               data={'audit_id': audit_id, 'candidate_id': cid})
-            c.execute('INSERT INTO project_audit_publications VALUES(?,?,?,?,?,?)',
+            c.execute('''INSERT INTO project_audit_publications(audit_id,candidate_id,project_id,issue_id,issue_ref,created_at) VALUES(?,?,?,?,?,?)
+                ON CONFLICT(audit_id,candidate_id) DO UPDATE SET issue_id=excluded.issue_id,issue_ref=excluded.issue_ref,created_at=excluded.created_at,mode='issue' ''',
                       (audit_id, cid, pid, iid, ref, db.now_iso()))
             results.append(dict(c.execute('SELECT * FROM project_audit_publications WHERE audit_id=? AND candidate_id=?', (audit_id, cid)).fetchone()))
         return {'publications': results}
-
-
-def link_existing(actor, key, audit_id, candidate_id, issue_ref):
-    """보완 제안을 기존 Issue의 댓글에 한 번만 연결하며 Plan·승인·실행은 유지한다."""
-    pid = project_id(actor, key)
-    if not isinstance(candidate_id, str) or not candidate_id or not isinstance(issue_ref, str) or not issue_ref:
-        raise issues.StoreError('연결할 후보와 기존 Issue를 선택해 주세요.', 400)
-    old = get_audit(pid, audit_id)
-    if old['status'] != 'complete':
-        raise issues.StoreError('완료된 점검만 연결할 수 있어요.', 409)
-    mapped = next((p for p in old['publications'] if p['candidate_id'] == candidate_id), None)
-    current = collect_snapshot(key, base_branch=old['base_branch']) if old['snapshot'] and not mapped else None
-    with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
-        row = c.execute('SELECT * FROM project_audits WHERE id=? AND project_id=?', (audit_id, pid)).fetchone()
-        if not row or row['status'] != 'complete':
-            raise issues.StoreError('완료된 점검만 연결할 수 있어요.', 409)
-        candidate = c.execute('SELECT * FROM project_audit_candidates WHERE audit_id=? AND candidate_id=?', (audit_id, candidate_id)).fetchone()
-        if not candidate:
-            raise issues.StoreError('점검 후보를 찾을 수 없어요.', 404)
-        data = json.loads(candidate['data_json'])
-        if candidate['disposition'] != 'reuse_issue' or issue_ref not in data['related_issues']:
-            raise issues.StoreError('기존 Issue 재사용 후보에서 관련 Issue를 선택해 주세요.', 409)
-        issue = issues._find(c, issue_ref)
-        if issue['project_id'] != pid:
-            raise issues.StoreError('같은 프로젝트의 Issue에만 연결할 수 있어요.', 409)
-        mapped = c.execute('SELECT * FROM project_audit_publications WHERE audit_id=? AND candidate_id=?', (audit_id, candidate_id)).fetchone()
-        if mapped:
-            if mapped['issue_ref'] != issue_ref:
-                raise issues.StoreError('이미 다른 Issue에 연결한 후보예요.', 409)
-            return {'publication': dict(mapped)}
-        snapshot = json.loads(row['snapshot_json'])
-        project = c.execute('SELECT * FROM projects WHERE id=?', (pid,)).fetchone()
-        if (not current or _baseline(current) != _baseline(snapshot) or
-            str(Path(project['local_path']).resolve()) != snapshot['repo_path'] or
-            _git(project['local_path'], 'rev-parse', '--verify', 'refs/heads/' + row['base_branch'] + '^{commit}').decode('ascii').strip() != row['base_sha']):
-            raise issues.StoreError('기준 자료가 변경됐어요. 다시 점검해 주세요.', 409)
-        body = '\n\n'.join([f'목표 대비 현황 점검 #{audit_id} · 후보 {candidate_id}\n{data["title"]}',
-            '기준 커밋: ' + row['base_sha'], '발견한 공백\n' + data['gap'], '보완 범위\n' + data['scope'],
-            '완료 기준\n' + '\n'.join(data['completion_criteria']), '선행 조건\n' + '\n'.join(data['prerequisites']),
-            '점검 근거\n' + _json(data['evidence']), '참고용 Plan 초안 (기존 Plan·승인·Task는 변경하지 않아요.)\n' + data['plan_draft']])
-        body = issues._text(body, '점검 연결 내용', 50_000, required=True)
-        issues._event(c, issue['id'], actor, 'comment', body, data={'audit_id': audit_id, 'candidate_id': candidate_id})
-        now = db.now_iso()
-        c.execute('UPDATE issues SET updated_at=? WHERE id=?', (now, issue['id']))
-        c.execute('INSERT INTO project_audit_publications VALUES(?,?,?,?,?,?)',
-                  (audit_id, candidate_id, pid, issue['id'], issue_ref, now))
-        return {'publication': dict(c.execute('SELECT * FROM project_audit_publications WHERE audit_id=? AND candidate_id=?', (audit_id, candidate_id)).fetchone())}

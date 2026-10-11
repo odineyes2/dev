@@ -220,11 +220,11 @@ with db.connect() as c:
     c.execute("INSERT INTO project_audit_candidates VALUES(?,1,'c','new_work','hash','{}')", (aid,))
 assert rejected("INSERT INTO project_audit_requirements VALUES(?,'r','missing','{}')", (aid,))
 assert rejected("INSERT INTO project_audit_candidates VALUES(?,1,'c','new_work','hash','{}')", (aid,))
-assert rejected("INSERT INTO project_audit_publications VALUES(?,'c',1,2,'OTHER-1',?)", (aid,now))
-assert rejected("INSERT INTO project_audit_publications VALUES(?,'c',2,2,'OTHER-1',?)", (aid,now))
+assert rejected("INSERT INTO project_audit_publications(audit_id,candidate_id,project_id,issue_id,issue_ref,created_at) VALUES(?,'c',1,2,'OTHER-1',?)", (aid,now))
+assert rejected("INSERT INTO project_audit_publications(audit_id,candidate_id,project_id,issue_id,issue_ref,created_at) VALUES(?,'c',2,2,'OTHER-1',?)", (aid,now))
 with db.connect() as c:
-    c.execute("INSERT INTO project_audit_publications VALUES(?,'c',1,1,'AUD-1',?)", (aid,now))
-assert rejected("INSERT INTO project_audit_publications VALUES(?,'c',1,1,'AUD-1',?)", (aid,now))
+    c.execute("INSERT INTO project_audit_publications(audit_id,candidate_id,project_id,issue_id,issue_ref,created_at) VALUES(?,'c',1,1,'AUD-1',?)", (aid,now))
+assert rejected("INSERT INTO project_audit_publications(audit_id,candidate_id,project_id,issue_id,issue_ref,created_at) VALUES(?,'c',1,1,'AUD-1',?)", (aid,now))
 assert rejected('UPDATE project_audit_publications SET issue_id=2 WHERE audit_id=?', (aid,))
 with db.connect() as c:
     c.execute('DELETE FROM issues WHERE id=1')

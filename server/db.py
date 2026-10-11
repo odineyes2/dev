@@ -726,6 +726,15 @@ ALTER TABLE projects ADD COLUMN service_prepare_provider TEXT NOT NULL DEFAULT '
 """)
 
 
+MIGRATIONS.append("""
+ALTER TABLE project_audit_publications ADD COLUMN mode TEXT NOT NULL DEFAULT 'issue'
+    CHECK(mode IN ('issue','comment'));
+UPDATE project_audit_publications SET mode='comment' WHERE EXISTS(
+    SELECT 1 FROM project_audit_candidates c WHERE c.audit_id=project_audit_publications.audit_id
+    AND c.candidate_id=project_audit_publications.candidate_id AND c.disposition='reuse_issue');
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

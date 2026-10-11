@@ -1789,7 +1789,7 @@ function bindProjectAudits(project){
   const active = s => ['preparing', 'running', 'cancelling'].includes(s);
   const states = {preparing:'준비 중', running:'진행 중', cancelling:'취소 중', complete:'완료', failed:'실패', timeout:'시간 초과', cancelled:'취소됨'};
   const judgments = {complete:'완료', partial:'부분 구현', missing:'미구현', needs_confirmation:'확인 필요'};
-  const dispositions = {new_work:'새 개발 작업', reuse_issue:'기존 Issue 재사용', human_confirmation:'사람 확인 필요'};
+  const dispositions = {new_work:'새 개발 작업', reuse_issue:'기존 작업 후속 개발', human_confirmation:'사람 확인 필요'};
   const state = s => `<span class="audit-state audit-${esc(s)}"><span aria-hidden="true"></span>${esc(states[s] || s)}</span>`;
   const time = v => v ? esc(new Date(v).toLocaleString()) : '미계측';
   const link = ref => `<a href="#/issue/${encodeURIComponent(ref)}">${esc(ref)}</a>`;
@@ -1829,24 +1829,22 @@ function bindProjectAudits(project){
     }).join('')}</ul>`;
   }
   function drawReport(){
-    const r = report, snapshot = r.snapshot, publications = new Map((r.publications || []).map(p => [p.candidate_id, p.issue_ref]));
+    const r = report, snapshot = r.snapshot, publications = new Map((r.publications || []).filter(p => p.mode !== 'comment').map(p => [p.candidate_id, p.issue_ref]));
     // 재조회에서 발행됐거나 발행 불가가 된 후보는 선택에서 제거한다.
-    const eligible = new Set((r.report?.candidates || []).filter(c => c.disposition === 'new_work' && !publications.has(c.id) && !r.stale).map(c => c.id));
+    const eligible = new Set((r.report?.candidates || []).filter(c => ['new_work', 'reuse_issue'].includes(c.disposition) && !publications.has(c.id) && !r.stale).map(c => c.id));
     for(const id of checked) if(!eligible.has(id)) checked.delete(id);
     detail.innerHTML = `<h4 tabindex="-1" id="audit-report-title">점검 #${r.id} ${state(r.status)}</h4><p class="audit-meta">${esc(r.provider)} · 요청 모델 ${esc(r.model)} · 실제 모델 ${esc(r.actual_model || '아직 미확인')}<br>시작 ${time(r.started_at)} · 종료 ${time(r.ended_at)}<br>기준 ${esc(r.base_branch || '미확인')} · ${esc(r.base_sha || '미확인')}<br>${esc(limitsText(r.limits))}<br>측정 비용 ${r.usage?.cost_measured ? `$${esc(r.usage.cost_usd)}` : '미계측'} · 입력 토큰 ${esc(r.usage?.input_tokens ?? '미계측')} · 출력 토큰 ${esc(r.usage?.output_tokens ?? '미계측')}</p>${r.stale ? `<p class="audit-notice" role="status">오래된 결과예요. ${esc(r.stale_reason)} 새 후보 발행 전에 다시 점검해 주세요.</p>` : ''}${r.error ? `<p class="error" role="alert">${esc(r.error)} 도구와 실행 조건을 확인하고 새 점검을 시작해 주세요.</p>` : ''}${active(r.status) ? `<p role="status">${esc(r.phase || states[r.status])} · 진행 상태를 자동으로 확인해요.</p><button type="button" id="audit-cancel" ${r.status === 'cancelling' || busy ? 'disabled' : ''}>${r.status === 'cancelling' ? '취소 중…' : '점검 취소'}</button>` : ''}
       ${snapshot ? `<details class="audit-materials"><summary>기준 자료와 누락 · 문서 ${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).length}개</summary>${list(snapshot.warnings)}<ul>${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).map(s => `<li>${esc(s.path || s.id)}<small class="dim">${esc(s.hash)}</small></li>`).join('')}</ul><ul>${(snapshot.omissions || []).map(o => `<li>${esc(o.source_id)} · ${esc(o.reason)}</li>`).join('')}</ul>${snapshot.omissions_truncated ? `<p>누락 ${snapshot.omitted_count}개 중 일부만 표시해요.</p>` : ''}</details>` : ''}
-      ${r.report ? `<p class="audit-summary">${esc(r.report.summary)}</p><h4>요구사항별 판단</h4>${r.report.requirements.map(q => `<article class="audit-card"><h5>${esc(q.title)} <span class="audit-judgment">${esc(judgments[q.status])}</span></h5><p>${esc(q.assessment)}</p>${evidence(q.evidence, snapshot)}</article>`).join('') || '<div class="empty">판단할 요구사항 근거가 없어요.</div>'}<h4>후속 Issue 후보</h4><p class="dim">선택한 후보만 같은 프로젝트에 발행해요. Plan은 초안이며 자동으로 승인하거나 실행하지 않아요.</p>${r.report.candidates.map(c => {
-        const published = publications.get(c.id), selectable = c.disposition === 'new_work' && !published && !r.stale;
-        return `<article class="audit-card" data-candidate="${esc(c.id)}"><h5>${selectable ? `<label class="audit-choice"><input type="checkbox" data-candidate-id="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''} ${busy ? 'disabled' : ''}><span>${esc(c.title)}</span></label>` : esc(c.title)}</h5><p class="audit-meta">${esc(dispositions[c.disposition])} · ${esc(c.priority)} · 요구사항 ${c.requirement_ids.map(esc).join(', ')}</p>${published ? `<p>${c.disposition === 'reuse_issue' ? '연결한' : '발행한'} Issue ${link(published)}</p>` : ''}<p>${esc(c.gap)}</p><p><b>범위</b> ${esc(c.scope)}</p><b>완료 기준</b>${list(c.completion_criteria)}<b>선행 조건</b>${c.prerequisites.length ? list(c.prerequisites) : '<p>없어요.</p>'}${c.related_issues.length ? `<p>관련 Issue ${c.related_issues.map(link).join(' · ')}</p>` : ''}${evidence(c.evidence, snapshot)}<details><summary>Plan 초안</summary><pre class="document-source">${esc(c.plan_draft)}</pre></details>${c.disposition === 'reuse_issue' && !published ? `<p class="dim">점검 내용과 참고용 Plan 초안을 선택한 Issue 하나에 댓글로 연결해요.</p><div class="audit-toolbar"><label>연결할 Issue<select data-link-target="${esc(c.id)}" ${busy || r.stale ? 'disabled' : ''}>${c.related_issues.map(ref => `<option value="${esc(ref)}">${esc(ref)}</option>`).join('')}</select></label><button type="button" data-link-candidate="${esc(c.id)}" ${busy || r.stale ? 'disabled' : ''}>기존 Issue에 점검 결과 연결</button></div>` : ''}${c.disposition === 'human_confirmation' ? '<p class="dim">사람이 근거와 선행 조건을 확인한 후 다시 점검해 주세요.</p>' : ''}</article>`;
-      }).join('') || '<div class="empty">후속 후보가 없어요. 차이가 없거나 근거가 부족하면 후보를 만들지 않아요.</div>'}${r.report.candidates.some(c => c.disposition === 'new_work' && !publications.has(c.id)) ? `<button type="button" id="audit-publish" ${busy || r.stale || !checked.size ? 'disabled' : ''}>${busy ? '발행 중…' : '선택한 후보 발행'}</button>` : ''}` : ''}`;
+      ${r.report ? `<p class="audit-summary">${esc(r.report.summary)}</p><h4>요구사항별 판단</h4>${r.report.requirements.map(q => `<article class="audit-card"><h5>${esc(q.title)} <span class="audit-judgment">${esc(judgments[q.status])}</span></h5><p>${esc(q.assessment)}</p>${evidence(q.evidence, snapshot)}</article>`).join('') || '<div class="empty">판단할 요구사항 근거가 없어요.</div>'}<h4>후속 Issue 후보</h4><p class="dim">선택한 개발 후보를 새 Issue로 발행하고 관련 Issue를 본문에 기재해요. Plan 제안은 자동으로 승인하거나 실행하지 않아요.</p>${r.report.candidates.map(c => {
+        const published = publications.get(c.id), selectable = ['new_work', 'reuse_issue'].includes(c.disposition) && !published && !r.stale;
+        return `<article class="audit-card" data-candidate="${esc(c.id)}"><h5>${selectable ? `<label class="audit-choice"><input type="checkbox" data-candidate-id="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''} ${busy ? 'disabled' : ''}><span>${esc(c.title)}</span></label>` : esc(c.title)}</h5><p class="audit-meta">${esc(dispositions[c.disposition])} · ${esc(c.priority)} · 요구사항 ${c.requirement_ids.map(esc).join(', ')}</p>${published ? `<p>발행한 Issue ${link(published)}</p>` : ''}<p>${esc(c.gap)}</p><p><b>범위</b> ${esc(c.scope)}</p><b>완료 기준</b>${list(c.completion_criteria)}<b>선행 조건</b>${c.prerequisites.length ? list(c.prerequisites) : '<p>없어요.</p>'}${c.related_issues.length ? `<p>관련 Issue ${c.related_issues.map(link).join(' · ')}</p>` : ''}${evidence(c.evidence, snapshot)}<details><summary>Plan 초안</summary><pre class="document-source">${esc(c.plan_draft)}</pre></details>${c.disposition === 'human_confirmation' ? '<p class="dim">사람이 근거와 선행 조건을 확인한 후 다시 점검해 주세요.</p>' : ''}</article>`;
+      }).join('') || '<div class="empty">후속 후보가 없어요. 차이가 없거나 근거가 부족하면 후보를 만들지 않아요.</div>'}${r.report.candidates.some(c => ['new_work', 'reuse_issue'].includes(c.disposition) && !publications.has(c.id)) ? `<button type="button" id="audit-publish" ${busy || r.stale || !checked.size ? 'disabled' : ''}>${busy ? '발행 중…' : '선택한 후보 새 Issue로 발행'}</button>` : ''}` : ''}`;
     detail.querySelectorAll('[data-candidate-id]').forEach(input => input.onchange = () => {
       input.checked ? checked.add(input.dataset.candidateId) : checked.delete(input.dataset.candidateId);
       detail.querySelector('#audit-publish').disabled = !checked.size;
     });
     detail.querySelector('#audit-cancel')?.addEventListener('click', cancel);
     detail.querySelector('#audit-publish')?.addEventListener('click', publish);
-    detail.querySelectorAll('[data-link-candidate]').forEach(button => button.onclick = () => connectCandidate(
-      button.dataset.linkCandidate, button.closest('.audit-card').querySelector('[data-link-target]').value));
     const diagnosticId = `DEV-AUDIT-${project.key}-${r.id}`;
     const diagnostic = [
       'Dev 목표 대비 현황점검 진단', `진단 번호: ${diagnosticId}`,
@@ -1944,19 +1942,8 @@ function bindProjectAudits(project){
       // 발행 성공 뒤 상세 조회가 실패해도 링크와 선택 해제를 즉시 반영한다.
       report.publications = [...(report.publications || []), ...data.publications];
       checked.clear(); drawReport();
-      message.textContent = '선택한 후보를 발행했어요. Issue에서 Plan 초안을 확인해 주세요.';
+      message.textContent = '선택한 후보를 발행했어요. 새 Issue에서 관련 작업과 Plan 제안을 확인해 주세요.';
     } catch(e){ if(current()) message.textContent = `${e.message} 기존 Issue와 기준 자료를 확인하고 다시 점검해 주세요.`; }
-    finally { if(current()){ busy = false; await load(); } }
-  }
-  async function connectCandidate(candidateId, issueRef){
-    if(busy || report.stale) return;
-    busy = true; controls(); drawReport();
-    try {
-      const data = await api('POST', `${url}/${selected}/link`, {candidate_id:candidateId, issue_ref:issueRef}, current);
-      if(!current()) return;
-      report.publications = [...(report.publications || []), data.publication]; drawReport();
-      message.textContent = `${data.publication.issue_ref}에 점검 결과를 연결했어요. Issue의 댓글에서 보완 제안을 확인해 주세요.`;
-    } catch(e){ if(current()) message.textContent = e.message; }
     finally { if(current()){ busy = false; await load(); } }
   }
   provider.onchange = () => { request = null; loadPreflight(); };
