@@ -731,6 +731,11 @@ async def api_retry_merge(ref: str, request: Request):
     return await run_in_threadpool(orchestrate.retry_merge, human_only(request), ref)
 
 
+@app.post('/api/issues/{ref}/register-repair', status_code=202)
+async def api_register_repair(ref: str, request: Request):
+    return await run_in_threadpool(execute.register_repair, human_only(request), ref)
+
+
 @app.get("/api/jobs")
 def api_jobs():
     return {"jobs": jobs.list_jobs(), "in_progress": jobs.list_in_progress()}

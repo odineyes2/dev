@@ -16,6 +16,7 @@ import os
 import json
 import re
 import subprocess
+import threading
 from pathlib import Path
 
 import config
@@ -393,6 +394,96 @@ def already_submitted(c, issue_id: int, sha: str) -> bool:
     return bool(c.execute("SELECT 1 FROM execution_completion WHERE issue_id=? AND task_sha=?", (issue_id, sha)).fetchone())
 
 
+def repair_available(issue):
+    if not issue.get('parent_ref') or issue['status'] not in ('in_review', 'on_hold', 'changes_requested'):
+        return False
+    with db.connect() as c:
+        row = c.execute('''SELECT r.id,r.mode,r.status,t.state FROM runs r
+            JOIN task_execution_results t ON t.run_id=r.id WHERE r.issue_id=?
+            AND r.id=(SELECT MAX(id) FROM runs WHERE issue_id=?)
+            AND NOT EXISTS(SELECT 1 FROM execution_completion e WHERE e.run_id=r.id)''', (issue['id'], issue['id'])).fetchone()
+    return bool(row and row['mode'] == 'execute' and row['status'] != 'running' and row['state'] == 'processing')
+
+
+def register_repair(actor, ref):
+    """관리자가 연결한 수동 수정 커밋을 모델 재호출 없이 완료 검사에 넘긴다."""
+    import jobs
+    import review
+    if actor['kind'] != 'human':
+        raise issues.StoreError('수정 결과 등록은 관리자만 할 수 있어요.', 403)
+    issue = issues.get_issue(ref)
+    ref = issue['ref']
+    if not repair_available(issue):
+        raise issues.StoreError('완료 기록이 없는 보류·검토 Task만 수정 결과를 등록할 수 있어요.', 409)
+    parent = issues.get_issue(issue['parent_ref'])
+    why = _eligibility_reason(issue, parent)
+    if why:
+        raise issues.StoreError(why, 409)
+    cwd = worktree_path(ref)
+    sha = _git(cwd, 'rev-parse', 'HEAD')
+    if (_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD') != branch_name(ref) or
+        _git(cwd, 'status', '--porcelain') or not _git(cwd, 'log', '--oneline', f'{BASE_BRANCH}..HEAD') or
+        not any(e['kind'] == 'commit' and e['data'].get('sha') == sha for e in issue['events'])):
+        raise issues.StoreError('깨끗한 Task worktree와 연결된 수정 커밋이 필요해요.', 409)
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        why = jobs.start_block(c, issue['project_key'], 'execute')
+        if why:
+            raise issues.StoreError(why, 409)
+        row = issues._find(c, ref)
+        run = c.execute('SELECT * FROM runs WHERE issue_id=? ORDER BY id DESC LIMIT 1', (row['id'],)).fetchone()
+        result = c.execute('SELECT * FROM task_execution_results WHERE run_id=?', (run['id'],)).fetchone()
+        if (row['status'] != issue['status'] or run['status'] == 'running' or not result or result['state'] != 'processing' or
+            result['plan_version'] != parent['approval']['plan_version'] or
+            c.execute('SELECT 1 FROM execution_completion WHERE run_id=?', (run['id'],)).fetchone() or
+            c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND status='queued'", (row['id'],)).fetchone()):
+            raise issues.StoreError('Task 상태·승인·실행 기록이 바뀌었어요. 새로고침해 주세요.', 409)
+        c.execute("UPDATE runs SET status='running',note='수동 수정 커밋 서버 검사 — 에이전트 재호출 없음' WHERE id=?", (run['id'],))
+        issues._set_status(c, actor, row, 'in_progress', '수정 커밋 서버 검사·결과 등록 — 에이전트 재호출 없음', {'run_id': run['id']})
+        rid = run['id']
+    try:
+        threading.Thread(target=jobs.run_then_pump, args=(_register_repair, actor, ref, rid, sha, run['ended_at']),
+                         kwargs={'lane': (issue['project_key'], 'execute')}, daemon=True).start()
+    except Exception:
+        _repair_failed(actor, ref, rid, '수정 결과 검사 스레드를 시작하지 못했어요.', run['ended_at'])
+        raise issues.StoreError('수정 결과 검사 스레드를 시작하지 못했어요.', 503) from None
+    return {'ref': ref, 'run_id': rid, 'task_sha': sha, 'status': 'checking'}
+
+
+def _repair_failed(actor, ref, rid, note, ended_at=None):
+    import review
+    with db.connect() as c:
+        row = issues._find(c, ref)
+        c.execute("UPDATE runs SET status='failed',ended_at=?,note=? WHERE id=? AND status='running'", (ended_at or db.now_iso(), note, rid))
+        if review.owned_start(c, row['id'], rid):
+            issues._set_status(c, actor, row, 'on_hold', note)
+
+
+def _register_repair(actor, ref, rid, sha, ended_at=None):
+    import orchestrate
+    cwd = worktree_path(ref)
+    try:
+        failed = orchestrate.run_tests(str(cwd), stage='server_completion', ref=ref)
+        if failed:
+            raise issues.StoreError(failed, 409)
+        if _git(cwd, 'rev-parse', 'HEAD') != sha:
+            raise issues.StoreError('검사 중 수정 커밋이 바뀌었어요.', 409)
+        import regression
+        checks = regression.load_record('regression-selection:' + ref + ':server_completion').get('results', {})
+        note = '수동 수정 커밋의 완료 등록을 마쳤어요. 에이전트 재호출 없음.'
+        if not any(result in ('passed', 'reused') for result in checks.values()):
+            note += '\n선택된 서버 검사 파일이 없어 자동 검사는 수행되지 않았어요. 관련 검사 근거는 Task 댓글에서 확인해 주세요.'
+        register_completion(actor, ref, cwd, rid, note)
+        if ended_at:
+            with db.connect() as c:
+                c.execute('UPDATE runs SET ended_at=? WHERE id=?', (ended_at, rid))
+    except Exception as error:
+        from project_audit import _safe
+        _repair_failed(actor, ref, rid, str(_safe(str(error)))[:4000], ended_at)
+        return
+    orchestrate.handle(actor, ref)
+
+
 def register_completion(actor, ref, cwd, run_id, note):
     """두 실행 경로의 결과를 소유권과 커밋 검사 후 영속화한다."""
     import orchestrate, review
@@ -643,5 +734,6 @@ def panel(issue: dict) -> dict | None:
     import regression
     return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC,
             "retry_merge_available": orchestrate.retry_available(issue),
+            "repair_available": repair_available(issue) and bool(branch and branch['commits']) and not _eligibility_reason(issue, parent),
             "regression": regression.resolve(issue['ref'], worktree_path(issue['ref']) if worktree_path(issue['ref']).exists() else repo),
             "regression_results": {stage: regression.load_record('regression-selection:' + issue['ref'] + ':' + stage) for stage in ('server_completion', 'server_merge')}}

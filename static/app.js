@@ -761,6 +761,7 @@ function executeHtml(it, liveMode, liveProvider){
     <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>${provider === 'codex' ? '실행 중…' : 'Codex에게 실행 맡기기'}</button>
     <div class="dim hint">${hint}</div><div class="dim hint">Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음.</div>`}
     ${x.retry_merge_available && !running && !job ? '<button id="retry-merge">병합 재시도</button><div class="dim hint">기존 구현 커밋으로 서버 검사·병합만 다시 진행해요. 회귀검사 설정과 자동 병합·재시작 정책이 적용돼요.</div>' : ''}
+    ${x.repair_available && it.status !== 'in_review' && !running && !job ? '<button class="register-repair">수정 커밋 검사·결과 등록</button><div class="dim hint">에이전트 재호출 없이 연결된 수정 커밋을 검사하고 기존 병합 정책으로 처리해요.</div>' : ''}
     ${b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
       ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}${checks}</div>`;
 }
@@ -787,6 +788,7 @@ const RESULT_FORM = {
 function resultHtml(it){
   if(it.status !== 'in_review') return '';
   return `<div class="panel"><h2>Result <span class="meta">결과를 확인해 주세요</span></h2>
+    ${it.execute?.repair_available ? '<button class="register-repair">수정 커밋 검사·결과 등록</button><p class="dim">에이전트 재호출 없이 서버 검사와 결과 등록을 진행해요. 자동 병합 설정이 켜져 있으면 병합·반영도 이어서 처리해요.</p>' : ''}
     <div class="decision" id="result"><div id="result-form" hidden><textarea id="result-note"></textarea>
       <div class="row-end"><button id="result-cancel">취소</button><button id="result-send"></button></div></div>
     <div class="review-actions" id="result-actions"><button id="approve" class="primary">결과 승인 → 완료</button>
@@ -1021,6 +1023,11 @@ ${QUEUE_LINE}`)) return;
     }catch(e){ /* api()가 오류를 알린다. */ }
     finally{ if(location.hash === `#/issue/${it.ref}`) await reload(); }
   };
+  view.querySelectorAll('.register-repair').forEach(button => button.onclick = e => whileBusy(e.currentTarget, async () => {
+    await api('POST', `/api/issues/${R}/register-repair`, {});
+    toast('수정 커밋의 서버 검사와 결과 등록을 시작했어요.');
+    if(location.hash === `#/issue/${it.ref}`) await reload();
+  }));
   for(const [id, provider] of [['ask-execute', 'claude'], ['ask-codex-execute', 'codex']]) {
     if($(id)) $(id).addEventListener('click', async (e) => {
     if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;

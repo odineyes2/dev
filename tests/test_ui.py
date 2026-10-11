@@ -269,6 +269,45 @@ def check_service_diagnostic(page, shots):
     page.wait_for_function("!projects.some(p => p.key === 'DIAG')")
 
 
+def check_register_repair(page, shots):
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE+'/api/projects', headers=headers, data={'key':'REPAIR','name':'수정 결과 검사'}).ok
+    parent = page.request.post(BASE+'/api/issues', headers=headers, data={'project':'REPAIR','title':'parent'}).json()
+    task = page.request.post(BASE+'/api/issues', headers=headers, data={'project':'REPAIR','title':'수동 수정 Task','parent':parent['ref']}).json()
+    state = {'posts': 0, 'status': 'in_review', 'available': True}
+    path = '/api/issues/'+task['ref']
+    def detail(route):
+        if route.request.method != 'GET':
+            route.continue_(); return
+        response = route.fetch()
+        data = response.json()
+        data['status'] = state['status']
+        data['execute']['repair_available'] = state['available']
+        route.fulfill(json=data)
+    def submit(route):
+        state['posts'] += 1
+        state.update(status='in_progress', available=False)
+        route.fulfill(status=202, json={'status':'checking'})
+    page.route('**'+path, detail)
+    page.route('**'+path+'/register-repair', submit)
+    page.goto(BASE+'/#/issue/'+task['ref']);page.reload()
+    page.wait_for_selector('.register-repair')
+    assert page.locator('.register-repair').count() == 1
+    assert page.locator('.register-repair').evaluate('e=>e.closest(".panel").querySelector("h2").textContent.includes("Result")')
+    for theme in ('light','dark'):
+        page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300,390):
+            page.set_viewport_size({'width':width,'height':850});page.wait_for_timeout(200)
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+            page.locator('#result').locator('..').screenshot(path=str(shots/f'register_repair_{theme}_{width}.png'))
+    page.locator('.register-repair').evaluate('b=>{b.click();b.click()}')
+    page.wait_for_function('document.querySelectorAll(".register-repair").length===0')
+    assert state['posts'] == 1
+    page.unroute('**'+path, detail);page.unroute('**'+path+'/register-repair', submit)
+    print('register repair UI OK')
+
+
 def check_project_restart(page, shots):
     """PM2를 호출하지 않고 관리자 버튼·복사·재연결 흐름만 검사한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -2833,6 +2872,10 @@ try:
             check_project_usage(page, shots)
             assert not errs, errs
             print('OK: project usage'); sys.exit(0)
+        if '--register-repair-only' in sys.argv:
+            check_register_repair(page, shots)
+            assert not errs, errs
+            sys.exit(0)
         if '--restart-only' in sys.argv:
             check_project_restart(page, shots)
             assert not errs, errs
