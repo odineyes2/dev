@@ -29,6 +29,8 @@ try:
         client.post(f'/api/issues/{ref}/plans', json={'body': '## 방향\nSQLite 카탈로그를 웹 수집까지 확장한다.\n\n## Tasks\n1. 수집 연결 | 파일: backend/catalog/local.py | 확인: 결과 표시 | 선행: 없음'}).raise_for_status()
         approved_note = 'PostgreSQL 기준으로 계획서를 재작성해 주세요.'
         client.post(f'/api/issues/{ref}/decision', json={'verdict': 'approve_notes', 'note': approved_note, 'plan_version': 1}).raise_for_status()
+        client.post(f'/api/issues/{ref}/plans', json={'body': '## Tasks\n1. PostgreSQL 연결 | 파일: backend/catalog/pg.py | 확인: 결과 표시 | 선행: 없음'}).raise_for_status()
+        client.post(f'/api/issues/{ref}/decision', json={'verdict': 'approve_notes', 'note': approved_note, 'plan_version': 2}).raise_for_status()
         children = client.get(f'/api/issues/{ref}').json()['children']
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
@@ -46,6 +48,8 @@ try:
                         page.goto(base + '/#/issue/' + ref)
                         page.locator('[data-verdict="review"]').click()
                         assert page.input_value('#decision-note') == approved_note
+                        page.locator('#superseded-tasks summary').click()
+                        assert page.locator('#superseded-tasks a').count() == 1
                         page.fill('#decision-note', 'SQLite는 임시예요. PostgreSQL로 통일하고 기존 3건을 이관해 주세요.')
                         page.select_option('#revision-provider', 'codex')
                         page.locator('#decision-form').scroll_into_view_if_needed()
@@ -66,6 +70,7 @@ try:
                 assert result['plan']['revision_note'] == note
                 assert result['approval']['stale'] and result['approval']['verdict'] == 'approve_notes'
                 assert len(result['children']) == len(children) and result['status'] != 'closed'
+                assert len(result['superseded_children']) == 1
                 queued = client.get('/api/jobs').json()['jobs']
                 assert len(queued) == 1 and queued[0]['provider'] == 'codex'
                 assert not errors, errors

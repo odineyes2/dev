@@ -328,6 +328,7 @@ def delete_project(actor, key, confirmation_token=None):
 _LAST_DECISION = "(SELECT {} FROM decisions d WHERE d.issue_id=i.id AND d.gate='plan' ORDER BY d.id DESC LIMIT 1)"
 _DEC_VERDICT, _DEC_VERSION = _LAST_DECISION.format("verdict"), _LAST_DECISION.format("plan_version")
 _LATEST_PLAN = "(SELECT MAX(version) FROM plans pl WHERE pl.issue_id=i.id)"
+_SUPERSEDED = "(SELECT MAX(json_extract(e.data_json,'$.superseded_by_plan')) FROM events e WHERE e.issue_id=i.id)"
 
 
 def ref_sql(i, k):
@@ -337,6 +338,7 @@ def ref_sql(i, k):
 
 _PARENT_REF = f"(SELECT {ref_sql('q', 'p')} FROM issues q WHERE q.id=i.parent_id)"
 _ISSUE_SELECT = (f"SELECT i.*, p.key AS project_key, {ref_sql('i', 'p')} AS ref, {_PARENT_REF} AS parent_ref, "
+                 f"{_SUPERSEDED} AS superseded_by_plan, "
                  f"{_DEC_VERDICT} AS dec_verdict, {_DEC_VERSION} AS dec_version, "
                  f"{_LATEST_PLAN} AS latest_plan, "
                  f"EXISTS(SELECT 1 FROM events e WHERE e.issue_id=i.id AND e.actor LIKE 'human:%' "
@@ -449,7 +451,7 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
               "id_asc": "i.id ASC", "id_desc": "i.id DESC"}
     if sort not in orders:
         raise StoreError("모르는 정렬이에요.")
-    where, args = [], []
+    where, args = ['superseded_by_plan IS NULL'], []
     if approved:
         where.append('NOT plan_revision_requested')
         where.append(f"{_DEC_VERDICT} IN ('approve','approve_notes') AND {_DEC_VERSION} = {_LATEST_PLAN}")
@@ -516,6 +518,8 @@ def get_issue(ref) -> dict:
         d["blocked_by"] = blockers(row["id"])
         d["children"] = [{**{k: v for k, v in _issue_dict(ch).items() if k != "body"}, "blocked_by": blockers(ch["id"])} for ch in
                          c.execute(_ISSUE_SELECT + " WHERE i.parent_id=? ORDER BY i.id", (row["id"],))]
+        d['superseded_children'] = [ch for ch in d['children'] if ch['superseded_by_plan']]
+        d['children'] = [ch for ch in d['children'] if not ch['superseded_by_plan']]
         par = c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["parent_id"],)).fetchone() if row["parent_id"] else None
         d["parent_ref"] = _issue_dict(par)["ref"] if par else None
         import attachments
@@ -849,7 +853,7 @@ def complete_tree(actor, ref, note="", confirm_checks=False) -> list[dict]:
                                             f"JOIN projects p ON p.id=i.project_id WHERE r.status='running' AND i.id IN ({marks})", ids)]
         if busy:
             raise StoreError(f"Claude가 실행 중인 이슈가 있어요: {', '.join(busy)} — 끝난 뒤 다시 해 주세요.", 409)
-        rows = c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({marks}) AND i.status NOT IN ('done','closed') ORDER BY i.id", ids).fetchall()
+        rows = c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({marks}) AND i.status NOT IN ('done','closed') AND superseded_by_plan IS NULL ORDER BY i.id", ids).fetchall()
         _checks_gate(c, rows, confirm_checks)
         now = db.now_iso()
         body = note.strip() or f"전체 완료 ({row['ref']}에서 한 번에)"
@@ -942,7 +946,7 @@ def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
         return 0   # 첫 판인데 하위가 이미 있음(사람이 만든 Task), 또는 Tasks 절 없는 새 판(기존 Task를 이어 감) — 그대로 둔다
     # 계획서에 Tasks 절이 없으면(작은 일) 이슈 자체를 Task 하나로 — 실행은 Task에만 붙는다
     tasks = parse_tasks(plan_body) or [{"n": 1, "title": parent["title"], "files": "", "check": "", "after": []}]
-    existing = {r["title"]: r["id"] for r in c.execute("SELECT id, title FROM issues WHERE parent_id=?", (parent["id"],))}
+    existing = {r["title"]: r["id"] for r in c.execute(f"SELECT i.id, i.title FROM issues i WHERE i.parent_id=? AND {_SUPERSEDED} IS NULL", (parent["id"],))}
     proj = c.execute("SELECT * FROM projects WHERE id=?", (parent["project_id"],)).fetchone()
     now, ids, made, ref = db.now_iso(), {}, set(), _issue_dict(parent)["ref"]
     for t in tasks:
@@ -970,6 +974,52 @@ def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
     return len(made)
 
 
+def _supersede_tasks(c, parent, plan_body, version, actor):
+    """새 승인 계획에 없는 자동 생성 Task는 이력을 보존하고 실행 대상에서 제외한다."""
+    tasks = parse_tasks(plan_body)
+    if not tasks:
+        return 0
+    keep = {t['title'] for t in tasks}
+    ref = _issue_dict(parent)['ref']
+    old = []
+    for task in c.execute(_ISSUE_SELECT + ' WHERE i.parent_id=? ORDER BY i.id', (parent['id'],)):
+        match = re.match(re.escape(ref) + r' 계획서 v(\d+)의 Task \d+\.', task['body'])
+        if not match or int(match[1]) >= version or task['title'] in keep or task['superseded_by_plan']:
+            continue
+        active = c.execute("SELECT 1 FROM runs WHERE issue_id=? AND status='running'", (task['id'],)).fetchone()
+        merging = c.execute("SELECT 1 FROM execution_completion WHERE issue_id=? AND phase IN ('ready','checking','applying','deployed','restart_requested','rollback_requested','rollback_applied')", (task['id'],)).fetchone()
+        if active or (merging and task['status'] not in HUMAN_ONLY_STATUSES):
+            raise StoreError(f"{task['ref']}가 실행·병합 중이에요. 끝난 뒤 새 계획서를 승인해 주세요.", 409)
+        old.append(task)
+    import jobs
+    for task in old:
+        for job in c.execute("SELECT * FROM jobs WHERE issue_id=? AND status='queued'", (task['id'],)).fetchall():
+            c.execute("UPDATE jobs SET status='cancelled',cancellation_reason='plan_superseded' WHERE id=?", (job['id'],))
+            jobs._restore(c, job)
+        row = _find(c, task['id'])
+        if row['status'] not in HUMAN_ONLY_STATUSES and row['status'] != 'on_hold':
+            _set_status(c, actor, row, 'on_hold', f'계획서 v{version}으로 대체된 이전 Task를 보관했어요.', {'source': 'approved_plan_supersession'})
+        _event(c, task['id'], actor, 'comment', f"계획서 v{version}으로 대체되어 이전 Task로 보관했어요. 실행 기록·커밋은 보존해요.", {'superseded_by_plan': version, 'source': 'approved_plan_supersession'})
+    return len(old)
+
+
+def reconcile_plan_tasks(c):
+    """기존에 승인된 새 계획의 누락된 Task 보관도 같은 승인 근거로 복구한다."""
+    rows = c.execute(_ISSUE_SELECT + " WHERE i.parent_id IS NULL AND i.status NOT IN ('done','closed')").fetchall()
+    for row in rows:
+        approval = _issue_dict(row)['approval']
+        if not approval or approval['stale'] or approval['verdict'] not in ('approve','approve_notes'):
+            continue
+        decision = c.execute("SELECT actor FROM decisions WHERE issue_id=? AND gate='plan' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
+        if not decision or not decision['actor'].startswith('human:'):
+            continue
+        plan = c.execute('SELECT body,version FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1', (row['id'],)).fetchone()
+        try:
+            _supersede_tasks(c, row, plan['body'], plan['version'], {'kind': 'human', 'name': decision['actor'][6:]})
+        except StoreError:
+            continue  # 진행 중인 이전 Task는 끝난 뒤 다음 펌프에서 정리한다.
+
+
 def _record_plan_decision(c, row, latest, verdict, note, actor, provenance=None):
     """직렬화된 호출자 트랜잭션에서 결정과 Task 생성을 함께 기록한다."""
     c.execute("INSERT INTO decisions(issue_id, gate, plan_version, verdict, note, actor, created_at) VALUES(?,?,?,?,?,?,?)",
@@ -977,9 +1027,11 @@ def _record_plan_decision(c, row, latest, verdict, note, actor, provenance=None)
     if verdict != "reject":   # 거절은 아래 상태 변경 이벤트가 사유를 담는다
         plan_body = c.execute("SELECT body FROM plans WHERE issue_id=? AND version=?", (row["id"], latest)).fetchone()[0]
         made = _spawn_tasks(c, row, plan_body, latest, actor, "" if provenance else note)
+        superseded = _supersede_tasks(c, row, plan_body, latest, actor)
         label = "Auto 계획 승인" if provenance else VERDICT_LABEL[verdict]
         _event(c, row["id"], actor, "comment", f"**{label}** (계획서 v{latest})" + (f"\n\n{note}" if note.strip() else "")
-               + (f"\n\n하위 Task {made}개를 만들었어요." if made else ""),
+               + (f"\n\n하위 Task {made}개를 만들었어요." if made else "")
+               + (f"\n\n이전 Task {superseded}개를 보관했어요." if superseded else ""),
                {"decision": verdict, "plan_version": latest, **(provenance or {})})
         c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), row["id"]))
 

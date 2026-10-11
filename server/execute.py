@@ -582,6 +582,8 @@ def blocked_reason(issue: dict, parent: dict | None, wait: bool = True) -> str |
 
 
 def _eligibility_reason(issue: dict, parent: dict | None, wait: bool = True) -> str | None:
+    if issue.get('superseded_by_plan'):
+        return f"계획서 v{issue['superseded_by_plan']}으로 대체된 이전 Task예요. 새 Task를 실행해 주세요."
     if not issue.get("parent_ref") or parent is None:
         return "Task(하위 이슈)만 실행을 맡길 수 있어요."
     a = parent.get("approval")

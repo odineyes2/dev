@@ -123,6 +123,8 @@ def _approve_tasks(c, setting):
         row = issues._find(c, item['id'])
         if 'goal' in json.loads(row['labels_json']) or row['claimed_by']:
             continue
+        if row['superseded_by_plan']:
+            continue
         parent = issues._find(c, row['parent_id'])
         if parent['project_id'] != row['project_id']:
             continue
@@ -328,6 +330,7 @@ def sync():
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         settings = c.execute('SELECT s.* FROM project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE p.archived=0 ORDER BY p.id').fetchall()
+        issues.reconcile_plan_tasks(c)
         for setting in settings:
             _approve_plans(c, setting)
             _approve_tasks(c, setting)

@@ -871,11 +871,13 @@ async function renderIssue(ref, background = false){
           <span class="right">${it.plan && it.plan.version > 1 ? '<button id="plan-history">이전 판</button>' : ''}<button id="edit-plan">${it.plan ? '고쳐 쓰기' : '쓰기'}</button></span></h2>
           <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div>
           ${it.plan && !['done', 'closed'].includes(it.status) ? decisionHtml(it) : ''}</div>
+        ${it.superseded_by_plan ? `<div class="stage">계획서 v${it.superseded_by_plan}으로 대체된 이전 Task예요. 기록은 보존되며 실행 대상에서 제외됐어요.</div>` : ''}
         ${it.parent_ref ? '' : resultHtml(it)}
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues tasks">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}<div class="task-history">${processingAgentsHtml(ch)} ${completionTimeHtml(ch)}</div></td><td>${statusHtml(ch.status)}${progressHtml(ch)}</td>
             <td>${taskActionsHtml(it, ch)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
+        ${it.superseded_children?.length ? `<details class="panel" id="superseded-tasks"><summary>이전 계획의 Task · ${it.superseded_children.length}개</summary>${it.superseded_children.map(ch => `<p><a href="#/issue/${esc(ch.ref)}">${esc(ch.ref)} · ${esc(ch.title)}</a> <span class="dim">계획서 v${ch.superseded_by_plan}으로 대체</span></p>`).join('')}</details>` : ''}
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.filter(e => e.kind !== 'claim').map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">댓글 달기</button></div></div></div>

@@ -339,7 +339,7 @@ def _reservations(c, keep_stalled: bool = False) -> dict[int, tuple[str, set[str
     held = {}
     for p in c.execute(f"""SELECT DISTINCT q.id, {issues.ref_sql('q', 'k')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id
             JOIN issues q ON q.id=i.parent_id JOIN projects k ON k.id=q.project_id WHERE r.mode='execute'""").fetchall():
-        kids = c.execute("SELECT status, body FROM issues WHERE parent_id=? AND status NOT IN ('done','closed')", (p["id"],)).fetchall()
+        kids = c.execute(f"SELECT i.status, i.body FROM issues i WHERE i.parent_id=? AND i.status NOT IN ('done','closed') AND {issues._SUPERSEDED} IS NULL", (p["id"],)).fetchall()
         if not kids or (not keep_stalled and any(k["status"] in STALLED for k in kids)):
             continue
         todo = ("backlog", "waiting", "in_progress") + (STALLED if keep_stalled else ())
