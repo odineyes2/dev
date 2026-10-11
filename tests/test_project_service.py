@@ -215,6 +215,18 @@ class ServiceTest(unittest.TestCase):
         self.health.assert_not_called()
         self.assertFalse(any('route' in c.args[0] for c in self.commands.call_args_list))
 
+    def test_old_cli_error_is_enriched_in_diagnostic_without_changing_the_record(self):
+        self.queue()
+        original = '실행 파일 생성에 실패했어요. 에이전트 CLI 로그인과 설정을 확인해 주세요.'
+        service._save(self.project['id'], status='failed', step=4, error=original)
+        with patch('service_prepare.previous_failure', return_value='생성 비용 상한에 도달했어요.') as lookup:
+            state = service.status('APP')
+        self.assertIn('비용 상한', state['error'])
+        self.assertEqual(state['steps'][3]['error'], state['error'])
+        lookup.assert_called_once()
+        with db.connect() as c:
+            self.assertEqual(c.execute('SELECT error FROM project_services WHERE project_id=?', (self.project['id'],)).fetchone()[0], original)
+
     def test_missing_config_is_generated_before_pm2_and_dns(self):
         self.project = issues.update_project(H, 'APP', {'service_app': 'myapp'})
         def generated(project):

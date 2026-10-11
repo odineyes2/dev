@@ -150,6 +150,14 @@ def status(key):
         row = c.execute('SELECT * FROM project_services WHERE project_id=?', (project['id'],)).fetchone()
     state = dict(row) if row else {'status': 'idle', 'domain': '', 'port': 0, 'phase': '', 'error': ''}
     state['steps'] = _steps(project, row)
+    if state['status'] == 'failed' and state.get('step') == 4 and state['error'] == '실행 파일 생성에 실패했어요. 에이전트 CLI 로그인과 설정을 확인해 주세요.':
+        import service_prepare
+        detail = service_prepare.previous_failure(project['id'], state['updated_at'])
+        if detail:
+            state['error'] = '실행 파일 생성에 실패했어요. ' + detail
+            for step in state['steps']:
+                if step['status'] == 'failed':
+                    step['error'] = state['error']
     state['managed'] = bool(state['domain'])
     domain, port = _existing_service(project)
     domain, port = state['domain'] or domain, state['port'] or port

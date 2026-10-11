@@ -164,6 +164,14 @@ class PrepareTest(unittest.TestCase):
         self.assertNotIn('private-password', prepare._failure_detail('', 'password=private-password', 'claude'))
         self.assertNotIn('backend/bootstrap.py', prepare._failure_detail(json.dumps({'structured_output': result()}), '', 'claude'))
 
+    def test_old_failure_can_be_read_without_another_paid_generation(self):
+        directory = config.DATA_DIR / 'service-preparations' / (str(self.project['id']) + '-old')
+        directory.mkdir(parents=True)
+        (directory / 'agent-output.log').write_text(json.dumps({'subtype': 'error_max_budget_usd', 'is_error': True}))
+        (directory / 'agent-error.log').write_text('')
+        self.assertIn('비용 상한', prepare.previous_failure(self.project['id'], db.now_iso()))
+        self.assertEqual(prepare.previous_failure(self.project['id'], '2000-01-01T00:00:00+00:00'), '')
+
     def test_nonzero_exit_reports_the_actual_error_instead_of_guessing_login(self):
         snapshot = prepare.audit.collect_snapshot('APP')
         directory = self.root / 'failed-agent'

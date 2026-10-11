@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import auto_settings
@@ -44,6 +45,29 @@ def _failure_detail(out, err, provider):
         parts.append(err.strip())
     # 오류 신호만 표시한다. 성공 결과의 생성 코드나 인증값은 진단에 넣지 않는다.
     return '\n'.join(audit._safe(part)[:1000] for part in parts)[:2000] or '프로그램이 상세 오류를 반환하지 않았어요.'
+
+
+def previous_failure(project_id, updated_at):
+    """진단 요청은 서버 계정에서 기존 실패 로그의 오류 부분만 읽는다."""
+    try:
+        directories = list((config.DATA_DIR / 'service-preparations').glob(str(project_id) + '-*'))
+        if not directories:
+            return ''
+        directory = max(directories, key=lambda p: p.stat().st_mtime)
+        if abs(directory.stat().st_mtime - datetime.fromisoformat(updated_at).timestamp()) > 60:
+            return ''
+        with (directory / 'agent-output.log').open('rb') as f:
+            out = f.read(2 * 1024 * 1024).decode('utf-8', errors='replace')
+        with (directory / 'agent-error.log').open('rb') as f:
+            err = f.read(8000).decode('utf-8', errors='replace')
+        try:
+            event = json.loads(out)
+            provider = 'codex' if isinstance(event, dict) and 'type' in event else 'claude'
+        except ValueError:
+            provider = 'codex'
+        return _failure_detail(out, err, provider)
+    except (OSError, ValueError):
+        return ''
 
 
 def _unchanged(repo, sha, branch):
