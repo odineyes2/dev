@@ -47,6 +47,10 @@ with db.connect() as c:
 issues.set_status(me, ref, 'in_review', 'manual repair')
 assert execute.repair_available(issues.get_issue(ref))
 assert execute.panel(issues.get_issue(ref))['repair_available']
+with patch.object(execute, 'branch_info', side_effect=issues.StoreError('branch lookup failed', 409)):
+    assert execute.panel(issues.get_issue(ref))['repair_available']
+no_commit = dict(issues.get_issue(ref), events=[])
+assert not execute.repair_available(no_commit)
 (wt / 'dirty.txt').write_text('dirty')
 try:
     execute.register_repair(me, ref)

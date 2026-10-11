@@ -398,11 +398,12 @@ def repair_available(issue):
     if not issue.get('parent_ref') or issue['status'] not in ('in_review', 'on_hold', 'changes_requested'):
         return False
     with db.connect() as c:
-        row = c.execute('''SELECT r.id,r.mode,r.status,t.state FROM runs r
+        row = c.execute('''SELECT r.id,r.mode,r.status,r.task_start_sha,t.state FROM runs r
             JOIN task_execution_results t ON t.run_id=r.id WHERE r.issue_id=?
             AND r.id=(SELECT MAX(id) FROM runs WHERE issue_id=?)
             AND NOT EXISTS(SELECT 1 FROM execution_completion e WHERE e.run_id=r.id)''', (issue['id'], issue['id'])).fetchone()
-    return bool(row and row['mode'] == 'execute' and row['status'] != 'running' and row['state'] == 'processing')
+    return bool(row and row['mode'] == 'execute' and row['status'] != 'running' and row['state'] == 'processing'
+                and any(e['kind'] == 'commit' and e['data'].get('sha') and e['data']['sha'] != row['task_start_sha'] for e in issue.get('events', [])))
 
 
 def register_repair(actor, ref):
@@ -734,6 +735,6 @@ def panel(issue: dict) -> dict | None:
     import regression
     return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC,
             "retry_merge_available": orchestrate.retry_available(issue),
-            "repair_available": repair_available(issue) and bool(branch and branch['commits']) and not _eligibility_reason(issue, parent),
+            "repair_available": repair_available(issue) and not _eligibility_reason(issue, parent),
             "regression": regression.resolve(issue['ref'], worktree_path(issue['ref']) if worktree_path(issue['ref']).exists() else repo),
             "regression_results": {stage: regression.load_record('regression-selection:' + issue['ref'] + ':' + stage) for stage in ('server_completion', 'server_merge')}}

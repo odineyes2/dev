@@ -1821,7 +1821,9 @@ function bindProjectRestart(project){
     try {
       const result = await request('GET');
       if(!panel.isConnected) return;
+      const reloadAfterRestart = active() && data.self_restart && result.self_restart && result.id === data.id && result.status === 'complete';
       data = result; retries = 0; paint();
+      if(reloadAfterRestart){ location.reload(); return; }
     } catch(error){
       if(!panel.isConnected) return;
       retries++;

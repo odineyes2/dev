@@ -342,8 +342,10 @@ def check_project_restart(page, shots):
     assert page.locator('.project-restart').count() == 1
     page.unroute('**/api/restart-auth-test')
     state['row'].update(status='complete', phase='앱 재시작·접속 확인 완료')
+    page.evaluate('window.beforeSelfRestartReload=true')
     page.click('#app-restart-refresh')
     page.wait_for_selector('#app-restart-start:not([disabled])')
+    page.wait_for_function('window.beforeSelfRestartReload === undefined')
     state['row'].update(status='failed', phase='앱 재시작 실패', error='PM2 앱 재시작 실패 <img src=x onerror="window.restartXSS=1">')
     page.click('#app-restart-refresh')
     page.wait_for_function('document.querySelector("#app-restart-state").textContent.includes("재시작 실패")')
