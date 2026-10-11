@@ -330,6 +330,46 @@ class PublicationTests(unittest.TestCase):
     report = AuditTests.report
     actor = {'kind': 'human', 'id': 1, 'name': 'admin'}
 
+    def completed_reuse(self):
+        issue = issues.create_issue(self.actor, 'AUD', '기존 검색', '')
+        issues.post_plan(self.actor, issue['ref'], '## Tasks\n1. 검색 구현 | 파일: app.py | 확인: 검색 검사 | 선행: 없음')
+        issues.decide(self.actor, issue['ref'], 'approve', plan_version=1)
+        report = self.report()
+        report['candidates'][0].update(disposition='reuse_issue', related_issues=[issue['ref']])
+        snapshot = audit.collect_snapshot('AUD')
+        row = audit.create_audit(self.pid, 'reuse', 'codex', 'human:admin')
+        audit.save_snapshot(row['id'], snapshot)
+        audit.finish_audit(row['id'], 'complete', report=report)
+        return row['id'], issue
+
+    def test_existing_link_is_idempotent_and_preserves_plan_approval_and_work(self):
+        aid, issue = self.completed_reuse()
+        with db.connect() as c:
+            before = {table: [tuple(r) for r in c.execute(f'SELECT * FROM {table}')] for table in ('plans', 'decisions', 'jobs', 'runs')}
+            count = c.execute('SELECT COUNT(*) FROM issues').fetchone()[0]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: audit.link_existing(self.actor, 'AUD', aid, 'c1', issue['ref']), range(2)))
+        self.assertEqual(results[0], results[1])
+        with db.connect() as c:
+            for table, rows in before.items():
+                self.assertEqual([tuple(r) for r in c.execute(f'SELECT * FROM {table}')], rows)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM issues').fetchone()[0], count)
+            comments = c.execute("SELECT body FROM events WHERE issue_id=? AND kind='comment' AND json_extract(data_json,'$.audit_id')=?", (issue['id'], aid)).fetchall()
+            self.assertEqual(len(comments), 1)
+            self.assertIn('참고용 Plan 초안', comments[0]['body'])
+            self.assertIn('목표 대비 현황 점검', comments[0]['body'])
+        self.assertEqual(audit.get_audit(self.pid, aid)['publications'][0]['issue_ref'], issue['ref'])
+
+    def test_existing_link_rejects_unrelated_candidates_and_stale_baseline(self):
+        aid, issue = self.completed_reuse()
+        other = issues.create_issue(self.actor, 'AUD', '다른 작업', '')
+        self.denied(lambda: audit.link_existing(self.actor, 'AUD', aid, 'c1', other['ref']), 409)
+        self.denied(lambda: audit.link_existing(self.actor, 'AUD', aid, 'missing', issue['ref']), 404)
+        self.denied(lambda: audit.link_existing({'kind': 'agent'}, 'AUD', aid, 'c1', issue['ref']), 403)
+        self.write('app.py', 'print("changed")\n'); self.commit()
+        self.denied(lambda: audit.link_existing(self.actor, 'AUD', aid, 'c1', issue['ref']), 409)
+        self.assertEqual(audit.get_audit(self.pid, aid)['publications'], [])
+
     def completed(self, request='publish', count=1):
         report = self.report()
         report['candidates'][0]['plan_draft'] = '## Tasks\n1. 검색 구현 | 파일: app.py | 확인: 검색 결과 검사 | 선행: 없음'
@@ -494,7 +534,7 @@ class PublicationTests(unittest.TestCase):
         aid = self.completed()
         base = '/api/projects/AUD/audits'
         routes = [('GET', base), ('GET', base + '/preflight'), ('GET', base + f'/{aid}'),
-                  ('POST', base), ('POST', base + f'/{aid}/cancel'), ('POST', base + f'/{aid}/publish')]
+                  ('POST', base), ('POST', base + f'/{aid}/cancel'), ('POST', base + f'/{aid}/publish'), ('POST', base + f'/{aid}/link')]
         async def user(cookie):
             return {'id': 1, 'username': 'admin', 'role': 'admin' if cookie == 'admin' else 'user'} if cookie else None
         with patch.object(auth, 'nightshift_user', side_effect=user), TestClient(app.app) as client:
@@ -514,9 +554,9 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(client.get(base + '/preflight?provider=unknown').status_code, 400)
             self.assertEqual(client.get(base + f'/{aid}').status_code, 200)
             issues.create_project(self.actor, 'OTHER', 'other')
-            for suffix, method in [(f'/{aid}', 'GET'), (f'/{aid}/cancel', 'POST'), (f'/{aid}/publish', 'POST')]:
+            for suffix, method in [(f'/{aid}', 'GET'), (f'/{aid}/cancel', 'POST'), (f'/{aid}/publish', 'POST'), (f'/{aid}/link', 'POST')]:
                 self.assertEqual(client.request(method, '/api/projects/OTHER/audits' + suffix,
-                    headers={'X-Requested-With': 'dev'}, json={'candidate_ids': ['c1']}).status_code, 404)
+                    headers={'X-Requested-With': 'dev'}, json={'candidate_ids': ['c1'], 'candidate_id': 'c1', 'issue_ref': 'AUD-1'}).status_code, 404)
             def fake_run(project, row):
                 with runner._lock:
                     runner._workers.discard(row['id'])

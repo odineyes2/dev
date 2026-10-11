@@ -53,7 +53,7 @@ def audit_fixture(status='complete', variant='report', audit_id=1):
 def mock_audits(page, key='DEV'):
     """로컬 UI용 API만 대체하며 호출·충돌·응답 유실을 제어한다."""
     state = {'audits': [audit_fixture()], 'blocked': '', 'available': True, 'requests': [],
-             'publish_error': '', 'start_lost': False, 'publish_lost': False, 'cancel_pending': False}
+             'publish_error': '', 'link_error': '', 'start_lost': False, 'publish_lost': False, 'cancel_pending': False}
 
     def handle(route):
         request = route.request
@@ -81,6 +81,15 @@ def mock_audits(page, key='DEV'):
         row = next(r for r in state['audits'] if r['id'] == aid)
         if suffix.endswith('/cancel'):
             row['status'] = 'cancelling' if state['cancel_pending'] else 'cancelled'
+        if suffix.endswith('/link'):
+            if state['link_error']:
+                route.fulfill(status=409, json={'detail': state['link_error']}); return
+            body = request.post_data_json
+            publication = next((p for p in row['publications'] if p['candidate_id'] == body['candidate_id']), None)
+            if publication is None:
+                publication = {'candidate_id': body['candidate_id'], 'issue_ref': body['issue_ref'], 'issue_id': 1}
+                row['publications'].append(publication)
+            route.fulfill(json={'publication': publication}); return
         if suffix.endswith('/publish'):
             if state['publish_error']:
                 route.fulfill(status=409, json={'detail': state['publish_error']}); return

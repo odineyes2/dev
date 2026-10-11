@@ -368,9 +368,36 @@ def check_project_audits(page, shots):
         if variant == 'stale':
             assert '오래된 결과예요' in page.inner_text('#audit-detail')
             assert page.locator('#audit-publish').is_disabled()
+            assert page.locator('[data-link-candidate="c3"]').is_disabled()
         if variant == 'confirmation':
             assert page.locator('[data-candidate="c1"] input').count() == 0
             assert '사람 확인 필요' in page.inner_text('[data-candidate="c1"]')
+            assert page.locator('[data-candidate="c1"] [data-link-candidate]').count() == 0
+    row = audit_fixture()
+    row['report']['candidates'][2]['related_issues'] = ['DEV-1', issue['ref']]
+    open_screen([row])
+    page.select_option('[data-link-target="c3"]', issue['ref'])
+    state['link_error'] = '기준 자료가 변경됐어요.'
+    page.click('[data-link-candidate="c3"]')
+    page.wait_for_function('document.querySelector("#audit-message").textContent.includes("기준 자료가 변경")')
+    assert page.locator('[data-link-candidate="c3"]').is_enabled()
+    for scheme in ('light', 'dark'):
+        page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.wait_for_timeout(200)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            assert page.locator('[data-link-candidate="c3"]').bounding_box()['height'] >= 40
+            page.locator('[data-candidate="c3"]').screenshot(path=str(shots / f'audit_existing_link_{scheme}_{width}.png'))
+    state['link_error'] = ''
+    page.select_option('[data-link-target="c3"]', issue['ref'])
+    page.locator('[data-link-candidate="c3"]').evaluate('b=>{b.click();b.click()}')
+    page.wait_for_function('document.querySelector("#audit-message").textContent.includes("연결했어요")')
+    assert len(posts('/1/link')) == 2
+    assert posts('/1/link')[-1][2] == {'candidate_id': 'c3', 'issue_ref': issue['ref']}
+    assert page.locator('[data-link-candidate="c3"]').count() == 0
+    assert '연결한 Issue' in page.inner_text('[data-candidate="c3"]')
     # 보고서·Plan의 내용을 HTML로 실행하지 않는다.
     row = audit_fixture()
     row['report']['summary'] += '<img src=x onerror="window.auditXSS=1">'
