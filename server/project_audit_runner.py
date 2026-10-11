@@ -216,6 +216,7 @@ def analyze(row, snapshot):
 후보는 요구 근거·차이·범위·완료 기준·선행 조건·Plan 초안을 포함한다. 불명확한 유사 후보는 새 개발로 분류하지 않는다.
 Plan 초안은 저장소 내부 파일 변경 Task만 쓰며 승인·실행을 시작하지 않는다.
 근거 source_id와 실제 줄/절만 인용한다. JSON 스키마에 맞는 결과만 반환한다.
+근거의 줄/절을 지정하지 않을 때 line_start·line_end·section은 null로 채운다. 줄 범위는 시작과 끝을 함께 지정한다.
 <수집자료>\n''' + audit._json(snapshot) + '\n</수집자료>'
     if len(audit._json(snapshot).encode('utf-8')) > limits['input_bytes'] or audit.contains_sensitive(snapshot):
         raise ValueError('입력 제한')

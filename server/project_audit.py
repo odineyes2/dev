@@ -288,11 +288,11 @@ def validate_report(report, snapshot):
             if source is None:
                 fail()
             start, end = item.get('line_start'), item.get('line_end')
-            if 'line_start' in item or 'line_end' in item:
+            if start is not None or end is not None:
                 if (type(start) is not int or type(end) is not int or
                     not isinstance(source['content'], str) or not 1 <= start <= end <= source.get('lines', len(source['content'].splitlines()))):
                     fail()
-            if 'section' in item and (not isinstance(item['section'], str) or
+            if item.get('section') is not None and (not isinstance(item['section'], str) or
                 not item['section'].strip() or not isinstance(source['content'], str) or item['section'] not in source['content']):
                 fail()
             found.append(source)

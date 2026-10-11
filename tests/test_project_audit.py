@@ -210,11 +210,20 @@ class AuditTests(unittest.TestCase):
         schema = json.loads(audit.SCHEMA_PATH.read_text(encoding='utf-8'))
         self.assertEqual(set(schema['required']), set(report))
         self.assertEqual(set(schema['$defs']['candidate']['required']), set(report['candidates'][0]))
+        location = schema['$defs']['evidence']['items']
+        self.assertNotIn('dependentRequired', location)
+        self.assertEqual(set(location['required']), set(location['properties']))
+        nullable = copy.deepcopy(report)
+        for row in nullable['requirements'] + nullable['candidates']:
+            for evidence in row['evidence']:
+                for field in ('line_start', 'line_end', 'section'):
+                    evidence.setdefault(field, None)
+        self.assertEqual(audit.validate_report(nullable, snapshot), nullable)
         mutations = [
             lambda r: r['requirements'][0]['evidence'].append({'source_id': 'git:uncollected.py'}),
             lambda r: r['requirements'][0]['evidence'][0].update(section='없는 절'),
             lambda r: r['requirements'][0]['evidence'][1].update(line_end=999),
-            lambda r: r['requirements'][0]['evidence'][1].update(line_start=None, line_end=None),
+            lambda r: r['requirements'][0]['evidence'][1].update(line_start=1, line_end=None),
             lambda r: r['requirements'][0]['evidence'][0].update(source_id=[]),
             lambda r: r['requirements'][0].update(status='complete'),
             lambda r: r['requirements'].append(copy.deepcopy(r['requirements'][0])),
