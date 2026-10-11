@@ -206,11 +206,27 @@ class ServiceTest(unittest.TestCase):
     def test_missing_pm2_config_marks_the_exact_failed_step(self):
         self.project = issues.update_project(H, 'APP', {'service_app': 'myapp'})
         self.queue()
-        service._run(self.project, 'connect')
+        with patch('service_prepare.prepare', side_effect=issues.StoreError('실행 파일 자동 생성이 중단됐어요: 실행 진입점이 미정이에요.')) as prepare:
+            service._run(self.project, 'connect')
+            prepare.assert_called_once_with(self.project)
         steps = service.status('APP')['steps']
         self.assertEqual([s['status'] for s in steps], ['done', 'done', 'done', 'failed', 'pending', 'pending'])
-        self.assertIn('ecosystem.config.js', steps[3]['error'])
+        self.assertIn('자동 생성이 중단', steps[3]['error'])
         self.health.assert_not_called()
+        self.assertFalse(any('route' in c.args[0] for c in self.commands.call_args_list))
+
+    def test_missing_config_is_generated_before_pm2_and_dns(self):
+        self.project = issues.update_project(H, 'APP', {'service_app': 'myapp'})
+        def generated(project):
+            self.assertEqual(service.status('APP')['step'], 4)
+            self.assertIn('생성', service.status('APP')['phase'])
+            (self.root / 'ecosystem.config.js').write_text('module.exports = {};')
+            self.assertFalse(any('route' in c.args[0] for c in self.commands.call_args_list))
+            return ['ecosystem.config.js']
+        with patch('service_prepare.prepare', side_effect=generated) as prepare:
+            self.connect()
+            prepare.assert_called_once_with(self.project)
+        self.assertTrue(any(c.args[1] == 'PM2 앱 시작' for c in self.commands.call_args_list))
 
     def test_running_and_successful_steps(self):
         self.queue()
@@ -329,8 +345,9 @@ class ServiceTest(unittest.TestCase):
         cli.parent.mkdir(parents=True)
         cli.write_text('')
         paths = {'pm2': None, 'npx': str(self.root / 'npx.cmd'), 'node': str(self.root / 'node.exe')}
-        with patch.object(service.shutil, 'which', side_effect=paths.get):
+        with patch.object(service.shutil, 'which', side_effect=paths.get), patch('service_prepare.prepare') as prepare:
             self.connect()
+            prepare.assert_not_called()
         pm2 = next(c for c in self.commands.call_args_list if c.args[1] == 'PM2 앱 시작')
         self.assertEqual(pm2.args[0][:4], [paths['node'], str(cli), '--no-install', 'pm2'])
         self.assertEqual(pm2.args[2], str(self.root))

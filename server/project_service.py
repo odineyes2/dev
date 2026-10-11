@@ -218,13 +218,17 @@ def request(actor, key, action='connect'):
     return status(key)
 
 
-def _command(args, label, cwd=None):
+def _command(args, label, cwd=None, environment=None):
     try:
         # 앱 실행에 Dev의 인증키·알림 토큰을 물려주지 않는다. 앱은 자기 실행 설정에서 환경을 읽는다.
-        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(('DEV_', 'NIGHTSHIFT_', 'CLOUDFLARE_', 'CF_')) and not re.search(r'(TOKEN|PASSWORD|SECRET|API_KEY)$', k.upper())}
+        env = environment if environment is not None else {k: v for k, v in os.environ.items() if not k.upper().startswith(('DEV_', 'NIGHTSHIFT_', 'CLOUDFLARE_', 'CF_')) and not re.search(r'(TOKEN|PASSWORD|SECRET|API_KEY)$', k.upper())}
         result = subprocess.run(args, cwd=cwd, capture_output=True, timeout=45,
                                 env=env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode:
+            if environment is not None:
+                from project_audit import _safe
+                detail = _safe(result.stderr.decode('utf-8', errors='replace'))[-1000:]
+                raise issues.StoreError(label + '에 실패했어요. ' + detail, 409)
             raise issues.StoreError(label + '에 실패했어요. 실행 계정의 권한·설정과 기존 DNS 충돌을 확인해 주세요.', 409)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise issues.StoreError(label + '을 실행할 수 없거나 시간이 초과됐어요.', 409) from e
@@ -365,8 +369,14 @@ def _run(project, action):
             app = project['service_app']
             if app and app != 'dev':
                 repo = Path(project['local_path'])
-                if not repo.is_dir() or not (repo / 'ecosystem.config.js').is_file():
-                    raise issues.StoreError('Local path의 ecosystem.config.js에서 지정 PM2 앱을 준비해 주세요.', 409)
+                if not project['local_path'] or not repo.is_dir():
+                    raise issues.StoreError('Local path의 프로젝트 폴더를 찾을 수 없어요.', 409)
+                if not (repo / 'ecosystem.config.js').is_file():
+                    _save(pid, phase='에이전트가 실행 파일을 생성·검사하고 있어요')
+                    import service_prepare
+                    service_prepare.prepare(project)
+                    if not (repo / 'ecosystem.config.js').is_file():
+                        raise issues.StoreError('자동 생성 결과에 ecosystem.config.js가 없어요.', 409)
                 _save(pid, phase='앱 시작')
                 pm2 = shutil.which('pm2')
                 launcher = [pm2] if pm2 else [shutil.which('npx'), '--no-install', 'pm2']

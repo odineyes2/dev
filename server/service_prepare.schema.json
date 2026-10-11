@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "reason", "files", "checks"],
+  "properties": {
+    "status": {"type": "string", "enum": ["ready", "blocked"]},
+    "reason": {"type": "string"},
+    "files": {
+      "type": "array", "maxItems": 12,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path", "content"],
+        "properties": {"path": {"type": "string"}, "content": {"type": "string"}}
+      }
+    },
+    "checks": {"type": "array", "maxItems": 3, "items": {"type": "string"}}
+  }
+}
