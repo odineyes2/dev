@@ -269,6 +269,73 @@ def check_service_diagnostic(page, shots):
     page.wait_for_function("!projects.some(p => p.key === 'DIAG')")
 
 
+def check_project_restart(page, shots):
+    """PM2를 호출하지 않고 관리자 버튼·복사·재연결 흐름만 검사한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers, data={'key': 'RST', 'name': '재시작 검사'}).ok
+    state = {'row': {'id': 1, 'available': True, 'status': 'idle', 'phase': '재시작 준비', 'error': '',
+                    'app': 'preview', 'target_app': 'preview', 'health_url': 'http://127.0.0.1:8400/api/health',
+                    'created_at': '2026-10-11T08:00:00+00:00', 'updated_at': '2026-10-11T08:00:01+00:00'},
+             'posts': 0, 'disconnect': False}
+    def handle(route):
+        if route.request.method == 'POST':
+            state['posts'] += 1
+            state['row'].update(status='waiting', phase='진행 중인 작업 종료 대기', self_restart=True)
+        elif state['disconnect']:
+            state['disconnect'] = False
+            route.fulfill(status=503, json={'detail': '재연결 중'}); return
+        route.fulfill(json=state['row'])
+    endpoint = '**/api/projects/RST/restart'
+    page.route(endpoint, handle)
+    page.goto(BASE + '/#/projects?project=RST&tab=manage'); page.reload()
+    page.wait_for_selector('#app-restart-start:not([disabled])')
+    page.locator('#app-restart-start').evaluate('b=>{b.click();b.click()}')
+    page.wait_for_function('document.querySelector("#app-restart-state").textContent.includes("작업 종료 대기")')
+    assert state['posts'] == 1
+    assert page.locator('#app-restart-start').is_disabled()
+    state['row'].update(status='checking', phase='재시작 후 로컬 접속 확인')
+    state['disconnect'] = True; page.click('#app-restart-refresh')
+    page.wait_for_function('document.querySelector("#app-restart-state").textContent.includes("응답을 기다리고")')
+    page.wait_for_function('document.querySelector("#app-restart-state").textContent.includes("로컬 접속 확인")', timeout=7000)
+    page.route('**/api/restart-auth-test', lambda r: r.fulfill(status=401, json={'detail': 'login'}))
+    page.evaluate("api('GET','/api/restart-auth-test').catch(e=>{window.restartAuthMessage=e.message})")
+    page.wait_for_function('window.restartAuthMessage?.includes("다시 연결")')
+    assert page.locator('.project-restart').count() == 1
+    page.unroute('**/api/restart-auth-test')
+    state['row'].update(status='complete', phase='앱 재시작·접속 확인 완료')
+    page.click('#app-restart-refresh')
+    page.wait_for_selector('#app-restart-start:not([disabled])')
+    state['row'].update(status='failed', phase='앱 재시작 실패', error='PM2 앱 재시작 실패 <img src=x onerror="window.restartXSS=1">')
+    page.click('#app-restart-refresh')
+    page.wait_for_function('document.querySelector("#app-restart-state").textContent.includes("재시작 실패")')
+    assert page.evaluate('window.restartXSS') is None
+    page.evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.restartCopied=text}}})")
+    page.click('#app-restart-copy')
+    page.wait_for_function('document.querySelector("#app-restart-feedback").textContent.includes("복사했어요")')
+    copied = page.evaluate('window.restartCopied')
+    assert 'DEV-RESTART-RST-1' in copied and 'preview' in copied and 'PM2 앱 재시작 실패' in copied
+    page.evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw Error('denied')}}})")
+    page.click('#app-restart-copy')
+    page.wait_for_selector('#app-restart-manual:not([hidden])')
+    assert page.input_value('#app-restart-manual') == copied
+    for theme in ('light', 'dark'):
+        page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850}); page.wait_for_timeout(200)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            assert page.locator('#app-restart-start').bounding_box()['height'] >= 40
+            page.locator('.project-restart').screenshot(path=str(shots / f'app_restart_{theme}_{width}.png'))
+    page.evaluate("window.restartOriginalMe={...me};me={kind:'agent'};renderProjects('RST','manage')")
+    assert page.locator('.project-restart').count() == 0
+    page.evaluate("me=window.restartOriginalMe;renderProjects('RST','manage')")
+    page.wait_for_selector('#app-restart-state')
+    page.unroute(endpoint, handle)
+    token = page.request.get(BASE + '/api/projects/RST/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/RST', headers=headers, data={'confirmation_token': token}).ok
+    page.reload(); page.wait_for_selector('#project-filter')
+
+
 def check_project_audits(page, shots):
     """점검 탭의 전체 사용자 흐름을 모의 API로 격리해서 확인한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -2766,6 +2833,10 @@ try:
             check_project_usage(page, shots)
             assert not errs, errs
             print('OK: project usage'); sys.exit(0)
+        if '--restart-only' in sys.argv:
+            check_project_restart(page, shots)
+            assert not errs, errs
+            print('OK: app restart UI'); sys.exit(0)
         if '--audits-only' in sys.argv:
             check_project_audits(page, shots)
             # 전체 흐름에서 점검 검사 다음에 생성하는 첫 NS Issue의 프로젝트·번호를 유지한다.

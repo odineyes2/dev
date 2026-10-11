@@ -735,6 +735,27 @@ UPDATE project_audit_publications SET mode='comment' WHERE EXISTS(
 """)
 
 
+MIGRATIONS.append("""
+CREATE TABLE project_app_restarts (
+ id INTEGER PRIMARY KEY,
+ project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ actor TEXT NOT NULL,
+ app TEXT NOT NULL,
+ repo TEXT NOT NULL,
+ health_url TEXT NOT NULL,
+ self_restart INTEGER NOT NULL,
+ process_id TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('waiting','restarting','checking','complete','failed')),
+ phase TEXT NOT NULL,
+ error TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX one_active_app_restart ON project_app_restarts((1))
+ WHERE status IN ('waiting','restarting','checking');
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

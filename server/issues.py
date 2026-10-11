@@ -232,6 +232,8 @@ def update_project(actor, key, fields: dict) -> dict:
             from project_service import validate_fields
             sets.update(validate_fields(*(fields.get(k, previous[k]) for k in ('service_domain', 'service_port', 'service_app'))))
         service = c.execute("SELECT * FROM project_services WHERE project_id=?", (previous['id'],)).fetchone() if previous else None
+        if previous and c.execute("SELECT 1 FROM project_app_restarts WHERE project_id=? AND status IN ('waiting','restarting','checking')", (previous['id'],)).fetchone():
+            raise StoreError('앱 재시작이 끝난 뒤 프로젝트 정보를 변경해 주세요.', 409)
         if service and service['status'] == 'running':
             raise StoreError('서비스 연결이 끝난 뒤 변경해 주세요.', 409)
         if service and (service['domain'] or service['backup_path']) and sets.get('archived'):
@@ -266,11 +268,13 @@ def _project_deletion(c, key):
         f"SELECT * FROM issue_deps WHERE issue_id IN ({target}) OR blocked_by_id IN ({target}) ORDER BY issue_id, blocked_by_id",
         (project["id"], project["id"]))]
     snapshot["dependencies"] = deps
-    for table in ("project_audits", "project_audit_candidates", "project_audit_publications"):
+    for table in ("project_audits", "project_audit_candidates", "project_audit_publications", "project_app_restarts"):
         snapshot[table] = [dict(r) for r in c.execute(
             f"SELECT * FROM {table} WHERE project_id=? ORDER BY rowid", (project["id"],))]
     ids = {r["id"] for r in rows}
     blockers = []
+    if c.execute("SELECT 1 FROM project_app_restarts WHERE project_id=? AND status IN ('waiting','restarting','checking')", (project['id'],)).fetchone():
+        blockers.append('앱 재시작이 진행 중이에요.')
     service = c.execute('SELECT * FROM project_services WHERE project_id=?', (project['id'],)).fetchone()
     if service and (service['domain'] or service['backup_path'] or service['status'] == 'running'):
         blockers.append('서비스 연결을 해제한 뒤 프로젝트를 삭제해 주세요.')

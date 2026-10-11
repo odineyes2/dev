@@ -421,6 +421,19 @@ def project_free_port(request: Request):
         return JSONResponse({'detail': str(error)}, status_code=error.status, headers={'Cache-Control': 'no-store'})
 
 
+@app.get('/api/projects/{key}/restart')
+def api_app_restart_status(key: str, request: Request):
+    human_only(request)
+    import project_restart
+    return project_restart.status(key)
+
+
+@app.post('/api/projects/{key}/restart', status_code=202)
+def api_app_restart(key: str, request: Request):
+    import project_restart
+    return project_restart.request(human_only(request), key)
+
+
 @app.get('/api/projects/{key}/service')
 def api_project_service(key: str):
     import project_service

@@ -208,6 +208,8 @@ def request(actor, key, action='connect'):
             current = c.execute('SELECT * FROM projects WHERE id=?', (project['id'],)).fetchone()
             if not current or dict(current) != project:
                 raise issues.StoreError('프로젝트 정보가 바뀌었어요. 새로고침 후 다시 연결해 주세요.', 409)
+            if c.execute("SELECT 1 FROM project_app_restarts WHERE status IN ('waiting','restarting','checking')").fetchone():
+                raise issues.StoreError('앱 재시작이 끝난 뒤 서비스 연결을 변경해 주세요.', 409)
             if c.execute("SELECT 1 FROM project_services WHERE status='running'").fetchone():
                 raise issues.StoreError('다른 서비스 연결이 진행 중이에요. 끝난 뒤 다시 시도해 주세요.', 409)
             import jobs
@@ -230,6 +232,30 @@ def request(actor, key, action='connect'):
         _save(project['id'], status='failed', error='서비스 작업을 시작할 수 없어요.')
         raise issues.StoreError('서비스 작업을 시작할 수 없어요.', 503)
     return status(key)
+
+
+def pm2_launcher():
+    pm2 = shutil.which('pm2')
+    launcher = [pm2] if pm2 else [shutil.which('npx'), '--no-install', 'pm2']
+    if not launcher[0]:
+        raise issues.StoreError('설치된 PM2 또는 npx를 찾을 수 없어요.', 409)
+    if os.name == 'nt':
+        node = shutil.which('node')
+        if not node:
+            raise issues.StoreError('Dev 실행 환경에서 Node.js를 찾을 수 없어요. PATH를 확인해 주세요.', 409)
+        parent = Path(launcher[0]).parent
+        package_cli = Path('pm2/bin/pm2' if pm2 else 'npm/bin/npx-cli.js')
+        candidates = [parent / 'node_modules' / package_cli]
+        # npm exec·npx는 node_modules/.bin의 바로가기를 PATH 앞에 둔다.
+        if parent.name == '.bin':
+            candidates.append(parent.parent / package_cli)
+        if not pm2:
+            candidates.append(parent / 'npx-cli.js')
+        cli = next((path for path in candidates if path.is_file()), None)
+        if cli is None:
+            raise issues.StoreError('설치된 PM2 또는 npx의 실행 파일을 찾을 수 없어요. 설치 경로를 확인해 주세요.', 409)
+        launcher = [node, str(cli), *launcher[1:]]
+    return launcher
 
 
 def _command(args, label, cwd=None, environment=None):
@@ -394,26 +420,7 @@ def _run(project, action):
                     if not (repo / 'ecosystem.config.js').is_file():
                         raise issues.StoreError('자동 생성 결과에 ecosystem.config.js가 없어요.', 409)
                 _save(pid, phase='앱 시작')
-                pm2 = shutil.which('pm2')
-                launcher = [pm2] if pm2 else [shutil.which('npx'), '--no-install', 'pm2']
-                if not launcher[0]:
-                    raise issues.StoreError('설치된 PM2 또는 npx를 찾을 수 없어요.', 409)
-                if os.name == 'nt':
-                    node = shutil.which('node')
-                    if not node:
-                        raise issues.StoreError('Dev 실행 환경에서 Node.js를 찾을 수 없어요. PATH를 확인해 주세요.', 409)
-                    parent = Path(launcher[0]).parent
-                    package_cli = Path('pm2/bin/pm2' if pm2 else 'npm/bin/npx-cli.js')
-                    candidates = [parent / 'node_modules' / package_cli]
-                    # npm exec·npx는 node_modules/.bin의 바로가기를 PATH 앞에 둔다.
-                    if parent.name == '.bin':
-                        candidates.append(parent.parent / package_cli)
-                    if not pm2:
-                        candidates.append(parent / 'npx-cli.js')
-                    cli = next((path for path in candidates if path.is_file()), None)
-                    if cli is None:
-                        raise issues.StoreError('설치된 PM2 또는 npx의 실행 파일을 찾을 수 없어요. 설치 경로를 확인해 주세요.', 409)
-                    launcher = [node, str(cli), *launcher[1:]]
+                launcher = pm2_launcher()
                 args = [*launcher, 'startOrRestart', 'ecosystem.config.js', '--only', app, '--update-env']
                 import project_audit_runner
                 app_env = {**project_audit_runner._environment(), 'PORT': str(port), 'HOST': '127.0.0.1'}

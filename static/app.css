@@ -683,6 +683,9 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .service-diagnostic-head h4{ margin:0; font-size:13px; font-weight:600; }
 .audit-diagnostic{ margin:12px 0; }
 .audit-diagnostic textarea{ width:100%; min-height:240px; font-size:12px; overflow-wrap:anywhere; }
+.project-restart button{ min-height:40px; }
+#app-restart-state{ white-space:pre-wrap; overflow-wrap:anywhere; margin-top:12px; }
+#app-restart-manual{ width:100%; min-height:220px; font-size:12px; }
 #p-service-copy{ display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; padding:0; flex-shrink:0; }
 #p-service-copy .ico{ width:15px; height:15px; }
 .service-diagnostic-row{ font-size:14px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; min-width:0; }

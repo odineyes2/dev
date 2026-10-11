@@ -8,6 +8,7 @@ const PRIORITIES = ['urgent', 'high', 'medium', 'low', 'none'];
 const OPEN_STATUSES = STATUSES.filter(s => s !== 'done' && s !== 'closed');
 
 let me = null;
+let restartGraceUntil = 0;
 let projects = [];
 let agentsById = new Map();
 const view = document.getElementById('view');
@@ -33,7 +34,7 @@ async function api(method, url, body, isCurrent = () => true){
   const res = await fetch(url, opt);
   perf.fetchMs += performance.now() - t0;
   perf.server = res.headers.get('Server-Timing') || perf.server;
-  if(res.status === 401){ if(isCurrent()) showLogin(); throw new Error('로그인이 필요해요.'); }
+  if(res.status === 401){ if(Date.now() < restartGraceUntil) throw new Error('서버 재시작 후 다시 연결하고 있어요.'); if(isCurrent()) showLogin(); throw new Error('로그인이 필요해요.'); }
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if(!res.ok){ const msg = (data && data.detail) || `요청이 실패했어요(${res.status}).`; if(isCurrent()) toast(msg); const error = new Error(msg); error.status = res.status; throw error; }
   return data;
@@ -1449,6 +1450,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'documents', 'usage', 'audits'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '문서', '사용량', '목표 대비 현황 점검'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
     ${ed ? projectForm : ''}
     ${ed ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
+    ${ed && projectTab === 'manage' && me?.kind === 'human' ? `<section class="panel project-restart" aria-labelledby="app-restart-title"><div class="audit-toolbar"><h3 id="app-restart-title">앱 재시작</h3><button type="button" id="app-restart-copy" disabled aria-label="앱 재시작 진단 복사"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg> 진단 복사</button></div><p class="dim">저장된 PM2 앱을 재시작하고 로컬 접속을 확인해요. Dev 자체 재시작은 진행 중인 작업이 끝난 뒤 처리하며 화면이 자동으로 다시 연결돼요.</p><div class="line"><button type="button" id="app-restart-start" disabled>앱 재시작</button><button type="button" id="app-restart-refresh">상태 확인</button></div><div id="app-restart-state" role="status" aria-live="polite">재시작 설정을 확인하고 있어요…</div><p id="app-restart-feedback" class="dim" role="status" aria-live="polite"></p><textarea id="app-restart-manual" aria-label="직접 복사할 앱 재시작 진단" readonly hidden></textarea></section>` : ''}
     ${ed && projectTab === 'manage' ? `<section class="panel project-service"><h3>서비스 연결</h3><p class="dim">도메인과 포트를 저장한 뒤 연결해 주세요. 실행·접속 검사는 일반 코드로 처리해요. 실행 설정이 없을 때만 선택한 에이전트가 유료로 파일을 생성해요. 기존 파일만 사용에서는 에이전트를 호출하지 않아요. 앱 확인 후 DNS·공용 터널을 반영하고 터널을 재시작해요.</p><div class="line"><button type="button" id="p-service-connect" disabled>서비스 연결</button><button type="button" id="p-service-disconnect" disabled>연결 해제</button><button type="button" id="p-service-refresh">새로고침</button></div><section class="service-diagnostic" aria-labelledby="service-diagnostic-title"><div class="service-diagnostic-head"><h4 id="service-diagnostic-title">연결 진단</h4><button type="button" id="p-service-copy" title="복사하기" aria-label="연결 진단 전체 내용 복사하기"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg></button></div><div id="p-service-status" role="status" aria-live="polite"></div><p id="p-service-copy-message" role="status" aria-live="polite" class="dim"></p><textarea id="p-service-copy-text" aria-label="직접 복사할 연결 진단 전체 내용" readonly hidden></textarea></section><p class="dim">연결 해제는 터널 경로만 제거해요. 앱과 DNS 레코드는 유지해요. 도메인을 바꾸면 이전 DNS 레코드는 Cloudflare에서 정리해 주세요.</p></section>` : ''}
     ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg><span>Codex로 문서 생성</span></button><button type="button" data-doc-provider="claude"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg><span>Claude로 문서 생성</span></button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
@@ -1757,6 +1759,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     renderProjects(ed.key, b.dataset.projectTab);
     view.querySelector(`[data-project-tab="${b.dataset.projectTab}"]`).focus();
   });
+  if(ed && projectTab === 'manage' && me?.kind === 'human') bindProjectRestart(ed);
   if(ed && projectTab === 'documents') bindProjectDocuments(ed);
   if(ed && projectTab === 'usage') bindProjectUsage(ed);
   if(ed && projectTab === 'audits') bindProjectAudits(ed);
@@ -1776,6 +1779,76 @@ function renderProjects(editKey, projectTab = 'manage'){
     await api('PATCH', `/api/projects/${cb.dataset.archive}`, { archived: cb.checked }).catch(() => {});
     await loadProjects(); renderProjects();
   }));
+}
+
+function bindProjectRestart(project){
+  const panel = view.querySelector('.project-restart');
+  const start = panel.querySelector('#app-restart-start'), refresh = panel.querySelector('#app-restart-refresh');
+  const state = panel.querySelector('#app-restart-state'), copy = panel.querySelector('#app-restart-copy');
+  const feedback = panel.querySelector('#app-restart-feedback'), manual = panel.querySelector('#app-restart-manual');
+  const url = `/api/projects/${encodeURIComponent(project.key)}/restart`;
+  let data = {}, busy = false, loading = false, timer, retries = 0, diagnostic = '';
+  const active = () => ['waiting','restarting','checking'].includes(data.status);
+  function paint(){
+    start.disabled = busy || loading || !data.available || active();
+    start.textContent = busy || active() ? '재시작 처리 중…' : '앱 재시작';
+    state.textContent = [data.target_app ? `PM2 앱 ${data.target_app}` : '', data.phase, data.error, data.setup_error].filter(Boolean).join('\n');
+    if(active()) restartGraceUntil = Date.now() + 90000;
+    else if(['complete','failed'].includes(data.status)) restartGraceUntil = 0;
+    diagnostic = ['Dev 앱 재시작 진단', `진단 번호: DEV-RESTART-${project.key}-${data.id || '미생성'}`,
+      `프로젝트: ${project.key}`, `앱: ${data.app || data.target_app || '미확인'}`, `상태: ${data.status || '미확인'}`,
+      `단계: ${data.phase || '미확인'}`, `오류: ${data.error || data.setup_error || '없음'}`,
+      `로컬 확인 주소: ${data.health_url || data.target_health_url || '미확인'}`, `요청: ${data.created_at || '미기록'}`,
+      `갱신: ${data.updated_at || '미기록'}`].join('\n');
+    manual.value = diagnostic; copy.disabled = !data.status;
+  }
+  async function request(method){
+    const response = await fetch(url, {method, headers:{'X-Requested-With':'dev'}, cache:'no-store'});
+    const body = await response.json().catch(() => null);
+    if(!response.ok){ const error = new Error(body?.detail || `서버 응답 ${response.status}`); error.status = response.status; throw error; }
+    return body;
+  }
+  async function load(){
+    if(!panel.isConnected || loading) return;
+    clearTimeout(timer); loading = true;
+    try {
+      const result = await request('GET');
+      if(!panel.isConnected) return;
+      data = result; retries = 0; paint();
+    } catch(error){
+      if(!panel.isConnected) return;
+      retries++;
+      state.textContent = `서버 응답을 기다리고 있어요. ${error.message}`;
+      if(active()) restartGraceUntil = Date.now() + 15000;
+    } finally {
+      loading = false;
+      if(panel.isConnected){
+        start.disabled = busy || !data.available || active();
+        if((active() || retries) && retries < 60) timer = setTimeout(load, 2000);
+      }
+    }
+  }
+  start.onclick = async () => {
+    if(busy || active()) return;
+    busy = true; restartGraceUntil = Date.now() + 90000; paint();
+    try {
+      const result = await request('POST');
+      if(panel.isConnected){ data = result; manual.hidden = true; feedback.textContent = '재시작을 요청했어요.'; paint(); }
+    } catch(error){ if(panel.isConnected) feedback.textContent = `요청 상태를 확인하고 있어요. ${error.message}`; }
+    finally { busy = false; if(panel.isConnected) await load(); }
+  };
+  refresh.onclick = () => { retries = 0; load(); };
+  copy.onclick = async () => {
+    const text = diagnostic;
+    try {
+      if(!navigator.clipboard?.writeText) throw new Error();
+      await navigator.clipboard.writeText(text);
+      if(panel.isConnected) feedback.textContent = '진단 내용을 복사했어요.';
+    } catch {
+      if(panel.isConnected){ feedback.textContent = '아래 내용을 선택해 직접 복사해 주세요.'; manual.hidden = false; manual.value = text; manual.focus(); manual.select(); }
+    }
+  };
+  load();
 }
 
 // 화면을 떠나면 이전 프로젝트의 응답과 인증 오류를 반영하지 않는다.

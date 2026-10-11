@@ -74,6 +74,9 @@ def terminal_change(actor, ref, rejecting):
 def prepare(c, actor, root, rows, note):
     """운영 사본은 검사 성공 전까지 건드리지 않는다. 반환값이 있으면 배포 확인이 남았다."""
     import project_activity
+    import project_restart
+    if project_restart.block(c, root['project_key']):
+        raise RollbackError('앱 재시작이 끝난 뒤 다시 거절해 주세요.', 409)
     if project_activity.audit_active(c, root['project_key']):
         raise RollbackError('프로젝트 점검이 끝난 뒤 다시 거절해 주세요.', 409)
     for record in _records():
