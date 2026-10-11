@@ -381,6 +381,32 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(pm2.kwargs['environment']['PORT'], '8400')
         self.assertEqual(pm2.kwargs['environment']['HOST'], '127.0.0.1')
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows npm .bin 실행 경로')
+    def test_pm2_in_npx_cache_uses_package_cli_beside_dot_bin(self):
+        self.project = issues.update_project(H, 'APP', {'service_app': 'myapp', 'service_prepare_provider': 'none'})
+        (self.root / 'ecosystem.config.js').write_text('module.exports = {};')
+        modules = self.root / 'npm-cache/_npx/cache-id/node_modules'
+        cli = modules / 'pm2/bin/pm2'
+        cli.parent.mkdir(parents=True)
+        cli.write_text('')
+        paths = {'pm2': str(modules / '.bin/pm2.cmd'), 'node': str(self.root / 'node.exe')}
+        with patch.object(service.shutil, 'which', side_effect=paths.get):
+            self.connect()
+        pm2 = next(c for c in self.commands.call_args_list if c.args[1] == 'PM2 앱 시작')
+        self.assertEqual(pm2.args[0][:2], [paths['node'], str(cli)])
+        self.assertNotIn('--no-install', pm2.args[0])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows Node 실행 경로')
+    def test_missing_node_is_reported_before_pm2_or_dns(self):
+        self.project = issues.update_project(H, 'APP', {'service_app': 'myapp', 'service_prepare_provider': 'none'})
+        (self.root / 'ecosystem.config.js').write_text('module.exports = {};')
+        self.queue()
+        with patch.object(service.shutil, 'which', side_effect={'pm2': str(self.root / 'pm2.cmd')}.get):
+            service._run(self.project, 'connect')
+        self.assertFalse(any(c.args[1] in ('PM2 앱 시작', 'DNS 연결') for c in self.commands.call_args_list))
+        self.assertIn('Node.js', service.status('APP')['error'])
+        self.assertEqual(service.status('APP')['steps'][3]['status'], 'failed')
+
     def test_startup_recovers_interrupted_config_change(self):
         self.queue()
         candidate, _ = service._candidate(RAW, {'domain': '', 'port': 0}, 'app.example.com', 8400)

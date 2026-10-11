@@ -399,10 +399,20 @@ def _run(project, action):
                 if not launcher[0]:
                     raise issues.StoreError('설치된 PM2 또는 npx를 찾을 수 없어요.', 409)
                 if os.name == 'nt':
-                    cli = Path(launcher[0]).parent / ('node_modules/pm2/bin/pm2' if pm2 else 'node_modules/npm/bin/npx-cli.js')
                     node = shutil.which('node')
-                    if not node or not cli.is_file():
-                        raise issues.StoreError('Windows PM2의 Node 실행 경로를 찾을 수 없어요.', 409)
+                    if not node:
+                        raise issues.StoreError('Dev 실행 환경에서 Node.js를 찾을 수 없어요. PATH를 확인해 주세요.', 409)
+                    parent = Path(launcher[0]).parent
+                    package_cli = Path('pm2/bin/pm2' if pm2 else 'npm/bin/npx-cli.js')
+                    candidates = [parent / 'node_modules' / package_cli]
+                    # npm exec·npx는 node_modules/.bin의 바로가기를 PATH 앞에 둔다.
+                    if parent.name == '.bin':
+                        candidates.append(parent.parent / package_cli)
+                    if not pm2:
+                        candidates.append(parent / 'npx-cli.js')
+                    cli = next((path for path in candidates if path.is_file()), None)
+                    if cli is None:
+                        raise issues.StoreError('설치된 PM2 또는 npx의 실행 파일을 찾을 수 없어요. 설치 경로를 확인해 주세요.', 409)
                     launcher = [node, str(cli), *launcher[1:]]
                 args = [*launcher, 'startOrRestart', 'ecosystem.config.js', '--only', app, '--update-env']
                 import project_audit_runner
