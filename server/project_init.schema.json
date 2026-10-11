@@ -1,9 +1,17 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["description", "files", "issues"],
+  "required": ["description", "files", "issues", "runtime"],
   "properties": {
     "description": {"type": "string"},
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "entry"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["python", "node"]},
+        "entry": {"type": "string"}
+      }
+    },
     "files": {"type": "array", "items": {
       "type": "object", "additionalProperties": false,
       "required": ["path", "content"],

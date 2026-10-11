@@ -7,7 +7,13 @@ import subprocess
 import threading
 import uuid
 import traceback
+import socket
+import sys
+import time
+import shutil
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+import httpx
 
 import attachments
 import automation
@@ -19,7 +25,8 @@ import review
 
 ROOT = config.REPO_ROOT.parent
 SCHEMA = Path(__file__).with_name('project_init.schema.json')
-REQUIRED = {'README.md', '.env.example', 'AGENTS.md'} | {p for p, _ in project_docs.DOCUMENTS}
+REQUIRED = {'README.md', '.env.example', 'AGENTS.md', 'ecosystem.config.js'} | {p for p, _ in project_docs.DOCUMENTS}
+BOOT_TIMEOUT = 30
 _lock = threading.Lock()
 _active = set()
 _generation_lock = threading.Lock()
@@ -71,7 +78,7 @@ def cancel(actor, key):
 
 def get(key):
     with db.connect() as c:
-        row = c.execute('''SELECT r.*,p.key,p.name,p.local_path FROM project_initializations r
+        row = c.execute('''SELECT r.*,p.key,p.name,p.local_path,p.service_port,p.service_app FROM project_initializations r
             JOIN projects p ON p.id=r.project_id WHERE p.key=?''', (str(key).upper(),)).fetchone()
     if not row:
         raise issues.StoreError('초기 생성 요청을 찾을 수 없어요.', 404)
@@ -95,7 +102,7 @@ def request(actor, body):
     key = str(body.get('key') or '').strip().upper()
     name = issues._text(body.get('name'), '이름', 100, required=True).strip()
     repo_url = issues._text(body.get('repo_url', ''), '저장소 주소', 500).strip()
-    from project_service import validate_fields, validate_prepare_provider
+    from project_service import validate_fields, validate_prepare_provider, find_free_port
     service = validate_fields(body.get('service_domain', ''), body.get('service_port', 0), body.get('service_app', ''))
     provider_choice = validate_prepare_provider(body.get('service_prepare_provider', 'auto'))
     folder = str(body.get('folder') or '').strip()
@@ -103,6 +110,7 @@ def request(actor, body):
         raise issues.StoreError('Key는 영문으로 시작하는 10자 이하 영문·숫자예요.')
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}', folder) or re.fullmatch(r'con|prn|aux|nul|com[1-9]|lpt[1-9]', folder, re.I):
         raise issues.StoreError('폴더명은 영문·숫자·밑줄·하이픈으로 입력해 주세요.')
+    service['service_app'] = service['service_app'] or folder
     provider = body.get('provider')
     if provider not in ('codex', 'claude'):
         raise issues.StoreError('Claude 또는 Codex를 선택해 주세요.')
@@ -136,6 +144,8 @@ def request(actor, body):
             c.execute('BEGIN IMMEDIATE')
             if c.execute('SELECT 1 FROM projects WHERE lower(local_path)=lower(?)', (str(target),)).fetchone():
                 raise issues.StoreError('이미 등록되거나 생성 중인 경로예요.', 409)
+            if not service['service_port']:
+                service['service_port'] = find_free_port()
             pid = c.execute('INSERT INTO projects(key,name,repo_url,local_path,created_at,service_domain,service_port,service_app) VALUES(?,?,?,?,?,?,?,?)', (key, name, repo_url, str(target), now, *service.values())).lastrowid
             c.execute('UPDATE projects SET service_prepare_provider=? WHERE id=?', (provider_choice, pid))
             c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,status,phase,created_at,updated_at)
@@ -196,14 +206,22 @@ def generate(row, correction=''):
 원문 요구를 보존하고 확정 요구, 구현 제안, 미정/가정을 구분한다. 짧은 기획서도 가능한 최소 골격을 제안하되 근거 없는 API·검증 완료·제품 기능을 꾸미지 않는다.
 files에는 README.md, .env.example, AGENTS.md와 다음 공식 문서 모두를 작성한다:
 {json.dumps(project_docs.DOCUMENTS, ensure_ascii=False)}
-필요한 최소 설정과 소스 골격도 files에 작성한다. 전체 제품을 구현하지 않는다. 의존성 설치·외부 연결·배포는 하지 않는다.
+필수 요건: 초기 생성만으로 실행 가능한 최소 웹 앱을 작성한다. 외부 키·DB·로그인 없이 기본 화면과 /api/health가 동작해야 한다.
+전체 제품은 구현하지 않는다. 원문 요구를 보존하며 초기 화면에 현재 가능한 기능과 미구현·후속 개발 범위를 명확히 표시한다.
+가짜 사용자·보고서·외부 연결 성공을 만들지 않는다. health는 초기 앱 프로세스의 준비만 나타내며 제품 기능 완료를 주장하지 않는다.
+기본은 Python 표준 라이브러리 또는 Node 내장 모듈을 사용해 추가 설치 없이 실행한다. 의존성 설치·외부 연결·DNS·PM2 실행·배포는 하지 않는다.
+runtime에는 kind(python 또는 node)와 실제 파일인 entry(.py 또는 .js)를 적는다. entry는 인자 없이 실행하는 전경 서버 진입점이며 Python은 `python <entry>`, Node는 `node <entry>`로 시작한다.
+HOST(기본 127.0.0.1)·PORT 환경변수를 따르고 서버는 루프백에만 바인딩한다. /는 실제 기본 HTML 화면(200), /api/health는 JSON {{"ok":true,"stage":"starter","probe":...}}(200)을 반환한다.
+health의 probe는 환경변수 DEV_INITIALIZATION_PROBE 값이며 없으면 빈 문자열이다. 이는 서버가 확인하는 해당 초기 앱의 구동 식별값이다.
+소스·PROJECT_SPEC.md·.git·환경 파일을 HTTP로 공개하지 않는다. runtime entry와 ecosystem.config.js, README의 실행 방법이 서로 일치해야 한다.
+ecosystem.config.js는 __dirname을 cwd로 사용하고 저장된 PM2 앱 이름·포트로 위 진입점을 실행한다. PORT 환경변수로 포트를 바꿀 수 있어야 한다.
 AGENTS.md는 원본 PROJECT_SPEC.md와 공식 문서를 참조하고 기존 승인 절차를 우회하지 않는다. .env.example에는 빈 비밀값만 둔다.
 issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 body는 범위·완료 기준·미확인 선행 조건을 포함한다.
 각 plan에 ## Tasks 절을 쓰며 한 줄 형식은 반드시 `1. 제목 | 파일: backend/example.py | 확인: 검사 방법 | 선행: 없음`이다.
 번호는 1부터 연속, 선행은 같은 Issue의 Task 번호 목록이다. 파일은 프로젝트 내부 상대 경로이며 조사 전용 파일 없음 Task는 만들지 않는다.
 후속 기능도 초안으로 구분하여 Issue와 Task를 작성한다. 외부 사실 확인이 필요하면 사람이 할 일로 명시하고 검증된 척하지 않는다.
 최대 파일 80개·Issue 30개·Issue당 Task 20개. 문서와 설명은 한국어로 작성한다.
-초기 준비만 작성한다. 기본은 필수 문서와 최소 소스·설정 15개 안팎, 개발 Issue 3~6개, Issue당 Task 1~3개이며 최대 개수를 채우지 않는다.
+초기 앱의 구동과 기본 화면은 지금 완성한다. 제품 기능은 별도 개발 Issue 3~6개, Issue당 Task 1~3개의 후속 범위로 작성하며 최대 개수를 채우지 않는다.
 필수 문서 경로는 위 목록과 정확히 같아야 한다. PROJECT_SPEC.md는 서버가 원문으로 저장하므로 files에 포함하지 않는다.
 파일 경로는 슬래시를 사용한 프로젝트 내부 상대 경로이다. .git, .github, .vscode 등 숨김 폴더와 .env는 생성하지 않는다. 숨김 파일은 루트 .env.example과 .gitignore만 허용한다.
 파일 확장자는 .md, .py, .ts, .tsx, .js, .jsx, .json, .yaml, .yml, .toml, .txt, .css, .html, .sql, .example 또는 확장자 없음만 허용한다.
@@ -212,8 +230,7 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
         prompt += '\n앞선 생성 결과가 다음 검증에서 실패했다. 이 오류를 수정하여 전체 JSON을 다시 반환한다: ' + correction
     with db.connect() as c:
         service = dict(c.execute('SELECT service_domain,service_port,service_app FROM projects WHERE id=?', (row['project_id'],)).fetchone())
-    if service['service_domain']:
-        prompt += '\n서비스 연결 목표(배포는 Dev 관리 화면에서 별도로 실행): ' + json.dumps(service, ensure_ascii=False) + '\n지정 포트에 127.0.0.1로 바인딩하고 /api/health에서 200을 반환하는 실행 설정을 준비한다. PM2 앱 이름이 있으면 ecosystem.config.js에 해당 앱을 정의한다. DNS·터널·운영 서비스는 변경하지 않는다.'
+    prompt += '\n서비스 실행 설정(배포는 Dev 관리 화면에서 별도로 실행): ' + json.dumps(service, ensure_ascii=False)
     cwd = config.DATA_DIR / 'project-initializations' / row['request_id']
     cwd.mkdir(parents=True, exist_ok=True)
     if row['provider'] == 'codex':
@@ -266,7 +283,7 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
 
 
 def validate(result, root):
-    if not isinstance(result, dict) or set(result) != {'description', 'files', 'issues'}:
+    if not isinstance(result, dict) or set(result) != {'description', 'files', 'issues', 'runtime'}:
         raise ValueError('생성 결과 형식')
     issues._text(result['description'], '설명', required=True)
     if not isinstance(result['files'], list) or not 1 <= len(result['files']) <= 80:
@@ -294,6 +311,11 @@ def validate(result, root):
             raise ValueError('산출물 용량')
     if not REQUIRED <= {f['path'] for f in result['files']}:
         raise ValueError('필수 문서 누락')
+    runtime = result['runtime']
+    if not isinstance(runtime, dict) or set(runtime) != {'kind', 'entry'} or runtime['kind'] not in ('python', 'node'):
+        raise ValueError('최소 앱 실행 정보 누락')
+    if not isinstance(runtime['entry'], str) or runtime['entry'] not in {f['path'] for f in result['files']} or not runtime['entry'].endswith('.py' if runtime['kind'] == 'python' else '.js'):
+        raise ValueError('실제 서버 실행 파일이 필요해요')
     if not isinstance(result['issues'], list) or not 1 <= len(result['issues']) <= 30:
         raise ValueError('Issue 개수')
     for item in result['issues']:
@@ -319,6 +341,78 @@ def _git(path, *args):
     return r.stdout.strip()
 
 
+def verify_runtime(row, result, path):
+    """별도 포트에서 해당 앱의 기본 화면·health와 소스 비공개를 확인한 뒤 종료한다."""
+    runtime = result['runtime']
+    binary = sys.executable if runtime['kind'] == 'python' else shutil.which('node')
+    if not binary:
+        raise issues.StoreError('최소 앱 실행에 필요한 Node.js를 찾을 수 없어요.', 409)
+    with socket.socket() as candidate:
+        candidate.bind(('127.0.0.1', 0))
+        port = candidate.getsockname()[1]
+    probe = uuid.uuid4().hex
+    env = {k: v for k, v in os.environ.items() if k.upper() in {'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'PATHEXT'}}
+    env.update(HOST='127.0.0.1', PORT=str(port), DEV_INITIALIZATION_PROBE=probe,
+               PYTHONUNBUFFERED='1', PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
+    directory = config.DATA_DIR / 'project-initializations' / row['request_id']
+    directory.mkdir(parents=True, exist_ok=True)
+    _checkpoint(row)
+    _update(row['key'], phase='최소 앱 실행·접속 검사 중')
+    with (directory / 'runtime.log').open('w', encoding='utf-8') as log:
+        node = shutil.which('node')
+        if not node:
+            raise issues.StoreError('PM2 실행 설정 검사에 필요한 Node.js를 찾을 수 없어요.', 409)
+        check = '''const p=require('path'), f=require('fs'), c=require(process.argv[1]);
+const same=(x,y)=>{const a=f.statSync(x,{bigint:true}),b=f.statSync(y,{bigint:true});return a.dev===b.dev&&a.ino===b.ino;};
+const a=(c.apps||[]).find(a=>a.name===process.env.DEV_INITIALIZATION_APP);
+if(!a || !same(a.cwd||process.cwd(),process.cwd())) throw Error('PM2 app name/cwd mismatch');
+const e=process.env.DEV_INITIALIZATION_ENTRY;
+const s=p.resolve(a.script||'');
+if(!(f.existsSync(s)&&same(s,e)) && (Array.isArray(a.args)?a.args.join(' '):a.args)!==e) throw Error('PM2 entry mismatch');
+if(String((a.env||{}).PORT)!==process.env.PORT) throw Error('PM2 port mismatch');'''
+        checked = subprocess.run([node, '-e', check, str((path / 'ecosystem.config.js').resolve())], cwd=path,
+                                 env={**env, 'PORT': str(row['service_port']), 'DEV_INITIALIZATION_APP': row['service_app'], 'DEV_INITIALIZATION_ENTRY': runtime['entry']},
+                                 stdout=log, stderr=subprocess.STDOUT, timeout=10)
+        if checked.returncode:
+            raise issues.StoreError('PM2 설정의 앱 이름·실행 파일·포트가 초기 앱과 일치하지 않아요. 실행 로그를 확인해 주세요.', 409)
+        proc = subprocess.Popen([binary, runtime['entry']], cwd=path, env=env, stdin=subprocess.DEVNULL,
+                                stdout=log, stderr=subprocess.STDOUT,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        with _lock:
+            _processes[row['request_id']] = proc
+        try:
+            end = time.monotonic() + BOOT_TIMEOUT
+            base = f'http://127.0.0.1:{port}'
+            with httpx.Client(timeout=1, trust_env=False, follow_redirects=False) as client:
+                while time.monotonic() < end:
+                    _checkpoint(row)
+                    if proc.poll() is not None:
+                        raise issues.StoreError('생성된 앱이 시작 직후 종료됐어요. 실행 로그를 확인해 주세요.', 409)
+                    try:
+                        health = client.get(base + '/api/health')
+                        body = health.json() if health.status_code == 200 else {}
+                        if isinstance(body, dict) and body.get('ok') is True and body.get('stage') == 'starter' and body.get('probe') == probe:
+                            home = client.get(base + '/')
+                            if home.status_code != 200 or 'text/html' not in home.headers.get('content-type', '') or not home.content.strip():
+                                raise issues.StoreError('최소 앱의 기본 HTML 화면이 정상 응답하지 않아요.', 409)
+                            for private in ('/PROJECT_SPEC.md', '/.git/config', '/.env'):
+                                if client.get(base + private).status_code != 404:
+                                    raise issues.StoreError('초기 앱이 원본·Git·환경 파일을 공개하거나 비공개 경로를 잘못 처리해요.', 409)
+                            _checkpoint(row)
+                            (directory / 'runtime-check.json').write_text(json.dumps({'passed': True, 'kind': runtime['kind'], 'entry': runtime['entry'], 'checks': ['home', 'health', 'private_paths']}), encoding='utf-8')
+                            return
+                    except (httpx.HTTPError, ValueError):
+                        pass
+                    time.sleep(0.2)
+            raise issues.StoreError('최소 앱의 실행·health 확인 시간이 초과됐어요. HOST·PORT·probe와 실행 로그를 확인해 주세요.', 409)
+        finally:
+            if proc.poll() is None:
+                review._kill_tree(proc)
+            proc.wait(timeout=10)
+            with _lock:
+                _processes.pop(row['request_id'], None)
+
+
 def materialize(row, result):
     target = Path(row['local_path'])
     if target.parent.resolve() != ROOT.resolve():
@@ -329,6 +423,7 @@ def materialize(row, result):
             raise issues.StoreError('대상 폴더가 이미 있어요. 기존 파일을 보존하고 생성을 중단했어요.', 409)
         if _git(target, 'status', '--porcelain') or _git(target, 'rev-list', '--count', 'HEAD') != '1' or _git(target, 'rev-parse', 'HEAD') != _git(target, 'config', '--local', '--get', 'dev.initializationSha'):
             raise issues.StoreError('생성된 저장소에 변경이 있어요. 자동 재시도를 중단했어요.', 409)
+        verify_runtime(row, result, target)
         return
     if stage.exists():
         if stage.is_symlink() or stage.is_junction() or not (stage / '.git').is_dir() or (stage / '.git').is_symlink() or (stage / '.git').is_junction():
@@ -355,6 +450,7 @@ def materialize(row, result):
     unexpected = [p for p in stage.rglob('*') if p.is_file() and '.git' not in p.relative_to(stage).parts and p.relative_to(stage).as_posix() not in files]
     if unexpected:
         raise issues.StoreError('임시 저장소에 생성 범위 밖 파일이 있어요. 기존 파일을 보존했어요.', 409)
+    verify_runtime(row, result, stage)
     _git(stage, 'add', '-f', '--', *files)
     if _git(stage, 'status', '--porcelain'):
         _git(stage, '-c', 'user.name=dev', '-c', 'user.email=dev@localhost', 'commit', '-m', 'Initialize project from specification')

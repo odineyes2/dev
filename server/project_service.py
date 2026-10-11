@@ -405,7 +405,11 @@ def _run(project, action):
                         raise issues.StoreError('Windows PM2의 Node 실행 경로를 찾을 수 없어요.', 409)
                     launcher = [node, str(cli), *launcher[1:]]
                 args = [*launcher, 'startOrRestart', 'ecosystem.config.js', '--only', app, '--update-env']
-                _command(args, 'PM2 앱 시작', str(repo))
+                import project_audit_runner
+                app_env = {**project_audit_runner._environment(), 'PORT': str(port), 'HOST': '127.0.0.1'}
+                if os.environ.get('PM2_HOME'):
+                    app_env['PM2_HOME'] = os.environ['PM2_HOME']
+                _command(args, 'PM2 앱 시작', str(repo), environment=app_env)
             _save(pid, phase='로컬 서비스 확인')
             _healthy(f'http://127.0.0.1:{port}/api/health')
             _save(pid, step=5, phase='DNS 연결')

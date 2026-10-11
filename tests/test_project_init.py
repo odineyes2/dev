@@ -29,8 +29,28 @@ HEADERS = {'X-Requested-With': 'dev'}
 
 def fixture():
     return {'description': '개인용 모델 조사 도구. API 지원은 미검증이다.',
-            'files': [{'path': path, 'content': '# ' + path + '\n미정 사항은 원본 기획서를 따른다.\n'} for path in sorted(pi.REQUIRED)] +
-                     [{'path': 'backend/main.py', 'content': 'def health():\n    return {"status": "ready"}\n'},
+            'runtime': {'kind': 'python', 'entry': 'backend/main.py'},
+            'files': [{'path': path, 'content': '# ' + path + '\n미정 사항은 원본 기획서를 따른다.\n'} for path in sorted(pi.REQUIRED - {'ecosystem.config.js'})] +
+                     [{'path': 'ecosystem.config.js', 'content': "module.exports={apps:[{name:'new-product',cwd:__dirname,script:'python',args:'backend/main.py',interpreter:'none',env:{PORT:process.env.PORT||'8400'}}]};\n"},
+                      {'path': 'backend/main.py', 'content': '''import json, os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/api/health':
+            content = json.dumps({'ok': True, 'stage': 'starter', 'probe': os.environ.get('DEV_INITIALIZATION_PROBE', '')}).encode()
+            kind = 'application/json'
+        elif self.path == '/':
+            content = b'<html><body><h1>Starter</h1><p>Product features are pending.</p></body></html>'
+            kind = 'text/html'
+        else:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', kind)
+        self.end_headers()
+        self.wfile.write(content)
+ThreadingHTTPServer((os.environ.get('HOST', '127.0.0.1'), int(os.environ.get('PORT', '8400'))), Handler).serve_forever()
+'''},
                       {'path': '.gitignore', 'content': '*.md\n'}],
             'issues': [{'title': '첫 수집기', 'body': 'API 계약을 확인한 뒤 구현한다. 미확인 상태를 보존한다.',
                         'plan': '## Tasks\n1. 수집 골격 | 파일: backend/collector.py | 확인: 모의 응답 재처리 검사 | 선행: 없음\n2. 오류 처리 | 파일: tests/test_collector.py | 확인: 재시도 검사 | 선행: 1\n\n## 정해야 할 것\n- API 지원 범위 확인'}]}
@@ -68,6 +88,9 @@ class InitializationTest(unittest.TestCase):
         self.assertEqual(project['service_prepare_provider'], 'codex')
         self.assertEqual((project['service_domain'], project['service_port'], project['service_app']), ('new.example.com', 8400, 'newapp'))
         self.assertEqual(self.client.post('/api/projects/NEW/service', json={}, headers=HEADERS).status_code, 409)
+        for field, value in [('service_domain', 'other.example.com'), ('service_port', 8401), ('service_app', 'otherapp')]:
+            with self.subTest(field=field):
+                self.assertEqual(self.client.patch('/api/projects/NEW', json={field: value}, headers=HEADERS).status_code, 409)
 
     def test_repository_save_during_initialization(self):
         self.body['repo_url'] = 'https://github.com/example/initial.git'
@@ -151,6 +174,12 @@ class InitializationTest(unittest.TestCase):
         self.execute()
         status = self.client.get('/api/projects/NEW/initialization').json()
         self.assertEqual(status['status'], 'complete', status)
+        report = config.DATA_DIR / 'project-initializations' / self.body['request_id'] / 'runtime-check.json'
+        self.assertTrue(json.loads(report.read_text())['passed'])
+        self.assertNotIn(self.body['request_id'], pi._processes)
+        project = issues.list_projects()[0]
+        self.assertGreater(project['service_port'], 0)
+        self.assertEqual(project['service_app'], 'new-product')
         target = self.projects / 'new-product'
         self.assertEqual(pi._git(target, 'rev-list', '--count', 'HEAD'), '1')
         self.assertEqual(pi._git(target, 'status', '--porcelain'), '')
@@ -170,6 +199,112 @@ class InitializationTest(unittest.TestCase):
         before = len(issues.list_issues(project='NEW'))
         self.request()
         self.assertEqual(len(issues.list_issues(project='NEW')), before)
+
+    def test_runtime_metadata_is_required(self):
+        payload = fixture()
+        del payload['runtime']
+        with self.assertRaises(ValueError):
+            pi.validate(payload, self.projects / 'new-product')
+
+    def test_node_starter_is_actually_run(self):
+        self.request()
+        payload = fixture()
+        payload['runtime'] = {'kind': 'node', 'entry': 'server.js'}
+        payload['files'].append({'path': 'server.js', 'content': '''const http=require('node:http');
+http.createServer((req,res)=>{
+if(req.url==='/api/health'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,stage:'starter',probe:process.env.DEV_INITIALIZATION_PROBE||''}));}
+else if(req.url==='/'){res.setHeader('Content-Type','text/html');res.end('<html><body>Starter app. Product features are pending.</body></html>');}
+else {res.statusCode=404;res.end();}
+}).listen(Number(process.env.PORT),process.env.HOST);'''} )
+        source = next(f for f in payload['files'] if f['path'] == 'ecosystem.config.js')
+        source['content'] = source['content'].replace("script:'python',args:'backend/main.py'", "script:'node',args:'server.js'")
+        with patch.object(pi, 'generate', return_value=payload):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'complete', pi.status('NEW'))
+        self.assertNotIn(self.body['request_id'], pi._processes)
+
+    def test_runtime_process_is_terminated_when_initialization_is_cancelled(self):
+        self.request()
+        payload = fixture()
+        next(f for f in payload['files'] if f['path'] == 'backend/main.py')['content'] = 'import time; time.sleep(30)\n'
+        worker = threading.Thread(target=pi._run, args=('NEW',))
+        with pi._lock:
+            pi._active.add('NEW')
+        with patch.object(pi, 'generate', return_value=payload):
+            worker.start()
+            try:
+                deadline = time.monotonic() + 5
+                proc = None
+                while time.monotonic() < deadline:
+                    with pi._lock:
+                        proc = pi._processes.get(self.body['request_id'])
+                    if proc is not None:
+                        break
+                    time.sleep(0.02)
+                self.assertIsNotNone(proc)
+                pi.cancel(H, 'NEW')
+                worker.join(5)
+                self.assertFalse(worker.is_alive())
+                self.assertIsNotNone(proc.poll())
+                self.assertEqual(pi.status('NEW')['status'], 'cancelled')
+                self.assertFalse((self.projects / 'new-product').exists())
+            finally:
+                if worker.is_alive():
+                    pi.cancel(H, 'NEW')
+                    worker.join(5)
+
+    def test_missing_node_blocks_pm2_configuration_check(self):
+        self.request()
+        with patch.object(pi.shutil, 'which', return_value=None):
+            self.execute()
+        self.assertEqual(pi.status('NEW')['status'], 'failed')
+        self.assertIn('Node.js', pi.status('NEW')['error'])
+        self.assertFalse((self.projects / 'new-product').exists())
+
+    def test_crashing_app_is_not_published(self):
+        self.request()
+        payload = fixture()
+        next(f for f in payload['files'] if f['path'] == 'backend/main.py')['content'] = 'raise RuntimeError("boot failed")\n'
+        with patch.object(pi, 'generate', return_value=payload):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'failed')
+        self.assertIn('종료', pi.status('NEW')['error'])
+        self.assertFalse((self.projects / 'new-product').exists())
+        self.assertEqual(issues.list_issues(project='NEW'), [])
+        self.assertNotIn(self.body['request_id'], pi._processes)
+
+    def test_health_from_a_wrong_process_is_not_accepted(self):
+        self.request()
+        payload = fixture()
+        source = next(f for f in payload['files'] if f['path'] == 'backend/main.py')
+        source['content'] = source['content'].replace("os.environ.get('DEV_INITIALIZATION_PROBE', '')", "'wrong-process'")
+        with patch.object(pi, 'generate', return_value=payload), patch.object(pi, 'BOOT_TIMEOUT', 1.5):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'failed')
+        self.assertIn('시간이 초과', pi.status('NEW')['error'])
+        self.assertFalse((self.projects / 'new-product').exists())
+
+    def test_serving_private_files_blocks_initialization(self):
+        self.request()
+        payload = fixture()
+        source = next(f for f in payload['files'] if f['path'] == 'backend/main.py')
+        source['content'] = source['content'].replace('self.send_error(404)', 'self.send_response(200)\n            self.end_headers()')
+        with patch.object(pi, 'generate', return_value=payload):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'failed')
+        self.assertIn('원본·Git·환경 파일', pi.status('NEW')['error'])
+        self.assertFalse((self.projects / 'new-product').exists())
+
+    def test_pm2_settings_must_match_the_runtime(self):
+        self.request()
+        payload = fixture()
+        source = next(f for f in payload['files'] if f['path'] == 'ecosystem.config.js')
+        source['content'] = source['content'].replace("'new-product'", "'wrong-name'")
+        with patch.object(pi, 'generate', return_value=payload):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'failed')
+        self.assertIn('PM2 설정', pi.status('NEW')['error'])
+        self.assertFalse((self.projects / 'new-product').exists())
 
     def test_duplicate_and_live_project_guards(self):
         self.request()

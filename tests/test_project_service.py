@@ -378,6 +378,8 @@ class ServiceTest(unittest.TestCase):
         pm2 = next(c for c in self.commands.call_args_list if c.args[1] == 'PM2 앱 시작')
         self.assertEqual(pm2.args[0][:4], [paths['node'], str(cli), '--no-install', 'pm2'])
         self.assertEqual(pm2.args[2], str(self.root))
+        self.assertEqual(pm2.kwargs['environment']['PORT'], '8400')
+        self.assertEqual(pm2.kwargs['environment']['HOST'], '127.0.0.1')
 
     def test_startup_recovers_interrupted_config_change(self):
         self.queue()

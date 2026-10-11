@@ -238,7 +238,7 @@ def update_project(actor, key, fields: dict) -> dict:
             raise StoreError('서비스 연결을 해제한 뒤 보관해 주세요.', 409)
         if previous and sets.get('service_domain') and c.execute('SELECT 1 FROM projects WHERE service_domain=? AND id<>?', (sets['service_domain'], previous['id'])).fetchone():
             raise StoreError('다른 프로젝트가 사용하는 서비스 도메인이에요.', 409)
-        changes_setup = previous and any(k in sets and sets[k] != previous[k] for k in ('name', 'local_path', 'archived'))
+        changes_setup = previous and any(k in sets and sets[k] != previous[k] for k in ('name', 'local_path', 'archived', 'service_domain', 'service_port', 'service_app'))
         if changes_setup and c.execute("SELECT 1 FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE p.key=? AND r.status IN ('queued','running','cancelling')", (key,)).fetchone():
             raise StoreError('초기 생성이 끝나기 전에는 프로젝트 정보를 바꿀 수 없어요.', 409)
         if previous and any(k in sets and sets[k] != previous[k] for k in ('name', 'local_path')):
