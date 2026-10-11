@@ -287,6 +287,38 @@ class AuditRunnerTests(unittest.TestCase):
                 self.assertNotIn('supersecretvalue', result['error'])
                 self.assertIsNone(result['report'])
 
+    def test_report_validation_failure_keeps_reason_location_and_usage(self):
+        self.snapshot.update(has_goal_material=True, sources=[
+            {'id': 'doc', 'kind': 'document', 'content': '# Goal\nDetails', 'lines': 2},
+            {'id': 'code', 'kind': 'code', 'content': 'print(1)', 'lines': 1}])
+        for index, (evidence, status, expected) in enumerate([
+            ([{'source_id': 'doc', 'line_start': 1, 'line_end': 999}], 'partial', 'EVIDENCE_LINES'),
+            ([{'source_id': 'not-collected'}], 'partial', 'EVIDENCE_SOURCE'),
+            ([{'source_id': 'doc'}, {'source_id': 'code'}], 'complete', 'COMPLETE_EVIDENCE')
+        ]):
+            with self.subTest(expected=expected):
+                report = {'summary': 'result', 'requirements': [{'id': 'r1', 'title': 'goal', 'status': status,
+                    'assessment': 'assessment', 'evidence': evidence}], 'candidates': []}
+                result = self.run_row(self.row(request=f'validation-{index}'), json.dumps({
+                    'structured_output': report, 'usage': {'input_tokens': 100, 'output_tokens': 20}}))
+                self.assertEqual(result['status'], 'failed')
+                self.assertIn(expected, result['error'])
+                self.assertIn('requirements[0]', result['error'])
+                self.assertNotIn('로그인', result['error'])
+                self.assertEqual(result['usage']['input_tokens'], 100)
+                self.assertIsNone(result['report'])
+
+    def test_internal_error_keeps_stage_and_type_without_raw_exception(self):
+        row = self.row(request='internal-error')
+        with patch.object(audit, 'collect_snapshot', return_value=self.snapshot), patch.object(
+                runner, 'analyze', side_effect=RuntimeError('api_key=supersecretvalue')):
+            runner._run({'key': 'AUD'}, row)
+        result = self.get(row)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('에이전트 분석', result['error'])
+        self.assertIn('RuntimeError', result['error'])
+        self.assertNotIn('supersecretvalue', result['error'])
+
     def test_preparing_restart_and_model_metadata_reject_late_tools(self):
         row = self.row()
         runner.recover()

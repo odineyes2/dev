@@ -217,6 +217,10 @@ def analyze(row, snapshot):
 Plan 초안은 저장소 내부 파일 변경 Task만 쓰며 승인·실행을 시작하지 않는다.
 근거 source_id와 실제 줄/절만 인용한다. JSON 스키마에 맞는 결과만 반환한다.
 근거의 줄/절을 지정하지 않을 때 line_start·line_end·section은 null로 채운다. 줄 범위는 시작과 끝을 함께 지정한다.
+줄/절은 content가 문자열인 자료에만 지정한다. section은 원문에 있는 문자열을 그대로 인용한다.
+needs_confirmation 외 판정은 AGENTS.md가 아닌 document/initial_spec 근거를 포함한다.
+complete는 code 근거와 성공한 실행 이력(runs의 mode=execute,status=ok 또는 task_execution_results의 state=unmerged/merged)을 함께 인용해야 한다. 없으면 partial 또는 needs_confirmation으로 표시한다.
+new_work는 partial/missing인 요구에만 연결한다. related_issues는 수집된 Issue의 issue_ref만 사용한다.
 <수집자료>\n''' + audit._json(snapshot) + '\n</수집자료>'
     if len(audit._json(snapshot).encode('utf-8')) > limits['input_bytes'] or audit.contains_sensitive(snapshot):
         raise ValueError('입력 제한')
@@ -303,7 +307,8 @@ Plan 초안은 저장소 내부 파일 변경 Task만 쓰며 승인·실행을 �
 
 
 def _run(project, row):
-    status, error, report, actual = 'failed', '점검에 실패했어요. CLI 로그인·설정을 확인하고 새 점검을 시작해 주세요.', None, ''
+    status, error, report, actual = 'failed', '', None, ''
+    stage = '기준 자료 수집'
     usage = {'cost_usd': None, 'cost_measured': False, 'input_tokens': None, 'output_tokens': None}
     try:
         _checkpoint(row['id'])
@@ -314,7 +319,9 @@ def _run(project, row):
                                 (db.now_iso(), db.now_iso(), row['id'])).rowcount
         if not changed:
             raise Cancelled()
+        stage = '에이전트 분석'
         report, actual, usage = analyze(row, snapshot)
+        stage = '점검 결과 검증'
         audit.validate_report(report, snapshot)
         status, error = 'complete', ''
     except Cancelled:
@@ -323,8 +330,11 @@ def _run(project, row):
         status, error = 'timeout', '점검 시간이 초과됐어요. 새 점검을 시작해 주세요.'
     except AnalysisFailure as failure:
         status, error, actual, usage = failure.status, str(failure), failure.actual_model, failure.usage
-    except Exception:
-        pass  # 입력·출력·예외 원문을 로그나 보고서에 남기지 않는다.
+    except issues.StoreError as failure:
+        error = f'{stage}: {audit._safe(str(failure))}'
+    except Exception as failure:
+        # 예외 종류와 처리 단계만 보존하고 입력·출력·예외 원문은 남기지 않는다.
+        error = f'{stage} 중 내부 오류가 발생했어요({type(failure).__name__}).'
     finally:
         with _lock:
             try:

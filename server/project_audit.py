@@ -262,8 +262,9 @@ def collect_snapshot(key, *, base_branch=None, max_file_bytes=MAX_FILE_BYTES,
 
 def validate_report(report, snapshot):
     """구조와 실제 수집 근거를 함께 검증하며 근거 없는 완료·후보를 거절한다."""
-    def fail():
-        raise issues.StoreError('점검 결과의 구조 또는 근거가 유효하지 않아요.', 400)
+    location = 'report'
+    def fail(code='REPORT_FORMAT', reason='결과 구조가 올바르지 않아요.'):
+        raise issues.StoreError(f'점검 결과 검증 실패 [{code}] · {location}: {reason}', 400)
 
     if len(_json(report).encode('utf-8')) > MAX_OUTPUT_BYTES or contains_sensitive(report):
         fail()
@@ -279,22 +280,22 @@ def validate_report(report, snapshot):
         if not isinstance(items, list) or not items:
             fail()
         found = []
-        for item in items:
+        for index, item in enumerate(items):
             if not isinstance(item, dict) or set(item) - {'source_id', 'line_start', 'line_end', 'section'}:
                 fail()
             if not isinstance(item.get('source_id'), str):
                 fail()
             source = sources.get(item['source_id'])
             if source is None:
-                fail()
+                fail('EVIDENCE_SOURCE', f'근거 {index + 1}의 source_id가 수집 자료에 없어요.')
             start, end = item.get('line_start'), item.get('line_end')
             if start is not None or end is not None:
                 if (type(start) is not int or type(end) is not int or
                     not isinstance(source['content'], str) or not 1 <= start <= end <= source.get('lines', len(source['content'].splitlines()))):
-                    fail()
+                    fail('EVIDENCE_LINES', f'근거 {index + 1}의 줄 범위가 원문과 맞지 않거나 시작·끝이 누락됐어요.')
             if item.get('section') is not None and (not isinstance(item['section'], str) or
                 not item['section'].strip() or not isinstance(source['content'], str) or item['section'] not in source['content']):
-                fail()
+                fail('EVIDENCE_SECTION', f'근거 {index + 1}의 절 이름이 원문에 없어요.')
             found.append(source)
         return found
 
@@ -302,7 +303,8 @@ def validate_report(report, snapshot):
         return isinstance(value, list) and all(isinstance(s, str) and s.strip() for s in value)
 
     requirements = {}
-    for row in report['requirements']:
+    for index, row in enumerate(report['requirements']):
+        location = f'requirements[{index}]'
         if not isinstance(row, dict) or set(row) != {'id', 'title', 'status', 'assessment', 'evidence'}:
             fail()
         if any(not isinstance(row[k], str) or not row[k].strip() for k in ('id', 'title', 'assessment')):
@@ -311,17 +313,19 @@ def validate_report(report, snapshot):
             fail()
         found = evidence(row['evidence'])
         if row['status'] != 'needs_confirmation' and not any(s['kind'] in ('document', 'initial_spec') and s.get('path') != 'AGENTS.md' for s in found):
-            fail()
+            fail('GOAL_EVIDENCE', '판정에 목표 문서 또는 원문 요구 근거가 필요해요. AGENTS.md만으로 판단할 수 없어요.')
         if row['status'] == 'complete' and not (any(s['kind'] == 'code' for s in found) and
             any((s.get('table') == 'runs' and s['content'].get('status') == 'ok' and s['content'].get('mode') == 'execute') or
                 (s.get('table') == 'task_execution_results' and s['content'].get('state') in ('unmerged', 'merged'))
                 for s in found)):
-            fail()
+            fail('COMPLETE_EVIDENCE', '완료 판정에는 코드와 성공한 실행·검사 이력 근거가 함께 필요해요.')
         requirements[row['id']] = row
+    location = 'candidates'
     if len(report['candidates']) > 3 or (not snapshot['has_goal_material'] and report['candidates']):
         fail()
     ids = set()
-    for row in report['candidates']:
+    for index, row in enumerate(report['candidates']):
+        location = f'candidates[{index}]'
         fields = {'id', 'title', 'requirement_ids', 'evidence', 'gap', 'priority', 'scope',
                   'completion_criteria', 'prerequisites', 'plan_draft', 'disposition', 'related_issues'}
         if not isinstance(row, dict) or set(row) != fields:
@@ -335,17 +339,17 @@ def validate_report(report, snapshot):
             if not strings(row[field]):
                 fail()
         if not row['requirement_ids'] or not row['completion_criteria'] or any(r not in requirements for r in row['requirement_ids']):
-            fail()
+            fail('CANDIDATE_REQUIREMENT', '후보의 요구 ID 또는 완료 기준이 없거나 기존 판정과 연결되지 않아요.')
         evidence(row['evidence'])
         known_refs = {s.get('issue_ref') for s in sources.values() if s['kind'] == 'issue'}
         if any(ref not in known_refs for ref in row['related_issues']):
-            fail()
+            fail('RELATED_ISSUE', '관련 Issue가 수집된 이력에 없어요.')
         if row['disposition'] == 'reuse_issue' and not row['related_issues']:
             fail()
         if row['disposition'] == 'new_work' and any(requirements[r]['status'] in ('complete', 'needs_confirmation') for r in row['requirement_ids']):
-            fail()
+            fail('CANDIDATE_DISPOSITION', '완료 또는 확인 필요인 요구를 새 개발 후보로 발행할 수 없어요.')
         if row['disposition'] == 'new_work' and snapshot.get('goal_conflict'):
-            fail()
+            fail('GOAL_CONFLICT', '목표 충돌을 확인한 뒤 새 개발 후보를 작성해야 해요.')
     return report
 
 
