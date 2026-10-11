@@ -671,7 +671,7 @@ function eventHtml(e){
   else what = esc(e.kind);
   return `<li class="sys">${who}${when} · ${what}${e.kind === 'status' && e.body ? md(e.body) : ''}</li>`;
 }
-// ---- 계획서 결정(DEV-14): 승인 · 메모 붙여 승인 · 거절 ----
+// ---- 계획서 결정: 승인 · 메모 붙여 승인 · 메모 붙여 재검토 · 거절 ----
 const VERDICT_LABEL = { approve: '승인됨', approve_notes: '조건부 승인됨', reject: '거절됨' };
 const VERDICT_COLOR = { approve: 'done', approve_notes: 'in_review', reject: 'changes_requested' };
 function decisionQuestions(body){   // 계획서의 "정해야 할 것" 절의 목록 항목만
@@ -770,14 +770,17 @@ function decisionHtml(it){
   const state = !a ? '<span class="dim">아직 결정하지 않았어요.</span>'
     : a.stale ? `<span class="status" style="--sc:var(--s-in_progress)">v${a.plan_version} 결정은 무효</span> <span class="dim">— 새 계획서(v${it.plan.version})가 올라왔어요. 다시 결정해 주세요.</span>`
     : `<span class="status" style="--sc:var(--s-${VERDICT_COLOR[a.verdict]})">${VERDICT_LABEL[a.verdict]} · v${a.plan_version}</span> <span class="dim">${esc(actorName(a.actor))} · ${fmtTime(a.created_at)}</span>${a.note ? md(a.note) : ''}`;
-  const busy = it.review_running;
+  const busy = it.review_running || it.job?.mode === 'review';
   return `<div class="decision" id="decision"><div class="decision-state">${state}</div>
     ${busy ? '<div class="dim hint">검토가 도는 중이라 끝나면 결정할 수 있어요.</div>' : (a && !a.stale) ? '' : `
-    <div id="decision-form" hidden><textarea id="decision-note"></textarea>
+    ${it.plan.revision_note ? '<p class="dim hint">이 계획서는 재검토를 요청했어요. 새 계획서가 올라온 뒤 승인해 주세요.</p>' : ''}
+    <div id="decision-form" hidden><textarea id="decision-note" aria-label="계획서 결정 또는 재검토 메모"></textarea>
+      <div id="revision-provider-row" hidden><label for="revision-provider">검토 Agent</label> <select id="revision-provider"><option value="claude">Claude</option><option value="codex">Codex</option></select><p class="dim hint">메모를 반영해 계획서를 다시 작성해요. 코드는 수정하지 않으며 선택한 Agent 계정의 사용량을 사용해요.</p></div>
       <div class="row-end"><button id="decision-cancel">취소</button><button id="decision-send" class="primary"></button></div></div>
     <div class="review-actions" id="decision-actions">
-      <button data-verdict="approve"${it.status === 'in_review' ? '' : ' class="primary"'}>계획 승인</button>
-      <button data-verdict="approve_notes">메모 붙여 승인</button>
+      <button data-verdict="approve"${it.status === 'in_review' ? '' : ' class="primary"'}${it.plan.revision_note ? ' disabled' : ''}>계획 승인</button>
+      <button data-verdict="approve_notes"${it.plan.revision_note ? ' disabled' : ''}>메모 붙여 승인</button>
+      ${it.parent_ref ? '' : '<button data-verdict="review">메모 붙여 재검토</button>'}
       <button data-verdict="reject" class="danger">계획 거절</button></div>`}</div>`;
 }
 // ---- 결과 결정(DEV-16): in_review에서 승인 → Done · 수정 요청 → Changes Requested · 거절 → Closed ----
@@ -807,7 +810,8 @@ function stageHtml(it, liveMode, liveProvider){
   else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
   else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
   else if(!it.plan) msg = '계획서가 없어요 → Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
-  else if(!ok) msg = '계획서 승인 대기 → 계획서 아래에서 승인·메모 붙여 승인·거절을 골라 주세요.';
+  else if(it.plan.revision_note) msg = '계획서 재검토 요청 → 새 계획서를 기다려 주세요. 검토가 실패했으면 메모 붙여 재검토로 다시 맡겨 주세요.';
+  else if(!ok) msg = '계획서 승인 대기 → 계획서 아래에서 승인·메모 붙여 승인·메모 붙여 재검토·거절을 골라 주세요.';
   else { const next = it.children.find(c => !['done', 'closed', 'in_review'].includes(c.status));
     msg = next ? `계획 승인됨 → <a href="#/issue/${esc(next.ref)}">${esc(next.ref)}</a>에서 실행 맡기기` : it.children.length ? '모든 Task가 실행됐어요 — 결과를 확인해 주세요.' : '계획 승인됨.'; }
   return `<div class="stage" id="stage">${msg}</div>`;
@@ -973,16 +977,25 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
   }
   if($('decision-actions')){
     let verdict = null;
-    const send = async (v, note) => { const updated = await api('POST', `/api/issues/${R}/decision`, { verdict: v, note, plan_version: it.plan.version });
+    const send = async (v, note) => {
+      if(v === 'review') {
+        if(!note.trim()){ toast('수정할 방향을 메모로 적어 주세요'); return; }
+        const r = await api('POST', `/api/issues/${R}/review`, { provider: $('revision-provider').value, note, plan_version: it.plan.version });
+        toast(queuedMsg(r, '메모 붙여 재검토를 맡겼어요 — 새 계획서를 기다려 주세요'));
+        await reload(); return;
+      }
+      const updated = await api('POST', `/api/issues/${R}/decision`, { verdict: v, note, plan_version: it.plan.version });
       if(v === 'reject' && updated.status !== 'closed'){ toast('롤백 후 운영 반영을 확인 중이에요 — 보류 상태로 남겨요.'); await reload(); return; }
       toast(v === 'reject' ? `${it.ref}을(를) 거절해서 닫았어요` : '결정을 남겼어요'); if(v === 'reject') location.hash = '#/'; else reload(); };
     $('decision-actions').querySelectorAll('button').forEach(b => b.addEventListener('click', (e) => {
       verdict = b.dataset.verdict;
       if(verdict === 'approve'){ whileBusy(e.currentTarget, () => send('approve', '')); return; }
       $('decision-form').hidden = false; $('decision-actions').hidden = true;
-      $('decision-note').value = verdict === 'approve_notes' ? decisionQuestions(it.plan.body) : '';
-      $('decision-note').placeholder = verdict === 'approve_notes' ? '계획서가 물은 것에 대한 답, 고칠 내용 (예: 1번은 끄기로)' : '거절 이유 (예: NS-3과 중복, 필요 없어짐)';
-      $('decision-send').textContent = verdict === 'approve_notes' ? '메모 붙여 승인' : '거절하고 닫기';
+      $('revision-provider-row').hidden = verdict !== 'review';
+      $('revision-provider').value = runs.find(r => r.mode === 'review')?.provider || 'claude';
+      $('decision-note').value = verdict === 'review' ? (it.plan.revision_note || '') : verdict === 'approve_notes' ? decisionQuestions(it.plan.body) : '';
+      $('decision-note').placeholder = verdict === 'review' ? '예: SQLite는 임시예요. PostgreSQL 기준으로 계획서를 다시 작성해 주세요.' : verdict === 'approve_notes' ? '계획서가 물은 것에 대한 답, 고칠 내용 (예: 1번은 끄기로)' : '거절 이유 (예: NS-3과 중복, 필요 없어짐)';
+      $('decision-send').textContent = verdict === 'review' ? '메모 붙여 재검토' : verdict === 'approve_notes' ? '메모 붙여 승인' : '거절하고 닫기';
       $('decision-send').classList.toggle('danger', verdict === 'reject'); $('decision-send').classList.toggle('primary', verdict !== 'reject');
       $('decision-note').focus();
     }));

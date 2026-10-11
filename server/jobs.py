@@ -194,13 +194,19 @@ def reconcile():
             _waiting(c, j)
 
 
-def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None) -> dict:
+def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, note=None, plan_version=None) -> dict:
     """줄에 넣고 펌프를 돌린다. 바로 시작하면 {started}, 아니면 {queued, position}."""
     import auto_settings
     import execute
     import project_docs
     if actor["kind"] != "human":
         raise issues.StoreError("검토·실행은 사람만 맡길 수 있어요.", 403)
+    if note is not None:
+        if not isinstance(note, str):
+            raise issues.StoreError('재검토 메모는 글로 적어 주세요.', 400)
+        note = issues._text(note, '재검토 메모', 20_000, required=True).strip()
+        if mode != 'review' or type(plan_version) is not int:
+            raise issues.StoreError('재검토할 계획서 판을 지정해 주세요.', 400)
     issue = issues.get_issue(ref)
     provider = project_docs.resolve_provider(issue['id'], provider)
     if provider not in ("claude", "codex"):
@@ -209,7 +215,7 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None) -> di
         raise issues.StoreError("지원하지 않는 작업이에요.", 400)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
-    if mode == 'review':
+    if mode == 'review' and note is None:
         import project_init
         from pathlib import Path
         with db.connect() as c:
@@ -220,6 +226,15 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None) -> di
         c.execute("BEGIN IMMEDIATE")
         issue = issues.get_issue(ref)
         issues._guard_terminal_parent(c, issues._find(c, ref))
+        if note is not None:
+            if issue['parent_ref'] or issue['status'] in issues.HUMAN_ONLY_STATUSES:
+                raise issues.StoreError('열려 있는 최상위 Issue의 계획서만 재검토할 수 있어요.', 409)
+            if not issue['plan'] or issue['plan']['version'] != plan_version:
+                raise issues.StoreError('보던 계획서가 최신이 아니에요. 새로고침한 뒤 재검토해 주세요.', 409)
+            if issue['approval'] and not issue['approval']['stale']:
+                raise issues.StoreError('이미 결정한 계획서예요. 미승인 계획서만 메모 붙여 재검토할 수 있어요.', 409)
+            if c.execute("SELECT 1 FROM runs WHERE issue_id=? AND status='running' UNION ALL SELECT 1 FROM jobs WHERE issue_id=? AND status='queued' LIMIT 1", (issue['id'], issue['id'])).fetchone():
+                raise issues.StoreError('이미 맡긴 작업이 있어요. 끝나거나 대기를 취소한 뒤 재검토해 주세요.', 409)
         existing = c.execute("SELECT provider FROM runs WHERE issue_id=? AND mode=? AND status='running' UNION ALL SELECT provider FROM jobs WHERE issue_id=? AND mode=? AND status='queued' LIMIT 1",
                              (issue["id"], mode, issue["id"], mode)).fetchone()
         if existing and existing["provider"] != provider:
@@ -234,6 +249,9 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None) -> di
             c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, provider, model) VALUES(?, ?, ?, 'queued', ?, ?, ?)",
                       (issue["id"], mode, issues.actor_label(actor), db.now_iso(), provider, auto_settings.model_for(c, issue["id"], provider)))
         j = c.execute("SELECT * FROM jobs WHERE issue_id=? AND mode=? AND status='queued'", (issue["id"], mode)).fetchone()
+        if note is not None:
+            issues._event(c, issue['id'], actor, 'comment', note,
+                          {'plan_revision_request': True, 'plan_version': plan_version, 'job_id': j['id'], 'provider': provider})
         _waiting(c, j)
     pump()
     job = next((j for j in list_jobs() if j["issue_id"] == issue["id"] and j["mode"] == mode), None)

@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -71,9 +72,13 @@ def codex_command(prompt: str, tools: list[str], web: str = "disabled") -> list[
 
 def codex_command_for(ref: str) -> list[str]:
     tools = [t.removeprefix("mcp__dev__") for t in ALLOWED_TOOLS if t.startswith("mcp__dev__")]
-    prompt = prompt_for(ref).replace("Claude", "Codex").replace("Read/Grep/Glob으로", "읽기 전용 명령으로")
+    prompt = prompt_for(ref, include_revision=False).replace("Claude", "Codex").replace("Read/Grep/Glob으로", "읽기 전용 명령으로")
     prompt = prompt.replace("코드를 고치거나 명령을 실행하지 않는다(그런 도구도 없다).", "코드를 고치지 않는다. 파일 조회에 필요한 읽기 전용 명령만 사용한다.")
     prompt = prompt.replace("CLAUDE.md 규칙", "AGENTS.md(없으면 CLAUDE.md) 규칙")
+    try:
+        prompt += revision_prompt(issues.get_issue(ref))
+    except (issues.StoreError, sqlite3.OperationalError):
+        pass  # 이슈 생성 전 명령 정책 검사에는 메모가 없다.
     prompt += "\n종류 자동 분류는 선택적 정리다. 분류 조회·저장에 실패해도 계획서 작성과 등록을 완료한다.\n"
     return codex_command(prompt, tools, web="cached")   # 검토만 웹 검색 — 캐시 색인이라 실시간 페이지의 숨은 지시에 덜 노출된다
 
@@ -98,17 +103,30 @@ def in_flight_section(ref: str) -> str:
             "같은 함수·스키마·테스트 기대값을 어떻게 바꾸는지 확인하고, 겹침과 그에 맞춘 방향을 계획서에 적는다. 그 이슈는 건드리지 않는다.")
 
 
-def prompt_for(ref: str) -> str:
+def revision_prompt(issue):
+    """사람의 메모는 공급자별 안내 문구 치환에서 제외한다."""
+    plan = issue.get('plan')
+    if not plan or not plan.get('revision_note'):
+        return ''
+    return (f"\n사람의 계획서 v{plan['version']} 재검토 요청:\n" + plan['revision_note'] +
+            "\n위 메모를 요구사항으로 반영해 새 계획서를 작성한다. 기존 계획서를 승인하거나 구현하지 않는다.\n")
+
+
+def prompt_for(ref: str, *, include_revision=True) -> str:
     goal = ''
+    revision = ''
     try:
         issue = issues.get_issue(ref)
+        if include_revision:
+            revision = revision_prompt(issue)
         if 'goal' in issue['labels']:
             goal = '\n최종 목표(goal) Issue는 상태·제목·본문을 변경하지 않는다. 계획서와 댓글을 작성하고 점유만 해제한다. 아래 triage 전환 단계는 생략한다.\n'
         described = project_description.request_provider(issue["id"])
     except Exception:   # 이슈를 못 읽으면 일반 검토 프롬프트를 쓴다
         described = None
     if described:
-        return project_docs.reference_instructions(ref=ref) + goal + project_description.prompt_for(ref)
+        return project_docs.reference_instructions(ref=ref) + goal + revision + project_description.prompt_for(ref)
+    goal += revision
     import regression
     return project_docs.reference_instructions(ref=ref) + goal + regression.planning_instructions() + f"""dev 이슈 {ref}를 **검토만** 한다. 코드를 고치거나 명령을 실행하지 않는다(그런 도구도 없다).
 
@@ -195,6 +213,13 @@ def start(actor: dict, ref: str, provider: str = "claude", model: str | None = N
         raise issues.StoreError("서버에 DEV_CODEX_AGENT_KEY를 설정해 주세요 — Codex용 dev Agent 키가 필요해요.", 409)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
+    with db.connect() as c:
+        requested = c.execute("""SELECT json_extract(e.data_json,'$.plan_version') FROM events e
+            JOIN jobs j ON j.id=json_extract(e.data_json,'$.job_id')
+            WHERE j.issue_id=? AND j.mode='review' AND j.status='queued'
+            AND json_extract(e.data_json,'$.plan_revision_request')=1 ORDER BY e.id DESC LIMIT 1""", (issue['id'],)).fetchone()
+    if requested and requested[0] != (issue.get('plan') or {}).get('version'):
+        raise issues.StoreError('대기 중 계획서가 바뀌었어요. 새 계획서를 확인하고 다시 재검토해 주세요.', 409)
     cmd = with_model(codex_command_for(ref) if provider == "codex" else command_for(ref), provider, model)
     baseline_plan_id = (issue.get("plan") or {}).get("id", 0)
     log_path, run_id = begin(actor, issue, "review", provider, model)

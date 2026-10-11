@@ -477,6 +477,15 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
     return out
 
 
+def plan_revision_note(c, issue_id, version):
+    """해당 판에 붙인 사람의 재검토 지시를 반환한다. 새 판에는 이어 붙이지 않는다."""
+    row = c.execute("""SELECT body FROM events WHERE issue_id=? AND actor LIKE 'human:%'
+        AND json_extract(data_json,'$.plan_revision_request')=1
+        AND json_extract(data_json,'$.plan_version')=? ORDER BY id DESC LIMIT 1""",
+        (issue_id, version)).fetchone()
+    return row['body'] if row else None
+
+
 def get_issue(ref) -> dict:
     with db.connect() as c:
         row = _find(c, ref)
@@ -484,6 +493,8 @@ def get_issue(ref) -> dict:
         d["type_revision"] = _type_revision(c, row["id"])
         plan = c.execute("SELECT * FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1", (row["id"],)).fetchone()
         d["plan"] = dict(plan) if plan else None
+        if plan:
+            d["plan"]["revision_note"] = plan_revision_note(c, row['id'], plan['version'])
         d["human_checks"] = human_checks(plan["body"]) if plan else []
         dec = c.execute("SELECT * FROM decisions WHERE issue_id=? AND gate='plan' ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
         if dec:   # 요약(list와 같은 모양)에 메모·누가·언제를 더한다
@@ -987,6 +998,8 @@ def decide(actor, ref, verdict, note="", plan_version=None) -> dict:
             raise StoreError(f"보던 계획서(v{plan_version})가 최신(v{latest})이 아니에요 — 새로 고쳐서 다시 결정해 주세요.", 409)
         if row["status"] in HUMAN_ONLY_STATUSES:
             raise StoreError("끝난 이슈예요.", 409)
+        if verdict != 'reject' and plan_revision_note(c, row['id'], latest):
+            raise StoreError("재검토를 요청한 계획서예요. 새 계획서가 올라온 뒤 승인해 주세요.", 409)
         _record_plan_decision(c, row, latest, verdict, note, actor)
         if verdict == "reject":
             _sync_terminal_status(c, actor, row, "closed", f"거절 (계획서 v{latest}): {note.strip()}")

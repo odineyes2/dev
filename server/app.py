@@ -723,7 +723,7 @@ async def api_execute(ref: str, request: Request):
 async def api_review(ref: str, request: Request):
     me = actor(request)
     b = await json_body(request) if await request.body() else {}
-    return jobs.enqueue(me, ref, "review", b.get("provider"))
+    return jobs.enqueue(me, ref, "review", b.get("provider"), note=b.get("note"), plan_version=b.get("plan_version"))
 
 
 @app.post('/api/issues/{ref}/retry-merge')

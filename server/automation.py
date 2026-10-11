@@ -82,6 +82,8 @@ def _approve_plans(c, setting):
         plan = c.execute('SELECT * FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1', (row['id'],)).fetchone()
         if not plan or plan['id'] <= delegation['plan_id_floor']:
             continue
+        if issues.plan_revision_note(c, row['id'], plan['version']):
+            continue
         run = c.execute("""SELECT r.* FROM review_plan_runs link JOIN runs r ON r.id=link.run_id
             WHERE link.plan_id=? AND r.id=(SELECT MAX(id) FROM runs WHERE issue_id=?)""", (plan['id'], row['id'])).fetchone()
         if not run or run['mode'] != 'review' or run['status'] != 'ok' or not run['ended_at']:
