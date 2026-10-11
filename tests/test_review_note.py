@@ -59,7 +59,20 @@ with TestClient(A.app) as client:
     assert NOTE not in review.prompt_for(it['ref'])
     assert client.post(route, json=request, headers=H).status_code == 409
     issues.decide(me, it['ref'], 'approve', plan_version=new['version'])
+    child = issues.create_issue(me, 'NOTE', '기존 하위 Task', parent=it['ref'])
+    child_ids = [c['id'] for c in issues.get_issue(it['ref'])['children']]
+    with db.connect() as conn:
+        running = conn.execute("INSERT INTO runs(issue_id,mode,provider,status,actor,started_at) VALUES(?,'execute','codex','running','human:admin',?)", (child['id'], db.now_iso())).lastrowid
     assert client.post(route, json={**request, 'plan_version': new['version']}, headers=H).status_code == 409
+    with db.connect() as conn:
+        conn.execute("UPDATE runs SET status='ok',ended_at=? WHERE id=?", (db.now_iso(), running))
+    assert client.post(route, json={**request, 'plan_version': new['version']}, headers=H).status_code == 200
+    approval = issues.get_issue(it['ref'])['approval']
+    assert approval['verdict'] == 'approve' and approval['stale'] and approval['revision_requested']
+    assert it['ref'] not in [i['ref'] for i in issues.list_issues(approved=True)]
+    assert client.post(f"/api/issues/{child['ref']}/execute", json={'provider': 'claude'}, headers=H).status_code == 409
+    assert [c['id'] for c in issues.get_issue(it['ref'])['children']] == child_ids
+    jobs.cancel(me, jobs.list_jobs()[0]['id'])
 
     # Auto 승인은 요청한 이전 판을 큐 취소/실패 뒤에도 승인하지 않는다.
     auto = issues.create_issue(me, 'NOTE', 'Auto 재검토')

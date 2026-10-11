@@ -768,20 +768,21 @@ function executeHtml(it, liveMode, liveProvider){
 function decisionHtml(it){
   const a = it.approval;
   const state = !a ? '<span class="dim">아직 결정하지 않았어요.</span>'
-    : a.stale ? `<span class="status" style="--sc:var(--s-in_progress)">v${a.plan_version} 결정은 무효</span> <span class="dim">— 새 계획서(v${it.plan.version})가 올라왔어요. 다시 결정해 주세요.</span>`
+    : a.stale ? `<span class="status" style="--sc:var(--s-in_progress)">v${a.plan_version} 결정은 무효</span> <span class="dim">${a.revision_requested ? '— 재검토 요청으로 기존 승인을 보류했어요.' : `— 새 계획서(v${it.plan.version})가 올라왔어요. 다시 결정해 주세요.`}</span>`
     : `<span class="status" style="--sc:var(--s-${VERDICT_COLOR[a.verdict]})">${VERDICT_LABEL[a.verdict]} · v${a.plan_version}</span> <span class="dim">${esc(actorName(a.actor))} · ${fmtTime(a.created_at)}</span>${a.note ? md(a.note) : ''}`;
   const busy = it.review_running || it.job?.mode === 'review';
+  if(['done','closed'].includes(it.status)) return `<div class="decision"><div class="decision-state">${state}</div></div>`;
   return `<div class="decision" id="decision"><div class="decision-state">${state}</div>
-    ${busy ? '<div class="dim hint">검토가 도는 중이라 끝나면 결정할 수 있어요.</div>' : (a && !a.stale) ? '' : `
+    ${busy ? '<div class="dim hint">검토가 도는 중이라 끝나면 결정할 수 있어요.</div>' : `
     ${it.plan.revision_note ? '<p class="dim hint">이 계획서는 재검토를 요청했어요. 새 계획서가 올라온 뒤 승인해 주세요.</p>' : ''}
     <div id="decision-form" hidden><textarea id="decision-note" aria-label="계획서 결정 또는 재검토 메모"></textarea>
       <div id="revision-provider-row" hidden><label for="revision-provider">검토 Agent</label> <select id="revision-provider"><option value="claude">Claude</option><option value="codex">Codex</option></select><p class="dim hint">메모를 반영해 계획서를 다시 작성해요. 코드는 수정하지 않으며 선택한 Agent 계정의 사용량을 사용해요.</p></div>
       <div class="row-end"><button id="decision-cancel">취소</button><button id="decision-send" class="primary"></button></div></div>
     <div class="review-actions" id="decision-actions">
-      <button data-verdict="approve"${it.status === 'in_review' ? '' : ' class="primary"'}${it.plan.revision_note ? ' disabled' : ''}>계획 승인</button>
-      <button data-verdict="approve_notes"${it.plan.revision_note ? ' disabled' : ''}>메모 붙여 승인</button>
+      ${a && !a.stale ? '' : `<button data-verdict="approve"${it.status === 'in_review' ? '' : ' class="primary"'}${it.plan.revision_note ? ' disabled' : ''}>계획 승인</button>
+      <button data-verdict="approve_notes"${it.plan.revision_note ? ' disabled' : ''}>메모 붙여 승인</button>`}
       ${it.parent_ref ? '' : '<button data-verdict="review">메모 붙여 재검토</button>'}
-      <button data-verdict="reject" class="danger">계획 거절</button></div>`}</div>`;
+      ${a && !a.stale ? '' : '<button data-verdict="reject" class="danger">계획 거절</button>'}</div>`}</div>`;
 }
 // ---- 결과 결정(DEV-16): in_review에서 승인 → Done · 수정 요청 → Changes Requested · 거절 → Closed ----
 const RESULT_FORM = {
@@ -993,7 +994,7 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
       $('decision-form').hidden = false; $('decision-actions').hidden = true;
       $('revision-provider-row').hidden = verdict !== 'review';
       $('revision-provider').value = runs.find(r => r.mode === 'review')?.provider || 'claude';
-      $('decision-note').value = verdict === 'review' ? (it.plan.revision_note || '') : verdict === 'approve_notes' ? decisionQuestions(it.plan.body) : '';
+      $('decision-note').value = verdict === 'review' ? (it.plan.revision_note || it.approval?.note || '') : verdict === 'approve_notes' ? decisionQuestions(it.plan.body) : '';
       $('decision-note').placeholder = verdict === 'review' ? '예: SQLite는 임시예요. PostgreSQL 기준으로 계획서를 다시 작성해 주세요.' : verdict === 'approve_notes' ? '계획서가 물은 것에 대한 답, 고칠 내용 (예: 1번은 끄기로)' : '거절 이유 (예: NS-3과 중복, 필요 없어짐)';
       $('decision-send').textContent = verdict === 'review' ? '메모 붙여 재검토' : verdict === 'approve_notes' ? '메모 붙여 승인' : '거절하고 닫기';
       $('decision-send').classList.toggle('danger', verdict === 'reject'); $('decision-send').classList.toggle('primary', verdict !== 'reject');

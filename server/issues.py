@@ -339,6 +339,9 @@ _PARENT_REF = f"(SELECT {ref_sql('q', 'p')} FROM issues q WHERE q.id=i.parent_id
 _ISSUE_SELECT = (f"SELECT i.*, p.key AS project_key, {ref_sql('i', 'p')} AS ref, {_PARENT_REF} AS parent_ref, "
                  f"{_DEC_VERDICT} AS dec_verdict, {_DEC_VERSION} AS dec_version, "
                  f"{_LATEST_PLAN} AS latest_plan, "
+                 f"EXISTS(SELECT 1 FROM events e WHERE e.issue_id=i.id AND e.actor LIKE 'human:%' "
+                 f"AND json_extract(e.data_json,'$.plan_revision_request')=1 "
+                 f"AND json_extract(e.data_json,'$.plan_version')={_LATEST_PLAN}) AS plan_revision_requested, "
                  "(WITH RECURSIVE family(id) AS (SELECT i.id UNION SELECT q.id FROM issues q JOIN family f ON q.parent_id=f.id) "
                  "SELECT json_group_array(provider) FROM (SELECT DISTINCT r.provider FROM runs r JOIN family f ON r.issue_id=f.id "
                  "UNION SELECT CASE a.vendor WHEN 'anthropic' THEN 'claude' WHEN 'openai' THEN 'codex' END "
@@ -376,7 +379,9 @@ def _issue_dict(r) -> dict:
                 d["completion_seconds"] = seconds
     verdict, version, latest = d.pop("dec_verdict"), d.pop("dec_version"), d.pop("latest_plan")
     # 결정은 그 계획서 판에 붙는다 — 새 판이 올라오면 stale(승인이 무효, 다시 결정해야 한다)
-    d["approval"] = {"verdict": verdict, "plan_version": version, "stale": version != latest} if verdict else None
+    revision = bool(d.pop('plan_revision_requested'))
+    d["approval"] = {"verdict": verdict, "plan_version": version, "stale": version != latest or revision,
+                     **({'revision_requested': True} if revision else {})} if verdict else None
     if not _lease_active(r):
         d["claimed_by"] = None
         d["lease_until"] = None
@@ -446,6 +451,7 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
         raise StoreError("모르는 정렬이에요.")
     where, args = [], []
     if approved:
+        where.append('NOT plan_revision_requested')
         where.append(f"{_DEC_VERDICT} IN ('approve','approve_notes') AND {_DEC_VERSION} = {_LATEST_PLAN}")
     if project:
         where.append("p.key=?"); args.append(str(project).upper())
