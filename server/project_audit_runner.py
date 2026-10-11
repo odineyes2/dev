@@ -285,7 +285,13 @@ Plan 초안은 저장소 내부 파일 변경 Task만 쓰며 승인·실행을 �
                 if str(error) in ('출력 제한', '출력 제한·민감값', '민감한 출력'):
                     message = '점검 출력에 크기 초과 또는 민감값이 있어 결과를 저장하지 않았어요.'
                 elif str(error) == 'CLI 실패':
-                    message = '에이전트 점검에 실패했어요. CLI 로그인·설정을 확인해 주세요.'
+                    reason = 'CLI 실행을 완료하지 못했어요. 로그인·설정을 확인해 주세요.'
+                    output = (raw + err).decode('utf-8', errors='replace')
+                    if 'invalid_json_schema' in output:
+                        reason = 'invalid_json_schema: 점검 결과 JSON 스키마를 공급자가 거부했어요.'
+                    elif any(code in output for code in ('rate_limit_exceeded', 'insufficient_quota', 'usage_limit_reached', "You've hit your")):
+                        reason = 'usage_limit: 사용 한도 또는 호출 제한에 도달했어요.'
+                    message = f'에이전트 점검 실패({row["provider"]}, 종료 코드 {proc.returncode}). {reason}'
                 raise AnalysisFailure('failed', message, actual, usage) from None
             finally:
                 if proc.poll() is None:

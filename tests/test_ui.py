@@ -337,6 +337,28 @@ def check_project_audits(page, shots):
         open_screen([audit_fixture(status)])
         assert '분석을 완료하지 못했어요' in page.inner_text('#audit-detail')
         assert page.locator('#audit-start').is_enabled()
+        assert 'DEV-AUDIT-AUDIT-1' in page.inner_text('.audit-diagnostic')
+        page.evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.auditCopied=text}}})")
+        page.click('#audit-copy')
+        page.wait_for_function('document.querySelector("#audit-copy-message").textContent.includes("복사했어요")')
+        copied = page.evaluate('window.auditCopied')
+        for expected in ('DEV-AUDIT-AUDIT-1', 'fixture-audit-1', '분석을 완료하지 못했어요', 'gpt-6.1-sol', '기준 커밋:', '종료:'):
+            assert expected in copied
+        page.evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw Error('denied')}}})")
+        page.click('#audit-copy')
+        page.wait_for_selector('#audit-copy-text:not([hidden])')
+        assert page.input_value('#audit-copy-text') == copied
+        assert page.locator('#audit-copy-text').evaluate('e=>e.selectionEnd-e.selectionStart===e.value.length')
+        if status == 'failed':
+            for scheme in ('light', 'dark'):
+                page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", scheme)
+                page.emulate_media(color_scheme=scheme)
+                for width in (1300, 390):
+                    page.set_viewport_size({'width': width, 'height': 850})
+                    page.wait_for_timeout(200)
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                    assert page.locator('#audit-copy').bounding_box()['height'] >= 40
+                    page.screenshot(path=str(shots / f'audit_diagnostic_{scheme}_{width}.png'), full_page=True)
     # 근거 부족·차이 없음에서는 후보를 억지로 생성하지 않는다.
     for variant in ('empty', 'insufficient', 'stale', 'confirmation'):
         open_screen([audit_fixture(variant=variant)])

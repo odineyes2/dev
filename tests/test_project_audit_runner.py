@@ -272,6 +272,21 @@ class AuditRunnerTests(unittest.TestCase):
         self.assertEqual(result['usage']['cost_usd'], .01)
         self.assertEqual(result['usage']['input_tokens'], 7)
 
+    def test_cli_failure_diagnostic_keeps_exit_code_and_safe_category(self):
+        for n, (output, category) in enumerate([
+            ('invalid_json_schema: schema rejected; api_key=supersecretvalue', 'invalid_json_schema'),
+            ("You've hit your weekly limit", 'usage_limit'),
+            ('rate_limit_exceeded', 'usage_limit'),
+            ('unknown failure; api_key=supersecretvalue', 'CLI')
+        ]):
+            with self.subTest(category=category):
+                result = self.run_row(self.row(provider='codex', request=f'diagnostic-{n}'), output, code=1)
+                self.assertEqual(result['status'], 'failed')
+                self.assertIn('종료 코드 1', result['error'])
+                self.assertIn(category, result['error'])
+                self.assertNotIn('supersecretvalue', result['error'])
+                self.assertIsNone(result['report'])
+
     def test_preparing_restart_and_model_metadata_reject_late_tools(self):
         row = self.row()
         runner.recover()

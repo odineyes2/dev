@@ -37,7 +37,7 @@ def audit_fixture(status='complete', variant='report', audit_id=1):
     if variant == 'insufficient':
         snapshot['sources'] = []
         snapshot['warnings'] = ['목표 자료가 부족해요. 확인이 필요해요.']
-    return {'id': audit_id, 'provider': 'codex', 'model': 'gpt-6.1-sol', 'actual_model': 'gpt-6.1-sol',
+    return {'id': audit_id, 'request_id': f'fixture-audit-{audit_id}', 'provider': 'codex', 'model': 'gpt-6.1-sol', 'actual_model': 'gpt-6.1-sol',
             'status': status, 'phase': '자료를 비교해요', 'created_at': '2026-10-10T01:00:00+00:00',
             'started_at': '2026-10-10T01:00:01+00:00', 'ended_at': None if status in ('preparing','running','cancelling') else '2026-10-10T01:01:00+00:00',
             'base_sha': '1234567890abcdef'*2 + '12345678', 'base_branch': 'main',

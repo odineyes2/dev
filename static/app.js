@@ -1845,6 +1845,33 @@ function bindProjectAudits(project){
     });
     detail.querySelector('#audit-cancel')?.addEventListener('click', cancel);
     detail.querySelector('#audit-publish')?.addEventListener('click', publish);
+    const diagnosticId = `DEV-AUDIT-${project.key}-${r.id}`;
+    const diagnostic = [
+      'Dev 목표 대비 현황점검 진단', `진단 번호: ${diagnosticId}`,
+      `프로젝트: ${project.key} · ${project.name}`, `점검 번호: #${r.id}`,
+      `요청 ID: ${r.request_id || '미기록'}`, `상태: ${states[r.status] || r.status}`,
+      `단계: ${r.phase || '미기록'}`, `오류: ${r.error || '없음'}`,
+      `도구: ${r.provider}`, `요청 모델: ${r.model || '미확인'}`, `실제 모델: ${r.actual_model || '미확인'}`,
+      `생성: ${r.created_at || '미계측'}`, `시작: ${r.started_at || '미계측'}`, `종료: ${r.ended_at || '미계측'}`,
+      `기준 브랜치: ${r.base_branch || '미확인'}`, `기준 커밋: ${r.base_sha || '미확인'}`,
+      limitsText(r.limits), `입력 토큰: ${r.usage?.input_tokens ?? '미계측'} · 출력 토큰: ${r.usage?.output_tokens ?? '미계측'}`,
+      `측정 비용: ${r.usage?.cost_measured ? `$${r.usage.cost_usd}` : '미계측'}`
+    ].join('\n');
+    const box = document.createElement('section'); box.className = 'audit-diagnostic';
+    box.innerHTML = `<div class="audit-toolbar"><span class="audit-meta">진단 번호 ${esc(diagnosticId)}</span><button type="button" id="audit-copy" title="진단 내용 복사하기" aria-label="점검 진단 내용 복사하기"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg> 진단 복사</button></div><p id="audit-copy-message" class="dim" role="status" aria-live="polite"></p><textarea id="audit-copy-text" aria-label="직접 복사할 점검 진단 내용" readonly hidden></textarea>`;
+    detail.querySelector('#audit-report-title').after(box);
+    const copy = box.querySelector('#audit-copy'), feedback = box.querySelector('#audit-copy-message'), manual = box.querySelector('#audit-copy-text');
+    manual.value = diagnostic;
+    copy.onclick = async () => {
+      copy.disabled = true;
+      try {
+        if(!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+        await navigator.clipboard.writeText(diagnostic);
+        if(box.isConnected) feedback.textContent = '진단 내용을 복사했어요. Codex나 Claude에 붙여넣어 주세요.';
+      } catch {
+        if(box.isConnected){ feedback.textContent = '자동 복사를 못 했어요. 아래 내용을 선택해 직접 복사해 주세요.'; manual.hidden = false; manual.focus(); manual.select(); }
+      } finally { copy.disabled = false; }
+    };
   }
   async function select(id, focus = false){
     const token = ++detailToken;
