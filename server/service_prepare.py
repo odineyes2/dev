@@ -31,7 +31,7 @@ def _failure_detail(out, err, provider):
         if not isinstance(event, dict) or not (event.get('is_error') or str(event.get('subtype', '')).startswith('error') or event.get('type') in ('error', 'turn.failed')):
             continue
         subtype = event.get('subtype')
-        if subtype:
+        if subtype and subtype != 'success':
             parts.append('생성 비용 상한에 도달했어요.' if subtype == 'error_max_budget_usd' else str(subtype))
         for field in ('message', 'error', 'errors', 'result'):
             value = event.get(field)
@@ -78,6 +78,11 @@ def _unchanged(repo, sha, branch):
 def _generate(project, snapshot, directory):
     settings = auto_settings.get_settings(project['key'])
     candidates = settings['agent_orders']['provider_order'] or [{'provider': p, 'model': ''} for p in settings['provider_order']]
+    preferred = project.get('service_prepare_provider', 'auto')
+    if preferred == 'none':
+        raise issues.StoreError('기존 파일 사용 모드에서는 에이전트를 호출하지 않아요.', 409)
+    if preferred in ('codex', 'claude'):
+        candidates = [a for a in candidates if a['provider'] == preferred] or [{'provider': preferred, 'model': ''}]
     agent = next((a for a in candidates if automation.provider_available(a['provider'])), None)
     if not agent:
         raise issues.StoreError('실행 파일을 생성할 에이전트가 없어요. Agents 설정과 CLI 로그인을 확인해 주세요.', 409)

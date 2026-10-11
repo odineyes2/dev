@@ -36,7 +36,7 @@ with db.connect() as c:
         added = (None, None) if table == 'jobs' else (0,) if table == 'project_auto_settings' else ('',) if table == 'runs' else ()
         model = (None,) if table in ('jobs', 'runs') else ()   # DEV-89-4 model 컬럼
         lifecycle = (None, None) if table == 'issues' else ()   # 근거 없는 생애 시각은 NULL로 확장한다.
-        service = ('', 0, '') if table == 'projects' else ()
+        service = ('', 0, '', 'auto') if table == 'projects' else ()
         assert [r + added + ((r[0],) if table == 'jobs' else ()) + model + lifecycle + service for r in before[table]] ==[tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=?', (legacy['id'],)).fetchone()
     assert job['source'] == 'manual' and job['provider'] == 'codex'
@@ -403,7 +403,7 @@ with patch.object(config, 'DB_PATH', old_path):
             elif table == 'issues':
                 assert after == [r + (None, None) for r in snapshot[table]], table
             elif table == 'projects':
-                assert after == [r + ('', 0, '') for r in snapshot[table]], table
+                assert after == [r + ('', 0, '', 'auto') for r in snapshot[table]], table
             else:
                 assert after == [r + ('',) for r in snapshot[table]] if table in ('runs', 'plans') else after == snapshot[table], table   # plans ''는 base_sha
         assert c.execute('PRAGMA foreign_key_check').fetchall() == []

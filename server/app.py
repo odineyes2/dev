@@ -408,7 +408,7 @@ def api_projects():
 @app.post("/api/projects")
 async def api_create_project(request: Request):
     b = await json_body(request)
-    return issues.create_project(actor(request), b.get("key"), b.get("name"), b.get("repo_url", ""), b.get("local_path", ""), b.get("description", ""), b.get('service_domain', ''), b.get('service_port', 0), b.get('service_app', ''))
+    return issues.create_project(actor(request), b.get("key"), b.get("name"), b.get("repo_url", ""), b.get("local_path", ""), b.get("description", ""), b.get('service_domain', ''), b.get('service_port', 0), b.get('service_app', ''), b.get('service_prepare_provider', 'auto'))
 
 
 @app.get('/api/projects/free-port')

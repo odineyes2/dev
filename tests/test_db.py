@@ -81,7 +81,7 @@ assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
         after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
-        added = {'jobs': (None, 'manual', None, None, None, None, 1, None), 'projects': ('', '', 0, ''), 'runs': ('', None), 'plans': ('',), 'agents': ('agent',)}.get(table, ())   # 끝 None: DEV-89-4 model, plans ''는 base_sha
+        added = {'jobs': (None, 'manual', None, None, None, None, 1, None), 'projects': ('', '', 0, '', 'auto'), 'runs': ('', None), 'plans': ('',), 'agents': ('agent',)}.get(table, ())   # 끝 None: DEV-89-4 model, plans ''는 base_sha
         if table == 'issues':
             assert after == [r + (now if r[0] == 2 else None, None) for r in before[table]], table
         else:

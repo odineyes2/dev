@@ -156,6 +156,7 @@ class PrepareTest(unittest.TestCase):
                 self.assertEqual(command[command.index('--tools') + 1], '')
 
     def test_cli_failure_details_distinguish_budget_auth_and_private_output(self):
+        self.assertNotIn('success', prepare._failure_detail(json.dumps({'is_error': True, 'subtype': 'success', 'result': 'weekly limit'}), '', 'claude'))
         budget = json.dumps({'subtype': 'error_max_budget_usd', 'is_error': True, 'result': 'Budget exceeded'})
         self.assertIn('비용 상한', prepare._failure_detail(budget, '', 'claude'))
         codex = json.dumps({'type': 'turn.failed', 'error': {'message': 'Authentication failed'}})
@@ -183,6 +184,19 @@ class PrepareTest(unittest.TestCase):
         with patch.object(prepare.auto_settings, 'get_settings', return_value=settings), patch.object(prepare.automation, 'provider_available', return_value=True), patch.object(prepare.subprocess, 'Popen', return_value=proc):
             with self.assertRaisesRegex(issues.StoreError, 'claude, 종료 코드 1.*비용 상한'):
                 prepare._generate(self.project, snapshot, directory)
+
+    def test_explicit_codex_choice_overrides_claude_first_priority(self):
+        directory = self.root / 'codex-choice'
+        directory.mkdir()
+        snapshot = prepare.audit.collect_snapshot('APP')
+        proc = MagicMock(returncode=0)
+        proc.poll.return_value = 0
+        proc.communicate.return_value = (json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(result())}}), '')
+        settings = {'provider_order': ['claude', 'codex'], 'agent_orders': {'provider_order': [{'provider': 'claude', 'model': 'claude-model'}, {'provider': 'codex', 'model': 'codex-model'}]}}
+        with patch.object(prepare.auto_settings, 'get_settings', return_value=settings), patch.object(prepare.automation, 'provider_available', return_value=True), patch.object(prepare.subprocess, 'Popen', return_value=proc) as launch:
+            self.assertEqual(prepare._generate({**self.project, 'service_prepare_provider': 'codex'}, snapshot, directory), result())
+        self.assertIn('codex-model', launch.call_args.args[0])
+        self.assertNotIn('claude-model', launch.call_args.args[0])
 
 
 if __name__ == '__main__':

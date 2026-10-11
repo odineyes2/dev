@@ -720,6 +720,11 @@ UPDATE project_services SET step=4 WHERE action='connect' AND status='failed'
     AND error LIKE 'Local path의 ecosystem.config.js에서 지정 PM2 앱을 준비해 주세요.%';
 """)
 
+MIGRATIONS.append("""
+ALTER TABLE projects ADD COLUMN service_prepare_provider TEXT NOT NULL DEFAULT 'auto'
+    CHECK(service_prepare_provider IN ('auto','codex','claude','none'));
+""")
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

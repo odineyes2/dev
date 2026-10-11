@@ -50,6 +50,12 @@ def find_free_port():
     raise issues.StoreError('8400~8999에 빈 포트가 없어요. 다른 포트를 직접 입력해 주세요.', 503)
 
 
+def validate_prepare_provider(value):
+    if value not in ('auto', 'codex', 'claude', 'none'):
+        raise issues.StoreError('실행 파일 생성 방식은 자동·Codex·Claude·기존 파일 중에서 선택해 주세요.')
+    return value
+
+
 def validate_fields(domain='', port=0, app=''):
     domain = issues._text(domain, '서비스 도메인', 253).strip().lower().rstrip('.')
     if domain:
@@ -380,6 +386,8 @@ def _run(project, action):
                 if not project['local_path'] or not repo.is_dir():
                     raise issues.StoreError('Local path의 프로젝트 폴더를 찾을 수 없어요.', 409)
                 if not (repo / 'ecosystem.config.js').is_file():
+                    if project.get('service_prepare_provider', 'auto') == 'none':
+                        raise issues.StoreError('기존 파일 사용을 선택했어요. 프로젝트의 ecosystem.config.js를 준비하거나 실행 파일 생성 방식을 Codex·Claude로 바꿔 주세요.', 409)
                     _save(pid, phase='에이전트가 실행 파일을 생성·검사하고 있어요')
                     import service_prepare
                     service_prepare.prepare(project)

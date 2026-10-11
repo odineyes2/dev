@@ -53,6 +53,10 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(service.status('APP')['status'], 'connected')
 
     def test_validation_and_storage(self):
+        self.assertEqual(self.project['service_prepare_provider'], 'auto')
+        self.assertEqual(issues.update_project(H, 'APP', {'service_prepare_provider': 'codex'})['service_prepare_provider'], 'codex')
+        with self.assertRaises(issues.StoreError):
+            issues.update_project(H, 'APP', {'service_prepare_provider': 'unknown'})
         for domain in ('https://app.example.com', 'app.example.com/path', '*.example.com', '-bad.example.com', '127.0.0.1', 'a..com'):
             with self.assertRaises(issues.StoreError):
                 service.validate_fields(domain, 8400)
@@ -240,6 +244,16 @@ class ServiceTest(unittest.TestCase):
             prepare.assert_called_once_with(self.project)
         self.assertTrue(any(c.args[1] == 'PM2 앱 시작' for c in self.commands.call_args_list))
 
+    def test_code_only_mode_never_calls_agent_when_files_are_missing(self):
+        self.project = issues.update_project(H, 'APP', {'service_app': 'myapp', 'service_prepare_provider': 'none'})
+        self.queue()
+        with patch('service_prepare.prepare') as prepare:
+            service._run(self.project, 'connect')
+            prepare.assert_not_called()
+        state = service.status('APP')
+        self.assertEqual(state['step'], 4)
+        self.assertIn('기존 파일 사용', state['error'])
+
     def test_running_and_successful_steps(self):
         self.queue()
         state = service.status('APP')
@@ -253,7 +267,8 @@ class ServiceTest(unittest.TestCase):
         import sqlite3
         legacy = self.root / 'legacy.db'
         with sqlite3.connect(legacy) as c:
-            for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+            step_version = next(i for i, sql in enumerate(db.MIGRATIONS) if 'ALTER TABLE project_services ADD COLUMN step' in sql)
+            for version, sql in enumerate(db.MIGRATIONS[:step_version], 1):
                 c.executescript(sql + f'PRAGMA user_version={version};')
             c.execute("INSERT INTO projects(key,name,service_domain,service_port,created_at) VALUES('OLD','기존','app.example.com',8400,?)", (db.now_iso(),))
             c.execute("INSERT INTO project_services(project_id,status,error,actor,action,updated_at) VALUES(1,'failed',?,'human:admin','connect',?)",
@@ -351,7 +366,7 @@ class ServiceTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'Windows npx 실행 경로')
     def test_pm2_uses_installed_npx_without_shell_or_package_install(self):
-        self.project = issues.update_project(H, 'APP', {'service_app': 'myapp'})
+        self.project = issues.update_project(H, 'APP', {'service_app': 'myapp', 'service_prepare_provider': 'none'})
         (self.root / 'ecosystem.config.js').write_text('module.exports = {};')
         cli = self.root / 'node_modules/npm/bin/npx-cli.js'
         cli.parent.mkdir(parents=True)

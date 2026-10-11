@@ -62,9 +62,10 @@ class InitializationTest(unittest.TestCase):
         return r.json()
 
     def test_service_settings_are_saved_during_initialization(self):
-        self.body.update(service_domain='NEW.example.com', service_port=8400, service_app='newapp')
+        self.body.update(service_domain='NEW.example.com', service_port=8400, service_app='newapp', service_prepare_provider='codex')
         self.request()
         project = issues.list_projects()[0]
+        self.assertEqual(project['service_prepare_provider'], 'codex')
         self.assertEqual((project['service_domain'], project['service_port'], project['service_app']), ('new.example.com', 8400, 'newapp'))
         self.assertEqual(self.client.post('/api/projects/NEW/service', json={}, headers=HEADERS).status_code, 409)
 

@@ -138,12 +138,16 @@ def capture(route='#/', fixture='empty'):
                             page.goto(base + '/' + route)
                             wait_screen(page, route)
                             if fixture == 'project-service':
+                                page.select_option('#p-service-provider', 'none')
+                                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                                 page.fill('#p-domain', 'app.example.com')
                                 page.fill('#p-port', '8500')
+                                page.select_option('#p-service-provider', 'codex')
                                 page.click('#project-form button[type="submit"]')
                                 page.wait_for_function("document.querySelector('#project-form')?.getAttribute('aria-busy') !== 'true'")
                                 saved = context.request.get(base + '/api/projects').json()['projects'][0]
                                 assert saved['service_domain'] == 'app.example.com' and saved['service_port'] == 8500
+                                assert saved['service_prepare_provider'] == 'codex'
                                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                             if fixture == 'projects-input':
                                 page.click('#project-add')

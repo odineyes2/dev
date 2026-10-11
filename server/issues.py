@@ -183,15 +183,16 @@ def list_projects() -> list[dict]:
         return [_project_row(r) for r in c.execute("SELECT * FROM projects ORDER BY archived, key")]
 
 
-def create_project(actor, key, name, repo_url="", local_path="", description="", service_domain="", service_port=0, service_app="") -> dict:
+def create_project(actor, key, name, repo_url="", local_path="", description="", service_domain="", service_port=0, service_app="", service_prepare_provider="auto") -> dict:
     if not _is_human(actor):
         raise _forbidden("프로젝트는 사람만 만들 수 있어요.")
     key = str(key or "").strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9]{0,9}", key):
         raise StoreError("키는 영문 대문자로 시작하는 10자 이하 영문·숫자예요(예: NS).")
     name = _text(name, "이름", 100, required=True).strip()
-    from project_service import validate_fields
+    from project_service import validate_fields, validate_prepare_provider
     service = validate_fields(service_domain, service_port, service_app)
+    provider = validate_prepare_provider(service_prepare_provider)
     try:
         with db.connect() as c:
             pid = c.execute("INSERT INTO projects(key, name, repo_url, local_path, description, created_at) VALUES(?,?,?,?,?,?)",
@@ -199,6 +200,8 @@ def create_project(actor, key, name, repo_url="", local_path="", description="",
                              _text(description, "프로젝트 설명"), db.now_iso())).lastrowid
             if any(service.values()):
                 c.execute('UPDATE projects SET service_domain=?,service_port=?,service_app=? WHERE id=?', (*service.values(), pid))
+            if provider != 'auto':
+                c.execute('UPDATE projects SET service_prepare_provider=? WHERE id=?', (provider, pid))
             return _project_row(c.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone())
     except sqlite3.IntegrityError:
         raise StoreError("같은 키 또는 서비스 도메인의 프로젝트가 있어요.", 409)
@@ -215,6 +218,9 @@ def update_project(actor, key, fields: dict) -> dict:
         sets["archived"] = 1 if fields["archived"] else 0
     if "description" in fields:
         sets["description"] = _text(fields["description"], "프로젝트 설명")
+    if 'service_prepare_provider' in fields:
+        from project_service import validate_prepare_provider
+        sets['service_prepare_provider'] = validate_prepare_provider(fields['service_prepare_provider'])
     if not sets and not any(k in fields for k in ('service_domain', 'service_port', 'service_app')):
         raise StoreError("바꿀 내용이 없어요.")
     with db.connect() as c:
