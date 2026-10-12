@@ -336,6 +336,8 @@ def check_register_repair(page, shots):
     # 수정 커밋 버튼은 단계 안내 한 자리에만 있다(DEV-113)
     assert page.locator('.register-repair').count() == 1 and page.locator('#stage .register-repair').count() == 1
     assert page.locator('.register-repair').get_attribute('title')
+    # in_review Task에서는 누를 수 없는 실행 버튼을 그리지 않는다(DEV-113)
+    assert page.locator('#ask-execute, #ask-codex-execute, #ask-review').count() == 0
     for theme in ('light','dark'):
         page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
         page.emulate_media(color_scheme=theme)
@@ -2019,9 +2021,10 @@ def check_execute_buttons(page, shots, answers):
         page.wait_for_selector('#ask-execute:not([disabled])')
         assert page.is_enabled('#ask-codex-execute')
     def active(provider):
-        for key, selector in ids.items():
-            assert page.is_disabled(selector)
-            assert page.inner_text(selector) == ('실행 중…' if key == provider else f'{"Claude" if key == "claude" else "Codex"}에게 실행 맡기기')
+        # 도는 중에는 누를 수 없는 버튼 대신 상태 줄만 보인다(DEV-113)
+        for selector in ids.values():
+            assert page.locator(selector).count() == 0
+        assert page.inner_text('.exec .agent-busy') == f'{"Claude" if provider == "claude" else "Codex"} 실행 중…'
     page.goto(BASE + f'/#/issue/{ref}'); page.reload(); ready()
     for provider in ids:
         answers.append(None); page.click(ids[provider]); ready()
@@ -2048,7 +2051,7 @@ def check_execute_buttons(page, shots, answers):
     page.route(f'**/api/issues/{ref}/runs', runs)
     for provider in ids:
         state.update(running=True, provider=provider)
-        page.reload(); page.wait_for_selector(ids[provider]); active(provider)
+        page.reload(); page.wait_for_selector('.exec .agent-busy'); active(provider)
         page.evaluate('() => { renderIssue("DEV-4-1"); }'); page.wait_for_timeout(200); active(provider)
         for scheme in ('light', 'dark'):
             page.evaluate('s => { document.documentElement.dataset.theme = s; }', scheme)
@@ -2280,6 +2283,10 @@ def check_review_buttons(page, ref, shots):
     def refresh():
         page.evaluate('(ref) => renderIssue(ref)', ref)
     def buttons(provider=None, busy=False):
+        if busy:   # 도는 중에는 버튼 대신 상태 줄(DEV-113)
+            assert page.locator('#ask-review, #ask-codex-review').count() == 0
+            assert page.inner_text('.agent-busy') == (f'{provider.title()} 검토 중…' if provider else '검토 중…')
+            return
         for name, selector in (('claude', '#ask-review'), ('codex', '#ask-codex-review')):
             button = page.locator(selector)
             assert button.is_disabled() == busy
@@ -2293,19 +2300,19 @@ def check_review_buttons(page, ref, shots):
         page.wait_for_timeout(100)
         assert len(pending) == 1 and pending[0].request.post_data_json == {'provider': provider}
         buttons(provider, True)
-        page.evaluate("() => { document.querySelector('#ask-review').click(); document.querySelector('#ask-codex-review').click(); }")
+        page.evaluate("() => { document.querySelector('#ask-review')?.click(); document.querySelector('#ask-codex-review')?.click(); }")
         assert len(pending) == 1
         refresh(); buttons(provider, True)
         # 오류 후 두 버튼과 라벨이 복구되어 재시도할 수 있다.
         pending.pop().fulfill(status=500, json={'detail': '시험 오류'})
-        page.wait_for_function("!document.querySelector('#ask-review').disabled")
+        page.wait_for_function("document.querySelector('#ask-review')")
         buttons()
         page.click(selector); page.wait_for_timeout(100)
         state['running'] = True
         pending.pop().fulfill(json={'status': 'running'})
         page.wait_for_timeout(100); buttons(provider, True)
         refresh(); buttons(provider, True)
-        page.reload(); page.wait_for_selector('#ask-review'); buttons(provider, True)
+        page.reload(); page.wait_for_selector('.agent-busy'); buttons(provider, True)
         # 실제 15초 갱신 뒤에도 서버 기록으로 provider를 복원한다.
         if provider == 'codex':
             page.wait_for_timeout(15500); buttons(provider, True)
@@ -2318,10 +2325,9 @@ def check_review_buttons(page, ref, shots):
             page.evaluate('s => { document.documentElement.dataset.theme = s; }', scheme)
             page.set_viewport_size({'width': width, 'height': 850})
             assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
-            for selector in ('#ask-review', '#ask-codex-review'):
-                box = page.locator(selector + ' svg').bounding_box()
-                assert box['width'] > 0 and box['x'] >= 0 and box['x'] + box['width'] <= width
-                assert page.locator(selector + ' svg').evaluate('el => getComputedStyle(el).stroke') == 'none'
+            box = page.locator('.agent-busy svg').bounding_box()
+            assert box['width'] > 0 and box['x'] >= 0 and box['x'] + box['width'] <= width
+            assert page.locator('.agent-busy svg').evaluate('el => getComputedStyle(el).stroke') == 'none'
             page.screenshot(path=str(shots / f'review_running_{scheme}_{tag}.png'), full_page=True)
     # 실행 기록의 시차나 execute 실행을 Claude 검토로 단정하지 않는다.
     state['records'] = False
@@ -3606,11 +3612,13 @@ try:
                 page.goto(BASE + "/#/issue/DEV-4-1"); page.reload(); page.wait_for_selector("#ask-execute")
                 page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)
                 page.wait_for_timeout(300)
-                assert page.is_enabled("#ask-execute") and "비용 상한 $2" in page.inner_text(".exec")
-                assert page.is_enabled("#ask-codex-execute") and "Codex: 시간 제한 30분 · 비용 상한 없음" in page.inner_text(".exec")
+                # 비용·시간 안내는 버튼 툴팁으로 옮겼다(DEV-113)
+                assert page.is_enabled("#ask-execute") and "비용 상한 $2" in page.get_attribute("#ask-execute", "title") and "비용 상한" not in page.inner_text(".exec")
+                assert page.is_enabled("#ask-codex-execute") and page.get_attribute("#ask-codex-execute", "title") == "Codex: 시간 제한 30분 · 비용 상한 없음."
+                assert [t.strip() for t in page.locator(".exec .agent-sub").all_inner_texts()] == ["실행", "병합"] and page.locator("#ask-review").count() == 0
                 assert page.locator('#ask-execute .brand-icon use').get_attribute('href') == '#i-claude'
                 assert page.locator('#ask-codex-execute .brand-icon use').get_attribute('href') == '#i-openai'
-                txt = page.inner_text(".exec .branch"); assert "relay/DEV-4-1" in txt and "커밋 1개" in txt and "new_feature.py" in txt and "git merge relay/DEV-4-1" in txt, txt
+                txt = page.inner_text(".exec .branch"); assert "relay/DEV-4-1" in txt and "커밋 1개" in txt and "new_feature.py" in txt and "git merge" not in page.inner_text(".exec"), txt
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
         page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
@@ -3620,6 +3628,7 @@ try:
         # 선행 대기는 눌러 둘 수 있다(DEV-43) — 줄에서 기다린다
         assert page.is_enabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec") and "차례로" in page.inner_text(".exec")
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review", state="attached"); assert page.locator("#ask-execute").count() == 0
+        assert page.locator(".side .agent-sub").all_inner_texts() == ["검토"] and "홈서버에서 검토만" in page.get_attribute("#ask-review", "title")
         # 부모 화면에서 바로 실행(선행이 안 끝난 DEV-4-2도 눌러 두면 줄에 선다, 삭제는 아이콘 하나)
         page.wait_for_selector("tr.row"); n = page.locator(".run-task").count(); assert n == 4, n
         check_task_actions(page, pr, shots, answers, asked)
