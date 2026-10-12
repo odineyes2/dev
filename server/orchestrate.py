@@ -49,9 +49,17 @@ DEFAULTS = {"restart_when": ["server/*", "ecosystem.config.js"], "restart_cmd": 
 
 def settings(project_key: str) -> dict:
     try:
-        return {"auto_merge": True, **(json.loads(SETTINGS.read_text(encoding="utf-8")).get(project_key) or {})}
+        cfg = {"auto_merge": True, **(json.loads(SETTINGS.read_text(encoding="utf-8")).get(project_key) or {})}
     except (OSError, ValueError):
-        return {"auto_merge": True}
+        cfg = {"auto_merge": True}
+    with db.connect() as c:
+        project = c.execute('SELECT service_app,service_port FROM projects WHERE key=?', (project_key,)).fetchone()
+    if project:
+        if not cfg.get('pm2_app') and project['service_app']:
+            cfg['pm2_app'] = project['service_app']
+        if not cfg.get('health_url') and project['service_port']:
+            cfg['health_url'] = f"http://127.0.0.1:{project['service_port']}/api/health"
+    return cfg
 
 
 def _get(url, timeout=5):
