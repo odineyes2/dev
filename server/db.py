@@ -887,6 +887,16 @@ BEGIN
 END;
 """)
 
+MIGRATIONS.append("""
+ALTER TABLE project_app_restarts ADD COLUMN mode TEXT NOT NULL DEFAULT 'restart' CHECK(mode IN ('restart','deploy'));
+ALTER TABLE project_app_restarts ADD COLUMN build_dir TEXT NOT NULL DEFAULT '';
+ALTER TABLE project_app_restarts ADD COLUMN release_sha TEXT NOT NULL DEFAULT '';
+ALTER TABLE project_app_restarts ADD COLUMN build_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE project_app_restarts ADD COLUMN log TEXT NOT NULL DEFAULT '';
+ALTER TABLE project_app_restarts ADD COLUMN reported_revision TEXT NOT NULL DEFAULT '';
+ALTER TABLE project_app_restarts ADD COLUMN reported_web_revision TEXT NOT NULL DEFAULT '';
+""")
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

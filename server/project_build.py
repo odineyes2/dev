@@ -50,7 +50,7 @@ def _git(repo, *args):
     return result.stdout.strip()
 
 
-def declarations(repo, value):
+def declarations(repo, value, *, _isolated=False):
     root = Path(repo).resolve()
     if value is None:
         return []
@@ -64,7 +64,7 @@ def declarations(repo, value):
         _path(root, entry.get('cwd', '.'), True)
         out = _path(root, entry.get('out'))
         relative = out.relative_to(root).as_posix()
-        if any(p.lower() in ('data', '.git') or p.lower().endswith(('.db', '.sqlite', '.sqlite3')) for p in out.relative_to(root).parts) or out.resolve().is_relative_to(config.DATA_DIR.resolve()):
+        if any(p.lower() in ('data', '.git') or p.lower().endswith(('.db', '.sqlite', '.sqlite3')) for p in out.relative_to(root).parts) or (not _isolated and out.resolve().is_relative_to(config.DATA_DIR.resolve())):
             raise BuildError('config', '데이터 경로를 산출물로 사용할 수 없다.')
         if _git(root, 'ls-files', '--', relative) or subprocess.run(['git', 'check-ignore', '-q', '--', relative + '/'], cwd=root, env=dict(os.environ)).returncode:
             raise BuildError('config', '산출물은 tracked 파일이 없는 git 제외 경로여야 한다.')
@@ -120,7 +120,8 @@ def build(repo, revision, specs, project_key, data_dir=None):
     try:
         _git(repo, 'worktree', 'add', '--detach', str(work), sha)
         added = True
-        entries = declarations(work, specs)
+        # 실행기가 만든 detached worktree만 데이터 폴더 안에서 빌드한다.
+        entries = declarations(work, specs, _isolated=True)
         for index, entry in enumerate(entries):
             cwd = _path(work, entry.get('cwd', '.'), True)
             out = _path(work, entry['out'])

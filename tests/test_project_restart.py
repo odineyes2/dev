@@ -14,6 +14,7 @@ import issues
 import jobs
 import project_restart as restart
 import project_service
+import project_build
 import orchestrate
 
 H = {'kind': 'human', 'name': 'admin'}
@@ -132,6 +133,123 @@ class RestartTests(unittest.TestCase):
         self.assertNotIn('DEV_CODEX_AGENT_KEY', options['env'])
         self.assertEqual(options['stdin'], restart.subprocess.DEVNULL)
         self.assertTrue(options['creationflags'] if os.name == 'nt' else options['start_new_session'])
+
+    def build_setup(self, command=None):
+        import json
+        def git(*args):
+            return project_build._git(self.repo, *args)
+        git('init', '-q', '-b', 'main')
+        git('config', 'user.name', 'test')
+        git('config', 'user.email', 'test@local')
+        (self.repo / '.gitignore').write_text('out/\nout.prev/\n')
+        (self.repo / 'source.txt').write_text('new release')
+        (self.repo / 'data').mkdir()
+        (self.repo / 'data' / 'keep.db').write_bytes(b'preserve database')
+        git('add', '.')
+        git('commit', '-qm', 'fixture')
+        self.sha = git('rev-parse', 'HEAD')
+        (self.repo / 'out').mkdir()
+        (self.repo / 'out' / 'index.html').write_text('previous release')
+        code = "from pathlib import Path; p=Path('out'); p.mkdir(); (p/'index.html').write_text(Path('source.txt').read_text())"
+        self.specs = [{'cwd': '.', 'run': command or [sys.executable, '-c', code], 'out': 'out', 'expect': ['index.html']}]
+        self.settings = patch.object(orchestrate, 'settings', return_value={'build': self.specs}).start()
+
+    def test_deploy_builds_head_and_reports_current_release(self):
+        self.build_setup()
+        row = restart.request(H, 'MO', mode='deploy')
+        with self.health([{'revision': self.sha, 'web_revision': self.sha}]):
+            restart.run(row['id'])
+        result = restart.status('MO')
+        self.assertEqual(result['status'], 'complete')
+        self.assertEqual(result['mode'], 'deploy')
+        self.assertEqual(result['release_sha'], self.sha)
+        self.assertEqual(result['current_release'][0]['revision'], self.sha)
+        self.assertEqual(result['reported_web_revision'], self.sha)
+        self.assertTrue(Path(result['log']).is_file())
+        self.assertEqual((self.repo / 'out/index.html').read_text(), 'new release')
+        self.assertFalse((self.repo / 'out.prev').exists())
+        self.assertEqual((self.repo / 'data/keep.db').read_bytes(), b'preserve database')
+        self.assertEqual(project_build._git(self.repo, 'rev-parse', 'HEAD'), self.sha)
+        # 다음 배포에서도 이전 복원본이 성공 경로를 막지 않는다.
+        again = restart.request(H, 'MO', mode='deploy')
+        with self.health([{}]):
+            restart.run(again['id'])
+        self.assertEqual(restart.status('MO')['status'], 'complete')
+        self.assertIn('로컬 표식', restart.status('MO')['error'])
+
+    def test_deploy_build_failure_keeps_existing_output(self):
+        self.build_setup([sys.executable, '-c', 'print("build failure"); raise SystemExit(1)'])
+        row = restart.request(H, 'MO', mode='deploy')
+        restart.run(row['id'])
+        result = restart.status('MO')
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['phase'], '빌드 단계: build')
+        self.assertIn('build failure', result['error'])
+        self.assertIn('build failure', result['log_tail'])
+        self.assertTrue(Path(result['log']).is_file())
+        self.assertEqual((self.repo / 'out/index.html').read_text(), 'previous release')
+        self.command.assert_not_called()
+
+    def test_deploy_restart_failure_restores_previous_output(self):
+        self.build_setup()
+        row = restart.request(H, 'MO', mode='deploy')
+        self.command.side_effect = [issues.StoreError('PM2 failed', 409), None]
+        restart.run(row['id'])
+        result = restart.status('MO')
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['phase'], '앱 재시작 실패')
+        self.assertEqual((self.repo / 'out/index.html').read_text(), 'previous release')
+        self.assertFalse((self.repo / 'out.prev').exists())
+        self.assertEqual(self.command.call_count, 2)
+
+    def test_deploy_release_mismatch_and_health_failure_restore(self):
+        self.build_setup()
+        for mismatch in (True, False):
+            row = restart.request(H, 'MO', mode='deploy')
+            with self.health([{'revision': 'wrong'}]), patch.object(restart, 'HEALTH_SECONDS', 60 if mismatch else 0):
+                restart.run(row['id'])
+            self.assertEqual(restart.status('MO')['status'], 'failed')
+            self.assertEqual((self.repo / 'out/index.html').read_text(), 'previous release')
+            self.assertFalse((self.repo / 'out.prev').exists())
+
+    def test_deploy_head_change_before_swap_is_rejected(self):
+        self.build_setup()
+        row = restart.request(H, 'MO', mode='deploy')
+        original = project_build.build
+        def changed(*args):
+            result = original(*args)
+            (self.repo / 'source.txt').write_text('concurrent change')
+            project_build._git(self.repo, 'add', '.')
+            project_build._git(self.repo, 'commit', '-qm', 'concurrent')
+            return result
+        with patch.object(project_build, 'build', side_effect=changed):
+            restart.run(row['id'])
+        self.assertEqual(restart.status('MO')['status'], 'failed')
+        self.assertEqual((self.repo / 'out/index.html').read_text(), 'previous release')
+        self.command.assert_not_called()
+
+    def test_deploy_rejects_missing_declaration_and_mixed_active_mode(self):
+        with self.assertRaises(issues.StoreError):
+            restart.request(H, 'MO', mode='deploy')
+        self.build_setup()
+        restart.request(H, 'MO')
+        with self.assertRaises(issues.StoreError):
+            restart.request(H, 'MO', mode='deploy')
+
+    def test_deploy_http_route_authentication(self):
+        import app
+        import auth
+        from fastapi.testclient import TestClient
+        self.build_setup()
+        user = AsyncMock(return_value={'id': 1, 'username': 'admin', 'role': 'admin'})
+        with patch.object(auth, 'nightshift_user', user), patch.object(jobs, 'start_timer'), TestClient(app.app) as client:
+            self.assertEqual(client.post('/api/projects/MO/deploy').status_code, 403)
+            response = client.post('/api/projects/MO/deploy', headers={'X-Requested-With': 'dev'})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['mode'], 'deploy')
+            self.assertEqual(client.get('/api/projects/MO/restart').json()['mode'], 'deploy')
+            with patch.object(auth, 'agent_for_key', return_value={'id': 1, 'name': 'agent', 'model': ''}):
+                self.assertEqual(client.post('/api/projects/MO/deploy', headers={'Authorization': 'Bearer fake'}).status_code, 403)
 
     def test_admin_auth_and_csrf_routes(self):
         import app

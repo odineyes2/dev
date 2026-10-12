@@ -434,6 +434,12 @@ def api_app_restart(key: str, request: Request):
     return project_restart.request(human_only(request), key)
 
 
+@app.post('/api/projects/{key}/deploy')
+def api_app_deploy(key: str, request: Request):
+    import project_restart
+    return project_restart.request(human_only(request), key, mode='deploy')
+
+
 @app.get('/api/projects/{key}/service')
 def api_project_service(key: str):
     import project_service
