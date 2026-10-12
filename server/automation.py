@@ -205,7 +205,8 @@ def eligible(c, issue, mode, job=None):
         """, (issue['id'],)).fetchone():
         return False
     if mode == 'review':
-        return (not issue['parent_ref'] and issue['reporter'].startswith('human:') and not issue['plan'])
+        # 등록자(사람·에이전트)와 무관하게 위임한다 — 사용자 결정 2026-10-12.
+        return not issue['parent_ref'] and not issue['plan']
     parent = issues.get_issue(issue['parent_ref']) if issue['parent_ref'] else None
     if execute.blocked_reason(issue, parent):
         return False

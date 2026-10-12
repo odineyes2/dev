@@ -109,7 +109,7 @@ auto_settings.update_settings(admin, 'DEV', {'auto_review': False, 'auto_execute
 jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}
 issues.create_project(admin, 'AUTO', '자동 검사', '', '/fake')
 one = issues.create_issue(admin, 'AUTO', '첫 검토')
-two = issues.create_issue(admin, 'AUTO', '둘째 검토')
+two = issues.create_issue({'kind': 'agent', 'id': agent['id']}, 'AUTO', '둘째 검토')   # 에이전트 등록 이슈도 자동 검토
 goal = issues.create_issue(admin, 'AUTO', '목표', labels=['goal'])
 auto_settings.update_settings(admin, 'AUTO', {'auto_review': True, 'provider_order': ['codex','claude']})
 automation.provider_available = lambda provider: provider == 'claude'
