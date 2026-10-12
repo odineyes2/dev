@@ -33,7 +33,15 @@ git("init", "-q", "-b", "main")
 git("add", "."); git("commit", "-qm", "init")
 
 # 기본 켜짐
+orchestrate.db.init()
 assert orchestrate.settings("DEV") == {"auto_merge": True}
+with orchestrate.db.connect() as c:
+    c.execute("INSERT INTO projects(key,name,service_app,service_port,created_at) VALUES ('BUILD','build','build-app',8400,datetime('now'))")
+assert orchestrate.settings('BUILD') == {'auto_merge': True, 'pm2_app': 'build-app', 'health_url': 'http://127.0.0.1:8400/api/health'}
+orchestrate.SETTINGS.write_text('{"BUILD":{"pm2_app":"explicit","health_url":"http://127.0.0.1:8500/api/health"}}')
+assert orchestrate.settings('BUILD')['pm2_app'] == 'explicit'
+assert orchestrate.settings('BUILD')['health_url'] == 'http://127.0.0.1:8500/api/health'
+orchestrate.SETTINGS.unlink()
 
 # 통과 — --no-ff 병합 커밋
 branch("T-1", {"b.txt": "b\n"})
