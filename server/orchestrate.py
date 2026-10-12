@@ -666,7 +666,7 @@ def merge_state(issue: dict, cfg: dict | None = None) -> str | None:
     cfg를 주면 settings()를 다시 읽지 않는다(Task 여러 개를 한 번에 볼 때)."""
     record = completion(issue['ref']) if issue.get('ref') else None
     if record and record['auto_merge']:
-        labels = {'ready': '병합 검사 중', 'checking': '병합 검사 중', 'applying': '운영 반영 중', 'deployed': '운영 반영 중', 'restart_requested': '재시작 확인 중', 'rollback_requested': '복구 중', 'rollback_applied': '복구 확인 중', 'complete': '병합됨'}
+        labels = {'ready': '병합 검사 중', 'checking': '병합 검사 중', 'building': '웹 빌드 중', 'applying': '운영 반영 중', 'deployed': '산출물 교체 중', 'restart_requested': '재시작 확인 중', 'rollback_requested': '복구 중', 'rollback_applied': '복구 확인 중', 'complete': '병합됨'}
         if record['phase'] in labels:
             return labels[record['phase']]
     for e in reversed(issue.get("events", [])):
