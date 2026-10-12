@@ -743,7 +743,7 @@ def check_published_notice(page, shots):
         route.fulfill(json={'auto_review': mode == 'on'})
     def record(request):
         if request.method == 'POST' and request.url == BASE + '/api/issues': posts.append(request)
-    page.route('**/api/projects/*/auto-settings', settings)
+    page.route('**/api/settings/auto', settings)
     page.on('request', record)
     def publish(status='backlog', labels='', parent=''):
         before = len(posts)
@@ -761,7 +761,7 @@ def check_published_notice(page, shots):
         page.wait_for_function('text => !document.querySelector("#toast").hidden && document.querySelector("#toast").textContent === text', arg=text)
     try:
         parent = publish(); notice(auto)
-        assert requests[-1].endswith('/NOTICE/auto-settings')
+        assert requests[-1].endswith('/api/settings/auto')
         mode = 'off'; publish(); notice(manual)
         mode = 'on'
         for status, labels, task in [('triage','',''), ('backlog','goal',''), ('backlog','',parent)]:
@@ -775,6 +775,30 @@ def check_published_notice(page, shots):
         pending.pop().fulfill(json={'auto_review':True})
         page.wait_for_timeout(100)
         assert page.inner_text('#toast') == neutral
+        # 빠른 발행도 선택 프로젝트와 관계없이 같은 전역 설정으로 안내한다.
+        def quick(text, expected, shot=None):
+            page.goto(BASE + '/#/')
+            page.wait_for_selector('#project-filter')
+            page.evaluate('openComposer()')
+            page.wait_for_selector('#composer:not([hidden])')
+            page.select_option('#cmp-project', 'NOTICE')
+            page.fill('#cmp-body', text)
+            page.click('#cmp-send')
+            page.wait_for_function("document.querySelector('#cmp-body').value === '' && !document.querySelector('#cmp-send').getAttribute('aria-busy')")
+            page.wait_for_function('s => document.querySelector("#toast").textContent.includes(s)', arg=expected)
+            assert page.url.endswith('/#/') and page.locator('#composer').is_visible()
+            if shot:
+                page.evaluate('window.scrollTo(0, 0)')
+                page.wait_for_timeout(250)
+                assert page.evaluate('document.documentElement.scrollWidth') <= page.viewport_size['width'] + 1
+                assert page.locator('#toast').evaluate('e => e.scrollWidth <= e.clientWidth && e.scrollHeight <= e.clientHeight')
+                assert page.locator('#toast').evaluate("e => e.getBoundingClientRect().bottom <= document.querySelector('#composer').getBoundingClientRect().top - 8")
+                page.screenshot(path=str(shot), full_page=True)
+            page.evaluate('closeComposer()')
+        mode = 'off'; quick('Manual 빠른 발행', '검토를 맡길 수 있어요')
+        mode = 'on'; quick('Auto 빠른 발행', '잠시 후 에이전트')
+        mode = 'fail'; quick('설정 실패 빠른 발행', '이슈를 발행했어요.')
+        assert page.input_value('#cmp-body') == ''
         mode = 'on'
         for scheme in ('light','dark'):
             page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}', scheme)
@@ -782,11 +806,14 @@ def check_published_notice(page, shots):
             for width in (1300,390):
                 page.set_viewport_size({'width':width,'height':850})
                 publish(); notice(auto)
+                page.evaluate('window.scrollTo(0, 0)')
+                page.wait_for_timeout(250)
                 assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
                 assert page.locator('#toast').evaluate('e => e.scrollWidth <= e.clientWidth && e.scrollHeight <= e.clientHeight')
                 page.screenshot(path=str(shots / f'published_notice_{scheme}_{width}.png'), full_page=True)
+                quick('빠른 발행 화면 확인', '잠시 후 에이전트', shots / f'quick_notice_{scheme}_{width}.png')
     finally:
-        page.unroute('**/api/projects/*/auto-settings', settings)
+        page.unroute('**/api/settings/auto', settings)
         page.remove_listener('request', record)
         page.set_viewport_size({'width':1300,'height':850})
         page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
@@ -892,7 +919,8 @@ def check_auto_settings(page, shots):
     page.reload(); page.wait_for_selector('#project-filter')
     page.select_option('#project-filter', '')
     page.goto(BASE + '/#/settings')
-    page.wait_for_selector('#settings-body .empty')
+    page.wait_for_selector('#auto_review')
+    assert page.locator('#auto_review').get_attribute('aria-checked') == 'false'
     page.select_option('#project-filter', 'AUTOA')
     review = page.locator('#auto_review')
     page.wait_for_selector('#auto_review')
@@ -964,7 +992,7 @@ def check_auto_settings(page, shots):
             route.fulfill(status=500, content_type='application/json', body='{"detail":"저장 실패"}')
         else:
             route.continue_()
-    page.route('**/api/projects/AUTOA/auto-settings', fail)
+    page.route('**/api/settings/auto', fail)
     approve.click()
     page.wait_for_function("document.querySelector('#settings-status').textContent.includes('복원')")
     assert approve.get_attribute('aria-checked') == 'true' and approve.is_enabled()
@@ -974,7 +1002,7 @@ def check_auto_settings(page, shots):
     assert review.get_attribute('aria-checked') == 'true' and review.is_enabled()
     page.click('#provider-order [data-move="0"][data-direction="1"]')
     page.wait_for_function("document.querySelector('#settings-status').textContent.includes('복원') && document.querySelector('#provider-order li span').textContent === 'Codex'")
-    page.unroute('**/api/projects/AUTOA/auto-settings', fail)
+    page.unroute('**/api/settings/auto', fail)
     page.select_option('#project-filter', 'AUTOB')
     page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'true'")
     assert approve.get_attribute('aria-checked') == 'true'
@@ -987,44 +1015,44 @@ def check_auto_settings(page, shots):
     held = []
     def hold(route):
         held.append(route)
-    page.route('**/api/projects/AUTOA/auto-settings', hold)
-    approve.click()
+    pattern = '**/api/settings/auto'
+    page.route(pattern, hold)
+    approve.evaluate('e => {e.click();e.click()}')
     page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'true'")
     assert review.is_disabled() and approve.is_disabled() and page.locator('#auto_execute').is_disabled()
+    page.wait_for_timeout(100)
+    assert len(held) == 1 and held[0].request.post_data_json == {'auto_approve': False}
+    # 프로젝트 변경 후 전역 설정을 재조회하며 오래된 저장 실패는 표시하지 않는다.
     page.select_option('#project-filter', 'AUTOB')
-    page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'true'")
-    assert len(held) == 1
-    held.pop().fulfill(status=500, content_type='application/json', body='{"detail":"late error"}')
+    page.wait_for_selector('.settings-skeleton')
+    assert len(held) == 2
+    shared = page.request.get(BASE + '/api/settings/auto').json()
+    held.pop().fulfill(json=shared)
+    page.wait_for_selector('#auto_approve')
+    held.pop().fulfill(status=500, json={'detail':'late error'})
     page.wait_for_timeout(100)
     assert page.locator('#settings-status').inner_text() == ''
     assert approve.get_attribute('aria-checked') == 'true' and approve.is_enabled()
-    # 성공 응답도 프로젝트를 떠난 뒤에는 새 화면의 상태·포커스를 바꾸지 않는다.
-    page.route('**/api/projects/AUTOB/auto-settings', hold)
     approve.click()
-    page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'true'")
-    assert len(held) == 1
-    assert held[0].request.post_data_json == {'auto_approve': False}
-    page.select_option('#project-filter', 'AUTOA')
+    page.wait_for_selector('#settings-body[aria-busy=true]')
+    page.select_option('#project-filter', '')
     page.wait_for_selector('.settings-skeleton')
     assert len(held) == 2
-    held.pop().fulfill(json=page.request.get(BASE + '/api/projects/AUTOA/auto-settings').json())
+    held.pop().fulfill(json=shared)
     page.wait_for_selector('#auto_approve')
-    held.pop().fulfill(json={'auto_review': False, 'auto_execute': False, 'auto_approve': False, 'provider_order': ['claude', 'codex']})
+    held.pop().fulfill(json={**shared, 'auto_approve':False})
     page.wait_for_timeout(100)
     assert approve.get_attribute('aria-checked') == 'true'
     assert review.get_attribute('aria-checked') == 'true'
     assert page.locator('#settings-status').inner_text() == ''
-    page.unroute('**/api/projects/AUTOB/auto-settings', hold)
-    page.select_option('#project-filter', 'AUTOB')
-    page.wait_for_function("document.querySelector('#auto_approve')?.getAttribute('aria-checked') === 'true'")
     page.select_option('#project-filter', 'AUTOA')
     page.wait_for_selector('.settings-skeleton')
     page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
     assert len(held) == 1
-    held.pop().fulfill(status=500, content_type='application/json', body='{"detail":"late load"}')
+    held.pop().fulfill(status=500, json={'detail':'late load'})
     page.wait_for_timeout(100)
     assert page.locator('.project-create-row').is_visible()
-    page.unroute('**/api/projects/AUTOA/auto-settings', hold)
+    page.unroute(pattern, hold)
     page.goto(BASE + '/#/settings'); page.wait_for_selector('#auto_review')
     page.wait_for_timeout(3200)  # 실패 토스트가 캡처의 도움말을 가리지 않도록 기다린다.
     for scheme in ('light', 'dark'):
@@ -1054,6 +1082,43 @@ def check_auto_settings(page, shots):
         assert page.request.delete(BASE + '/api/projects/' + key, headers=H).ok
     page.evaluate("localStorage.removeItem('dev.project')")
     page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
+
+
+def check_global_agent_orders(page, shots):
+    """실제 카탈로그 Agent의 역할별 순서를 전역 API로 저장·복원한다."""
+    H = {'X-Requested-With':'dev'}
+    catalog = page.request.get(BASE + '/api/model-catalog').json()['vendors']
+    for index, vendor in enumerate(catalog[:2]):
+        assert page.request.post(BASE + '/api/agents', headers=H, data={
+            'name':f'global-order-{index}', 'vendor':vendor['vendor'], 'model':vendor['models'][0]['id']}).ok
+    for key in ('ORDERA', 'ORDERB'):
+        assert page.request.post(BASE + '/api/projects', headers=H, data={'key':key,'name':key}).ok
+    page.reload(); page.wait_for_selector('#project-filter')
+    page.select_option('#project-filter', '')
+    page.goto(BASE + '/#/settings/auto'); page.wait_for_selector('#provider-order[data-agents="1"]')
+    roles = [('provider_order','provider-order'), ('orchestrator_provider_order','orchestrator-order'),
+             ('troubleshooter_provider_order','troubleshooter-order'), ('description_provider_order','description-order')]
+    for field, selector in roles:
+        before = page.request.get(BASE + '/api/settings/auto').json()['agent_orders'][field]
+        assert len(before) >= 2
+        page.click(f'#{selector} [data-move="0"][data-direction="1"]')
+        page.wait_for_function("document.querySelector('#settings-status').textContent === '저장했어요.' && document.querySelector('#settings-body').getAttribute('aria-busy') === 'false'")
+        expected = [before[1]['id'], before[0]['id']] + [a['id'] for a in before[2:]]
+        assert [a['id'] for a in page.request.get(BASE + '/api/settings/auto').json()['agent_orders'][field]] == expected
+        for key in ('ORDERA', 'ORDERB', ''):
+            page.select_option('#project-filter', key)
+            page.wait_for_selector(f'#{selector}[data-agents="1"]')
+            assert page.locator(f'#{selector} li span').first.inner_text().startswith(before[1]['name'] + ' ·')
+    page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+    page.goto(BASE + '/#/settings/auto'); page.wait_for_selector('#provider-order[data-agents="1"]')
+    original = page.locator('#provider-order li span').first.inner_text()
+    def fail(route):
+        route.fulfill(status=500, json={'detail':'역할 저장 실패'}) if route.request.method == 'PATCH' else route.continue_()
+    page.route('**/api/settings/auto', fail)
+    page.click('#provider-order [data-move="0"][data-direction="1"]')
+    page.wait_for_function("document.querySelector('#settings-status').textContent.includes('복원')")
+    assert page.locator('#provider-order li span').first.inner_text() == original
+    page.unroute('**/api/settings/auto', fail)
 
 
 def check_font_settings(page, shots):
@@ -1181,12 +1246,14 @@ def check_settings_navigation(page, shots):
         assert page.locator('#shell > #settings-nav').count() == 0
         assert page.locator('#view > .panel > .management-header > h2').text_content() == 'Settings'
 
-    page.goto(BASE + '/#/settings'); selected('auto', '#settings-body .empty')
+    page.goto(BASE + '/#/settings'); selected('auto', '#auto_review')
+    assert page.locator('#settings-body h3').first.inner_text() == '전체 · Auto'
     assert page.url.endswith('/#/settings/auto')
     page.locator('[data-settings=types]').focus(); page.keyboard.press('Enter')
     selected('types', '#type-create')
     assert '모든 프로젝트' in page.locator('.type-management').inner_text()
-    page.go_back(); selected('auto', '#settings-body .empty')
+    page.go_back(); selected('auto', '#auto_review')
+    assert page.locator('#settings-body h3').first.inner_text() == '전체 · Auto'
     page.go_forward(); selected('types', '#type-create')
     page.reload(); selected('types', '#type-create')
     page.goto(BASE + '/#/types'); selected('types', '#type-create')
@@ -1232,7 +1299,7 @@ def check_settings_navigation(page, shots):
     assert page.locator('#shell').is_visible()
     page.unroute('**/api/issue-types')
 
-    auto_pattern = '**/api/projects/NAVA/auto-settings'
+    auto_pattern = '**/api/settings/auto'
     page.route(auto_pattern, lambda route: held.append(route))
     page.goto(BASE + '/#/settings/auto'); page.wait_for_selector('.settings-skeleton')
     page.goto(BASE + '/#/settings/types'); selected('types', '#type-create')
@@ -2058,6 +2125,21 @@ def check_list_loading(page, shots):
     assert page.locator('tr.row').count() == 1 and page.locator('#list-more .list-error').count() == 1
     page.wait_for_timeout(500); assert not pending
 
+    # 보조 설정 조회가 늦어도 행을 그리기 전에 로딩 완료를 표시하지 않는다.
+    settings_waiting = []
+    page.route('**/api/settings/auto', lambda route: settings_waiting.append(route))
+    request = reload_list(); reply(request, [item(4)])
+    for _ in range(100):
+        if settings_waiting: break
+        page.wait_for_timeout(20)
+    assert len(settings_waiting) == 1
+    assert page.get_attribute('#list-body', 'aria-busy') == 'true'
+    page.wait_for_selector('#list-body .list-loading')
+    settings_waiting.pop().fulfill(json=page.request.get(BASE + '/api/settings/auto').json())
+    settled()
+    assert page.locator('tr.row').get_attribute('data-ref') == 'TEST-4'
+    page.unroute('**/api/settings/auto')
+
     # 탭 이동 후의 지연 응답과 검색 debounce가 목록을 되살리지 않는다.
     for status in (200, 500):
         old = reload_list()
@@ -2479,7 +2561,7 @@ def check_board_actions(page, shots, answers, asked):
             route.fulfill(json={**rows[2], 'children':[{'ref':'ACT-3-1','title':'?미완료 Task','status':'backlog','merge_state':'병합 대기'}],
                                 'execute':{'timeout_sec':1800,'budget_usd':2}})
     page.route('**/api/issues?*', issues)
-    page.route('**/api/projects/*/auto-settings', auto)
+    page.route('**/api/settings/auto', auto)
     page.route('**/api/issues/ACT-**', action)
     def ready(board=False):
         page.goto(BASE + ('/#/board' if board else '/#/'))
@@ -2590,7 +2672,7 @@ def check_board_actions(page, shots, answers, asked):
         assert page.inner_text('#toast') != '오래된 오류'
         page.evaluate('localStorage.removeItem("dev.project")')
     finally:
-        page.unroute('**/api/issues?*',issues); page.unroute('**/api/projects/*/auto-settings',auto); page.unroute('**/api/issues/ACT-**',action)
+        page.unroute('**/api/issues?*',issues); page.unroute('**/api/settings/auto',auto); page.unroute('**/api/issues/ACT-**',action)
         page.set_viewport_size({'width':1300,'height':850})
         page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
         page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
@@ -2802,6 +2884,29 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--settings-navigation-only' in sys.argv:
+            check_settings_navigation(page, shots)
+            assert not errs, errs
+            print('OK: Settings navigation'); sys.exit(0)
+        if '--global-agent-orders-only' in sys.argv:
+            check_global_agent_orders(page, shots)
+            assert not errs, errs
+            print('OK: global Agent role orders'); sys.exit(0)
+        if '--publication-only' in sys.argv:
+            check_published_notice(page, shots)
+            assert not errs, errs
+            print('OK: publication notices'); sys.exit(0)
+        if '--manual-actions-only' in sys.argv:
+            check_board_actions(page, shots, answers, asked)
+            assert not errs, errs
+            print('OK: manual actions'); sys.exit(0)
+        if '--global-auto-only' in sys.argv:
+            check_auto_settings(page, shots)
+            check_global_agent_orders(page, shots)
+            check_published_notice(page, shots)
+            check_board_actions(page, shots, answers, asked)
+            assert not errs, errs
+            print('OK: global auto settings, publication and manual actions'); sys.exit(0)
         if '--free-port-only' in sys.argv:
             check_free_port(page, shots)
             assert not errs, errs
@@ -3581,6 +3686,7 @@ try:
         # 로그아웃(사용자 메뉴 안)
         check_management_agents(page, shots)
         check_management_layout(page, shots)
+        check_global_agent_orders(page, shots)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert page.locator('#open-jupyter').get_attribute('hidden') is not None
         assert not errs, errs
