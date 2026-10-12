@@ -239,3 +239,15 @@ def restore(repo, build_dir):
             marker = out / 'dev-release.json'
             if marker.is_file() and marker.read_bytes() == (Path(item['staged']) / 'dev-release.json').read_bytes():
                 shutil.rmtree(out)
+
+
+def confirm(repo, build_dir):
+    """확인한 배포의 복원본을 정리해 다음 배포를 허용한다."""
+    manifest = json.loads((Path(build_dir) / 'manifest.json').read_text(encoding='utf-8'))
+    root = Path(repo).resolve()
+    for item in manifest['outputs']:
+        out = _path(root, item['out'])
+        previous = _path(root, item['out'] + '.prev')
+        marker = out / 'dev-release.json'
+        if marker.is_file() and marker.read_bytes() == (Path(item['staged']) / 'dev-release.json').read_bytes() and previous.exists():
+            shutil.rmtree(previous)

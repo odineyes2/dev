@@ -264,7 +264,7 @@ issues.post_plan(me, parent['ref'], 'approved')
 issues.decide(me, parent['ref'], 'approve', plan_version=1)
 
 
-def ready(provider='claude', auto=True, restart=False):
+def ready(provider='claude', auto=True, restart=False, web=False):
     cfg = {'auto_merge': auto, 'pm2_app': 'dev' if restart else '',
            'health_url': 'http://fake/health', 'health_seconds': 0}
     orchestrate.SETTINGS.write_text(json.dumps({'FLOW': cfg}))
@@ -275,7 +275,7 @@ def ready(provider='claude', auto=True, restart=False):
     start = execute._git(wt, 'rev-parse', 'HEAD')
     with db.connect() as c:
         c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (start, rid))
-    (wt / ('feature-' + str(rid) + ('.py' if restart else '.txt'))).write_text('feature')
+    (wt / ('apps/web/source.txt' if web else 'feature-' + str(rid) + ('.py' if restart else '.txt'))).write_text('feature ' + str(rid))
     execute._git(wt, 'add', '.')
     execute._git(wt, '-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-qm', 'implemented')
     sha = execute._git(wt, 'rev-parse', 'HEAD')
@@ -565,3 +565,99 @@ try:
 except issues.StoreError as e:
     assert '새 Task 커밋' in str(e), e
 print('OK failed run commit is taken over, submitted commit is refused')
+
+
+# 실제 격리 빌드·교체: 서버 패턴 밖 웹 변경도 재시작한다.
+import project_build
+with db.connect() as c:
+    c.execute("UPDATE runs SET status='failed' WHERE status='running'")
+(repo / '.gitignore').write_text('apps/web/out/\n')
+(repo / 'apps/web').mkdir(parents=True, exist_ok=True)
+(repo / 'apps/web/source.txt').write_text('web source')
+git('add', '.gitignore', 'apps/web/source.txt'); git('commit', '-qm', 'ignore web output')
+out = repo / 'apps/web/out'
+out.mkdir()
+(out / 'index.html').write_text('previous')
+(repo / 'data').mkdir(exist_ok=True)
+(repo / 'data/keep.db').write_bytes(b'preserved database')
+build_spec = {'cwd': 'apps/web', 'out': 'apps/web/out', 'expect': ['index.html'],
+              'run': [sys.executable, '-c', "from pathlib import Path; p=Path('out'); p.mkdir(); (p/'index.html').write_text('new release')"]}
+
+def web_ready(fail=False):
+    ref, rid = ready(web=True)
+    cfg = {'auto_merge': True, 'pm2_app': 'web', 'health_url': 'http://fake', 'health_seconds': 0,
+           'build': [{**build_spec, 'when': ['apps/web/*'], **({'run': [sys.executable, '-c', 'raise SystemExit(1)']} if fail else {})}]}
+    with db.connect() as c:
+        c.execute('UPDATE execution_completion SET cfg_json=? WHERE run_id=?', (json.dumps(cfg), rid))
+    return ref, rid
+
+with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(notify, 'send'), patch.object(orchestrate, '_busy', return_value=False):
+    for _ in range(2):
+        ref, rid = web_ready()
+        with patch.object(orchestrate, '_restart', return_value=None) as restarted, patch.object(orchestrate, '_get', return_value=(200, '{}')):
+            assert orchestrate.handle(me, ref) == 'merged'
+            assert restarted.call_count == 1
+        record = orchestrate.completion(ref)
+        assert json.loads((out / 'dev-release.json').read_text())['revision'] == git('rev-parse', 'HEAD') == record['release_sha']
+        assert not out.with_name('out.prev').exists()
+        assert '로컬 표식' in issues.get_issue(ref)['events'][-1]['body']
+    before, content = git('rev-parse', 'HEAD'), (out / 'index.html').read_bytes()
+    ref, rid = web_ready(fail=True)
+    with patch.object(orchestrate, '_restart') as restarted:
+        assert orchestrate.handle(me, ref) == 'changes_requested'
+        restarted.assert_not_called()
+    assert git('rev-parse', 'HEAD') == before and (out / 'index.html').read_bytes() == content
+    assert 'build' in issues.get_issue(ref)['events'][-1]['body']
+    ref, rid = web_ready()
+    original_marker = (out / 'dev-release.json').read_bytes()
+    with patch.object(orchestrate, '_restart', return_value=None) as restarted, patch.object(orchestrate, '_get', return_value=(200, '{"revision":"wrong"}')):
+        assert orchestrate.handle(me, ref) == 'changes_requested'
+        assert restarted.call_count == 2
+    assert git('log', '-1', '--format=%s').startswith('Revert')
+    assert (out / 'dev-release.json').read_bytes() == original_marker
+    assert (repo / 'data/keep.db').read_bytes() == b'preserved database'
+    # 교체 직후 중단돼도 deployed에서 같은 배포를 이어받는다.
+    ref, rid = web_ready()
+    real_deploy = project_build.deploy
+    def interrupted_deploy(*args):
+        real_deploy(*args)
+        raise Interrupted()
+    with patch.object(project_build, 'deploy', side_effect=interrupted_deploy):
+        try:
+            orchestrate.handle(me, ref)
+            raise AssertionError('must interrupt')
+        except Interrupted:
+            pass
+    assert orchestrate.completion(ref)['phase'] == 'deployed'
+    with patch.object(orchestrate, 'PROCESS_ID', 'web-recovered'), patch.object(orchestrate, '_restart', return_value=None), patch.object(orchestrate, '_get', return_value=(200, '{}')):
+        orchestrate.take_over(); orchestrate.recover()
+    assert orchestrate.completion(ref)['phase'] == 'complete'
+    # 빌드 기록 뒤 ff-only 전에 중단되면 운영은 그대로이며 다시 검사·빌드한다.
+    ref, rid = web_ready()
+    previous_head = git('rev-parse', 'HEAD')
+    real_save = orchestrate._save
+    def interrupted_build(record, phase, **values):
+        real_save(record, phase, **values)
+        if phase == 'building' and values.get('build_dir'):
+            raise Interrupted()
+    with patch.object(orchestrate, '_save', side_effect=interrupted_build):
+        try:
+            orchestrate.handle(me, ref)
+            raise AssertionError('must interrupt build')
+        except Interrupted:
+            pass
+    assert git('rev-parse', 'HEAD') == previous_head
+    assert orchestrate.completion(ref)['phase'] == 'building'
+    with patch.object(orchestrate, '_restart', return_value=None), patch.object(orchestrate, '_get', return_value=(200, '{}')):
+        assert orchestrate.handle(me, ref) == 'merged'
+    # 교체 실패도 코드 revert 경로로 처리한다.
+    ref, rid = web_ready()
+    marker = (out / 'dev-release.json').read_bytes()
+    with patch.object(project_build, 'deploy', side_effect=project_build.BuildError('swap', 'locked')), patch.object(orchestrate, '_restart', return_value=None), patch.object(orchestrate, '_get', return_value=(200, '{}')):
+        assert orchestrate.handle(me, ref) == 'changes_requested'
+    assert (out / 'dev-release.json').read_bytes() == marker
+    assert git('log', '-1', '--format=%s').startswith('Revert')
+print('OK web build: SHA, repeated deploy, pre-ff failure, revision rollback, data, interrupted swap')
+
+with patch.object(orchestrate.subprocess, 'run', side_effect=subprocess.TimeoutExpired('restart', 300)):
+    assert 'TimeoutExpired' in orchestrate._restart(str(repo), {**orchestrate.DEFAULTS, 'pm2_app': 'web'})

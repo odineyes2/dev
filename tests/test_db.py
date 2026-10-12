@@ -281,3 +281,8 @@ assert rejected("UPDATE global_auto_settings SET auto_review=2")
 assert rejected("INSERT INTO project_auto_settings_events(scope,project_id,actor,before_json,after_json,created_at) VALUES('global',1,'human:admin','{}','{}',?)", (now,))
 db.config.DB_PATH = original_path
 print('OK global migration: Manual defaults, preserved audit/FK, restart, new project')
+
+with db.connect() as c:
+    columns = {r[1] for r in c.execute('PRAGMA table_info(execution_completion)')}
+    assert {'build_dir', 'release_sha'} <= columns
+print('OK persistent build completion columns')
