@@ -766,8 +766,6 @@ function executeHtml(it, liveMode, liveProvider){
   return `<div class="exec">${job ? jobHtml(job) : `<button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>${provider === 'claude' ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
     <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>${provider === 'codex' ? '실행 중…' : 'Codex에게 실행 맡기기'}</button>
     <div class="dim hint">${hint}</div><div class="dim hint">Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음.</div>`}
-    ${x.retry_merge_available && !running && !job ? '<button id="retry-merge">병합 재시도</button><div class="dim hint">기존 구현 커밋으로 서버 검사·병합만 다시 진행해요. 회귀검사 설정과 자동 병합·재시작 정책이 적용돼요.</div>' : ''}
-    ${x.repair_available && it.status !== 'in_review' && !running && !job ? '<button class="register-repair">수정 커밋 검사·결과 등록</button><div class="dim hint">에이전트 재호출 없이 연결된 수정 커밋을 검사하고 기존 병합 정책으로 처리해요.</div>' : ''}
     ${b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
       ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}${checks}</div>`;
 }
@@ -798,7 +796,6 @@ const RESULT_FORM = {
 function resultHtml(it){
   if(it.status !== 'in_review') return '';
   return `<div class="panel"><h2>Result <span class="meta">결과를 확인해 주세요</span></h2>
-    ${it.execute?.repair_available ? '<button class="register-repair">수정 커밋 검사·결과 등록</button><p class="dim">에이전트 재호출 없이 서버 검사와 결과 등록을 진행해요. 자동 병합 설정이 켜져 있으면 병합·반영도 이어서 처리해요.</p>' : ''}
     <div class="decision" id="result"><div id="result-form" hidden><textarea id="result-note"></textarea>
       <div class="row-end"><button id="result-cancel">취소</button><button id="result-send"></button></div></div>
     <div class="review-actions" id="result-actions"><button id="approve" class="primary">결과 승인 → 완료</button>
@@ -814,6 +811,7 @@ function stageHtml(it, liveMode, liveProvider){
   if(LIVE_MERGE.has(it.merge_state)) msg = `${esc(it.merge_state)} — 운영 반영 확인이 끝나면 결과를 확인할 수 있어요.`;
   else if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
   else if(it.job) msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — ${esc(it.job.note || '앞의 일이 끝나면 차례로 시작해요.')}`;
+  else if(x?.retry_merge_available) msg = mergeFailureLine(x);
   else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
   else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
   else if(!it.plan) msg = '계획서가 없어요 → Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
@@ -821,7 +819,17 @@ function stageHtml(it, liveMode, liveProvider){
   else if(!ok) msg = '계획서 승인 대기 → 계획서 아래에서 승인·메모 붙여 승인·메모 붙여 재검토·거절을 골라 주세요.';
   else { const next = it.children.find(c => !['done', 'closed', 'in_review'].includes(c.status));
     msg = next ? `계획 승인됨 → <a href="#/issue/${esc(next.ref)}">${esc(next.ref)}</a>에서 실행 맡기기` : it.children.length ? '모든 Task가 실행됐어요 — 결과를 확인해 주세요.' : '계획 승인됨.'; }
-  return `<div class="stage" id="stage">${msg}</div>`;
+  // 상황별 버튼은 이 줄 하나에만 둔다(DEV-113) — 도는 중·대기 중이면 숨긴다
+  const idle = x && !it.review_running && !it.job && !LIVE_MERGE.has(it.merge_state);
+  const actions = (idle && x.retry_merge_available ? '<button id="retry-merge" title="기존 구현 커밋으로 서버 검사·병합만 다시 진행해요. 회귀검사 설정과 자동 병합·재시작 정책이 적용돼요.">병합 재시도</button>' : '')
+    + (idle && x.repair_available ? '<button class="register-repair" title="에이전트 재호출 없이 연결된 수정 커밋을 검사하고 기존 병합 정책으로 처리해요.">수정 커밋 검사·결과 등록</button>' : '');
+  return `<div class="stage" id="stage"><span>${msg}</span>${actions ? `<span class="stage-actions">${actions}</span>` : ''}</div>`;
+}
+// 병합 보류 원인 한 줄 — 서버의 마지막 검사 결과에서 실패한 검사 이름만 뽑는다
+function mergeFailureLine(x){
+  const failed = stage => Object.entries(x.regression_results?.[stage]?.results || {}).filter(([, r]) => r === 'failed').map(([name]) => name.replace(/\.py$/, ''));
+  const merge = failed('server_merge'), done = failed('server_completion');
+  return merge.length ? `병합 검사 실패 — ${esc(merge.join(', '))}` : done.length ? `완료 전 검사 실패 — ${esc(done.join(', '))}` : '병합 보류 — 실패 진단은 아래 트러블슈팅에서 확인해 주세요.';
 }
 // 부모 화면에서 바로 실행: 계획 승인됨 · 아직 안 한 Task(서버가 다시 확인한다). 바쁘거나 선행이 안 끝났으면 줄에 선다(DEV-43)
 // — Task 여럿을 한 번에 눌러 두면 선행 순서대로 돈다.

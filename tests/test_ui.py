@@ -333,20 +333,54 @@ def check_register_repair(page, shots):
     page.route('**'+path+'/register-repair', submit)
     page.goto(BASE+'/#/issue/'+task['ref']);page.reload()
     page.wait_for_selector('.register-repair')
-    assert page.locator('.register-repair').count() == 1
-    assert page.locator('.register-repair').evaluate('e=>e.closest(".panel").querySelector("h2").textContent.includes("Result")')
+    # 수정 커밋 버튼은 단계 안내 한 자리에만 있다(DEV-113)
+    assert page.locator('.register-repair').count() == 1 and page.locator('#stage .register-repair').count() == 1
+    assert page.locator('.register-repair').get_attribute('title')
     for theme in ('light','dark'):
         page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
         page.emulate_media(color_scheme=theme)
         for width in (1300,390):
             page.set_viewport_size({'width':width,'height':850});page.wait_for_timeout(200)
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
-            page.locator('#result').locator('..').screenshot(path=str(shots/f'register_repair_{theme}_{width}.png'))
+            page.screenshot(path=str(shots/f'register_repair_{theme}_{width}.png'))
     page.locator('.register-repair').evaluate('b=>{b.click();b.click()}')
     page.wait_for_function('document.querySelectorAll(".register-repair").length===0')
     assert state['posts'] == 1
     page.unroute('**'+path, detail);page.unroute('**'+path+'/register-repair', submit)
     print('register repair UI OK')
+    # 병합 실패: 단계 안내에 원인 한 줄과 병합 재시도(DEV-113)
+    merge = {'posts': 0, 'available': True}
+    def failed(route):
+        if route.request.method != 'GET':
+            route.continue_(); return
+        data = route.fetch().json()
+        data['status'] = 'changes_requested'
+        data['execute'].update(blocked=None, repair_available=merge['available'], retry_merge_available=merge['available'],
+                               regression_results={'server_merge': {'results': {'test_ui.py': 'failed', 'test_db.py': 'passed'}}})
+        route.fulfill(json=data)
+    def retry(route):
+        merge['posts'] += 1; merge['available'] = False
+        route.fulfill(status=202, json={'status':'checking'})
+    page.route('**'+path, failed)
+    page.route('**'+path+'/retry-merge', retry)
+    page.reload()
+    page.wait_for_selector('#stage #retry-merge')
+    assert '병합 검사 실패 — test_ui' in page.inner_text('#stage') and 'test_db' not in page.inner_text('#stage')
+    assert page.locator('#retry-merge').count() == 1 and page.locator('.register-repair').count() == 1
+    assert page.locator('#stage .register-repair').count() == 1 and page.locator('#retry-merge').get_attribute('title')
+    for theme in ('light','dark'):
+        page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300,390):
+            page.set_viewport_size({'width':width,'height':850});page.wait_for_timeout(200)
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+            page.screenshot(path=str(shots/f'retry_merge_stage_{theme}_{width}.png'))
+    page.set_viewport_size({'width':1300,'height':850})
+    page.locator('#retry-merge').evaluate('b=>{b.click();b.click()}')
+    page.wait_for_function('!document.querySelector("#retry-merge")')
+    assert merge['posts'] == 1
+    page.unroute('**'+path, failed);page.unroute('**'+path+'/retry-merge', retry)
+    print('retry merge stage UI OK')
 
 
 def check_project_restart(page, shots):
