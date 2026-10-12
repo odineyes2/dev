@@ -128,7 +128,16 @@ assert issues.get_issue(one['ref'])['status'] == 'backlog'
 jobs.cancel(admin, jobs.list_jobs()[0]['id'])
 auto_settings.update_settings(admin, 'AUTO', {'auto_review': True})
 jobs.pump()
-assert not [j for j in jobs.list_jobs() if j['ref'] in (one['ref'],two['ref'])]
+resumed = [j for j in jobs.list_jobs() if j['ref'] in (one['ref'], two['ref'])]
+assert len(resumed) == 2
+with db.connect() as c:
+    for previous in auto_jobs:
+        cancelled = c.execute('SELECT * FROM jobs WHERE id=?', (previous['id'],)).fetchone()
+        assert cancelled['cancellation_reason'] == 'auto_review_off' and cancelled['cancellation_event_id']
+for job in resumed:
+    jobs.cancel(admin, job['id'])
+jobs.pump()
+assert not [j for j in jobs.list_jobs() if j['ref'] in (one['ref'], two['ref'], manual['ref'])]
 new = issues.create_issue(admin, 'AUTO', '착수')
 starts = []
 def fake_start(actor, ref, provider, model=None):
@@ -240,6 +249,9 @@ with patch.object(orchestrate, 'settings', return_value={'auto_merge':False}):
         blocked.append(result_task(run_status=status)[1])
     for state in ('processing','blocked'):
         blocked.append(result_task(state=state)[1])
+    _, task, _, _ = result_task()
+    issues.post_plan(admin, task, '## 사람이 할 일\n- 실계정으로 확인')
+    blocked.append(task)
     blocked.append(result_task(labels=['goal'])[1])
     p, task, _, _ = result_task()
     issues.decide(admin, p, 'approve_notes', '실행 뒤 바뀐 사람 조건', plan_version=1)
@@ -271,8 +283,10 @@ with patch.object(orchestrate, 'settings', return_value={'auto_merge':False}):
 
     _, off, _, _ = result_task()
     auto_settings.update_settings(admin, 'RESULT', {'auto_approve':False})
+    _, manual_result, _, _ = result_task()
     automation.sync()
     assert issues.get_issue(off)['status'] == 'in_review'
+    assert issues.get_issue(manual_result)['status'] == 'in_review'
     auto_settings.update_settings(admin, 'RESULT', {'auto_approve':True})
     errors = []
     def concurrent_sync():
@@ -283,6 +297,8 @@ with patch.object(orchestrate, 'settings', return_value={'auto_merge':False}):
     for t in threads: t.join(10)
     assert not errors and all(not t.is_alive() for t in threads)
     assert len([e for e in issues.get_issue(off)['events'] if e['data'].get('to') == 'done']) == 1
+    db.init(); automation.sync()
+    assert len([e for e in issues.get_issue(manual_result)['events'] if e['data'].get('to') == 'done']) == 1
 
     # 이전에 완료한 실행도 병합 OFF에서는 같은 조건으로 승인한다.
     _, old, _, _ = result_task(receipt=False)
@@ -632,12 +648,15 @@ assert event['data']['delegated_by'] == 'human:admin' and event['data']['delegat
 assert event['data']['plan_version'] == 1 and event['data']['run_id']
 assert not any('조건부 승인 메모' in issues.get_issue(t['ref'])['body'] for t in approved['children'])
 assert issues.get_issue(isolated['ref'])['approval']['verdict'] == 'approve'
-for item in (old, goal_plan, *failed):
+assert issues.get_issue(old['ref'])['approval']['verdict'] == 'approve'
+for item in (goal_plan, *failed):
     assert issues.get_issue(item['ref'])['approval'] is None
 automation.sync()
 assert len(issues.get_issue(new['ref'])['children']) == 2
+db.init(); automation.sync()
 with db.connect() as c:
     assert c.execute("SELECT COUNT(*) FROM decisions WHERE issue_id=?", (new['id'],)).fetchone()[0] == 1
+    assert c.execute("SELECT COUNT(*) FROM decisions WHERE issue_id=?", (old['id'],)).fetchone()[0] == 1
 
 # 새 판·사람의 기존 결정·OFF·재위임을 먼저 저장하면 이전 관측으로 승인하지 않는다.
 changed = reviewed()
@@ -653,7 +672,7 @@ automation.sync()
 assert issues.get_issue(off['ref'])['approval'] is None
 auto_settings.update_settings(admin, 'PLAN', {'auto_plan_approve': True})
 automation.sync()
-assert issues.get_issue(off['ref'])['approval'] is None
+assert issues.get_issue(off['ref'])['approval']['verdict'] == 'approve'
 assert issues.get_issue(changed['ref'])['approval'] is None
 assert issues.get_issue(human['ref'])['approval']['actor'] == 'human:admin'
 assert issues.get_issue(rejected['ref'])['approval']['verdict'] == 'reject'
@@ -1165,3 +1184,72 @@ with patch.object(config, 'DB_PATH', Path(tempfile.mkdtemp()) / 'global-consumer
             assert command[command.index('--model') + 1] == 'gpt-6.1-sol'
     assert not auto_settings.get_settings()['auto_review']
 print('OK global consumers: cross-project OFF gate, provider/model, Description, mocked service preparation')
+
+# DEV-111-2: 검토 OFF 취소만 두 프로젝트에서 재개하며 동시 sync·재시작에도 한 번 등록한다.
+with patch.object(config, 'DB_PATH', Path(tempfile.mkdtemp()) / 'resume-review.db'), \
+     patch.object(jobs, 'pump'), patch.object(automation, 'provider_available', return_value=True):
+    db.init()
+    for project_key in ('RA', 'RB'):
+        issues.create_project(admin, project_key, project_key, local_path='/fake')
+    pending_reviews = [issues.create_issue(admin, key, 'Manual 중 발행') for key in ('RA', 'RB')]
+    goal_review = issues.create_issue(admin, 'RA', 'Goal', labels=['goal'])
+    automation.sync()
+    assert not jobs.list_jobs()
+    auto_settings.update_settings(admin, 'RA', {'auto_review': True})
+    def concurrent_review_sync():
+        errors = []
+        def worker():
+            try: automation.sync()
+            except Exception as error: errors.append(error)
+        workers = [threading.Thread(target=worker) for _ in range(2)]
+        for worker in workers: worker.start()
+        for worker in workers: worker.join(10)
+        assert not errors and all(not worker.is_alive() for worker in workers), errors
+    for cycle in range(3):
+        concurrent_review_sync()
+        db.init(); jobs.reconcile(); automation.sync()
+        queued = jobs.list_jobs()
+        assert {j['issue_id'] for j in queued} == {i['id'] for i in pending_reviews}
+        with db.connect() as c:
+            for item in pending_reviews:
+                assert c.execute('SELECT COUNT(*) FROM jobs WHERE issue_id=?', (item['id'],)).fetchone()[0] == cycle + 1
+        auto_settings.update_settings(admin, 'RB', {'auto_review': False})
+        concurrent_review_sync()
+        assert not jobs.list_jobs()
+        with db.connect() as c:
+            for job in queued:
+                cancelled = c.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
+                assert cancelled['cancellation_reason'] == 'auto_review_off'
+                evidence = c.execute('SELECT * FROM project_auto_settings_events WHERE id=?', (cancelled['cancellation_event_id'],)).fetchone()
+                assert evidence['scope'] == 'global' and evidence['actor'] == 'human:admin'
+                assert cancelled['started_at'] is None and cancelled['run_id'] is None
+        auto_settings.update_settings(admin, 'RA', {'auto_review': True})
+    concurrent_review_sync()
+    for job in jobs.list_jobs(): jobs.cancel(admin, job['id'])
+    auto_settings.update_settings(admin, 'RA', {'auto_review': False})
+    auto_settings.update_settings(admin, 'RB', {'auto_review': True})
+    concurrent_review_sync()
+    assert not jobs.list_jobs()  # OFF 이력과 수동 취소가 섞이면 재등록하지 않는다.
+    assert issues.get_issue(goal_review['ref'])['status'] == 'backlog'
+
+    # OFF와 다른 무효 사유가 함께 저장되면 OFF 단독 취소로 분류하지 않는다.
+    for change in ('goal', 'claim', 'plan', 'failed'):
+        item = issues.create_issue(admin, 'RA', change)
+        automation.sync()
+        job = next(j for j in jobs.list_jobs() if j['issue_id'] == item['id'])
+        with db.connect() as c:
+            if change == 'goal': c.execute("UPDATE issues SET labels_json='[\"goal\"]' WHERE id=?", (item['id'],))
+            if change == 'claim': c.execute("UPDATE issues SET claimed_by='human:admin',lease_until='2099-01-01T00:00:00+00:00' WHERE id=?", (item['id'],))
+            if change == 'failed':
+                c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at) VALUES(?,'review','failed','human:admin',?,?)", (item['id'], db.now_iso(), db.now_iso()))
+        if change == 'plan': issues.post_plan(admin, item['ref'], '수동 Plan')
+        auto_settings.update_settings(admin, 'RA', {'auto_review': False})
+        automation.sync()
+        with db.connect() as c:
+            assert c.execute('SELECT cancellation_reason FROM jobs WHERE id=?', (job['id'],)).fetchone()[0] == 'conditions_changed', change
+        auto_settings.update_settings(admin, 'RB', {'auto_review': True})
+        automation.sync()
+        with db.connect() as c:
+            assert c.execute('SELECT COUNT(*) FROM jobs WHERE issue_id=?', (item['id'],)).fetchone()[0] == 1
+    assert not jobs.list_jobs()
+print('OK DEV-111-2 review: Manual→Auto, global OFF→ON, concurrent sync/restart, cancellation provenance, exclusions')
