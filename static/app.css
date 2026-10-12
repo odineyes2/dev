@@ -412,7 +412,9 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
 }
 @media (max-width: 800px){ .move-job, .queued .cancel-job, .jobs .cancel-job{ min-width:40px; min-height:40px; justify-content:center; } }
 
-.stage{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel)}
+.stage{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel);display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.stage>span:first-child{flex:1 1 240px;min-width:0}
+.stage-actions{display:flex;flex-wrap:wrap;gap:8px}
 
 /* 프로젝트 생성 — DESIGN 2~4·7~8·10~12절의 입력·포커스·모바일 배치를 따른다. */
 .projects-page{ min-width:0; }
