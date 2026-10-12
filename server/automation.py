@@ -80,7 +80,7 @@ def _approve_plans(c, setting):
         if 'goal' in json.loads(row['labels_json']):
             continue
         plan = c.execute('SELECT * FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1', (row['id'],)).fetchone()
-        if not plan or plan['id'] <= delegation['plan_id_floor']:
+        if not plan:
             continue
         if issues.plan_revision_note(c, row['id'], plan['version']):
             continue
@@ -124,6 +124,10 @@ def _approve_tasks(c, setting):
         if 'goal' in json.loads(row['labels_json']) or row['claimed_by']:
             continue
         if row['superseded_by_plan']:
+            continue
+        # 수동 Done과 같은 Task 계획서의 사람 검사 조건을 유지한다.
+        task_plan = c.execute('SELECT body FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1', (row['id'],)).fetchone()
+        if task_plan and issues.human_checks(task_plan['body']):
             continue
         parent = issues._find(c, row['parent_id'])
         if parent['project_id'] != row['project_id']:
@@ -195,8 +199,8 @@ def eligible(c, issue, mode, job=None):
     elif c.execute('SELECT 1 FROM runs WHERE issue_id=?', (issue['id'],)).fetchone():
         return False
     if not job and c.execute("""SELECT 1 FROM jobs WHERE issue_id=? AND NOT (
-        source='auto' AND mode='execute' AND status='cancelled'
-        AND COALESCE(cancellation_reason,'')='auto_execute_off'
+        source='auto' AND mode IN ('review','execute') AND status='cancelled'
+        AND COALESCE(cancellation_reason,'')='auto_' || mode || '_off'
         AND cancellation_event_id IS NOT NULL AND started_at IS NULL AND run_id IS NULL)
         """, (issue['id'],)).fetchone():
         return False
@@ -307,17 +311,18 @@ def cancel_invalid(c, job, start_error=False):
     issue = issues.get_issue(job['ref'])
     setting = c.execute('SELECT s.*,p.archived FROM global_project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE s.project_id=?', (issue['project_id'],)).fetchone()
     reason, event_id = ('start_error' if start_error else 'conditions_changed'), None
-    if (not start_error and setting and not setting['archived'] and not setting['auto_execute']
-            and job['source'] == 'auto' and job['mode'] == 'execute'
+    mode = job['mode']
+    if (not start_error and setting and not setting['archived'] and not setting['auto_' + mode]
+            and job['source'] == 'auto'
             and current['started_at'] is None and current['run_id'] is None
             and jobs._latest(c, issue['id']).get('job_id') == job['id']
-            and eligible(c, issue, 'execute', job)):
+            and eligible(c, issue, mode, job)):
         event = c.execute("""SELECT * FROM project_auto_settings_events WHERE scope='global'
-            AND id>? AND json_extract(before_json,'$.auto_execute')=1
-            AND json_extract(after_json,'$.auto_execute')=0 ORDER BY id DESC LIMIT 1""",
-            (job['delegation_id'] or 0,)).fetchone()
+            AND id>? AND json_extract(before_json,?)=1
+            AND json_extract(after_json,?)=0 ORDER BY id DESC LIMIT 1""",
+            (job['delegation_id'] or 0, '$.auto_' + mode, '$.auto_' + mode)).fetchone()
         if event:
-            reason, event_id = 'auto_execute_off', event['id']
+            reason, event_id = 'auto_' + mode + '_off', event['id']
     c.execute("UPDATE jobs SET status='cancelled',note='자동 위임 조건이 바뀌었어요',cancellation_reason=?,cancellation_event_id=? WHERE id=?", (reason, event_id, job['id']))
     jobs._restore(c, job)
 
