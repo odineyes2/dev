@@ -26,7 +26,7 @@ function toast(msg){
 function confirmChecks(items){
   return !(items || []).length || confirm(`계획서의 '사람이 할 일'을 모두 했나요?\n\n${items.map(x => `☐ ${x}`).join('\n')}\n\n했으면 확인을 눌러 주세요 — Done으로 바꿔요.`);
 }
-async function api(method, url, body, isCurrent = () => true){
+async function api(method, url, body, isCurrent = () => true, {notifyErrors = true} = {}){
   const opt = { method, headers: { 'X-Requested-With': 'dev' } };
   if(body instanceof FormData) opt.body = body;
   else if(body !== undefined){ opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
@@ -36,7 +36,7 @@ async function api(method, url, body, isCurrent = () => true){
   perf.server = res.headers.get('Server-Timing') || perf.server;
   if(res.status === 401){ if(Date.now() < restartGraceUntil) throw new Error('서버 재시작 후 다시 연결하고 있어요.'); if(isCurrent()) showLogin(); throw new Error('로그인이 필요해요.'); }
   const data = res.status === 204 ? null : await res.json().catch(() => null);
-  if(!res.ok){ const msg = (data && data.detail) || `요청이 실패했어요(${res.status}).`; if(isCurrent()) toast(msg); const error = new Error(msg); error.status = res.status; throw error; }
+  if(!res.ok){ const msg = (data && data.detail) || `요청이 실패했어요(${res.status}).`; if(isCurrent() && notifyErrors) toast(msg); const error = new Error(msg); error.status = res.status; throw error; }
   return data;
 }
 // 저장 버튼은 요청이 끝날 때까지 막는다 — 두 번 눌러(모바일 두 번 탭) 같은 이슈가 두 번 저장되던 문제(DEV-12).
@@ -293,13 +293,13 @@ function actionKind(i){
 function actionOff(kind,s){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='task-approve' ? s.auto_approve===true : kind==='decision' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
 function actionHtml(i){
   const kind=actionKind(i); if(!kind) return '';
-  const settings=actionSession?.settings.get(i.project_key);
+  const settings=actionSession?.settings;
   return `<div class="issue-actions" aria-label="Action">${(['review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
     const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':kind==='task-approve'?'승인':'전체 완료';
     return `<button type="button" draggable="false" data-action="${kind}" data-ref="${esc(i.ref)}" data-provider="${provider}" title="${label}" aria-label="${label}" aria-disabled="${!settings || !!actionOff(kind,settings)}">${provider?`<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider==='claude'?'claude':'openai'}"/></svg>`:label}</button>`;
   }).join('')}</div>`;
 }
-function beginActions(current){ return actionSession={settings:new Map(),items:new Map(),parentStatuses:new Map(),current}; }
+function beginActions(current){ return actionSession={settings:null,items:new Map(),parentStatuses:new Map(),current}; }
 async function loadActionSettings(session,items){
   items.forEach(i=>session.items.set(i.ref,i));
   // 목록 요약에 부모 상태가 없으므로 승인 후보의 부모만 조회한다. 실패하면 승인을 표시하지 않는다.
@@ -308,12 +308,11 @@ async function loadActionSettings(session,items){
       session.parentStatuses.set(ref,parent.status);
     }catch(e){ session.parentStatuses.set(ref,null); }
   }));
-  await Promise.all([...new Set(items.map(i=>i.project_key))].filter(k=>!session.settings.has(k)).map(async key=>{
-    try{ const s=await api('GET',`/api/projects/${encodeURIComponent(key)}/auto-settings`,undefined,session.current);
-      if(typeof s.auto_review!=='boolean' || typeof s.auto_execute!=='boolean') throw new Error('설정');
-      session.settings.set(key,s);
-    }catch(e){ session.settings.set(key,null); }
-  }));
+  // 보조 조회 오류는 Action 클릭 때 안내하며 발행 성공 알림을 덮지 않는다.
+  try{ const s=await api('GET','/api/settings/auto',undefined,session.current,{notifyErrors:false});
+    if(typeof s.auto_review!=='boolean' || typeof s.auto_execute!=='boolean') throw new Error('설정');
+    session.settings=s;
+  }catch(e){ session.settings=null; }
 }
 function bindActions(container,session,refresh){
   container.querySelectorAll('[data-action]').forEach(b=>{
@@ -324,7 +323,7 @@ function bindActions(container,session,refresh){
       const i=session.items.get(b.dataset.ref),kind=b.dataset.action,provider=b.dataset.provider;
       const current=()=>actionSession===session && session.current();
       if(!current() || pendingActions.has(i.ref) || actionKind(i)!==kind) return;
-      const settings=session.settings.get(i.project_key);
+      const settings=session.settings;
       if(!settings){toast('Auto 설정을 확인하지 못했어요. 새로고침해 다시 조회해 주세요.');return;}
       if(actionOff(kind,settings)){toast('Auto 모드에서는 해당 버튼이 비활성화됩니다.');return;}
       pendingActions.add(i.ref);
@@ -537,17 +536,15 @@ async function loadMoreIssues(){
     (L.offset ? more : body).innerHTML = '<div class="list-error" role="status">Issue를 불러오지 못했어요. 새로고침해 보세요.</div>';
     return;
   }
-  finish();
-  if(!current()) return;   // 필터 변경과 탭 이동 후의 응답은 버린다.
+  if(!current()){ finish(); return; }   // 필터 변경과 탭 이동 후의 응답은 버린다.
   // 고친 순 정렬이라 사이에 바뀐 이슈가 두 번 올 수 있다 — 이미 그린 것은 건너뛴다.
-  L.busy = true;   // Auto 설정을 기다리는 동안 같은 페이지를 다시 요청하지 않는다.
   await loadActionSettings(L.actions, data.issues);
+  finish();   // 설정 조회까지 끝나야 행을 그릴 수 있으므로 그동안 로딩을 유지한다.
   if(!current()) return;
   const items = data.issues.filter(i => !L.seen.has(i.ref));
   items.forEach(i => L.seen.add(i.ref));
   L.offset += data.issues.length;
   L.done = !data.has_more;   // 예전 서버(has_more 없음)면 한 번으로 끝
-  L.busy = false;
   if(!body.querySelector('table, .empty')){
     body.innerHTML = items.length ? `<table class="issues"><thead><tr><th aria-sort="${L.qs.sort === 'id_asc' ? 'ascending' : L.qs.sort === 'id_desc' ? 'descending' : 'none'}"><button type="button" id="list-id-sort" class="list-sort" title="${L.qs.sort === 'id_asc' ? 'ID 내림차순으로 정렬해요' : L.qs.sort === 'id_desc' ? '최근 고친 순으로 정렬해요' : 'ID 오름차순으로 정렬해요'}">ID${L.qs.sort ? `<svg class="ico${L.qs.sort === 'id_desc' ? ' sort-desc' : ''}" aria-hidden="true"><use href="#i-arrow-up"/></svg>` : ''}</button></th><th>Title</th><th>Status</th>
       <th class="hide-m history-heading">AGENT</th><th class="hide-m history-heading">TIME</th><th class="hide-m">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
@@ -1148,8 +1145,8 @@ function editInPlace(box, value, save, title){
 }
 
 // ---- 새 이슈 ----
-async function showPublishedNotice(it){
-  const manual = '이슈를 발행했어요 — Claude나 Codex에게 검토를 맡길 수 있어요.';
+async function showPublishedNotice(it, {hash = `#/issue/${it.ref}`, initial = '이슈를 발행했어요.', prefix = '이슈를 발행했어요'} = {}){
+  const manual = `${prefix} — Claude나 Codex에게 검토를 맡길 수 있어요.`;
   if(it.status !== 'backlog' || it.parent_ref || (it.labels || []).includes('goal')){
     toast(manual); return;
   }
@@ -1157,15 +1154,15 @@ async function showPublishedNotice(it){
   const timeout = setTimeout(() => controller.abort(), 800);
   try {
     // 보조 조회 실패는 발행 오류로 표시하지 않는다. 늦은 응답도 다른 화면의 알림을 덮지 않는다.
-    const res = await fetch(`/api/projects/${encodeURIComponent(it.project_key)}/auto-settings`, {
+    const res = await fetch('/api/settings/auto', {
       headers: { 'X-Requested-With': 'dev' }, signal: controller.signal,
     });
     if(!res.ok) return;
     const settings = await res.json();
     if(typeof settings.auto_review !== 'boolean') return;
-    if(location.hash === `#/issue/${it.ref}` && !document.getElementById('toast').hidden &&
-        document.getElementById('toast').textContent === '이슈를 발행했어요.'){
-      toast(settings.auto_review ? '이슈를 발행했어요 — 잠시 후 에이전트가 계획서를 작성해요.' : manual);
+    if(location.hash === hash && !document.getElementById('toast').hidden &&
+        document.getElementById('toast').textContent === initial){
+      toast(settings.auto_review ? `${prefix} — 잠시 후 에이전트가 계획서를 작성해요.` : manual);
     }
   } catch { /* 발행 성공 안내를 유지한다. */ }
   finally { clearTimeout(timeout); }
@@ -1263,6 +1260,8 @@ async function renderNew(params){
 
 // ---- 빠른 발행 입력창(DEV-93) — 목록·Board에서 백틱으로 열고, Enter로 #/new를 거치지 않고 바로 발행한다 ----
 const composer = document.getElementById('composer'), cmpBody = document.getElementById('cmp-body');
+// 입력창이 커져도 발행 알림이 입력창과 겹치지 않도록 높이를 공유한다.
+new ResizeObserver(() => document.documentElement.style.setProperty('--composer-height', `${composer.offsetHeight}px`)).observe(composer);
 const cmpFiles = [];   // {name, file, busy, error, data}
 let cmpSaving = false;
 function composerAllowed(){ const n = location.hash.replace(/^#\/?/, '').split(/[/?]/)[0]; return !n || n === 'board'; }
@@ -1333,6 +1332,7 @@ composer.addEventListener('submit', async (e) => {
       status: 'backlog', attachment_ids: cmpFiles.map(f => f.data.id), assignee_agent_id: agent ? Number(agent) : undefined });
     cmpBody.value = ''; cmpBody.style.height = ''; cmpFiles.length = 0;
     toast(`${it.ref} 이슈를 발행했어요.`);
+    void showPublishedNotice(it, {hash: location.hash, initial: `${it.ref} 이슈를 발행했어요.`, prefix: `${it.ref} 이슈를 발행했어요`});
     if(composerAllowed()) void route();   // 페이지는 그대로, 목록·Board만 다시 읽는다
   }catch(ex){ err.textContent = `${ex.message} 입력과 첨부를 유지했어요. 다시 보내 주세요.`; }
   finally{ cmpSaving = false; cmpDraw(); if(!composer.hidden) cmpBody.focus(); }
@@ -2266,22 +2266,20 @@ async function renderRegressionSettings(){
 async function renderSettings(){
   const session = {};
   settingsSession = session;
-  const key = projectSel.value;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
   view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><h3>Auto 위임 설정</h3><p class="dim">모든 프로젝트에 같은 위임 설정을 적용해요. 프로젝트를 바꿔도 설정은 같아요.</p><div id="settings-body"></div></section>`;
   void renderQueueSettings(view.querySelector('#queue-settings'), current);
   const body = view.querySelector('#settings-body');
-  if(!key){ body.innerHTML = '<div class="empty">위의 프로젝트 필터에서 설정할 프로젝트를 선택해 주세요.</div>'; return; }
   body.innerHTML = '<div class="settings-skeleton" aria-label="설정을 불러오는 중" aria-busy="true"></div>';
   let settings;
-  const url = `/api/projects/${encodeURIComponent(key)}/auto-settings`;
+  const url = '/api/settings/auto';
   try { settings = await api('GET', url, undefined, current); }
   catch(e){ if(current()) body.innerHTML = `<p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="settings-retry" type="button">다시 불러오기</button>`;
     body.querySelector('#settings-retry')?.addEventListener('click', renderSettings); return; }
   if(!current()) return;
   body.innerHTML = `<h3>전체 · Auto</h3>
     ${[['auto_review','Auto 검토 맡기기','사람이 등록한 Plan 없는 최상위 Backlog Issue를 검토해요. Goal과 기존 작업이 있는 Issue는 제외해요.'],
-       ['auto_plan_approve','Auto 계획 승인','ON 이후 검토가 완료된 새 Plan을 구조 검사 후 승인해요. 의미적·기술적 오류 검출은 보장하지 않으며, 사람의 기존 결정과 Goal은 유지해요.'],
+       ['auto_plan_approve','Auto 계획 승인','Manual 중 완료된 Plan도 포함해 성공한 최신 검토의 유효한 Plan을 구조 검사 후 승인해요. 의미적·기술적 오류 검출은 보장하지 않으며, 사람의 기존 결정과 Goal은 유지해요.'],
        ['auto_execute','Auto 실행맡기기','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],
        ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.']].map(([field,label,help]) =>
       `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}

@@ -15,6 +15,15 @@ spec.loader.exec_module(capture_ui)
 
 
 class CaptureTests(unittest.TestCase):
+    def test_global_auto_settings_route(self):
+        _, manifest = capture_ui.capture('#/settings/auto', 'projects-empty')
+        self.assertEqual(manifest['status'], 'ok', manifest['errors'])
+        self.assertEqual(len(manifest['captures']), 4)
+        self.assertEqual({(c['theme'], c['width']) for c in manifest['captures']},
+                         {(t, w) for t in ('light', 'dark') for w in (1300, 390)})
+        for item in manifest['captures']:
+            self.assertEqual((ROOT / item['path']).read_bytes()[:8], b'\x89PNG\r\n\x1a\n')
+
     def test_environment_and_routes(self):
         with patch.dict(os.environ, {'DEV_DB_PATH': 'production.db', 'RUNPOD_API_KEY': 'secret',
                                     'DEV_AGENT_KEY': 'secret', 'PYTHONPATH': 'unsafe', 'NTFY_TOKEN': 'secret'}):
