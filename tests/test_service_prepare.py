@@ -17,6 +17,8 @@ import issues
 import service_prepare as prepare
 
 H = {'kind': 'human', 'name': 'admin'}
+# Windows의 patch.dict 복원은 빈 Git 설정값을 지울 수 있으므로 원래 차단 설정을 보존한다.
+GIT_CONFIG_ENV = {k: v for k, v in os.environ.items() if k.startswith('GIT_CONFIG_')}
 
 
 def result():
@@ -33,6 +35,12 @@ class PrepareTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(patch.stopall)
+        original_run = subprocess.run
+        def run_with_git_config(*args, **kwargs):
+            if 'env' not in kwargs:
+                kwargs['env'] = {**os.environ, **GIT_CONFIG_ENV}
+            return original_run(*args, **kwargs)
+        patch.object(subprocess, 'run', side_effect=run_with_git_config).start()
         self.root = Path(self.temp.name)
         self.repo = self.root / 'repo'
         self.repo.mkdir()

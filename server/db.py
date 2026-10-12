@@ -756,6 +756,81 @@ CREATE UNIQUE INDEX one_active_app_restart ON project_app_restarts((1))
 """)
 
 
+
+# 전역 위임은 Manual로 시작한다. 기존 프로젝트 설정과 이력 ID·FK를 보존한다.
+MIGRATIONS.append("""
+CREATE TABLE global_auto_settings (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        auto_review INTEGER NOT NULL DEFAULT 0 CHECK(auto_review IN (0,1)),
+        auto_execute INTEGER NOT NULL DEFAULT 0 CHECK(auto_execute IN (0,1)),
+        auto_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_approve IN (0,1)),
+        provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]'
+            CHECK(provider_order_json IN ('["claude","codex"]','["codex","claude"]')),
+        updated_by TEXT,
+        updated_at TEXT,
+        auto_plan_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_plan_approve IN (0,1))
+    );
+CREATE TABLE global_auto_role_settings (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+ orchestrator_provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]'
+ CHECK(orchestrator_provider_order_json IN ('["claude","codex"]','["codex","claude"]')),
+ troubleshooter_provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]'
+ CHECK(troubleshooter_provider_order_json IN ('["claude","codex"]','["codex","claude"]')),
+ token_exhaustion_fallback INTEGER NOT NULL DEFAULT 0 CHECK(token_exhaustion_fallback IN (0,1))
+);
+ALTER TABLE global_auto_role_settings ADD COLUMN description_provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]'
+ CHECK(description_provider_order_json IN ('["claude","codex"]','["codex","claude"]'));
+INSERT INTO global_auto_settings(singleton) VALUES(1);
+INSERT INTO global_auto_role_settings(singleton) VALUES(1);
+CREATE TABLE global_agent_orders (
+ singleton INTEGER NOT NULL CHECK(singleton=1) REFERENCES global_auto_settings(singleton),
+ role TEXT NOT NULL,
+ agent_ids_json TEXT NOT NULL,
+ PRIMARY KEY(singleton,role)
+);
+-- 한 이력 테이블에서 ID를 유지해 기존 대기열·이관 체인 FK를 보존한다.
+CREATE TABLE auto_settings_events_new (
+ id INTEGER PRIMARY KEY,
+ project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+ actor TEXT NOT NULL,
+ before_json TEXT NOT NULL,
+ after_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ plan_id_floor INTEGER NOT NULL DEFAULT 0,
+ scope TEXT NOT NULL DEFAULT 'project' CHECK(scope IN ('project','global')),
+ CHECK((scope='project' AND project_id IS NOT NULL) OR (scope='global' AND project_id IS NULL))
+);
+INSERT INTO auto_settings_events_new(id,project_id,actor,before_json,after_json,created_at,plan_id_floor)
+ SELECT id,project_id,actor,before_json,after_json,created_at,plan_id_floor FROM project_auto_settings_events;
+DROP TABLE project_auto_settings_events;
+ALTER TABLE auto_settings_events_new RENAME TO project_auto_settings_events;
+CREATE VIEW global_project_auto_settings AS
+ SELECT p.id AS project_id,s.* FROM projects p CROSS JOIN global_auto_settings s;
+CREATE VIEW global_project_auto_role_settings AS
+ SELECT p.id AS project_id,s.* FROM projects p CROSS JOIN global_auto_role_settings s;
+DROP TRIGGER auto_run_gate;
+    CREATE TRIGGER auto_run_gate BEFORE INSERT ON runs
+    WHEN EXISTS(SELECT 1 FROM jobs WHERE issue_id=NEW.issue_id AND mode=NEW.mode AND status='queued' AND source='auto')
+    BEGIN
+        SELECT RAISE(ABORT, '자동 위임 조건이 바뀌었어요') WHERE NOT EXISTS(
+            SELECT 1 FROM jobs j JOIN issues i ON i.id=j.issue_id
+            JOIN projects p ON p.id=i.project_id
+            JOIN global_auto_settings s ON s.singleton=1
+            WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto'
+            AND p.archived=0 AND i.status='waiting' AND i.claimed_by IS NULL
+            AND NOT EXISTS(SELECT 1 FROM json_each(i.labels_json) WHERE value='goal')
+            AND ((NEW.mode='review' AND s.auto_review=1 AND i.parent_id IS NULL
+                  AND i.reporter LIKE 'human:%'
+                  AND NOT EXISTS(SELECT 1 FROM plans WHERE issue_id=i.id))
+              OR (NEW.mode='execute' AND s.auto_execute=1
+                  AND j.approval_version=(SELECT MAX(version) FROM plans WHERE issue_id=i.parent_id)
+                  AND EXISTS(SELECT 1 FROM decisions d WHERE d.id=(SELECT MAX(id) FROM decisions WHERE issue_id=i.parent_id AND gate='plan')
+                      AND d.plan_version=j.approval_version AND d.verdict IN ('approve','approve_notes') AND d.actor LIKE 'human:%')
+                  AND NOT EXISTS(SELECT 1 FROM issue_deps dep JOIN issues b ON b.id=dep.blocked_by_id WHERE dep.issue_id=i.id AND b.status<>'done')))
+        );
+    END;
+""")
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

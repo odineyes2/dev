@@ -1,4 +1,8 @@
-"""프로젝트별 자동화 설정과 관리자 위임 이력을 저장한다."""
+"""전역 자동화 설정과 관리자 위임 이력을 저장한다.
+
+project_key는 호환 요청의 프로젝트이며 적용 범위는 항상 scope=global이다.
+기존 프로젝트 이력과 새 전역 이력은 같은 ID 공간에서 scope로 구분한다.
+"""
 import json
 
 import db
@@ -32,8 +36,8 @@ def _candidates(c):
 
 def _agent_order(c, project, role, provider_order, candidates):
     """저장한 순서에서 빠진 Agent를 지우고, 새 Agent는 provider 순서 → id 순으로 끝에 붙인다."""
-    row = c.execute("SELECT agent_ids_json FROM project_agent_orders WHERE project_id=? AND role=?",
-                    (project["id"], role)).fetchone()
+    row = c.execute("SELECT agent_ids_json FROM global_agent_orders WHERE singleton=? AND role=?",
+                    (1, role)).fetchone()
     saved = json.loads(row["agent_ids_json"]) if row else []
     by_id = {a["id"]: a for a in candidates}
     rest = sorted((a for a in candidates if a["id"] not in saved), key=lambda a: provider_order.index(a["provider"]))
@@ -41,8 +45,8 @@ def _agent_order(c, project, role, provider_order, candidates):
 
 
 def _settings(c, project):
-    row = c.execute("SELECT * FROM project_auto_settings WHERE project_id=?", (project["id"],)).fetchone()
-    roles = c.execute("SELECT * FROM project_auto_role_settings WHERE project_id=?", (project["id"],)).fetchone()
+    row = c.execute("SELECT * FROM global_auto_settings WHERE singleton=1", ()).fetchone()
+    roles = c.execute("SELECT * FROM global_auto_role_settings WHERE singleton=1", ()).fetchone()
     result = _base_settings(row, roles, project)
     candidates = _candidates(c)
     result["agent_orders"] = {f: _agent_order(c, project, f, result[f], candidates) for f in ORDER_FIELDS}
@@ -60,7 +64,8 @@ def model_for(c, issue_id, provider):
 
 def _base_settings(row, roles, project):
     return {
-        "project_key": project["key"],
+        "project_key": project["key"] if project else None,
+        "scope": "global",
         "auto_review": bool(row["auto_review"]) if row else False,
         "auto_execute": bool(row["auto_execute"]) if row else False,
         "auto_approve": bool(row["auto_approve"]) if row else False,
@@ -78,9 +83,9 @@ def _base_settings(row, roles, project):
     }
 
 
-def get_settings(key):
+def get_settings(key=None):
     with db.connect() as c:
-        return _settings(c, _project(c, key))
+        return _settings(c, _project(c, key) if key else None)
 
 
 def update_settings(actor, key, changes):
@@ -99,7 +104,7 @@ def update_settings(actor, key, changes):
     with db.connect() as c:
         # 읽기와 쓰기를 직렬화해 동시 부분 수정과 감사 기록의 일관성을 유지한다.
         c.execute("BEGIN IMMEDIATE")
-        project = _project(c, key)
+        project = _project(c, key) if key else None
         before = _settings(c, project)
         if not changes:
             return before
@@ -117,40 +122,40 @@ def update_settings(actor, key, changes):
             changes[role] = providers + [p for p in before[role] if p not in providers]
         for role in ORDER_FIELDS:
             if role in agent_orders:
-                c.execute("""INSERT INTO project_agent_orders(project_id,role,agent_ids_json) VALUES(?,?,?)
-                    ON CONFLICT(project_id,role) DO UPDATE SET agent_ids_json=excluded.agent_ids_json""",
-                    (project["id"], role, json.dumps(agent_orders[role])))
+                c.execute("""INSERT INTO global_agent_orders(singleton,role,agent_ids_json) VALUES(?,?,?)
+                    ON CONFLICT(singleton,role) DO UPDATE SET agent_ids_json=excluded.agent_ids_json""",
+                    (1, role, json.dumps(agent_orders[role])))
             elif role in changes and changes[role] != before[role]:
                 # 예전 provider 순서만 바꾸면 Agent 순서는 그 provider 순서로 다시 만든다.
-                c.execute("DELETE FROM project_agent_orders WHERE project_id=? AND role=?", (project["id"], role))
+                c.execute("DELETE FROM global_agent_orders WHERE singleton=? AND role=?", (1, role))
         updated = {**before, **changes}
         who, now = actor_label(actor), db.now_iso()
-        c.execute("""INSERT INTO project_auto_settings
-            (project_id,auto_review,auto_execute,auto_approve,provider_order_json,updated_by,updated_at,auto_plan_approve)
-            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+        c.execute("""INSERT INTO global_auto_settings
+            (singleton,auto_review,auto_execute,auto_approve,provider_order_json,updated_by,updated_at,auto_plan_approve)
+            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET
             auto_review=excluded.auto_review, auto_execute=excluded.auto_execute,
             auto_approve=excluded.auto_approve, auto_plan_approve=excluded.auto_plan_approve,
             provider_order_json=excluded.provider_order_json,
             updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
-            (project["id"], updated["auto_review"], updated["auto_execute"], updated["auto_approve"],
+            (1, updated["auto_review"], updated["auto_execute"], updated["auto_approve"],
              json.dumps(updated["provider_order"], separators=(",", ":")), who, now, updated["auto_plan_approve"]))
-        c.execute("""INSERT INTO project_auto_role_settings
-            (project_id,orchestrator_provider_order_json,troubleshooter_provider_order_json,token_exhaustion_fallback,
+        c.execute("""INSERT INTO global_auto_role_settings
+            (singleton,orchestrator_provider_order_json,troubleshooter_provider_order_json,token_exhaustion_fallback,
              description_provider_order_json)
-            VALUES(?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+            VALUES(?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET
             orchestrator_provider_order_json=excluded.orchestrator_provider_order_json,
             troubleshooter_provider_order_json=excluded.troubleshooter_provider_order_json,
             token_exhaustion_fallback=excluded.token_exhaustion_fallback,
             description_provider_order_json=excluded.description_provider_order_json""",
-            (project["id"],
+            (1,
              json.dumps(updated["orchestrator_provider_order"], separators=(",", ":")),
              json.dumps(updated["troubleshooter_provider_order"], separators=(",", ":")),
              updated["token_exhaustion_fallback"],
              json.dumps(updated["description_provider_order"], separators=(",", ":"))))
         after = _settings(c, project)
         c.execute("""INSERT INTO project_auto_settings_events
-            (project_id,actor,before_json,after_json,created_at,plan_id_floor)
-            VALUES(?,?,?,?,?,(SELECT COALESCE(MAX(id),0) FROM plans))""",
-            (project["id"], who, json.dumps(before, ensure_ascii=False),
+            (project_id,actor,before_json,after_json,created_at,plan_id_floor,scope)
+            VALUES(NULL,?,?,?,?,(SELECT COALESCE(MAX(id),0) FROM plans),'global')""",
+            (who, json.dumps(before, ensure_ascii=False),
              json.dumps(after, ensure_ascii=False), now))
         return after

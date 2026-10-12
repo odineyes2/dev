@@ -33,7 +33,7 @@ with db.connect() as c:
 assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     for table in tables:
-        added = (None, None) if table == 'jobs' else (0,) if table == 'project_auto_settings' else ('',) if table == 'runs' else ()
+        added = (None, None) if table == 'jobs' else (0,) if table == 'project_auto_settings' else ("project",) if table == 'project_auto_settings_events' else ('',) if table == 'runs' else ()
         model = (None,) if table in ('jobs', 'runs') else ()   # DEV-89-4 model 컬럼
         lifecycle = (None, None) if table == 'issues' else ()   # 근거 없는 생애 시각은 NULL로 확장한다.
         service = ('', 0, '', 'auto') if table == 'projects' else ()
@@ -60,7 +60,7 @@ with TestClient(A.app) as c:
     assert r.status_code == 200, r.text
     saved = r.json()
     assert saved["auto_review"] and not saved["auto_execute"] and saved["updated_by"] == "human:admin"
-    assert auto_settings.get_settings("NS") == {**defaults, "project_key": "NS"}
+    assert auto_settings.get_settings("NS") == {**saved, "project_key": "NS"}
     for bad in ({"auto_review": 1}, {"auto_execute": "true"}, {"auto_approve": None},
                 {"unknown": True},
                 *({"provider_order": v} for v in ([], ["claude"], ["claude", "claude"],
@@ -189,7 +189,7 @@ import orchestrate
 
 jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}
 issues.create_project(admin, 'RESULT', '결과 승인', '', '/fake')
-auto_settings.update_settings(admin, 'RESULT', {'auto_approve': True})
+auto_settings.update_settings(admin, 'RESULT', {'auto_approve': True, 'auto_execute': False})
 
 def result_task(state='unmerged', run_status='ok', labels=None, receipt=True):
     parent = issues.create_issue(admin, 'RESULT', '사람 승인 부모')
@@ -397,7 +397,7 @@ with patch.object(config, 'DB_PATH', old_path):
                 assert after[0][3] == 0
                 assert after[0][4:] == snapshot[table][0][4:] + (0,)
             elif table == 'project_auto_settings_events':
-                assert after[:-1] == snapshot[table] and len(after) == len(snapshot[table]) + 1
+                assert after[:-1] == [r + ('project',) for r in snapshot[table]] and len(after) == len(snapshot[table]) + 1
                 assert after[-1][2] == 'system:migration/task-result-approval'
                 assert json.loads(after[-1][4])['auto_approve'] is False
             elif table == 'issues':
@@ -563,7 +563,7 @@ try:
 except ValueError: pass
 with db.connect() as c:
     c.execute('UPDATE project_auto_settings_events SET before_json=? WHERE id=?', (event['before_json'], event_id))
-    duplicate = c.execute('INSERT INTO project_auto_settings_events(project_id,actor,before_json,after_json,created_at,plan_id_floor) VALUES(?,?,?,?,?,?)',
+    duplicate = c.execute("INSERT INTO project_auto_settings_events(project_id,actor,before_json,after_json,created_at,plan_id_floor,scope) VALUES(?,?,?,?,?,?,'global')",
                           tuple(event[k] for k in ('project_id', 'actor', 'before_json', 'after_json', 'created_at', 'plan_id_floor'))).lastrowid
 try:
     with db.connect() as c: recover(c, [a['id']], True)
@@ -612,10 +612,12 @@ old = reviewed()
 enabled = auto_settings.update_settings(admin, 'PLAN', {'auto_plan_approve': True})
 assert enabled['auto_plan_approve'] and not enabled['auto_review'] and not enabled['auto_execute']
 with db.connect() as c:
-    delegation = c.execute('SELECT * FROM project_auto_settings_events WHERE project_id=? ORDER BY id DESC LIMIT 1', (old['project_id'],)).fetchone()
+    delegation = c.execute("SELECT * FROM project_auto_settings_events WHERE scope='global' ORDER BY id DESC LIMIT 1", ()).fetchone()
     assert delegation['plan_id_floor'] == issues.list_plans(old['ref'])[0]['id']
 new = reviewed()
 isolated = reviewed(project='NS')
+with db.connect() as c:
+    c.execute("UPDATE projects SET local_path='/fake' WHERE key='NS'")
 goal_plan = reviewed(labels=['goal'])
 failed = [reviewed(status=s) for s in ('failed', 'timeout', 'orphaned', 'running')]
 automation.sync()
@@ -629,7 +631,8 @@ assert 'Auto 계획 승인' in event['body']
 assert event['data']['delegated_by'] == 'human:admin' and event['data']['delegation_id'] == delegation['id']
 assert event['data']['plan_version'] == 1 and event['data']['run_id']
 assert not any('조건부 승인 메모' in issues.get_issue(t['ref'])['body'] for t in approved['children'])
-for item in (old, isolated, goal_plan, *failed):
+assert issues.get_issue(isolated['ref'])['approval']['verdict'] == 'approve'
+for item in (old, goal_plan, *failed):
     assert issues.get_issue(item['ref'])['approval'] is None
 automation.sync()
 assert len(issues.get_issue(new['ref'])['children']) == 2
@@ -837,13 +840,14 @@ db.init()
 assert auto_settings.get_settings('NS') == fallback
 with db.connect() as c:
     event = c.execute(
-        "SELECT e.* FROM project_auto_settings_events e JOIN projects p ON p.id=e.project_id WHERE p.key='NS' ORDER BY e.id DESC LIMIT 1").fetchone()
+        "SELECT * FROM project_auto_settings_events WHERE scope='global' ORDER BY id DESC LIMIT 1").fetchone()
     assert json.loads(event['after_json']) == fallback
     assert json.loads(event['before_json'])['token_exhaustion_fallback'] is False
 print('OK — 세 역할 독립 저장·유효성·이관 기본 OFF·감사·영속성')
 
 # DEV-89-3: 우선순위는 켜진 카탈로그 Agent 목록 — 추가하면 끝에 붙고, 끄면 빠지고, 저장하면 provider 순서도 맞춘다.
 issues.create_project(admin, 'AGO', 'agent order')
+auto_settings.update_settings(admin, None, {f: ['claude', 'codex'] for f in auto_settings.ORDER_FIELDS})
 base = auto_settings.get_settings('AGO')
 assert all(v == [] for v in base['agent_orders'].values()) and base['provider_order'] == ['claude', 'codex']
 gpt, _ = auth.create_agent('ago-gpt', 'openai', 'gpt-6.1-sol')
@@ -896,7 +900,7 @@ for out, err, provider in ((json.dumps({'is_error': True, 'result': 'API Error: 
 real_available = automation.provider_available
 automation.provider_available = lambda provider: True
 issues.create_project(admin, 'TOK', '이관')
-auto_settings.update_settings(admin, 'TOK', {'auto_review': True, 'token_exhaustion_fallback': True})
+auto_settings.update_settings(admin, 'TOK', {'auto_review': True, 'token_exhaustion_fallback': True, 'provider_order': ['claude', 'codex']})
 
 def fake_run(ref, provider, payload):
     job = next(j for j in jobs.list_jobs() if j['ref'] == ref)
@@ -1032,3 +1036,132 @@ with db.connect() as c:
     c.execute('UPDATE agents SET enabled=0 WHERE id IN (?,?,?)', (gpt['id'], opus['id'], sonnet['id']))
     assert auto_settings.model_for(c, mi['id'], 'claude') is None
 print('OK — 우선순위 모델 적용')
+
+# 전역 REST와 기존 경로는 같은 저장소를 사용하며 실제 미들웨어 경계를 통과한다.
+auth._auth_cache.clear()
+auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
+    lambda req: httpx.Response(200, json={'user': {'username': 'admin', 'role': 'admin'}})))
+with patch.object(jobs, 'pump') as pump, TestClient(A.app) as client:
+    path = '/api/settings/auto'
+    assert client.get('/api/health').status_code == 200
+    assert client.get(path).status_code == 401
+    assert client.patch(path, headers={'X-Requested-With': 'dev'}, json={}).status_code == 401
+    client.cookies.set('ns_session', 'admin')
+    assert client.patch(path, json={}).status_code == 403
+    headers = {'X-Requested-With': 'dev'}
+    def global_patch(changes):
+        return client.patch(path, headers=headers, json=changes)
+    saved = global_patch({'auto_review': False, 'auto_execute': False, 'auto_approve': False,
+                          'auto_plan_approve': False, 'token_exhaustion_fallback': False}).json()
+    assert saved['scope'] == 'global' and saved['project_key'] is None
+    for value in ([], {'auto_review': 1}, {'bad': True}, {'agent_orders': []},
+                  {'provider_order': ['codex']}, {'token_exhaustion_fallback': 'true'}):
+        assert global_patch(value).status_code == 400
+        assert client.get(path).json() == saved
+    assert client.patch(path, headers=headers, content='{').status_code == 400
+    assert client.get('/api/projects/missing/auto-settings').status_code == 404
+    assert client.patch('/api/projects/missing/auto-settings', headers=headers, json={}).status_code == 404
+    issues.create_project(admin, 'GLOBALNEW', 'new global consumer')
+    for key in ('DEV', 'NS', 'GLOBALNEW'):
+        assert client.get(f'/api/projects/{key}/auto-settings').json() == {**saved, 'project_key': key}
+    result = client.patch('/api/projects/NS/auto-settings', headers=headers,
+                          json={'description_provider_order': ['codex', 'claude']})
+    assert result.status_code == 200
+    assert client.get(path).json() == {**result.json(), 'project_key': None}
+    client.cookies.clear()
+    _, reader_key = auth.create_agent('global-reader')
+    for method in ('GET', 'PATCH'):
+        r = client.request(method, path, headers={'Authorization': f'Bearer {reader_key}'}, json={})
+        assert r.status_code == (200 if method == 'GET' else 403)
+    client.cookies.set('ns_session', 'member')
+    auth._auth_cache.clear()
+    auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda req: httpx.Response(200, json={'user': {'username': 'member', 'role': 'user'}})))
+    assert client.get(path).status_code == 403
+    assert global_patch({}).status_code == 403
+
+# 동시에 다른 항목을 PATCH해도 두 변경과 감사 이력이 모두 남는다.
+auth._auth_cache.clear()
+auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
+    lambda req: httpx.Response(200, json={'user': {'username': 'admin', 'role': 'admin'}})))
+barrier = threading.Barrier(2)
+responses = []
+def partial_patch(field):
+    with TestClient(A.app) as client:
+        client.cookies.set('ns_session', 'admin')
+        barrier.wait(timeout=10)
+        responses.append(client.patch('/api/settings/auto', headers={'X-Requested-With': 'dev'}, json={field: True}))
+with patch.object(jobs, 'pump'):
+    workers = [threading.Thread(target=partial_patch, args=(f,)) for f in ('auto_review', 'auto_execute')]
+    for worker in workers: worker.start()
+    for worker in workers: worker.join(15)
+assert len(responses) == 2 and all(r.status_code == 200 for r in responses)
+assert all(not worker.is_alive() for worker in workers)
+saved = auto_settings.get_settings()
+assert saved['auto_review'] and saved['auto_execute']
+db.init()
+assert auto_settings.get_settings() == saved
+with db.connect() as c:
+    last = c.execute("SELECT * FROM project_auto_settings_events WHERE scope='global' ORDER BY id DESC LIMIT 2").fetchall()
+    assert all(e['project_id'] is None and e['actor'] == 'human:admin' for e in last)
+    assert json.loads(last[0]['before_json']) == json.loads(last[1]['after_json'])
+    assert json.loads(last[0]['after_json']) == saved
+    assert not c.execute('PRAGMA foreign_key_check').fetchall()
+print('OK global REST: auth/admin/CSRF, invalid input, compatibility, concurrent PATCH, restart/audit')
+
+# 다른 프로젝트에서 저장한 OFF도 유료 실행 직전 차단하고 소비자는 전역 순서를 읽는다.
+from unittest.mock import MagicMock
+import project_description, service_prepare
+with patch.object(config, 'DB_PATH', Path(tempfile.mkdtemp()) / 'global-consumers.db'), \
+     patch.object(jobs, 'pump'), patch.object(automation, 'provider_available', return_value=True):
+    db.init()
+    for project_key in ('GA', 'GB'):
+        issues.create_project(admin, project_key, project_key, local_path='/fake')
+    codex_agent, _ = auth.create_agent('global-codex', 'openai', 'gpt-6.1-sol')
+    claude_agent, _ = auth.create_agent('global-claude', 'anthropic', 'claude-sonnet-5-5')
+    global_settings = auto_settings.update_settings(admin, 'GA', {
+        'auto_review': True, 'provider_order': ['codex', 'claude'],
+        'description_provider_order': ['codex', 'claude']})
+    for project_key in ('GA', 'GB'):
+        assert auto_settings.get_settings(project_key) == {**global_settings, 'project_key': project_key}
+    issue = issues.create_issue(admin, 'GA', 'global gate')
+    automation.sync()
+    with db.connect() as c:
+        queued = next(j for j in jobs._rows(c, "j.status='queued'") if j['issue_id'] == issue['id'])
+        assert automation.valid_job(c, queued)
+        assert queued['provider'] == 'codex' and queued['model'] == 'gpt-6.1-sol'
+        event = c.execute('SELECT * FROM project_auto_settings_events WHERE id=?', (queued['delegation_id'],)).fetchone()
+        assert event['scope'] == 'global' and event['project_id'] is None
+    with TestClient(A.app) as client:
+        client.cookies.set('ns_session', 'admin')
+        response = client.patch('/api/projects/GB/auto-settings', headers={'X-Requested-With': 'dev'}, json={'auto_review': False})
+        assert response.status_code == 200
+    with db.connect() as c:
+        assert not automation.valid_job(c, queued)
+    try:
+        review.begin(jobs._actor(queued['actor']), issues.get_issue(issue['ref']), 'review', 'codex')
+        raise AssertionError('global OFF bypass')
+    except (sqlite3.IntegrityError, issues.StoreError):
+        pass
+    assert not review.list_runs(issue['ref'])
+    automation.sync()
+    assert issues.get_issue(issue['ref'])['status'] == 'backlog'
+    for project_key in ('GA', 'GB'):
+        requested = project_description.request_description(admin, project_key)
+        assert requested['provider'] == 'codex'
+        with db.connect() as c:
+            assert auto_settings.model_for(c, issues.get_issue(requested['ref'])['id'], 'codex') == 'gpt-6.1-sol'
+    proc = MagicMock(returncode=0)
+    proc.poll.return_value = 0
+    proc.communicate.return_value = (json.dumps({'type': 'item.completed', 'item': {
+        'type': 'agent_message', 'text': json.dumps({'status': 'blocked', 'reason': 'mock', 'files': [], 'checks': []})}}), '')
+    for project_key in ('GA', 'GB'):
+        with patch.object(service_prepare.subprocess, 'Popen', return_value=proc) as popen:
+            result = service_prepare._generate({'key': project_key, 'service_app': 'mock', 'service_port': 0,
+                                                'service_domain': 'mock.invalid'},
+                                               {'sources': [], 'omissions': []}, Path(tempfile.mkdtemp()))
+            assert result['reason'] == 'mock'
+            command = popen.call_args.args[0]
+            assert command[command.index('--model') + 1] == 'gpt-6.1-sol'
+    assert not auto_settings.get_settings()['auto_review']
+print('OK global consumers: cross-project OFF gate, provider/model, Description, mocked service preparation')

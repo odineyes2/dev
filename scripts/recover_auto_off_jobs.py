@@ -31,8 +31,14 @@ def recover(c, job_ids, apply=False):
                     or json.loads(following['data_json']).get('to') != 'backlog'
                     or j['note'] != '자동 위임 조건이 바뀌었어요'):
                 raise ValueError(f'job {job_id}: 자동 대기 복구 증거가 없다')
-            changes = c.execute('SELECT * FROM project_auto_settings_events WHERE project_id=? AND id>? AND created_at>=? AND created_at<=? ORDER BY id',
-                                (j['project_id'], j['delegation_id'] or 0, waiting[0]['created_at'], following['created_at'])).fetchall()
+            # 전역 이력은 해당 대기의 위임 범위와 맞는 것만 증거로 사용한다.
+            has_scope = any(r['name'] == 'scope' for r in c.execute('PRAGMA table_info(project_auto_settings_events)'))
+            delegation = c.execute('SELECT * FROM project_auto_settings_events WHERE id=?', (j['delegation_id'],)).fetchone()
+            global_scope = has_scope and delegation and delegation['scope'] == 'global'
+            predicate = "scope='global'" if global_scope else "project_id=?"
+            args = () if global_scope else (j['project_id'],)
+            changes = c.execute('SELECT * FROM project_auto_settings_events WHERE ' + predicate + ' AND id>? AND created_at>=? AND created_at<=? ORDER BY id',
+                                args + (j['delegation_id'] or 0, waiting[0]['created_at'], following['created_at'])).fetchall()
             # 시간 해상도 안에서 여러 설정 변경이 겹치면 추정하지 않는다.
             if len(changes) != 1:
                 raise ValueError(f'job {job_id}: OFF 설정 증거가 없거나 모호하다')

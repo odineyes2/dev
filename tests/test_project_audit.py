@@ -373,8 +373,13 @@ class PublicationTests(unittest.TestCase):
         with db.connect() as c:
             c.execute("INSERT INTO project_audit_publications VALUES(?,?,?,?,?,?,'comment')", (aid, 'c1', self.pid, issue['id'], issue['ref'], db.now_iso()))
             c.execute('ALTER TABLE project_audit_publications DROP COLUMN mode')
-            c.execute(f'PRAGMA user_version={len(db.MIGRATIONS) - 1}')
-        db.init()
+            publication_version = next(i for i, sql in enumerate(db.MIGRATIONS) if 'ALTER TABLE project_audit_publications ADD COLUMN mode' in sql)
+            c.execute(f'PRAGMA user_version={publication_version}')
+        # mode 마이그레이션만 재현하고 이미 적용된 후속 스키마는 유지한다.
+        with patch.object(db, 'MIGRATIONS', db.MIGRATIONS[:publication_version + 1]):
+            db.init()
+        with db.connect() as c:
+            c.execute(f'PRAGMA user_version={len(db.MIGRATIONS)}')
         self.assertEqual(audit.get_audit(self.pid, aid)['publications'][0]['mode'], 'comment')
         publication = audit.publish(self.actor, 'AUD', aid, ['c1'])['publications'][0]
         self.assertNotEqual(publication['issue_ref'], issue['ref'])

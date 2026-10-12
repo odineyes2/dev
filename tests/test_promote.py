@@ -93,9 +93,13 @@ issues.post_plan(me, q, "## Tasks\n1. 수정 요청 반영 | 파일: a.txt")   #
 assert not orchestrate.promote_parent(me, first[0]["ref"]) and issues.get_issue(q)["status"] == "triage"
 issues.decide(me, q, "approve", plan_version=2)
 kids = issues.get_issue(q)["children"]
-assert len(kids) == 2 and kids[-1]["title"] == "수정 요청 반영" and kids[-1]["status"] == "backlog", kids
+assert len(kids) == 1 and kids[0]["title"] == "수정 요청 반영" and kids[0]["status"] == "backlog", kids
+archived = issues.get_issue(q)['superseded_children']
+assert len(archived) == 1 and archived[0]['ref'] == first[0]['ref'] and archived[0]['status'] == 'done'
+assert archived[0]['superseded_by_plan'] == 2
 assert "하위 Task 1개를 만들었어요" in issues.get_issue(q)["events"][-1]["body"]
 issues.decide(me, q, "approve", plan_version=2)   # 같은 판 재승인은 다시 만들지 않는다
-assert len(issues.get_issue(q)["children"]) == 2
+assert len(issues.get_issue(q)["children"]) == 1
+assert len(issues.get_issue(q)['superseded_children']) == 1
 
 print("ok")
