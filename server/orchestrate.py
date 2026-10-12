@@ -35,13 +35,14 @@ from pathlib import Path
 
 import config
 import issues
+import project_build
 from execute import BASE_BRANCH, SECRET_ENV, _run_git, branch_name
 
 SETTINGS = config.DATA_DIR / "orchestrate.json"
 GIT_ID = ["-c", "user.name=dev orchestrator", "-c", "user.email=orchestrator@dev.local"]
 PROCESS_ID = uuid.uuid4().hex
 BOOT_SHA = _run_git(str(Path(__file__).resolve().parent.parent), "rev-parse", "HEAD").stdout.strip()
-ACTIVE_PHASES = ("ready", "checking", "applying", "deployed", "restart_requested", "rollback_requested", "rollback_applied")
+ACTIVE_PHASES = ("ready", "checking", "building", "applying", "deployed", "restart_requested", "rollback_requested", "rollback_applied")
 _lock = threading.RLock()   # 병합과 거절 롤백을 같은 순서로 직렬화한다.
 DEFAULTS = {"restart_when": ["server/*", "ecosystem.config.js"], "restart_cmd": "npx pm2 restart ecosystem.config.js --only {app} --update-env",
             "health_seconds": 60, "wait_minutes": 60, "poll_seconds": 30}
@@ -115,8 +116,11 @@ def _no_restart_note(hits) -> str:
 
 def _restart(repo, cfg) -> str | None:
     """재시작 명령을 돌린다. 실패하면 출력 끝부분."""
-    r = subprocess.run(cfg["restart_cmd"].format(app=cfg.get("pm2_app", "")), shell=True, cwd=repo, capture_output=True,
-                       text=True, encoding="utf-8", errors="replace", timeout=300)
+    try:
+        r = subprocess.run(cfg["restart_cmd"].format(app=cfg.get("pm2_app", "")), shell=True, cwd=repo, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return '재시작 명령 실행 실패: ' + type(error).__name__
     return ((r.stdout + r.stderr).strip()[-800:] or f"종료 코드 {r.returncode}") if r.returncode else None
 
 
@@ -211,7 +215,7 @@ def merge(repo: str, ref: str, after: list[str] = ()) -> tuple[str, str]:
         return _merge(repo, ref, after)
 
 
-def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task=None) -> tuple[str, str]:
+def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task=None, build_checkpoint=None, cfg=None) -> tuple[str, str]:
     head = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if head != BASE_BRANCH:
         return "on_hold", f"저장소가 {BASE_BRANCH}가 아니라 {head}에 있어 병합 보류 — {BASE_BRANCH}로 돌려 놓은 뒤 재개해 주세요."
@@ -251,6 +255,20 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
         failed = run_tests(str(worktree), ref=ref if expected_task else None, changed=changed)
         if failed:
             return 'changes_requested', f'시험 병합의 선택된 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
+        cfg = cfg if cfg is not None else settings(ref.split('-')[0])
+        try:
+            specs = selected_builds(cfg, changed)
+        except project_build.BuildError as error:
+            return 'changes_requested', build_failure(error)
+        if specs:
+            if build_checkpoint:
+                build_checkpoint('', sha)
+            try:
+                build_dir = project_build.build(repo, sha, specs, ref.split('-')[0])
+            except project_build.BuildError as error:
+                return 'changes_requested', build_failure(error)
+            if build_checkpoint:
+                build_checkpoint(str(build_dir), sha)
         changed = _git(str(worktree), 'status', '--porcelain', '--untracked-files=no').stdout.strip()
         if _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip() != sha or changed:
             return 'changes_requested', ('검사 중 시험 병합 사본이 변경됐어요 — 검사 결과를 반영하지 않았어요. 검사가 커밋된 파일을 다시 쓰면 .gitignore에 넣거나 임시 폴더에 쓰게 고쳐 주세요.'
@@ -279,6 +297,45 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
                 worktree.rmdir()
         except OSError as error:
             print(f'시험 병합 사본 정리 실패: {worktree}: {error}')
+
+
+def selected_builds(cfg, files):
+    specs = cfg.get('build') or []
+    if not isinstance(specs, list):
+        raise project_build.BuildError('config', 'build는 선언 배열이어야 한다.')
+    for spec in specs:
+        if not isinstance(spec, dict) or not isinstance(spec.get('when', []), list) or not all(isinstance(p, str) and p for p in spec.get('when', [])):
+            raise project_build.BuildError('config', '빌드 선언과 when 경로 패턴이 올바르지 않아요.')
+    return [s for s in specs if not isinstance(s, dict) or not s.get('when') or
+            any(fnmatch.fnmatch(f, pattern) for f in files for pattern in s['when'])]
+
+
+def build_failure(error):
+    return f'웹 빌드 실패({error.phase}) — 운영 산출물은 유지했어요. 전체 로그: {error.log}\n{str(error)[-1500:]}'
+
+
+def release_health(repo, cfg, revision, build_dir):
+    """공개 식별자와 운영 HEAD·산출물 표식을 함께 확인한다."""
+    code, body = _get(cfg['health_url']) if cfg.get('health_url') else (200, '{}')
+    if code != 200:
+        return False, ''
+    try:
+        data = json.loads(body)
+        if not isinstance(data, dict):
+            return False, ''
+        reported = [data[k] for k in ('revision', 'web_revision') if k in data]
+        if any(value != revision for value in reported):
+            return False, ''
+        manifest = json.loads((Path(build_dir) / 'manifest.json').read_text(encoding='utf-8'))
+        if _git(repo, 'rev-parse', 'HEAD').stdout.strip() != revision:
+            return False, ''
+        for item in manifest['outputs']:
+            marker = json.loads((Path(repo) / item['out'] / 'dev-release.json').read_text(encoding='utf-8'))
+            if marker['revision'] != revision:
+                return False, ''
+        return True, '' if len(reported) == 2 else '⚠️ 앱이 릴리스 식별자를 공개하지 않아 로컬 표식으로만 확인했어요'
+    except (OSError, ValueError, KeyError):
+        return False, ''
 
 
 def completion(ref):
@@ -402,6 +459,9 @@ def _finish(actor, record, status, note):
 
 
 def _publish(actor, record):
+    if record.get('build_dir'):
+        repo = next(p['local_path'] for p in issues.list_projects() if p['key'] == issues.get_issue(record['ref'])['project_key'])
+        project_build.confirm(repo, record['build_dir'])
     with db.connect() as c:
         send = c.execute("UPDATE execution_completion SET notified=1 WHERE run_id=? AND phase='complete' AND notified=0", (record['run_id'],)).rowcount
     if send:
@@ -435,21 +495,39 @@ def _post_deploy(actor, repo, cfg, record):
     sha = record['merge_sha']
     files = _git(repo, 'diff', '--name-only', f'{sha}^1', sha).stdout.split()
     hits = [f for f in files if any(fnmatch.fnmatch(f, p) for p in cfg['restart_when'])]
+    built = bool(record.get('build_dir'))
     if record['phase'] == 'deployed':
-        if not hits or not cfg.get('pm2_app'):
-            return _finish(actor, record, 'merged', _no_restart_note(hits))
+        if built:
+            try:
+                project_build.deploy(repo, record['build_dir'])
+            except project_build.BuildError as error:
+                _save(record, 'rollback_requested', note=record['note'] + '\n' + build_failure(error))
+        if record['phase'] == 'deployed' and (not hits and not built or not cfg.get('pm2_app')):
+            if built:
+                good, warning = release_health(repo, cfg, sha, record['build_dir'])
+                if not good:
+                    _save(record, 'rollback_requested')
+                else:
+                    return _finish(actor, record, 'merged', warning or _no_restart_note(hits))
+            else:
+                return _finish(actor, record, 'merged', _no_restart_note(hits))
+    if record['phase'] == 'deployed':
         deadline = time.monotonic() + cfg['wait_minutes'] * 60
         while _busy(cfg, record['run_id']):
             if time.monotonic() >= deadline:
                 return _finish(actor, record, 'on_hold', '작업 종료 대기 시간 제한을 넘었어요. 병합은 반영됐으며 재시작 확인이 필요해요.')
             time.sleep(cfg['poll_seconds'])
         _save(record, 'restart_requested', process_id=PROCESS_ID)
-        err = _restart(repo, cfg)
+        err = _restart(repo, cfg) if cfg.get('pm2_app') else None
         if err:
             _save(record, 'rollback_requested')
     if record['phase'] == 'restart_requested':
-        if _verified_health(cfg, record):
-            return _finish(actor, record, 'merged', '재시작과 반영 health 확인을 통과했어요.')
+        good = _verified_health(cfg, record)
+        warning = ''
+        if good and built:
+            good, warning = release_health(repo, cfg, sha, record['build_dir'])
+        if good:
+            return _finish(actor, record, 'merged', warning or '재시작과 반영 health 확인을 통과했어요.')
         _save(record, 'rollback_requested')
     if record['phase'] == 'rollback_requested':
         # revert 직후 종료됐으면 이미 생긴 복구 커밋을 다시 만들지 않는다.
@@ -461,14 +539,16 @@ def _post_deploy(actor, repo, cfg, record):
             r = _git(repo, 'revert', '-m', '1', '--no-edit', sha)
             if r.returncode:
                 return _finish(actor, record, 'changes_requested', '재시작/health 실패 후 revert도 실패했어요: ' + r.stderr.strip())
+        if built:
+            project_build.restore(repo, record['build_dir'])
         back = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
         _save(record, 'rollback_applied', merge_sha=back, process_id=PROCESS_ID)
-        err = _restart(repo, cfg)
+        err = _restart(repo, cfg) if cfg.get('pm2_app') else None
         if err:
             return _finish(actor, record, 'changes_requested', '병합을 revert했지만 복구 재시작 명령이 실패했어요: ' + err)
     if record['phase'] == 'rollback_applied':
         healthy = _verified_health(cfg, record)
-        return _finish(actor, record, 'changes_requested', '재시작/health 실패로 병합을 revert했어요. ' + ('복구 health를 확인했어요.' if healthy else '복구 health 확인도 실패했어요 — 직접 확인해 주세요.'))
+        return _finish(actor, record, 'changes_requested', '교체/재시작/health 실패로 병합을 revert했어요. ' + ('복구 health를 확인했어요.' if healthy else '복구 health 확인도 실패했어요 — 직접 확인해 주세요.') + ('\n' + record['note'] if built else ''))
 
 
 def handle(actor: dict, ref: str) -> str | None:
@@ -486,11 +566,13 @@ def handle(actor: dict, ref: str) -> str | None:
             if not claimed:
                 return None
             _save(record, record['phase'])
-            if record['phase'] in ('ready', 'checking'):
+            if record['phase'] in ('ready', 'checking', 'building'):
                 _save(record, 'checking')
                 def checkpoint(sha):
                     _save(record, 'applying', merge_sha=sha)
-                status, note = _merge(repo, ref, [b['ref'] for b in issue['blocked_by']], checkpoint, record['task_sha'])
+                def build_checkpoint(folder, sha):
+                    _save(record, 'building', build_dir=folder, release_sha=sha)
+                status, note = _merge(repo, ref, [b['ref'] for b in issue['blocked_by']], checkpoint, record['task_sha'], build_checkpoint, cfg)
                 if status != 'merged':
                     return _finish(actor, record, status, note)
                 _save(record, 'deployed', merge_sha=note)

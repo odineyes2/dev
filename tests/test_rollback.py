@@ -170,3 +170,37 @@ with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(rol
     assert issues.set_status(human, plain['ref'], 'closed')['status'] == 'closed'
 
 print('OK: rollback')
+
+
+# 사람 롤백은 revert HEAD를 다시 빌드하고 웹 릴리스를 맞춘다.
+import project_build
+with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(rollback, 'start_recovery'), patch.object(orchestrate, '_busy', return_value=False):
+    for mode in ('success', 'build', 'restart', 'revision'):
+        fail = mode == 'build'
+        repo, parent, children, merges = case()
+        (repo / '.gitignore').write_text('apps/web/out/\n')
+        (repo / 'apps/web').mkdir(parents=True)
+        (repo / 'apps/web/source.txt').write_text('web source')
+        git(repo, 'add', '.gitignore', 'apps/web/source.txt'); git(repo, 'commit', '-qm', 'web declaration paths')
+        out = repo / 'apps/web/out'; out.mkdir()
+        (out / 'index.html').write_text('old output')
+        spec = {'cwd': 'apps/web', 'out': 'apps/web/out', 'expect': ['index.html'],
+                'run': [sys.executable, '-c', 'raise SystemExit(1)' if fail else "from pathlib import Path; p=Path('out'); p.mkdir(); (p/'index.html').write_text('rollback output')"]}
+        orchestrate.SETTINGS.write_text(json.dumps({parent.split('-')[0]: {'build': [spec], 'pm2_app': 'web', 'health_url': 'http://fake', 'health_seconds': 0}}))
+        issues.set_status(human, parent, 'closed', '사람 롤백')
+        body = '{"web_revision":"wrong"}' if mode == 'revision' else '{}'
+        with patch.object(orchestrate, '_restart', side_effect=['failed', None] if mode == 'restart' else None, return_value=None), patch.object(orchestrate, '_healthy', return_value=True), patch.object(orchestrate, '_get', return_value=(200, body)):
+            rollback.recover()
+        records = [r for r in rollback._records() if r['ref'] == parent]
+        record = records[-1]
+        if mode != 'success':
+            assert record['phase'] == 'restart_failed', record
+            if fail:
+                assert 'build' in record['error']
+            assert (out / 'index.html').read_text() == 'old output'
+            assert issues.get_issue(parent)['status'] != 'closed'
+        else:
+            assert record['phase'] == 'complete', record
+            assert json.loads((out / 'dev-release.json').read_text())['revision'] == git(repo, 'rev-parse', 'HEAD')
+            assert issues.get_issue(parent)['status'] == 'closed'
+print('OK human rollback: rebuild release and failed build preserves output')

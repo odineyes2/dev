@@ -13,6 +13,7 @@ import config
 import db
 import issues
 import orchestrate
+import project_build
 
 
 class RollbackError(issues.StoreError):
@@ -129,7 +130,8 @@ def prepare(c, actor, root, rows, note):
         record['head'] = orchestrate._git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()
         changed = orchestrate._git(str(worktree), 'diff', '--name-only', before, record['head']).stdout.split()
         cfg = {**orchestrate.DEFAULTS, **orchestrate.settings(root['project_key'])}
-        record['restart'] = bool(cfg.get('pm2_app') and any(any(fnmatch.fnmatch(f, pattern) for pattern in cfg['restart_when']) for f in changed))
+        record['build_specs'] = orchestrate.selected_builds(cfg, changed)
+        record['restart'] = bool(cfg.get('pm2_app') and (record['build_specs'] or any(any(fnmatch.fnmatch(f, pattern) for pattern in cfg['restart_when']) for f in changed)))
         record['phase'] = 'prepared'
         _save(record)  # Git 반영 전 의도를 보존해 서버 종료 뒤 이어서 처리한다.
         if orchestrate._git(repo, 'rev-parse', 'HEAD').stdout.strip() != before or orchestrate._git(repo, 'status', '--porcelain', '--untracked-files=no').stdout.strip():
@@ -184,8 +186,25 @@ def recover():
             try:
                 with db.connect() as c:
                     _recovery_rows(c, record)
+                cfg = {**orchestrate.DEFAULTS, **orchestrate.settings(record['project_key'])}
+                if record.get('build_specs'):
+                    with db.connect() as c:
+                        if c.execute("SELECT 1 FROM runs WHERE status='running' LIMIT 1").fetchone():
+                            waiting = True
+                            continue
+                    if orchestrate._busy(cfg):
+                        waiting = True
+                        continue
+                if record.get('build_specs') and record['phase'] != 'restarting':
+                    if orchestrate._git(repo, 'rev-parse', 'HEAD').stdout.strip() != record['head']:
+                        raise RollbackError('롤백 빌드 전에 운영 HEAD가 바뀌었어요.', 409)
+                    if not record.get('build_dir'):
+                        record['phase'] = 'building'
+                        _save(record)
+                        record['build_dir'] = str(project_build.build(repo, record['head'], record['build_specs'], record['project_key']))
+                        _save(record)
+                    project_build.deploy(repo, record['build_dir'])
                 if record['restart']:
-                    cfg = {**orchestrate.DEFAULTS, **orchestrate.settings(record['project_key'])}
                     with db.connect() as c:
                         if c.execute("SELECT 1 FROM runs WHERE status='running' LIMIT 1").fetchone():
                             waiting = True
@@ -201,6 +220,12 @@ def recover():
                             raise RollbackError('운영 재시작 실패: ' + error, 409)
                     if not orchestrate._healthy(cfg):
                         raise RollbackError('재시작 뒤 정상 응답을 확인하지 못했어요.', 409)
+                if record.get('build_dir'):
+                    good, warning = orchestrate.release_health(repo, cfg, record['head'], record['build_dir'])
+                    if not good:
+                        raise RollbackError('롤백 릴리스 식별자가 일치하지 않아요.', 409)
+                    if warning:
+                        issues.add_comment(record['actor'], record['ref'], warning)
                 with db.connect() as c:
                     c.execute('BEGIN IMMEDIATE')
                     rows = _recovery_rows(c, record)
@@ -210,11 +235,18 @@ def recover():
                             issues._set_status(c, record['actor'], row, 'closed', record['note'], {'rollback_id': record['id'], 'rollback_sha': record['head']})
                     for row in rows:
                         issues._event(c, row['id'], record['actor'], 'comment', '↩ 롤백과 운영 반영 확인을 완료했어요.', {'rollback_id': record['id'], 'rollback_sha': record['head']})
+                if record.get('build_dir'):
+                    project_build.confirm(repo, record['build_dir'])
                 record['phase'] = 'complete'
                 _save(record)
-            except (issues.StoreError, OSError, ValueError, subprocess.TimeoutExpired) as error:
-                record['phase'] = 'restart_failed' if record['restart'] else 'failed'
-                record['error'] = str(error)
+            except (issues.StoreError, project_build.BuildError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+                if record.get('build_dir'):
+                    project_build.restore(repo, record['build_dir'])
+                    record.pop('build_dir', None)
+                    if record['restart']:
+                        orchestrate._restart(repo, cfg)
+                record['phase'] = 'restart_failed' if record['restart'] or record.get('build_specs') else 'failed'
+                record['error'] = orchestrate.build_failure(error) if isinstance(error, project_build.BuildError) else str(error)
                 _save(record)
                 issues.add_comment(record['actor'], record['ref'], '↩ 롤백 후속 확인 실패 — 닫지 않았어요. ' + str(error))
     if waiting:

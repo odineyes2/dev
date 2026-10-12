@@ -916,6 +916,12 @@ BEGIN
 END;
 """)
 
+# 병합 빌드의 스테이징 위치와 릴리스를 재기동 뒤에도 보존한다.
+MIGRATIONS.append("""
+ALTER TABLE execution_completion ADD COLUMN build_dir TEXT NOT NULL DEFAULT '';
+ALTER TABLE execution_completion ADD COLUMN release_sha TEXT NOT NULL DEFAULT '';
+""")
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
