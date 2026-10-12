@@ -748,26 +748,29 @@ function troubleshootingHtml(it){
   const t = it.troubleshooting;
   if(!t || (!t.failure && !t.requests.length)) return '';
   const f = t.failure, labels = {queued:'대기',running:'복구 실행 중',succeeded:'코드 복구 완료',failed:'복구 실패',cancelled:'취소',needs_input:'확인 필요'};
-  return `<section class="panel troubleshooting"><h2>트러블슈팅</h2><p class="dim">승인된 Plan 안에서 기존 작업을 이어받아요. 추가 CLI 호출은 1회·최대 10분이며 사용량이 발생해요.</p>
-    ${f ? `<p>원 실행 #${f.source_run_id} · Plan v${f.plan_version}</p><p class="dim">${esc(f.blocked || f.hint || '코드·테스트 실패를 복구할 수 있어요.')}</p>${f.available ? '<button id="ask-troubleshoot">트러블슈팅 요청</button>' : ''}<button id="copy-troubleshooting" class="secondary">진단 복사</button><details><summary>실패 진단</summary><pre>${esc(f.diagnostic)}</pre></details>` : ''}
-    ${t.requests.map(r => `<details><summary>TS-${r.id} · ${labels[r.status]} · 원 실행 #${r.source_run_id}${r.run_id ? ` → 복구 #${r.run_id}` : ''}</summary><p>${esc(r.provider || '대기')} · ${esc(r.model || '')} · ${r.automatic ? '자동' : '수동'}</p><p class="dim">요청: ${esc(r.actor || '')} · ${fmtTime(r.created_at)}${r.started_at ? `<br>시작: ${fmtTime(r.started_at)}` : ''}${r.ended_at ? `<br>종료: ${fmtTime(r.ended_at)}` : ''}</p><pre>${esc(r.diagnostic)}</pre><p class="dim">복구 호출의 토큰: 입력 ${r.input_tokens ?? '미측정'} · 출력 ${r.output_tokens ?? '미측정'} · 비용 ${r.cost_usd == null ? '미측정' : '$' + r.cost_usd}</p></details>`).join('')}
-    <p class="dim">병합·배포 결과와 승인은 기존 Result에서 확인해 주세요.</p></section>`;
+  return `<section class="panel troubleshooting"><h2>트러블슈팅</h2>
+    ${f ? `<p>원 실행 #${f.source_run_id} · Plan v${f.plan_version}</p><p class="dim">${esc(f.blocked || f.hint || '코드·테스트 실패를 복구할 수 있어요.')}</p>${f.available ? '<button id="ask-troubleshoot" title="승인된 Plan 안에서 기존 작업을 이어받아요. 추가 CLI 호출은 1회·최대 10분이며 사용량이 발생해요.">트러블슈팅 요청</button>' : ''}<button id="copy-troubleshooting" class="secondary">진단 복사</button><details><summary>실패 진단</summary><pre>${esc(f.diagnostic)}</pre></details>` : ''}
+    ${t.requests.map(r => `<details><summary>TS-${r.id} · ${labels[r.status]} · 원 실행 #${r.source_run_id}${r.run_id ? ` → 복구 #${r.run_id}` : ''}</summary><p>${esc(r.provider || '대기')} · ${esc(r.model || '')} · ${r.automatic ? '자동' : '수동'}</p><p class="dim">요청: ${esc(r.actor || '')} · ${fmtTime(r.created_at)}${r.started_at ? `<br>시작: ${fmtTime(r.started_at)}` : ''}${r.ended_at ? `<br>종료: ${fmtTime(r.ended_at)}` : ''}</p><pre>${esc(r.diagnostic)}</pre><p class="dim">복구 호출의 토큰: 입력 ${r.input_tokens ?? '미측정'} · 출력 ${r.output_tokens ?? '미측정'} · 비용 ${r.cost_usd == null ? '미측정' : '$' + r.cost_usd}</p></details>`).join('')}</section>`;
 }
 function executeHtml(it, liveMode, liveProvider){
   const x = it.execute, running = it.review_running && liveMode === 'execute';
   const job = it.job && it.job.mode === 'execute' ? it.job : null;
   const provider = pendingExecutions.get(it.ref) || (running ? liveProvider || 'claude' : null);
-  const off = !!provider || (x.blocked && !waitOnly(x.blocked));
-  const hint = LIVE_MERGE.has(it.merge_state) ? `${esc(it.merge_state)} — 운영 반영 확인 후 In Review로 올라와요.` : running ? '구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.'
-    : x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
-    : it.review_busy ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : `격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}.`;
+  const stopped = x.blocked && !waitOnly(x.blocked);   // 기다려도 못 누르면 버튼 대신 사유만
+  const hint = x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
+    : it.review_busy && !running ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : '';
   const b = x.branch;
-  const checks = x.regression ? `<details class="task-checks"><summary>검사 선택 · ${{light:'가벼움',normal:'보통',high:'높음'}[x.regression.level]} · ${x.regression.planned ? '승인 계획 반영' : '서버 판단'}</summary><p class="dim">실제 변경에 따라 Auto 선택이 보강될 수 있어요.</p>${Object.values(x.regression.checks).sort((a,b) => Number(b.enabled) - Number(a.enabled)).map(c => `<div><b>${esc(c.name)}</b> · ${c.mode.toUpperCase()} · ${c.enabled ? '실행' : '생략'}<p class="dim">${esc(c.reason)}</p></div>`).join('')}${Object.entries(x.regression_results || {}).filter(([,r]) => r.results).map(([stage,r]) => `<h4>${stage === 'server_completion' ? '최근 완료 전 검사' : '최근 병합 검사'}</h4>${Object.entries(r.results).map(([name,result]) => `<div>${esc(name)} · ${{passed:'통과',failed:'실패',reused:'기존 통과 결과 재사용',skipped:'생략'}[result]}</div>`).join('')}`).join('')}</details>` : '';
-  return `<div class="exec">${job ? jobHtml(job) : `<button id="ask-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>${provider === 'claude' ? '실행 중…' : 'Claude에게 실행 맡기기'}</button>
-    <button id="ask-codex-execute"${off ? ' disabled' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>${provider === 'codex' ? '실행 중…' : 'Codex에게 실행 맡기기'}</button>
-    <div class="dim hint">${hint}</div><div class="dim hint">Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음.</div>`}
-    ${b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
-      ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}<div class="dim hint">합치기는 터미널에서: <code>git merge ${esc(b.branch)}</code></div></div>` : ''}${checks}</div>`;
+  const checks = x.regression ? `<details class="task-checks"><summary title="실제 변경에 따라 Auto 선택이 보강될 수 있어요.">검사 선택 · ${{light:'가벼움',normal:'보통',high:'높음'}[x.regression.level]} · ${x.regression.planned ? '승인 계획 반영' : '서버 판단'}</summary>${Object.values(x.regression.checks).sort((a,b) => Number(b.enabled) - Number(a.enabled)).map(c => `<div><b>${esc(c.name)}</b> · ${c.mode.toUpperCase()} · ${c.enabled ? '실행' : '생략'}<p class="dim">${esc(c.reason)}</p></div>`).join('')}${Object.entries(x.regression_results || {}).filter(([,r]) => r.results).map(([stage,r]) => `<h4>${stage === 'server_completion' ? '최근 완료 전 검사' : '최근 병합 검사'}</h4>${Object.entries(r.results).map(([name,result]) => `<div>${esc(name)} · ${{passed:'통과',failed:'실패',reused:'기존 통과 결과 재사용',skipped:'생략'}[result]}</div>`).join('')}`).join('')}</details>` : '';
+  const buttons = `<div class="agent-btns" id="exec-btns"><button id="ask-execute" title="격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>Claude에게 실행 맡기기</button>
+    <button id="ask-codex-execute" title="Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>Codex에게 실행 맡기기</button></div>`;
+  const merge = (b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
+      ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}</div>` : '') + checks;
+  return `<div class="exec"><div class="agent-sub">실행</div>${job ? jobHtml(job) : provider ? busyLine(provider, '실행') : `${stopped ? '' : buttons}${hint ? `<div class="dim hint">${hint}</div>` : ''}`}
+    ${merge ? `<div class="agent-sub">병합</div>${merge}` : ''}</div>`;
+}
+// 검토·실행이 도는 동안 버튼 자리에 보이는 상태 줄(DEV-113) — 누를 수 없는 버튼은 그리지 않는다
+function busyLine(provider, word){
+  return `<div class="agent-busy" role="status">${provider ? `<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${PROVIDER_NAME[provider]} ` : ''}${word} 중…</div>`;
 }
 function decisionHtml(it){
   const a = it.approval;
@@ -870,7 +873,10 @@ async function renderIssue(ref, background = false){
   const liveMode = liveRun.mode;
   const reviewProvider = pendingReviews.get(ref) || (it.review_running && liveMode === 'review' ? liveRun.provider : null);
   const reviewBusy = it.review_running || pendingReviews.has(ref);
-  const reviewButton = (provider, id) => `<button id="${id}"${reviewBusy ? ' disabled' : ''}${it.execute ? ' hidden' : ''}><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${reviewProvider === provider ? '검토 중…' : `${PROVIDER_NAME[provider]}에게 검토 맡기기`}</button>`;
+  const reviewButton = (provider, id) => `<button id="${id}" title="홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음)."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${PROVIDER_NAME[provider]}에게 검토 맡기기</button>`;
+  // 검토 절은 Task가 아닐 때만 — 도는 중이면 버튼 대신 상태 줄
+  const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job) : reviewBusy ? busyLine(reviewProvider, '검토')
+    : `<div class="agent-btns" id="review-btns">${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}</div>${it.review_busy ? `<div class="dim hint">다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}</div>` : ''}`}`;
   view.innerHTML = `
     <div class="detail">
       <div>
@@ -903,13 +909,12 @@ async function renderIssue(ref, background = false){
           ${it.children.length || it.parent_ref ? '<button class="complete-tree" title="최상위 이슈와 모든 Task를 한 번에 Done으로">전체 완료</button>' : ''}</div>
         <div class="field" hidden><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
         <div class="field"><span>Assignee</span><select id="assignee">${agentOpts}</select></div>
-        <div class="field" id="issue-type-editor">${typePicker(catalog.types, it.type_ids || [])}<p class="dim">${(it.types || []).some(t => t.source === 'agent') ? '자동 분류 결과예요.' : '종류를 선택하거나 비울 수 있어요.'}</p><button id="save-types" type="button">종류 저장</button><p id="types-status" role="status"></p></div><div class="field"><span>Labels (쉼표로)</span><input id="labels" value="${esc(it.labels.join(', '))}"></div>
+        <div class="field" id="issue-type-editor">${typePicker(catalog.types, it.type_ids || [])}<p class="dim">${(it.types || []).some(t => t.source === 'agent') ? '자동 분류 결과예요.' : ''}</p><button id="save-types" type="button">종류 저장</button><p id="types-status" role="status"></p></div><div class="field"><span>Labels (쉼표로)</span><input id="labels" value="${esc(it.labels.join(', '))}"></div>
         <div class="field"><span>AGENT</span>${processingAgentsHtml(it)}</div>
         ${['done', 'closed'].includes(it.status) ? `<div class="field"><span>TIME</span>${completionTimeHtml(it)}</div>` : ''}
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Agent</span>
-          ${it.job && it.job.mode === 'review' ? jobHtml(it.job) : `${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}
-          <div class="dim hint"${it.execute ? ' hidden' : ''}>${it.review_busy && !it.review_running ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : '홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음).'}</div>`}
+          ${reviewSection}
           ${it.execute ? executeHtml(it, liveMode, liveRun.provider) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
@@ -1080,8 +1085,7 @@ ${QUEUE_LINE}`)) return;
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
     pendingExecutions.set(ref, provider);
-    for(const buttonId of ['ask-execute', 'ask-codex-execute']) $(buttonId).disabled = true;
-    e.currentTarget.lastChild.textContent = '실행 중…';
+    $('exec-btns').outerHTML = busyLine(provider, '실행');
     try {
       const r = await api('POST', `/api/issues/${R}/execute`, { provider });
       toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요'));
@@ -1101,9 +1105,7 @@ ${QUEUE_LINE}`)) return;
 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
       pendingReviews.set(ref, provider);
-      for(const buttonId of ['ask-review', 'ask-codex-review']) $(buttonId).disabled = true;
-      const label = e.currentTarget.lastChild;
-      label.textContent = '검토 중…';
+      $('review-btns').outerHTML = busyLine(provider, '검토');
       try {
         const r = await api('POST', `/api/issues/${R}/review`, { provider });
         toast(queuedMsg(r, '검토를 맡겼어요 — 몇 분 뒤 계획서가 올라와요'));

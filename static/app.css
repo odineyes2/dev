@@ -386,6 +386,10 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
 .runs li + li{ border-top:1px solid var(--border); }
 .runs code{ word-break:break-all; }
 .exec{ margin-top:var(--sp-3); }
+/* 사이드바 Agent 칸 소제목(검토/실행/병합)과 도는 중 상태 줄(DEV-113) */
+.agent-sub{ font-size:12px; color:var(--dim); margin:var(--sp-2) 0 4px; }
+.agent-btns{ display:flex; flex-wrap:wrap; gap:var(--sp-2); }
+.agent-busy{ display:flex; align-items:center; gap:6px; color:var(--dim); font-size:13px; }
 .branch{ margin-top:var(--sp-2); }
 .branch pre{ margin:6px 0 0; font:12px/1.5 var(--mono); white-space:pre-wrap; word-break:break-all; color:var(--dim); }
 
