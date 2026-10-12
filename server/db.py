@@ -922,6 +922,124 @@ ALTER TABLE execution_completion ADD COLUMN build_dir TEXT NOT NULL DEFAULT '';
 ALTER TABLE execution_completion ADD COLUMN release_sha TEXT NOT NULL DEFAULT '';
 """)
 
+# QA ??: FK? ?? ??? ???? runs? ???? ?? ???????? ????.
+MIGRATIONS.append("""
+CREATE TABLE runs_new (
+        id INTEGER PRIMARY KEY,
+        issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL CHECK (mode IN ('review','execute','qa')),
+        status TEXT NOT NULL CHECK (status IN ('running','ok','failed','timeout','orphaned')),
+        actor TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        exit_code INTEGER,
+        log_file TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cost_usd REAL,
+        note TEXT NOT NULL DEFAULT ''
+    , provider TEXT NOT NULL DEFAULT 'claude', task_start_sha TEXT NOT NULL DEFAULT '', model TEXT);
+INSERT INTO runs_new SELECT * FROM runs;
+DROP TABLE runs;
+ALTER TABLE runs_new RENAME TO runs;
+CREATE INDEX runs_issue ON runs(issue_id, id);
+CREATE TRIGGER auto_job_owner_gate BEFORE INSERT ON runs
+    WHEN NEW.actor LIKE 'human:auto/delegation/%'
+    BEGIN
+        SELECT RAISE(ABORT, '자동 위임 조건이 바뀌었어요') WHERE NOT EXISTS(
+            SELECT 1 FROM jobs WHERE issue_id=NEW.issue_id AND mode=NEW.mode
+            AND actor=NEW.actor AND source='auto' AND status='queued'
+        );
+    END;
+CREATE TRIGGER troubleshoot_run_gate BEFORE INSERT ON runs
+WHEN EXISTS(SELECT 1 FROM troubleshoot_requests t JOIN jobs j ON j.id=t.job_id WHERE t.issue_id=NEW.issue_id AND t.status='queued' AND j.status='queued')
+BEGIN
+ SELECT RAISE(ABORT,'트러블슈팅 조건이 바뀌었어요') WHERE NOT EXISTS(
+ SELECT 1 FROM troubleshoot_requests t JOIN jobs j ON j.id=t.job_id JOIN issues i ON i.id=t.issue_id
+ JOIN projects p ON p.id=i.project_id JOIN global_auto_settings s ON s.singleton=1
+ WHERE t.issue_id=NEW.issue_id AND t.status='queued' AND j.status='queued' AND i.status='waiting'
+ AND NEW.mode='execute' AND p.archived=0 AND (t.automatic=0 OR s.auto_troubleshoot=1)
+ AND NEW.provider=j.provider AND NEW.model=j.model AND NEW.actor=t.actor
+ AND (i.claimed_by IS NULL OR i.lease_until IS NULL OR julianday(i.lease_until)<=julianday(NEW.started_at))
+ AND (SELECT MAX(id) FROM runs WHERE issue_id=i.id)=t.source_run_id
+ AND NOT EXISTS(SELECT 1 FROM issues par WHERE par.id=i.parent_id AND par.status IN ('done','closed'))
+ AND NOT EXISTS(SELECT 1 FROM json_each(i.labels_json) WHERE value='goal')
+ AND NOT EXISTS(SELECT 1 FROM issue_deps dep JOIN issues b ON b.id=dep.blocked_by_id WHERE dep.issue_id=i.id AND b.status<>'done')
+ AND EXISTS(SELECT 1 FROM agents a WHERE a.enabled=1 AND a.kind='agent' AND a.model=NEW.model AND ((NEW.provider='codex' AND a.vendor='openai') OR (NEW.provider='claude' AND a.vendor='anthropic')))
+ AND t.plan_version=(SELECT MAX(version) FROM plans WHERE issue_id=i.parent_id)
+ AND EXISTS(SELECT 1 FROM decisions d WHERE d.id=(SELECT MAX(id) FROM decisions WHERE issue_id=i.parent_id AND gate='plan') AND d.plan_version=t.plan_version AND d.verdict IN ('approve','approve_notes') AND d.actor LIKE 'human:%')
+ AND NOT EXISTS(SELECT 1 FROM events e WHERE e.issue_id=i.parent_id AND json_extract(e.data_json,'$.plan_revision_request')=1 AND json_extract(e.data_json,'$.plan_version')=t.plan_version));
+END;
+CREATE TRIGGER auto_run_gate BEFORE INSERT ON runs
+WHEN EXISTS(SELECT 1 FROM jobs j WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto'
+ AND NOT EXISTS(SELECT 1 FROM troubleshoot_requests t WHERE t.job_id=j.id))
+BEGIN
+ SELECT RAISE(ABORT,'자동 위임 조건이 바뀌었어요') WHERE NOT EXISTS(
+ SELECT 1 FROM jobs j JOIN issues i ON i.id=j.issue_id JOIN projects p ON p.id=i.project_id JOIN global_auto_settings s ON s.singleton=1
+ WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto'
+ AND p.archived=0 AND i.status='waiting' AND i.claimed_by IS NULL
+ AND NOT EXISTS(SELECT 1 FROM json_each(i.labels_json) WHERE value='goal')
+ AND ((NEW.mode='review' AND s.auto_review=1 AND i.parent_id IS NULL AND NOT EXISTS(SELECT 1 FROM plans WHERE issue_id=i.id))
+ OR (NEW.mode='execute' AND s.auto_execute=1 AND j.approval_version=(SELECT MAX(version) FROM plans WHERE issue_id=i.parent_id)
+ AND EXISTS(SELECT 1 FROM decisions d WHERE d.id=(SELECT MAX(id) FROM decisions WHERE issue_id=i.parent_id AND gate='plan') AND d.plan_version=j.approval_version AND d.verdict IN ('approve','approve_notes') AND d.actor LIKE 'human:%')
+ AND NOT EXISTS(SELECT 1 FROM issue_deps dep JOIN issues b ON b.id=dep.blocked_by_id WHERE dep.issue_id=i.id AND b.status<>'done'))));
+END;
+ALTER TABLE global_auto_settings ADD COLUMN auto_qa INTEGER NOT NULL DEFAULT 0 CHECK(auto_qa IN (0,1));
+ALTER TABLE global_auto_role_settings ADD COLUMN qa_provider_order_json TEXT NOT NULL DEFAULT '["claude","codex"]' CHECK(qa_provider_order_json IN ('["claude","codex"]','["codex","claude"]'));
+CREATE TABLE qa_rounds (
+ id INTEGER PRIMARY KEY,
+ issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+ round_number INTEGER NOT NULL CHECK(round_number>0),
+ snapshot_key TEXT NOT NULL,
+ snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+ status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','passed','failed','inconclusive','stale','orphaned')),
+ run_id INTEGER UNIQUE REFERENCES runs(id),
+ provider TEXT CHECK(provider IN ('claude','codex')),
+ model TEXT,
+ note TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL,
+ ended_at TEXT,
+ UNIQUE(issue_id,round_number), UNIQUE(issue_id,snapshot_key)
+);
+CREATE TABLE qa_items (
+ qa_id INTEGER NOT NULL REFERENCES qa_rounds(id) ON DELETE CASCADE,
+ requirement_id TEXT NOT NULL,
+ verdict TEXT NOT NULL CHECK(verdict IN ('pass','fail')),
+ evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json) AND json_type(evidence_json)='array' AND json_array_length(evidence_json)>0),
+ task_refs_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(task_refs_json) AND json_type(task_refs_json)='array'),
+ suggestion TEXT NOT NULL DEFAULT '',
+ PRIMARY KEY(qa_id,requirement_id)
+);
+CREATE TABLE qa_rework_batches (
+ id INTEGER PRIMARY KEY,
+ issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+ qa_id INTEGER NOT NULL UNIQUE REFERENCES qa_rounds(id),
+ attempt INTEGER NOT NULL CHECK(attempt BETWEEN 1 AND 5),
+ status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN ('proposed','registered','complete','cancelled')),
+ task_refs_json TEXT NOT NULL CHECK(json_valid(task_refs_json) AND json_type(task_refs_json)='array'),
+ created_at TEXT NOT NULL,
+ UNIQUE(issue_id,attempt)
+);
+CREATE TRIGGER qa_top_level BEFORE INSERT ON qa_rounds
+WHEN (SELECT parent_id FROM issues WHERE id=NEW.issue_id) IS NOT NULL
+BEGIN SELECT RAISE(ABORT,'QA? ??? Issue? ????'); END;
+CREATE TRIGGER qa_top_level_update BEFORE UPDATE OF issue_id ON qa_rounds
+WHEN (SELECT parent_id FROM issues WHERE id=NEW.issue_id) IS NOT NULL
+BEGIN SELECT RAISE(ABORT,'QA? ??? Issue? ????'); END;
+CREATE TRIGGER qa_run_issue BEFORE INSERT ON qa_rounds
+WHEN NEW.run_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM runs WHERE id=NEW.run_id AND issue_id=NEW.issue_id AND mode='qa')
+BEGIN SELECT RAISE(ABORT,'QA ?? ??? ???'); END;
+CREATE TRIGGER qa_run_issue_update BEFORE UPDATE OF run_id,issue_id ON qa_rounds
+WHEN NEW.run_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM runs WHERE id=NEW.run_id AND issue_id=NEW.issue_id AND mode='qa')
+BEGIN SELECT RAISE(ABORT,'QA ?? ??? ???'); END;
+CREATE TRIGGER qa_rework_issue_update BEFORE UPDATE OF issue_id,qa_id ON qa_rework_batches
+WHEN NEW.issue_id<>(SELECT issue_id FROM qa_rounds WHERE id=NEW.qa_id)
+BEGIN SELECT RAISE(ABORT,'QA ??? Issue? ???'); END;
+CREATE TRIGGER qa_rework_issue BEFORE INSERT ON qa_rework_batches
+WHEN NEW.issue_id<>(SELECT issue_id FROM qa_rounds WHERE id=NEW.qa_id)
+BEGIN SELECT RAISE(ABORT,'QA ??? Issue? ???'); END;
+""")
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

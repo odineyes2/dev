@@ -10,10 +10,10 @@ import model_catalog
 from issues import StoreError, actor_label
 
 PROVIDERS = ("claude", "codex")
-ORDER_FIELDS = ("provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order")
-BOOL_FIELDS = ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "token_exhaustion_fallback", "auto_troubleshoot")
+ORDER_FIELDS = ("provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "qa_provider_order")
+BOOL_FIELDS = ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "token_exhaustion_fallback", "auto_troubleshoot", "auto_qa")
 # agent_orders: {역할: [Agent id, …]} — 저장하면 그 역할의 provider 순서도 처음 나오는 provider 순으로 맞춘다.
-FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "token_exhaustion_fallback", "agent_orders", "auto_troubleshoot"}
+FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "token_exhaustion_fallback", "agent_orders", "auto_troubleshoot", "auto_qa", "qa_provider_order"}
 
 
 def _project(c, key):
@@ -66,6 +66,8 @@ def _base_settings(row, roles, project):
     return {
         "project_key": project["key"] if project else None,
         "scope": "global",
+        "auto_qa": bool(row["auto_qa"]) if row else False,
+        "qa_provider_order": json.loads(roles["qa_provider_order_json"]) if roles else list(PROVIDERS),
         "auto_review": bool(row["auto_review"]) if row else False,
         "auto_execute": bool(row["auto_execute"]) if row else False,
         "auto_troubleshoot": bool(row['auto_troubleshoot']) if row and 'auto_troubleshoot' in row.keys() else False,
@@ -154,6 +156,8 @@ def update_settings(actor, key, changes):
              updated["token_exhaustion_fallback"],
              json.dumps(updated["description_provider_order"], separators=(",", ":"))))
         c.execute('UPDATE global_auto_settings SET auto_troubleshoot=? WHERE singleton=1', (updated['auto_troubleshoot'],))
+        c.execute("UPDATE global_auto_settings SET auto_qa=? WHERE singleton=1", (updated["auto_qa"],))
+        c.execute("UPDATE global_auto_role_settings SET qa_provider_order_json=? WHERE singleton=1", (json.dumps(updated["qa_provider_order"], separators=(",", ":")),))
         after = _settings(c, project)
         c.execute("""INSERT INTO project_auto_settings_events
             (project_id,actor,before_json,after_json,created_at,plan_id_floor,scope)

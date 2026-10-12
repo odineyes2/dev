@@ -666,6 +666,12 @@ def api_issue(ref: str):
     return it
 
 
+@app.get("/api/issues/{ref}/qa")
+def api_qa(ref: str):
+    import qa
+    return qa.panel(ref)
+
+
 @app.get("/api/issues/{ref}/runs")
 def api_runs(ref: str):
     return {"runs": review.list_runs(ref)}
