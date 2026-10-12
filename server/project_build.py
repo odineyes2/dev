@@ -198,7 +198,11 @@ def deploy(repo, build_dir):
             incoming = out.with_name(out.name + '.incoming-' + uuid.uuid4().hex)
             out.parent.mkdir(parents=True, exist_ok=True)
             if previous.exists():
-                raise BuildError('swap', '이전 복원본이 남아 있다. 먼저 배포를 확인하거나 복원해야 한다.')
+                if not out.exists() and journal.get(item['out']) is True:
+                    # 같은 배포가 기존 산출물을 옮긴 직후 중단됐으면 복원하고 다시 교체한다.
+                    _rename(previous, out)
+                else:
+                    raise BuildError('swap', '이전 복원본이 남아 있다. 먼저 배포를 확인하거나 복원해야 한다.')
             journal[item['out']] = out.exists()
             journal_path.write_text(json.dumps(journal), encoding='utf-8')
             swaps.append((out, previous, incoming, out.exists()))

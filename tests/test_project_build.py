@@ -72,6 +72,21 @@ with tempfile.TemporaryDirectory() as temp:
     with patch.object(b, '_rename', side_effect=fail_incoming):
         fails('swap', lambda: b.deploy(repo, clean))
     assert (repo / 'out/index.html').read_text() == 'old'
+    class Interrupted(BaseException):
+        pass
+    def interrupt_swap(source, target):
+        original(source, target)
+        if target.name == 'out.prev':
+            raise Interrupted()
+    with patch.object(b, '_rename', side_effect=interrupt_swap):
+        try:
+            b.deploy(repo, clean)
+        except Interrupted:
+            pass
+        else:
+            raise AssertionError('교체 도중 중단해야 한다')
+    assert not (repo / 'out').exists()
+    assert (repo / 'out.prev/index.html').read_text() == 'old'
     b.deploy(repo, clean)
     b.deploy(repo, clean)
     assert (repo / 'out/index.html').read_text() == 'new'
