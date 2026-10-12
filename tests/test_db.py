@@ -121,9 +121,9 @@ assert db.init() == len(db.MIGRATIONS)
 assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
     assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings')] == [r + (0,) for r in settings_before]
-    assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings_events')] == [r + (0,) for r in event_before]
+    assert [tuple(r) for r in c.execute('SELECT * FROM project_auto_settings_events')] == [r + (0, "project") for r in event_before]
     assert [tuple(r) for r in c.execute('SELECT * FROM jobs')] == [r + (None, None, r[0], None) for r in job_before]   # 끝 None: DEV-89-4 model
-    assert c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='auto_run_gate'").fetchone()[0] == trigger_before
+    assert 'JOIN global_auto_settings' in c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='auto_run_gate'").fetchone()[0]
     assert c.execute('PRAGMA foreign_key_check').fetchall() == []
     c.execute('UPDATE project_auto_settings SET auto_approve=1 WHERE project_id=1')
 assert rejected('UPDATE project_auto_settings SET auto_approve=2 WHERE project_id=1')
@@ -241,3 +241,42 @@ with db.connect() as c:
     assert not c.execute('PRAGMA foreign_key_check').fetchall()
 db.config.DB_PATH = original_path
 print('OK project audit migration')
+
+# 전역화 직전 DB의 서로 다른 설정·이력·대기·취소·이관 FK를 보존한다.
+db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'global-legacy.db'
+with sqlite3.connect(db.config.DB_PATH) as c:
+    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+        c.executescript(sql + f'PRAGMA user_version={version};')
+    for pid, key in ((1, 'ONE'), (2, 'TWO')):
+        c.execute('INSERT INTO projects(id,key,name,created_at) VALUES(?,?,?,?)', (pid,key,key,now))
+        c.execute("INSERT INTO project_auto_settings VALUES(?,1,1,1,?, 'human:admin',?,1)",
+                  (pid, '["codex","claude"]' if pid == 1 else '["claude","codex"]', now))
+        c.execute('INSERT INTO project_auto_role_settings(project_id,token_exhaustion_fallback) VALUES(?,1)', (pid,))
+        c.execute("INSERT INTO project_agent_orders VALUES(?,'provider_order','[99]')", (pid,))
+        c.execute("INSERT INTO project_auto_settings_events VALUES(?,?,'human:admin','{}','{}',?,0)", (pid,pid,now))
+        c.execute("INSERT INTO issues(id,project_id,number,title,reporter,created_at,updated_at) VALUES(?,?,1,'legacy','human:admin',?,?)", (pid,pid,now,now))
+    for jid, status, source, delegation in ((1,'queued','auto',1), (2,'started','auto',1), (3,'queued','manual',None), (4,'cancelled','auto',1)):
+        c.execute("INSERT INTO jobs(id,issue_id,mode,status,source,delegation_id,actor,created_at,cancellation_event_id) VALUES(?,1,'review',?,?,?,'human:admin',?,2)", (jid,status,source,delegation,now))
+    c.execute('INSERT INTO provider_migration_chains VALUES(1,2,1,?)', (now,))
+    c.execute("INSERT INTO provider_migration_attempts(id,chain_id,provider,job_id,created_at) VALUES(1,1,'codex',2,?)", (now,))
+    kept = ('project_auto_settings','project_auto_role_settings','project_agent_orders','project_auto_settings_events','jobs','provider_migration_chains','provider_migration_attempts')
+    snapshot = {t: c.execute(f'SELECT * FROM {t}').fetchall() for t in kept}
+assert db.init() == len(db.MIGRATIONS)
+assert db.init() == len(db.MIGRATIONS)
+with db.connect() as c:
+    for table in kept:
+        expected = [r + ('project',) for r in snapshot[table]] if table == 'project_auto_settings_events' else snapshot[table]
+        assert [tuple(r) for r in c.execute(f'SELECT * FROM {table}')] == expected, table
+    assert not c.execute('PRAGMA foreign_key_check').fetchall()
+    assert tuple(c.execute('SELECT auto_review,auto_execute,auto_approve,auto_plan_approve,provider_order_json,updated_by FROM global_auto_settings').fetchone()) == (0,0,0,0,'["claude","codex"]',None)
+    assert c.execute('SELECT token_exhaustion_fallback FROM global_auto_role_settings').fetchone()[0] == 0
+    assert not c.execute('SELECT * FROM global_agent_orders').fetchall()
+    c.execute("INSERT INTO projects(id,key,name,created_at) VALUES(3,'NEW','new',?)", (now,))
+    assert len(c.execute('SELECT * FROM global_project_auto_settings').fetchall()) == 3
+    c.execute("INSERT INTO project_auto_settings_events(scope,actor,before_json,after_json,created_at) VALUES('global','human:admin','{}','{}',?)", (now,))
+    assert c.execute("SELECT id,project_id FROM project_auto_settings_events WHERE scope='global'").fetchone()[0] == 3
+assert rejected("INSERT INTO global_auto_settings(singleton) VALUES(2)")
+assert rejected("UPDATE global_auto_settings SET auto_review=2")
+assert rejected("INSERT INTO project_auto_settings_events(scope,project_id,actor,before_json,after_json,created_at) VALUES('global',1,'human:admin','{}','{}',?)", (now,))
+db.config.DB_PATH = original_path
+print('OK global migration: Manual defaults, preserved audit/FK, restart, new project')

@@ -2268,7 +2268,7 @@ async function renderSettings(){
   settingsSession = session;
   const key = projectSel.value;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><h3>Auto 위임 설정</h3><p class="dim">현재 선택한 프로젝트에만 적용해요.</p><div id="settings-body"></div></section>`;
+  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><h3>Auto 위임 설정</h3><p class="dim">모든 프로젝트에 같은 위임 설정을 적용해요. 프로젝트를 바꿔도 설정은 같아요.</p><div id="settings-body"></div></section>`;
   void renderQueueSettings(view.querySelector('#queue-settings'), current);
   const body = view.querySelector('#settings-body');
   if(!key){ body.innerHTML = '<div class="empty">위의 프로젝트 필터에서 설정할 프로젝트를 선택해 주세요.</div>'; return; }
@@ -2279,7 +2279,7 @@ async function renderSettings(){
   catch(e){ if(current()) body.innerHTML = `<p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="settings-retry" type="button">다시 불러오기</button>`;
     body.querySelector('#settings-retry')?.addEventListener('click', renderSettings); return; }
   if(!current()) return;
-  body.innerHTML = `<h3>${esc(key)} · Auto</h3>
+  body.innerHTML = `<h3>전체 · Auto</h3>
     ${[['auto_review','Auto 검토 맡기기','사람이 등록한 Plan 없는 최상위 Backlog Issue를 검토해요. Goal과 기존 작업이 있는 Issue는 제외해요.'],
        ['auto_plan_approve','Auto 계획 승인','ON 이후 검토가 완료된 새 Plan을 구조 검사 후 승인해요. 의미적·기술적 오류 검출은 보장하지 않으며, 사람의 기존 결정과 Goal은 유지해요.'],
        ['auto_execute','Auto 실행맡기기','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],

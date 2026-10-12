@@ -885,7 +885,7 @@ def check_issue_types(page, shots):
 
 
 def check_auto_settings(page, shots):
-    """프로젝트 격리·실패 복원·키보드와 네 화면을 확인한다."""
+    """기존 프로젝트 UI의 전역 설정 호환·실패 복원·키보드와 네 화면을 확인한다."""
     H = {'X-Requested-With': 'dev'}
     for key in ('AUTOA', 'AUTOB'):
         assert page.request.post(BASE + '/api/projects', headers=H, data={'key': key, 'name': key}).ok
@@ -896,6 +896,8 @@ def check_auto_settings(page, shots):
     page.select_option('#project-filter', 'AUTOA')
     review = page.locator('#auto_review')
     page.wait_for_selector('#auto_review')
+    assert '모든 프로젝트에 같은 위임 설정' in page.locator('.auto-settings').inner_text()
+    assert page.locator('#settings-body h3').first.inner_text() == '전체 · Auto'
     assert review.get_attribute('aria-checked') == 'false'
     approve = page.locator('#auto_approve')
     assert approve.is_enabled() and approve.get_attribute('aria-checked') == 'false'
@@ -974,8 +976,11 @@ def check_auto_settings(page, shots):
     page.wait_for_function("document.querySelector('#settings-status').textContent.includes('복원') && document.querySelector('#provider-order li span').textContent === 'Codex'")
     page.unroute('**/api/projects/AUTOA/auto-settings', fail)
     page.select_option('#project-filter', 'AUTOB')
-    page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'false'")
-    assert approve.get_attribute('aria-checked') == 'false'
+    page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'true'")
+    assert approve.get_attribute('aria-checked') == 'true'
+    shared = page.request.get(BASE + '/api/settings/auto').json()
+    assert shared['auto_review'] and shared['auto_approve'] and shared['auto_execute']
+    assert shared['provider_order'] == ['codex','claude']
     page.select_option('#project-filter', 'AUTOA')
     page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'true'")
     assert approve.get_attribute('aria-checked') == 'true'
@@ -987,31 +992,31 @@ def check_auto_settings(page, shots):
     page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'true'")
     assert review.is_disabled() and approve.is_disabled() and page.locator('#auto_execute').is_disabled()
     page.select_option('#project-filter', 'AUTOB')
-    page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'false'")
+    page.wait_for_function("document.querySelector('#auto_review')?.getAttribute('aria-checked') === 'true'")
     assert len(held) == 1
     held.pop().fulfill(status=500, content_type='application/json', body='{"detail":"late error"}')
     page.wait_for_timeout(100)
     assert page.locator('#settings-status').inner_text() == ''
-    assert approve.get_attribute('aria-checked') == 'false' and approve.is_enabled()
+    assert approve.get_attribute('aria-checked') == 'true' and approve.is_enabled()
     # 성공 응답도 프로젝트를 떠난 뒤에는 새 화면의 상태·포커스를 바꾸지 않는다.
     page.route('**/api/projects/AUTOB/auto-settings', hold)
     approve.click()
     page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'true'")
     assert len(held) == 1
-    assert held[0].request.post_data_json == {'auto_approve': True}
+    assert held[0].request.post_data_json == {'auto_approve': False}
     page.select_option('#project-filter', 'AUTOA')
     page.wait_for_selector('.settings-skeleton')
     assert len(held) == 2
     held.pop().fulfill(json=page.request.get(BASE + '/api/projects/AUTOA/auto-settings').json())
     page.wait_for_selector('#auto_approve')
-    held.pop().fulfill(json={'auto_review': False, 'auto_execute': False, 'auto_approve': True, 'provider_order': ['claude', 'codex']})
+    held.pop().fulfill(json={'auto_review': False, 'auto_execute': False, 'auto_approve': False, 'provider_order': ['claude', 'codex']})
     page.wait_for_timeout(100)
     assert approve.get_attribute('aria-checked') == 'true'
     assert review.get_attribute('aria-checked') == 'true'
     assert page.locator('#settings-status').inner_text() == ''
     page.unroute('**/api/projects/AUTOB/auto-settings', hold)
     page.select_option('#project-filter', 'AUTOB')
-    page.wait_for_function("document.querySelector('#auto_approve')?.getAttribute('aria-checked') === 'false'")
+    page.wait_for_function("document.querySelector('#auto_approve')?.getAttribute('aria-checked') === 'true'")
     page.select_option('#project-filter', 'AUTOA')
     page.wait_for_selector('.settings-skeleton')
     page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
@@ -1039,6 +1044,12 @@ def check_auto_settings(page, shots):
     assert approve.get_attribute('aria-checked') == 'true'
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+    # 전역 설정은 프로젝트 삭제로 초기화되지 않는다. 다음 UI 검사의 자동 실행을 격리한다.
+    assert page.request.patch(BASE + '/api/settings/auto', headers=H, data={
+        'auto_review': False, 'auto_plan_approve': False, 'auto_execute': False, 'auto_approve': False,
+        'token_exhaustion_fallback': False, 'provider_order': ['claude','codex'],
+        'orchestrator_provider_order': ['claude','codex'], 'troubleshooter_provider_order': ['claude','codex'],
+        'description_provider_order': ['claude','codex']}).ok
     for key in ('AUTOA', 'AUTOB'):
         assert page.request.delete(BASE + '/api/projects/' + key, headers=H).ok
     page.evaluate("localStorage.removeItem('dev.project')")

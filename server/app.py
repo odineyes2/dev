@@ -531,6 +531,20 @@ def api_project_usage(key: str, limit: int = 50, offset: int = 0):
     return usage.project_usage(key, limit, offset)
 
 
+@app.get("/api/settings/auto")
+def api_global_auto_settings():
+    import auto_settings
+    return auto_settings.get_settings()
+
+
+@app.patch("/api/settings/auto")
+async def api_update_global_auto_settings(request: Request):
+    import auto_settings
+    result = auto_settings.update_settings(human_only(request), None, await json_body(request))
+    jobs.pump()
+    return result
+
+
 @app.get("/api/projects/{key}/auto-settings")
 def api_auto_settings(key: str):
     import auto_settings

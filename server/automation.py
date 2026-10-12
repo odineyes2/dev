@@ -66,10 +66,10 @@ def _approve_plans(c, setting):
     """sync의 쓰기 잠금에서 위임·최신 판·검토 결과를 다시 확인한다."""
     if not setting['auto_plan_approve']:
         return
-    delegation = c.execute("""SELECT * FROM project_auto_settings_events WHERE project_id=?
+    delegation = c.execute("""SELECT * FROM project_auto_settings_events WHERE scope='global'
         AND json_extract(before_json,'$.auto_plan_approve')=0
         AND json_extract(after_json,'$.auto_plan_approve')=1 ORDER BY id DESC LIMIT 1""",
-        (setting['project_id'],)).fetchone()
+        ()).fetchone()
     if not delegation or not delegation['actor'].startswith('human:') or delegation['actor'].startswith('human:auto/'):
         return
     project = c.execute('SELECT local_path FROM projects WHERE id=?', (setting['project_id'],)).fetchone()
@@ -112,10 +112,10 @@ def _approve_tasks(c, setting):
     import orchestrate
     if not setting['auto_approve']:
         return
-    delegation = c.execute("""SELECT * FROM project_auto_settings_events WHERE project_id=?
+    delegation = c.execute("""SELECT * FROM project_auto_settings_events WHERE scope='global'
         AND json_extract(before_json,'$.auto_approve')=0
         AND json_extract(after_json,'$.auto_approve')=1 ORDER BY id DESC LIMIT 1""",
-        (setting['project_id'],)).fetchone()
+        ()).fetchone()
     if not delegation or not delegation['actor'].startswith('human:') or delegation['actor'].startswith('human:auto/'):
         return
     rows = c.execute("SELECT id FROM issues WHERE project_id=? AND parent_id IS NOT NULL AND status='in_review'", (setting['project_id'],)).fetchall()
@@ -212,11 +212,11 @@ def eligible(c, issue, mode, job=None):
 
 def valid_job(c, job):
     issue = issues.get_issue(job['ref'])
-    settings = c.execute('SELECT s.*,p.archived FROM project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE s.project_id=?', (issue['project_id'],)).fetchone()
+    settings = c.execute('SELECT s.*,p.archived FROM global_project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE s.project_id=?', (issue['project_id'],)).fetchone()
     if not settings or settings['archived'] or not settings['auto_' + job['mode']]:
         return False
     if c.execute('SELECT 1 FROM provider_migration_attempts WHERE job_id=?', (job['id'],)).fetchone() and not c.execute(
-            'SELECT token_exhaustion_fallback FROM project_auto_role_settings WHERE project_id=?', (issue['project_id'],)).fetchone()[0]:
+            'SELECT token_exhaustion_fallback FROM global_project_auto_role_settings WHERE project_id=?', (issue['project_id'],)).fetchone()[0]:
         return False
     return eligible(c, issue, job['mode'], job)
 
@@ -236,8 +236,8 @@ def _migrate(c, run_id):
         return _migration_stop(c, run_id, None, None, '')
     actor = jobs._actor(job['actor'])
     stop = lambda why: _migration_stop(c, run_id, run['issue_id'], actor, why)
-    setting = c.execute("""SELECT s.*,p.archived,r.token_exhaustion_fallback FROM project_auto_settings s JOIN projects p ON p.id=s.project_id
-        LEFT JOIN project_auto_role_settings r ON r.project_id=s.project_id
+    setting = c.execute("""SELECT s.*,p.archived,r.token_exhaustion_fallback FROM global_project_auto_settings s JOIN projects p ON p.id=s.project_id
+        LEFT JOIN global_project_auto_role_settings r ON r.project_id=s.project_id
         WHERE s.project_id=(SELECT project_id FROM issues WHERE id=?)""", (run['issue_id'],)).fetchone()
     if not setting or not setting['token_exhaustion_fallback']:
         return _migration_stop(c, run_id, None, None, '')   # OFF면 이관하지 않고 조용히 끝낸다
@@ -305,17 +305,17 @@ def cancel_invalid(c, job, start_error=False):
     if not current or current['status'] != 'queued':
         return
     issue = issues.get_issue(job['ref'])
-    setting = c.execute('SELECT s.*,p.archived FROM project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE s.project_id=?', (issue['project_id'],)).fetchone()
+    setting = c.execute('SELECT s.*,p.archived FROM global_project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE s.project_id=?', (issue['project_id'],)).fetchone()
     reason, event_id = ('start_error' if start_error else 'conditions_changed'), None
     if (not start_error and setting and not setting['archived'] and not setting['auto_execute']
             and job['source'] == 'auto' and job['mode'] == 'execute'
             and current['started_at'] is None and current['run_id'] is None
             and jobs._latest(c, issue['id']).get('job_id') == job['id']
             and eligible(c, issue, 'execute', job)):
-        event = c.execute("""SELECT * FROM project_auto_settings_events WHERE project_id=?
+        event = c.execute("""SELECT * FROM project_auto_settings_events WHERE scope='global'
             AND id>? AND json_extract(before_json,'$.auto_execute')=1
             AND json_extract(after_json,'$.auto_execute')=0 ORDER BY id DESC LIMIT 1""",
-            (issue['project_id'], job['delegation_id'] or 0)).fetchone()
+            (job['delegation_id'] or 0,)).fetchone()
         if event:
             reason, event_id = 'auto_execute_off', event['id']
     c.execute("UPDATE jobs SET status='cancelled',note='자동 위임 조건이 바뀌었어요',cancellation_reason=?,cancellation_event_id=? WHERE id=?", (reason, event_id, job['id']))
@@ -329,7 +329,7 @@ def sync():
     # 결과 승인을 커밋한 뒤 기존 대기열 경로가 선행 Task 완료를 읽게 한다.
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
-        settings = c.execute('SELECT s.* FROM project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE p.archived=0 ORDER BY p.id').fetchall()
+        settings = c.execute('SELECT s.* FROM global_project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE p.archived=0 ORDER BY p.id').fetchall()
         issues.reconcile_plan_tasks(c)
         for setting in settings:
             _approve_plans(c, setting)
@@ -345,9 +345,9 @@ def sync():
         for job in jobs._rows(c, "j.status='queued' AND j.source='auto'"):
             if not valid_job(c, job):
                 cancel_invalid(c, job)
-        settings = c.execute('SELECT s.*,p.key FROM project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE p.archived=0 ORDER BY p.id').fetchall()
+        settings = c.execute('SELECT s.*,p.key FROM global_project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE p.archived=0 ORDER BY p.id').fetchall()
         for setting in settings:
-            delegation = c.execute('SELECT id FROM project_auto_settings_events WHERE project_id=? ORDER BY id DESC LIMIT 1', (setting['project_id'],)).fetchone()
+            delegation = c.execute("SELECT id FROM project_auto_settings_events WHERE scope='global' ORDER BY id DESC LIMIT 1", ()).fetchone()
             if not delegation:
                 continue
             rows = c.execute(f"SELECT {issues.ref_sql('i','p')} AS ref FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.project_id=? AND i.status='backlog' ORDER BY i.id", (setting['project_id'],)).fetchall()
