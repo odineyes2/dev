@@ -831,6 +831,62 @@ DROP TRIGGER auto_run_gate;
     END;
 """)
 
+MIGRATIONS.append("""
+ALTER TABLE global_auto_settings ADD COLUMN auto_troubleshoot INTEGER NOT NULL DEFAULT 0 CHECK(auto_troubleshoot IN (0,1));
+CREATE TABLE troubleshoot_requests (
+ id INTEGER PRIMARY KEY,
+ issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+ source_run_id INTEGER NOT NULL REFERENCES runs(id),
+ plan_version INTEGER NOT NULL,
+ task_sha TEXT NOT NULL,
+ automatic INTEGER NOT NULL CHECK(automatic IN (0,1)),
+ actor TEXT NOT NULL,
+ classification TEXT NOT NULL,
+ diagnostic TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','cancelled','needs_input')),
+ job_id INTEGER REFERENCES jobs(id),
+ run_id INTEGER REFERENCES runs(id),
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX one_active_troubleshoot ON troubleshoot_requests(issue_id) WHERE status IN ('queued','running');
+CREATE UNIQUE INDEX one_auto_troubleshoot ON troubleshoot_requests(source_run_id) WHERE automatic=1;
+DROP TRIGGER auto_run_gate;
+CREATE TRIGGER auto_run_gate BEFORE INSERT ON runs
+WHEN EXISTS(SELECT 1 FROM jobs j WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto'
+ AND NOT EXISTS(SELECT 1 FROM troubleshoot_requests t WHERE t.job_id=j.id))
+BEGIN
+ SELECT RAISE(ABORT,'자동 위임 조건이 바뀌었어요') WHERE NOT EXISTS(
+ SELECT 1 FROM jobs j JOIN issues i ON i.id=j.issue_id JOIN projects p ON p.id=i.project_id JOIN global_auto_settings s ON s.singleton=1
+ WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto'
+ AND p.archived=0 AND i.status='waiting' AND i.claimed_by IS NULL
+ AND NOT EXISTS(SELECT 1 FROM json_each(i.labels_json) WHERE value='goal')
+ AND ((NEW.mode='review' AND s.auto_review=1 AND i.parent_id IS NULL AND i.reporter LIKE 'human:%' AND NOT EXISTS(SELECT 1 FROM plans WHERE issue_id=i.id))
+ OR (NEW.mode='execute' AND s.auto_execute=1 AND j.approval_version=(SELECT MAX(version) FROM plans WHERE issue_id=i.parent_id)
+ AND EXISTS(SELECT 1 FROM decisions d WHERE d.id=(SELECT MAX(id) FROM decisions WHERE issue_id=i.parent_id AND gate='plan') AND d.plan_version=j.approval_version AND d.verdict IN ('approve','approve_notes') AND d.actor LIKE 'human:%')
+ AND NOT EXISTS(SELECT 1 FROM issue_deps dep JOIN issues b ON b.id=dep.blocked_by_id WHERE dep.issue_id=i.id AND b.status<>'done'))));
+END;
+CREATE TRIGGER troubleshoot_run_gate BEFORE INSERT ON runs
+WHEN EXISTS(SELECT 1 FROM troubleshoot_requests t JOIN jobs j ON j.id=t.job_id WHERE t.issue_id=NEW.issue_id AND t.status='queued' AND j.status='queued')
+BEGIN
+ SELECT RAISE(ABORT,'트러블슈팅 조건이 바뀌었어요') WHERE NOT EXISTS(
+ SELECT 1 FROM troubleshoot_requests t JOIN jobs j ON j.id=t.job_id JOIN issues i ON i.id=t.issue_id
+ JOIN projects p ON p.id=i.project_id JOIN global_auto_settings s ON s.singleton=1
+ WHERE t.issue_id=NEW.issue_id AND t.status='queued' AND j.status='queued' AND i.status='waiting'
+ AND NEW.mode='execute' AND p.archived=0 AND (t.automatic=0 OR s.auto_troubleshoot=1)
+ AND NEW.provider=j.provider AND NEW.model=j.model AND NEW.actor=t.actor
+ AND (i.claimed_by IS NULL OR i.lease_until IS NULL OR julianday(i.lease_until)<=julianday(NEW.started_at))
+ AND (SELECT MAX(id) FROM runs WHERE issue_id=i.id)=t.source_run_id
+ AND NOT EXISTS(SELECT 1 FROM issues par WHERE par.id=i.parent_id AND par.status IN ('done','closed'))
+ AND NOT EXISTS(SELECT 1 FROM json_each(i.labels_json) WHERE value='goal')
+ AND NOT EXISTS(SELECT 1 FROM issue_deps dep JOIN issues b ON b.id=dep.blocked_by_id WHERE dep.issue_id=i.id AND b.status<>'done')
+ AND EXISTS(SELECT 1 FROM agents a WHERE a.enabled=1 AND a.kind='agent' AND a.model=NEW.model AND ((NEW.provider='codex' AND a.vendor='openai') OR (NEW.provider='claude' AND a.vendor='anthropic')))
+ AND t.plan_version=(SELECT MAX(version) FROM plans WHERE issue_id=i.parent_id)
+ AND EXISTS(SELECT 1 FROM decisions d WHERE d.id=(SELECT MAX(id) FROM decisions WHERE issue_id=i.parent_id AND gate='plan') AND d.plan_version=t.plan_version AND d.verdict IN ('approve','approve_notes') AND d.actor LIKE 'human:%')
+ AND NOT EXISTS(SELECT 1 FROM events e WHERE e.issue_id=i.parent_id AND json_extract(e.data_json,'$.plan_revision_request')=1 AND json_extract(e.data_json,'$.plan_version')=t.plan_version));
+END;
+""")
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

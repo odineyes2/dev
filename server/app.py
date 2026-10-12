@@ -644,6 +644,8 @@ def api_issue(ref: str):
             it["review_busy"] = jobs.start_block(c, it["project_key"], "execute" if it["parent_ref"] else "review") is not None
     with timing.span("execute"):
         it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
+        import troubleshoot
+        it['troubleshooting'] = troubleshoot.panel(it)
     with timing.span("job"):
         it["job"] = jobs.job_for(it["id"])   # 대기열 자리(DEV-43)
     with timing.span("merge"):
@@ -661,6 +663,19 @@ def api_issue(ref: str):
 @app.get("/api/issues/{ref}/runs")
 def api_runs(ref: str):
     return {"runs": review.list_runs(ref)}
+
+
+@app.get('/api/issues/{ref}/troubleshooting')
+def api_troubleshooting(ref: str):
+    import troubleshoot
+    return troubleshoot.panel(issues.get_issue(ref))
+
+
+@app.post('/api/issues/{ref}/troubleshoot', status_code=202)
+async def api_troubleshoot(ref: str, request: Request):
+    import troubleshoot
+    me = human_only(request)
+    return await run_in_threadpool(troubleshoot.request, me, ref, await json_body(request))
 
 
 @app.patch("/api/issues/{ref}")

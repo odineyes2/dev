@@ -744,6 +744,15 @@ view.addEventListener('click', (e) => {
 // ponytail: 선행 대기는 서버 문구로 가린다 — panel이 대기/불가를 따로 주면 그걸로
 function waitOnly(blocked){ return !!blocked && blocked.startsWith('선행 Task'); }
 const pendingExecutions = new Map();
+function troubleshootingHtml(it){
+  const t = it.troubleshooting;
+  if(!t || (!t.failure && !t.requests.length)) return '';
+  const f = t.failure, labels = {queued:'대기',running:'복구 실행 중',succeeded:'코드 복구 완료',failed:'복구 실패',cancelled:'취소',needs_input:'확인 필요'};
+  return `<section class="panel troubleshooting"><h2>트러블슈팅</h2><p class="dim">승인된 Plan 안에서 기존 작업을 이어받아요. 추가 CLI 호출은 1회·최대 10분이며 사용량이 발생해요.</p>
+    ${f ? `<p>원 실행 #${f.source_run_id} · Plan v${f.plan_version}</p><p class="dim">${esc(f.blocked || f.hint || '코드·테스트 실패를 복구할 수 있어요.')}</p>${f.available ? '<button id="ask-troubleshoot">트러블슈팅 요청</button>' : ''}<button id="copy-troubleshooting" class="secondary">진단 복사</button><details><summary>실패 진단</summary><pre>${esc(f.diagnostic)}</pre></details>` : ''}
+    ${t.requests.map(r => `<details><summary>TS-${r.id} · ${labels[r.status]} · 원 실행 #${r.source_run_id}${r.run_id ? ` → 복구 #${r.run_id}` : ''}</summary><p>${esc(r.provider || '대기')} · ${esc(r.model || '')} · ${r.automatic ? '자동' : '수동'}</p><p class="dim">요청: ${esc(r.actor || '')} · ${fmtTime(r.created_at)}${r.started_at ? `<br>시작: ${fmtTime(r.started_at)}` : ''}${r.ended_at ? `<br>종료: ${fmtTime(r.ended_at)}` : ''}</p><pre>${esc(r.diagnostic)}</pre><p class="dim">복구 호출의 토큰: 입력 ${r.input_tokens ?? '미측정'} · 출력 ${r.output_tokens ?? '미측정'} · 비용 ${r.cost_usd == null ? '미측정' : '$' + r.cost_usd}</p></details>`).join('')}
+    <p class="dim">병합·배포 결과와 승인은 기존 Result에서 확인해 주세요.</p></section>`;
+}
 function executeHtml(it, liveMode, liveProvider){
   const x = it.execute, running = it.review_running && liveMode === 'execute';
   const job = it.job && it.job.mode === 'execute' ? it.job : null;
@@ -879,6 +888,7 @@ async function renderIssue(ref, background = false){
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">댓글 달기</button></div></div></div>
         ${it.parent_ref ? resultHtml(it) : ''}
+        ${troubleshootingHtml(it)}
       </div>
       <aside class="side panel">
         <div class="field"><span>Status</span><select id="status">${STATUSES.map(s => `<option value="${s}"${s === it.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}</select>
@@ -1028,6 +1038,17 @@ ${QUEUE_LINE}`)) return;
     }
   }));
   // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게
+  if($('ask-troubleshoot')) $('ask-troubleshoot').onclick = e => whileBusy(e.currentTarget, async () => {
+    await api('POST', `/api/issues/${R}/troubleshoot`, it.troubleshooting.failure);
+    toast('트러블슈팅을 요청했어요.');
+    if(location.hash === `#/issue/${it.ref}`) await reload();
+  });
+  if($('copy-troubleshooting')) $('copy-troubleshooting').onclick = async () => {
+    const f = it.troubleshooting.failure;
+    const text = `${it.ref} 트러블슈팅 진단\n원 실행 #${f.source_run_id} · Plan v${f.plan_version}\nTask 커밋: ${f.task_sha}\n분류: ${f.classification}\n${f.blocked || f.hint || ''}\n${f.diagnostic}`;
+    try { await navigator.clipboard.writeText(text); toast('진단을 복사했어요.'); }
+    catch(e){ prompt('진단을 복사해 주세요.', text); }
+  };
   if($('retry-merge')) $('retry-merge').onclick = async e => {
     e.currentTarget.disabled = true;
     try{
@@ -2178,7 +2199,7 @@ let settingsSession = null;
 const ROLE_CARDS = [
   ['orchestrator_provider_order','orchestrator-order','오케스트레이터','준비 중인 역할이에요. 순서는 저장되지만 아직 실행되지 않아요.',false],
   ['provider_order','provider-order','작업 에이전트','Auto 검토·실행을 이 순서로 맡겨요.',true],
-  ['troubleshooter_provider_order','troubleshooter-order','트러블슈터','준비 중인 역할이에요. 순서는 저장되지만 아직 실행되지 않아요.',false],
+  ['troubleshooter_provider_order','troubleshooter-order','트러블슈터','실패 Task의 복구에 사용할 Agent예요. 요청당 CLI 1회·최대 10분이며 추가 이관은 하지 않아요.',true],
   ['description_provider_order','description-order','Description 작성','프로젝트 Description 자동 작성을 이 순서로 맡겨요.',true],
 ];
 // 공통 제목과 서브탭을 설정 카드 안에 함께 그린다.
@@ -2281,7 +2302,8 @@ async function renderSettings(){
     ${[['auto_review','Auto 검토 맡기기','사람이 등록한 Plan 없는 최상위 Backlog Issue를 검토해요. Goal과 기존 작업이 있는 Issue는 제외해요.'],
        ['auto_plan_approve','Auto 계획 승인','Manual 중 완료된 Plan도 포함해 성공한 최신 검토의 유효한 Plan을 구조 검사 후 승인해요. 의미적·기술적 오류 검출은 보장하지 않으며, 사람의 기존 결정과 Goal은 유지해요.'],
        ['auto_execute','Auto 실행맡기기','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],
-       ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.']].map(([field,label,help]) =>
+       ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.'],
+       ['auto_troubleshoot','Auto 트러블슈팅','기본 꺼짐. 켠 이후의 코드·검사 실패를 원 실행당 1회 복구해요. 승인 Plan·기존 worktree 안에서 최대 10분 실행하며, OFF로 바꾸면 자동 미착수 대기를 취소해요. 실행 중 작업은 유지해요.']].map(([field,label,help]) =>
       `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}
     <h3>Auto 에이전트 우선순위</h3>
     <div class="role-cards">${ROLE_CARDS.map(([field,id,title,help,ready]) =>
@@ -2291,7 +2313,7 @@ async function renderSettings(){
   let busy = false;
   const status = body.querySelector('#settings-status');
   function paint(){
-    for(const field of ['auto_review','auto_plan_approve','auto_execute','auto_approve','token_exhaustion_fallback']){
+    for(const field of ['auto_review','auto_plan_approve','auto_execute','auto_approve','auto_troubleshoot','token_exhaustion_fallback']){
       const b = body.querySelector(`#${field}`), on = settings[field];
       b.setAttribute('aria-checked', String(!!on)); b.disabled = busy || (field === 'auto_approve' && settings.auto_approve_available === false);
       b.querySelector('.switch-state').textContent = on ? '켜짐' : '꺼짐';

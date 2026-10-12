@@ -244,6 +244,8 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude", model: 
             row = issues._find(c, issue["ref"])
             if row["status"] != issue["status"]:
                 raise issues.StoreError("시작 전에 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
+            if c.execute("SELECT 1 FROM troubleshoot_requests WHERE issue_id=? AND status='queued'", (row['id'],)).fetchone():
+                issues._guard_terminal_parent(c, row)
             run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file, provider, model) VALUES(?, ?, 'running', ?, ?, ?, ?, ?)",
                                (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name, provider, model)).lastrowid
             import jobs
@@ -256,6 +258,8 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude", model: 
                 restore = queued["previous_status"] if queued and row["status"] == "waiting" and waiting_owner else row["status"]
                 issues._set_status(c, actor, row, "in_progress", f"{provider.title()} 작업 착수", {"run_id": run_id, "restore_status": restore, "job_id": queued["id"] if queued else None, "model": model or ""})
             c.execute("UPDATE jobs SET status='started', started_at=?, run_id=? WHERE issue_id=? AND mode=? AND status='queued'", (db.now_iso(), run_id, row["id"], mode))
+            if queued:
+                c.execute("UPDATE troubleshoot_requests SET status='running',run_id=?,updated_at=? WHERE job_id=? AND status='queued'", (run_id, db.now_iso(), queued['id']))
     return log_path, run_id
 
 
@@ -388,6 +392,8 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     name = "Codex" if provider == "codex" else "Claude Code"
     spent, earlier, held = {}, "", False
+    with db.connect() as c:
+        recovery = c.execute('SELECT 1 FROM troubleshoot_requests WHERE run_id=?', (run_id,)).fetchone()
     capture_before, capture_warning = None, ''
     if label == '실행':
         import attachments
@@ -395,7 +401,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             capture_before = attachments.capture_baseline(cwd)
         except Exception as e:
             capture_warning = f'⚠️ 화면 캡처 기준 목록을 읽지 못했어요: {type(e).__name__}'
-    for attempt in range(2 if label == "실행" else 1):
+    for attempt in range(2 if label == "실행" and not recovery else 1):
         code, note, status, out, err = None, "", "ok", "", ""
         try:
             proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
@@ -427,7 +433,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         failed = orchestrate.run_tests(str(cwd), stage='server_completion', ref=ref)
         if not failed:
             break
-        if attempt:
+        if attempt or recovery:
             status, note = "failed", "고친 뒤에도 전체 검사가 실패했어요:\n" + failed[-1500:]
             break
         earlier = text + "\n\n--- 서버 전체 검사 실패 → 재시도 ---\n" + failed + "\n\n"
@@ -489,7 +495,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         finish_codex_status(c, actor, ref, run_id, status, label)
         c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=?",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
-        if exhausted and status != "ok":   # 이관 판단은 automation.sync가 이 기록을 보고 한 번만 한다
+        if exhausted and status != "ok" and not recovery:   # 복구는 추가 유료 호출·이관 없이 끝낸다
             c.execute("INSERT OR IGNORE INTO provider_run_failures(run_id,failure_reason) VALUES(?,'token_exhausted')", (run_id,))
     if held:   # Claude는 on_hold 전환 때 이미 알림이 갔다
         if provider == "codex":

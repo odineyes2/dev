@@ -215,6 +215,9 @@ def eligible(c, issue, mode, job=None):
 
 
 def valid_job(c, job):
+    import troubleshoot
+    if troubleshoot.for_job(c, job['id']):
+        return troubleshoot.valid_job(c, job)
     issue = issues.get_issue(job['ref'])
     settings = c.execute('SELECT s.*,p.archived FROM global_project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE s.project_id=?', (issue['project_id'],)).fetchone()
     if not settings or settings['archived'] or not settings['auto_' + job['mode']]:
@@ -305,6 +308,9 @@ def _ref(c, issue_id):
 def cancel_invalid(c, job, start_error=False):
     """동일 잠금에서 OFF와 다른 무효 조건을 구별하고 대기 소유권을 복구한다."""
     import jobs
+    import troubleshoot
+    if troubleshoot.for_job(c, job['id']):
+        return troubleshoot.cancel_invalid(c, job)
     current = c.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
     if not current or current['status'] != 'queued':
         return
@@ -331,6 +337,8 @@ def sync():
     """jobs의 잠금 아래 등록·OFF 취소를 직렬화하고 재시작에도 중복을 막는다."""
     import jobs
     import project_docs
+    import troubleshoot
+    troubleshoot.sync()
     # 결과 승인을 커밋한 뒤 기존 대기열 경로가 선행 Task 완료를 읽게 한다.
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')

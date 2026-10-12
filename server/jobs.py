@@ -419,6 +419,12 @@ def pump() -> None:
                 _note(j["id"], own or block)
                 continue
             try:
+                import troubleshoot
+                with db.connect() as c:
+                    recovery = troubleshoot.for_job(c, j['id'])
+                    if recovery and not troubleshoot.valid_job(c, j):
+                        troubleshoot.cancel_invalid(c, j)
+                        continue
                 if j['source'] == 'auto':
                     with db.connect() as c:
                         c.execute('BEGIN IMMEDIATE')
@@ -448,16 +454,22 @@ def pump() -> None:
                     if why:   # 선행·겹치는 파일 대기 — 뒤 항목을 먼저 본다
                         _set(j["id"], "queued", why)
                         continue
-                    execute.start(actor, j["ref"], j["provider"], j["model"])
+                    if recovery:
+                        execute.start(actor, j['ref'], j['provider'], j['model'], troubleshoot_id=recovery['id'])
+                    else:
+                        execute.start(actor, j["ref"], j["provider"], j["model"])
             except sqlite3.IntegrityError as e:
-                if j['source'] != 'auto':
+                if j['source'] != 'auto' and not recovery:
                     raise
                 with db.connect() as c:
                     c.execute('BEGIN IMMEDIATE')
                     automation.cancel_invalid(c, j, start_error=str(e) != '자동 위임 조건이 바뀌었어요')
                 continue
             except issues.StoreError as e:
-                if j['source'] == 'auto' or e.status == 404:
+                if recovery:
+                    with db.connect() as c:
+                        troubleshoot.cancel_invalid(c, j, str(e))
+                elif j['source'] == 'auto' or e.status == 404:
                     _set(j["id"], "skipped", str(e))
                 else:   # 저장소가 깨끗하지 않음 등 — 줄에서 기다린다
                     _set(j["id"], "queued", str(e))

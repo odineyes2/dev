@@ -684,9 +684,10 @@ def _run_then_merge(actor, ref, *args):
         issues.add_comment(actor, ref, f"⚠️ 자동 병합 중 오류: {e}")
 
 
-def start(actor: dict, ref: str, provider: str | None = None, model: str | None = None) -> dict:
+def start(actor: dict, ref: str, provider: str | None = None, model: str | None = None, *, troubleshoot_id=None) -> dict:
     """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
     import review
+    import jobs
     import project_docs
     if actor["kind"] != "human":
         raise issues.StoreError("실행은 사람만 맡길 수 있어요.", 403)
@@ -696,12 +697,19 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     if provider == "codex" and not os.environ.get("DEV_CODEX_AGENT_KEY"):
         raise issues.StoreError("서버에 DEV_CODEX_AGENT_KEY를 설정해 주세요 — Codex용 dev Agent 키가 필요해요.", 409)
     issue = issues.get_issue(ref)   # 없으면 404
+    recovery = None
+    if troubleshoot_id is not None:
+        import troubleshoot
+        with db.connect() as c:
+            recovery = c.execute('SELECT * FROM troubleshoot_requests WHERE id=? AND issue_id=?', (troubleshoot_id, issue['id'])).fetchone()
+            job = next((j for j in jobs._rows(c) if recovery and j['id'] == recovery['job_id']), None)
+            if not job or provider != job['provider'] or model != job['model'] or not troubleshoot.valid_job(c, job):
+                raise issues.StoreError('트러블슈팅 조건이 바뀌었어요.', 409)
     ref = issue["ref"]
     parent = issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None
     why = blocked_reason(issue, parent)
     if why:
         raise issues.StoreError(why, 409)
-    import jobs
     with db.connect() as c:
         busy = jobs.start_block(c, issue["project_key"], "execute")   # worktree를 만들기 전에 줄이 비었는지 본다
     if busy:
@@ -711,6 +719,10 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     start_sha, conflicts = refresh_worktree(worktree, ref)
     stale = stale_commits(repo, issue, parent)
     notice = (conflict_notice(conflicts) if conflicts else "") + (stale_notice(stale, parent["approval"]["plan_version"]) if stale else "")
+    timeout = TIMEOUT_SEC
+    if recovery:
+        notice = troubleshoot.notice(recovery) + notice
+        timeout = min(TIMEOUT_SEC, troubleshoot.TIMEOUT_SEC)
     cmd = codex_command_for(ref, issue["parent_ref"]) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
     cmd = review.with_model(with_notice(cmd, provider, notice), provider, model)
     env = safe_env(repo)
@@ -720,11 +732,11 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
         c.execute('INSERT INTO task_execution_results(run_id,plan_version) SELECT id,? FROM runs WHERE id=? AND issue_id=?',
                   (parent['approval']['plan_version'], run_id, issue['id']))
     name = "Codex" if provider == "codex" else "Claude"
-    limit = f"시간 제한 {int(TIMEOUT_SEC // 60)}분, 비용 상한 없음" if provider == "codex" else f"비용 상한 ${BUDGET_USD:g}"
+    limit = f"시간 제한 {int(timeout // 60)}분, 비용 상한 없음" if provider == "codex" else f"비용 상한 ${BUDGET_USD:g}, 시간 제한 {int(timeout // 60)}분"
     review.launch(actor, ref, run_id, provider,
                   f"🛠 {name}에게 실행을 맡겼어요 — `{branch_name(ref)}` 브랜치의 worktree에서 구현해요"
                   f"(push 없음, {limit}). 끝나면 in_review로 올라와요.",
-                  (_run_then_merge, actor, ref, log_path, run_id, cmd, worktree, env, TIMEOUT_SEC, "실행", provider))
+                  (_run_then_merge, actor, ref, log_path, run_id, cmd, worktree, env, timeout, "실행", provider))
     return {"started": True, "ref": ref, "branch": branch_name(ref)}
 
 

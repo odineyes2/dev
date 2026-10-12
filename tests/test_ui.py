@@ -269,6 +269,47 @@ def check_service_diagnostic(page, shots):
     page.wait_for_function("!projects.some(p => p.key === 'DIAG')")
 
 
+def check_troubleshooter(page, shots):
+    """유료 호출 없이 요청·진단 복사·대기 상태와 네 화면을 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    page.request.post(BASE+'/api/projects', headers=headers, data={'key':'TROUBLE','name':'트러블슈팅'})
+    parent = page.request.post(BASE+'/api/issues', headers=headers, data={'project':'TROUBLE','title':'parent'}).json()
+    task = page.request.post(BASE+'/api/issues', headers=headers, data={'project':'TROUBLE','title':'실패한 Task','parent':parent['ref']}).json()
+    path = '/api/issues/'+task['ref']
+    failure = {'source_run_id':42,'plan_version':1,'task_sha':'a'*40,'classification':'code','diagnostic':'AssertionError: 실패한 검사의 근거\n'+'longpath/'*30,'hint':'','blocked':None,'available':True}
+    state = {'posts':0,'queued':False}
+    def detail(route):
+        response = route.fetch(); data = response.json()
+        data.update(status='waiting' if state['queued'] else 'on_hold', review_running=False)
+        data['execute'].update(blocked=None,repair_available=False)
+        data['troubleshooting'] = {'failure':None if state['queued'] else failure,'requests':[
+            {'id':7,'status':'queued','source_run_id':42,'run_id':None,'provider':None,'model':None,'automatic':False,'diagnostic':failure['diagnostic'],'input_tokens':None,'output_tokens':None,'cost_usd':None}
+        ] if state['queued'] else [],'timeout_sec':600}
+        route.fulfill(json=data)
+    def submit(route):
+        assert route.request.post_data_json['source_run_id'] == 42
+        state.update(posts=state['posts']+1,queued=True)
+        route.fulfill(status=202,json={'id':7,'status':'queued'})
+    page.route('**'+path, detail); page.route('**'+path+'/troubleshoot', submit)
+    page.goto(BASE+'/#/issue/'+task['ref']); page.wait_for_selector('#ask-troubleshoot')
+    page.evaluate("Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>window.copiedDiagnostic=text},configurable:true})")
+    page.click('#copy-troubleshooting')
+    page.wait_for_function("window.copiedDiagnostic?.includes('원 실행 #42')")
+    for theme in ('light','dark'):
+        page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}",theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300,390):
+            page.set_viewport_size({'width':width,'height':850})
+            page.locator('.troubleshooting details').evaluate('e=>e.open=true')
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+            page.locator('.troubleshooting').screenshot(path=str(shots/f'troubleshooter_{theme}_{width}.png'))
+    page.locator('#ask-troubleshoot').evaluate('b=>{b.click();b.click()}')
+    page.wait_for_function("!document.querySelector('#ask-troubleshoot') && document.querySelector('.troubleshooting')?.textContent.includes('TS-7')")
+    assert state['posts'] == 1
+    page.unroute('**'+path,detail);page.unroute('**'+path+'/troubleshoot',submit)
+    print('troubleshooter UI OK')
+
+
 def check_register_repair(page, shots):
     headers = {'X-Requested-With': 'dev'}
     assert page.request.post(BASE+'/api/projects', headers=headers, data={'key':'REPAIR','name':'수정 결과 검사'}).ok
@@ -920,6 +961,13 @@ def check_auto_settings(page, shots):
     page.select_option('#project-filter', '')
     page.goto(BASE + '/#/settings')
     page.wait_for_selector('#auto_review')
+    recovery = page.locator('#auto_troubleshoot')
+    assert recovery.get_attribute('aria-checked') == 'false'
+    recovery.click()
+    page.wait_for_function("document.querySelector('#auto_troubleshoot').getAttribute('aria-checked')==='true' && !document.querySelector('#auto_troubleshoot').disabled")
+    assert page.request.get(BASE+'/api/settings/auto').json()['auto_troubleshoot'] is True
+    recovery.click()
+    page.wait_for_function("document.querySelector('#auto_troubleshoot').getAttribute('aria-checked')==='false' && !document.querySelector('#auto_troubleshoot').disabled")
     assert page.locator('#auto_review').get_attribute('aria-checked') == 'false'
     page.select_option('#project-filter', 'AUTOA')
     review = page.locator('#auto_review')
@@ -929,9 +977,9 @@ def check_auto_settings(page, shots):
     assert review.get_attribute('aria-checked') == 'false'
     approve = page.locator('#auto_approve')
     assert approve.is_enabled() and approve.get_attribute('aria-checked') == 'false'
-    assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'token_exhaustion_fallback']
+    assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'auto_troubleshoot', 'token_exhaustion_fallback']
     # 세 역할 카드 — 준비 중 역할 표시, 지목된 안내문 삭제, 이관 스위치의 비용 안내
-    assert page.locator('.role-card h4').evaluate_all('(els) => els.map(e => e.textContent)') == ['오케스트레이터 준비 중', '작업 에이전트', '트러블슈터 준비 중', 'Description 작성']
+    assert page.locator('.role-card h4').evaluate_all('(els) => els.map(e => e.textContent)') == ['오케스트레이터 준비 중', '작업 에이전트', '트러블슈터', 'Description 작성']
     assert '신규 자동 등록 순서' not in page.locator('#settings-body').inner_text()
     assert '아직 실행되지 않아요' in page.locator('.role-card').first.inner_text()
     assert '금액 상한' in page.locator('#token_exhaustion_fallback-help').inner_text()
@@ -2994,6 +3042,10 @@ try:
             check_register_repair(page, shots)
             assert not errs, errs
             sys.exit(0)
+        if '--troubleshooter-only' in sys.argv:
+            check_troubleshooter(page, shots)
+            assert not errs, errs
+            sys.exit(0)
         if '--restart-only' in sys.argv:
             check_project_restart(page, shots)
             assert not errs, errs
@@ -3686,6 +3738,7 @@ try:
         # 로그아웃(사용자 메뉴 안)
         check_management_agents(page, shots)
         check_management_layout(page, shots)
+        check_troubleshooter(page, shots)
         check_global_agent_orders(page, shots)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert page.locator('#open-jupyter').get_attribute('hidden') is not None

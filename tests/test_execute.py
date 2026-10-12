@@ -106,7 +106,8 @@ def wait_idle():
     idle = 0
     for _ in range(120):
         time.sleep(0.2)
-        idle = idle + 1 if not jobs.busy() and not any(not j['note'] for j in jobs.list_jobs()) else 0
+        # run 생성 전 Git 준비도 pump 잠금 안에서 진행된다. 이전 대기 메모만 보고 먼저 끝내지 않는다.
+        idle = idle + 1 if not jobs._lock.locked() and not jobs.busy() and not any(not j['note'] for j in jobs.list_jobs()) else 0
         if idle >= 2:
             break
 

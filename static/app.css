@@ -701,5 +701,8 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .service-step-error{ margin:8px 0 0; font-size:14px; line-height:1.6; color:var(--dim); overflow-wrap:anywhere; }
 #p-service-copy-message:empty{ display:none; }
 #p-service-copy-text{ width:100%; min-height:160px; margin-top:8px; font-size:14px; }
+.troubleshooting details{ margin:12px 0; }
+.troubleshooting pre{ white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:auto; }
+.troubleshooting button{ margin:0 8px 8px 0; }
 .project-service :focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
 @media(max-width:800px){ .project-service button{ min-height:40px; min-width:40px; } }

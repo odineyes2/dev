@@ -245,7 +245,8 @@ print('OK project audit migration')
 # 전역화 직전 DB의 서로 다른 설정·이력·대기·취소·이관 FK를 보존한다.
 db.config.DB_PATH = Path(tempfile.mkdtemp()) / 'global-legacy.db'
 with sqlite3.connect(db.config.DB_PATH) as c:
-    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+    global_migration = next(i for i, sql in enumerate(db.MIGRATIONS) if 'CREATE TABLE global_auto_settings' in sql)
+    for version, sql in enumerate(db.MIGRATIONS[:global_migration], 1):
         c.executescript(sql + f'PRAGMA user_version={version};')
     for pid, key in ((1, 'ONE'), (2, 'TWO')):
         c.execute('INSERT INTO projects(id,key,name,created_at) VALUES(?,?,?,?)', (pid,key,key,now))

@@ -11,9 +11,9 @@ from issues import StoreError, actor_label
 
 PROVIDERS = ("claude", "codex")
 ORDER_FIELDS = ("provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order")
-BOOL_FIELDS = ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "token_exhaustion_fallback")
+BOOL_FIELDS = ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "token_exhaustion_fallback", "auto_troubleshoot")
 # agent_orders: {역할: [Agent id, …]} — 저장하면 그 역할의 provider 순서도 처음 나오는 provider 순으로 맞춘다.
-FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "token_exhaustion_fallback", "agent_orders"}
+FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "token_exhaustion_fallback", "agent_orders", "auto_troubleshoot"}
 
 
 def _project(c, key):
@@ -68,6 +68,7 @@ def _base_settings(row, roles, project):
         "scope": "global",
         "auto_review": bool(row["auto_review"]) if row else False,
         "auto_execute": bool(row["auto_execute"]) if row else False,
+        "auto_troubleshoot": bool(row['auto_troubleshoot']) if row and 'auto_troubleshoot' in row.keys() else False,
         "auto_approve": bool(row["auto_approve"]) if row else False,
         "provider_order": json.loads(row["provider_order_json"]) if row else list(PROVIDERS),
         "orchestrator_provider_order": json.loads(roles["orchestrator_provider_order_json"]) if roles else list(PROVIDERS),
@@ -152,6 +153,7 @@ def update_settings(actor, key, changes):
              json.dumps(updated["troubleshooter_provider_order"], separators=(",", ":")),
              updated["token_exhaustion_fallback"],
              json.dumps(updated["description_provider_order"], separators=(",", ":"))))
+        c.execute('UPDATE global_auto_settings SET auto_troubleshoot=? WHERE singleton=1', (updated['auto_troubleshoot'],))
         after = _settings(c, project)
         c.execute("""INSERT INTO project_auto_settings_events
             (project_id,actor,before_json,after_json,created_at,plan_id_floor,scope)
