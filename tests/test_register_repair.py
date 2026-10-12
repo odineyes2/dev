@@ -67,6 +67,18 @@ except issues.StoreError:
     pass
 with db.connect() as c:
     c.execute('UPDATE task_execution_results SET plan_version=1 WHERE run_id=?', (rid,))
+
+# Done 뒤 정리된 폴더는 기존 수정 브랜치에서 복원한다. 새 빈 브랜치를 만들지 않는다.
+issues.set_status(me, ref, 'done')
+assert ref in execute.prune_worktrees() and not wt.exists()
+issues.set_status(me, ref, 'in_review')
+with patch.object(execute, '_branch_exists', return_value=False):
+    try:
+        execute.register_repair(me, ref)
+        raise AssertionError('missing repair branch accepted')
+    except issues.StoreError as error:
+        assert error.status == 409
+assert not wt.exists()
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(
     200, json={'user': {'username': 'admin', 'role': 'admin'}})))
 client = TestClient(A.app)
@@ -79,6 +91,7 @@ assert client.post(url, headers={'Authorization': 'Bearer ' + key}).status_code 
 with patch.object(execute, 'threading') as thread_module:
     response = client.post(url, headers={'X-Requested-With':'dev'})
     assert response.status_code == 202, response.text
+    assert wt.is_dir() and execute._git(wt, 'rev-parse', 'HEAD') == sha
     assert thread_module.Thread.call_args.kwargs['args'][0] is execute._register_repair
     assert client.post(url, headers={'X-Requested-With':'dev'}).status_code == 409
 with patch.object(orchestrate, 'run_tests', return_value='failed check'), patch.object(orchestrate, 'handle') as merge:

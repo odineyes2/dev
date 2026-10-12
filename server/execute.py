@@ -421,6 +421,14 @@ def register_repair(actor, ref):
     if why:
         raise issues.StoreError(why, 409)
     cwd = worktree_path(ref)
+    if not cwd.exists():
+        project = next((p for p in issues.list_projects() if p['key'] == issue['project_key']), None)
+        repo = project['local_path'] if project else None
+        if not repo or not Path(repo).is_dir() or not _branch_exists(repo, branch_name(ref)):
+            raise issues.StoreError('Task 작업 폴더와 수정 브랜치를 찾지 못했어요. 프로젝트 경로·연결된 커밋을 확인해 주세요.', 409)
+        cwd = prepare_worktree(repo, ref)
+    if not cwd.is_dir():
+        raise issues.StoreError('Task 작업 경로가 폴더가 아니에요. 작업 폴더를 확인해 주세요.', 409)
     sha = _git(cwd, 'rev-parse', 'HEAD')
     if (_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD') != branch_name(ref) or
         _git(cwd, 'status', '--porcelain') or not _git(cwd, 'log', '--oneline', f'{BASE_BRANCH}..HEAD') or
