@@ -897,6 +897,25 @@ ALTER TABLE project_app_restarts ADD COLUMN reported_revision TEXT NOT NULL DEFA
 ALTER TABLE project_app_restarts ADD COLUMN reported_web_revision TEXT NOT NULL DEFAULT '';
 """)
 
+# Auto 검토는 등록자(사람·에이전트)와 무관하게 위임한다 — 사용자 결정 2026-10-12. 트리거에서 reporter 조건만 뺀다.
+MIGRATIONS.append("""
+DROP TRIGGER auto_run_gate;
+CREATE TRIGGER auto_run_gate BEFORE INSERT ON runs
+WHEN EXISTS(SELECT 1 FROM jobs j WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto'
+ AND NOT EXISTS(SELECT 1 FROM troubleshoot_requests t WHERE t.job_id=j.id))
+BEGIN
+ SELECT RAISE(ABORT,'자동 위임 조건이 바뀌었어요') WHERE NOT EXISTS(
+ SELECT 1 FROM jobs j JOIN issues i ON i.id=j.issue_id JOIN projects p ON p.id=i.project_id JOIN global_auto_settings s ON s.singleton=1
+ WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto'
+ AND p.archived=0 AND i.status='waiting' AND i.claimed_by IS NULL
+ AND NOT EXISTS(SELECT 1 FROM json_each(i.labels_json) WHERE value='goal')
+ AND ((NEW.mode='review' AND s.auto_review=1 AND i.parent_id IS NULL AND NOT EXISTS(SELECT 1 FROM plans WHERE issue_id=i.id))
+ OR (NEW.mode='execute' AND s.auto_execute=1 AND j.approval_version=(SELECT MAX(version) FROM plans WHERE issue_id=i.parent_id)
+ AND EXISTS(SELECT 1 FROM decisions d WHERE d.id=(SELECT MAX(id) FROM decisions WHERE issue_id=i.parent_id AND gate='plan') AND d.plan_version=j.approval_version AND d.verdict IN ('approve','approve_notes') AND d.actor LIKE 'human:%')
+ AND NOT EXISTS(SELECT 1 FROM issue_deps dep JOIN issues b ON b.id=dep.blocked_by_id WHERE dep.issue_id=i.id AND b.status<>'done'))));
+END;
+""")
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

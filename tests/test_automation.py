@@ -117,6 +117,10 @@ jobs.pump()
 auto_jobs = [j for j in jobs.list_jobs() if j['source'] == 'auto']
 assert [j['ref'] for j in auto_jobs] == [one['ref'], two['ref']]
 assert all(j['provider'] == 'claude' and j['delegation_id'] and '/delegation/' in j['actor'] for j in auto_jobs)
+# 실행 직전 DB 트리거(auto_run_gate)도 에이전트 등록 이슈의 runs 기록을 막지 않는다(기록은 되돌린다).
+conn = sqlite3.connect(config.DB_PATH)
+conn.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'running', 'human:auto', ?)", (two['id'], db.now_iso()))
+conn.rollback(); conn.close()
 jobs.pump(); db.init(); jobs.pump()
 assert len([j for j in jobs.list_jobs() if j['source'] == 'auto']) == 2
 manual = issues.create_issue(admin, 'AUTO', '수동')
