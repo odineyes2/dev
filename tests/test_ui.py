@@ -400,6 +400,33 @@ def check_project_restart(page, shots):
     page.click('#app-restart-copy')
     page.wait_for_selector('#app-restart-manual:not([hidden])')
     assert page.input_value('#app-restart-manual') == copied
+    assert page.locator('#app-deploy-start').is_disabled()
+    state['row'].update(deploy_available=True, mode='deploy', self_restart=False,
+                        current_release=[{'out':'apps/web/out','revision':'abcdef0123456789','built_at':'2026-10-12T08:00:00+00:00'}],
+                        reported_revision='abcdef0123456789', reported_web_revision='abcdef0123456789',
+                        log='builds/RST/abcdef/build.log', log_tail='build failed <img src=x onerror="window.restartXSS=1">\n' + 'long/path/' * 40)
+    page.click('#app-restart-refresh')
+    page.wait_for_selector('#app-deploy-start:not([disabled])')
+    assert 'abcdef0' in page.inner_text('#app-restart-release')
+    deploy_posts = []
+    def deploy_request(route):
+        deploy_posts.append(route.request.method)
+        state['row'].update(status='restarting', phase='웹 빌드 중')
+        route.fulfill(json=state['row'])
+    page.route('**/api/projects/RST/deploy', deploy_request)
+    page.locator('#app-deploy-start').evaluate('b=>{b.click();b.click()}')
+    page.wait_for_function('document.querySelector("#app-restart-state").textContent.includes("웹 빌드 중")')
+    assert deploy_posts == ['POST']
+    assert page.locator('#app-restart-start').is_disabled()
+    assert page.locator('#app-deploy-start').is_disabled()
+    state['row'].update(status='failed', phase='build', error='빌드 실패 — 로그를 확인해 주세요.')
+    page.click('#app-restart-refresh')
+    page.wait_for_selector('#app-deploy-start:not([disabled])')
+    page.locator('#app-restart-log').evaluate('e=>e.open=true')
+    assert page.evaluate('window.restartXSS') is None
+    page.locator('#app-restart-manual').evaluate('e=>e.hidden=true')
+    page.unroute('**/api/projects/RST/deploy', deploy_request)
+    page.wait_for_timeout(3200)
     for theme in ('light', 'dark'):
         page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
         page.emulate_media(color_scheme=theme)

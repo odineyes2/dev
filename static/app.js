@@ -1827,15 +1827,31 @@ function renderProjects(editKey, projectTab = 'manage'){
 
 function bindProjectRestart(project){
   const panel = view.querySelector('.project-restart');
+  panel.querySelector('h3').textContent = '앱 재시작·배포';
+  panel.querySelector('.line').insertAdjacentHTML('beforeend', '<button type="button" id="app-deploy-start" disabled>빌드 후 배포</button>');
+  panel.querySelector('.line').insertAdjacentHTML('afterend', '<div id="app-restart-release"></div><details id="app-restart-log" hidden><summary>배포 로그</summary><p class="dim"></p><pre></pre></details>');
+  for(const [id, text] of [['app-restart-start', '코드·산출물 그대로 프로세스만 재시작해요.'], ['app-deploy-start', '현재 HEAD 커밋을 빌드하고 산출물 교체·재시작·릴리스 확인을 진행해요.']]){
+    const button = panel.querySelector('#' + id), action = document.createElement('div');
+    action.className = 'restart-action'; button.before(action); action.append(button);
+    const description = document.createElement('p'); description.className = 'dim'; description.textContent = text; action.append(description);
+  }
+  const deploy = panel.querySelector('#app-deploy-start'), release = panel.querySelector('#app-restart-release'), log = panel.querySelector('#app-restart-log');
   const start = panel.querySelector('#app-restart-start'), refresh = panel.querySelector('#app-restart-refresh');
   const state = panel.querySelector('#app-restart-state'), copy = panel.querySelector('#app-restart-copy');
   const feedback = panel.querySelector('#app-restart-feedback'), manual = panel.querySelector('#app-restart-manual');
   const url = `/api/projects/${encodeURIComponent(project.key)}/restart`;
-  let data = {}, busy = false, loading = false, timer, retries = 0, diagnostic = '';
+  let data = {}, busy = false, loading = false, timer, retries = 0, diagnostic = '', pendingMode = 'restart';
   const active = () => ['waiting','restarting','checking'].includes(data.status);
   function paint(){
     start.disabled = busy || loading || !data.available || active();
-    start.textContent = busy || active() ? '재시작 처리 중…' : '앱 재시작';
+    deploy.disabled = busy || loading || !data.deploy_available || active();
+    const mode = busy ? pendingMode : data.mode;
+    start.textContent = (busy || active()) && mode !== 'deploy' ? '재시작 처리 중…' : '앱 재시작';
+    deploy.textContent = (busy || active()) && mode === 'deploy' ? '배포 처리 중…' : '빌드 후 배포';
+    release.textContent = ['현재 운영 릴리스', ...(data.current_release || []).map(r => `${r.out} · ${(r.revision || '').slice(0,7)} · ${fmtTime(r.built_at)}`), data.current_release?.length ? '' : '빌드 기록이 없어요.', data.reported_revision ? `앱 revision: ${data.reported_revision}` : '', data.reported_web_revision ? `웹 revision: ${data.reported_web_revision}` : '', data.deploy_available ? '' : '빌드 선언과 앱 설정을 확인하면 빌드 후 배포를 사용할 수 있어요.'].filter(Boolean).join('\n');
+    log.hidden = !data.log && !data.log_tail;
+    log.querySelector('p').textContent = data.log || '';
+    log.querySelector('pre').textContent = data.log_tail || '로그 내용이 없어요.';
     state.textContent = [data.target_app ? `PM2 앱 ${data.target_app}` : '', data.phase, data.error, data.setup_error].filter(Boolean).join('\n');
     if(active()) restartGraceUntil = Date.now() + 90000;
     else if(['complete','failed'].includes(data.status)) restartGraceUntil = 0;
@@ -1843,11 +1859,11 @@ function bindProjectRestart(project){
       `프로젝트: ${project.key}`, `앱: ${data.app || data.target_app || '미확인'}`, `상태: ${data.status || '미확인'}`,
       `단계: ${data.phase || '미확인'}`, `오류: ${data.error || data.setup_error || '없음'}`,
       `로컬 확인 주소: ${data.health_url || data.target_health_url || '미확인'}`, `요청: ${data.created_at || '미기록'}`,
-      `갱신: ${data.updated_at || '미기록'}`].join('\n');
+      `갱신: ${data.updated_at || '미기록'}`, `모드: ${data.mode || 'restart'}`, release.textContent, `로그: ${data.log || '없음'}`, data.log_tail || ''].join('\n');
     manual.value = diagnostic; copy.disabled = !data.status;
   }
-  async function request(method){
-    const response = await fetch(url, {method, headers:{'X-Requested-With':'dev'}, cache:'no-store'});
+  async function request(method, mode = 'restart'){
+    const response = await fetch(mode === 'deploy' ? url.replace(/restart$/, 'deploy') : url, {method, headers:{'X-Requested-With':'dev'}, cache:'no-store'});
     const body = await response.json().catch(() => null);
     if(!response.ok){ const error = new Error(body?.detail || `서버 응답 ${response.status}`); error.status = response.status; throw error; }
     return body;
@@ -1870,19 +1886,23 @@ function bindProjectRestart(project){
       loading = false;
       if(panel.isConnected){
         start.disabled = busy || !data.available || active();
+        deploy.disabled = busy || !data.deploy_available || active();
         if((active() || retries) && retries < 60) timer = setTimeout(load, 2000);
       }
     }
   }
-  start.onclick = async () => {
-    if(busy || active()) return;
+  const submit = async (mode) => {
+    if(busy || loading || active() || !(mode === 'deploy' ? data.deploy_available : data.available)) return;
+    pendingMode = mode;
     busy = true; restartGraceUntil = Date.now() + 90000; paint();
     try {
-      const result = await request('POST');
-      if(panel.isConnected){ data = result; manual.hidden = true; feedback.textContent = '재시작을 요청했어요.'; paint(); }
+      const result = await request('POST', mode);
+      if(panel.isConnected){ data = result; manual.hidden = true; feedback.textContent = mode === 'deploy' ? '빌드 후 배포를 요청했어요.' : '재시작을 요청했어요.'; paint(); }
     } catch(error){ if(panel.isConnected) feedback.textContent = `요청 상태를 확인하고 있어요. ${error.message}`; }
     finally { busy = false; if(panel.isConnected) await load(); }
   };
+  start.onclick = () => submit('restart');
+  deploy.onclick = () => submit('deploy');
   refresh.onclick = () => { retries = 0; load(); };
   copy.onclick = async () => {
     const text = diagnostic;
