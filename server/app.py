@@ -674,6 +674,16 @@ def api_qa(ref: str):
     return qa.panel(ref)
 
 
+@app.post("/api/issues/{ref}/qa/rework")
+async def api_qa_rework(ref: str, request: Request):
+    import qa
+    who = human_only(request)
+    b = await json_body(request)
+    if not isinstance(b.get("qa_id"), int) or not isinstance(b.get("task_refs"), list) or not all(isinstance(t, str) for t in b["task_refs"]):
+        raise HTTPException(400, "qa_id(정수)와 task_refs(문자열 목록)가 필요해요.")
+    return qa.request_rework(who, ref, b["qa_id"], b["task_refs"])
+
+
 @app.get("/api/issues/{ref}/runs")
 def api_runs(ref: str):
     return {"runs": review.list_runs(ref)}

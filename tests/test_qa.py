@@ -350,3 +350,33 @@ for attempt in range(1, 6):
 assert judge(limit,'fail')['status'] == 'failed'
 assert statuses(limit)[0] == 'on_hold' and qa.panel(limit['ref'])['rework_count'] == 5
 print('OK Auto QA done/rework/on_hold, OFF invariance, goal·human-check·new-task gates')
+
+# DEV-114-4: Auto QA OFF에서 사람이 카드로 재작업을 요청한다 — 인증·입력·승인 gate·중복을 실제 앱 요청으로 확인한다.
+set_auto_qa(False)
+def failed_with_plan(verdict):
+    root,task = make_issue('manual rework '+verdict)
+    with db.connect() as c:   # 판정 뒤 계획 결정을 바꾸면 stale이라 검사 전에 정해 둔다
+        c.execute("INSERT INTO plans(issue_id,version,body,author,created_at) VALUES(?,1,'plan','human:admin',?)", (root['id'],db.now_iso()))
+        c.execute("INSERT INTO decisions(issue_id,gate,plan_version,verdict,actor,created_at) VALUES(?,'plan',1,?,'human:admin',?)", (root['id'],verdict,db.now_iso()))
+    row = judge(root,'fail')
+    assert row['status'] == 'failed' and statuses(root) == ['in_review','backlog']
+    return root,task,row
+rejected,rtask,rrow = failed_with_plan('reject')
+manual,mtask,row = failed_with_plan('approve')
+url = '/api/issues/' + manual['ref'] + '/qa/rework'
+body = {'qa_id': row['id'], 'task_refs': [mtask['ref']]}
+with patch.object(app.jobs, 'pump'), TestClient(app.app) as client:
+    assert client.post(url, json=body).status_code in (401, 403)   # 비로그인(CSRF 헤더 없음 포함)
+    assert client.post(url, json=body, headers=headers).status_code == 403
+    client.cookies.set('ns_session','temporary'); client.headers['x-requested-with'] = 'dev'
+    with patch.object(auth,'nightshift_user',return_value={'role':'admin','username':'admin'}):
+        for bad in ({'qa_id':'1','task_refs':[]}, {'qa_id':row['id'],'task_refs':'x'}, {'qa_id':row['id'],'task_refs':['QA-404']}, {'qa_id':row['id'],'task_refs':[]}):
+            assert client.post(url, json=bad).status_code in (400, 404), bad
+        r = client.post('/api/issues/' + rejected['ref'] + '/qa/rework', json={'qa_id': rrow['id'], 'task_refs': [rtask['ref']]})
+        assert r.status_code == 409 and '승인' in r.json()['detail'], r.text   # 승인 gate
+        assert client.post(url, json={**body, 'qa_id': rrow['id']}).status_code == 404   # 다른 Issue의 회차
+        r = client.post(url, json=body)
+        assert r.status_code == 200 and r.json()['rework_count'] == 1, r.text
+        assert statuses(manual) == ['in_review','changes_requested']
+        assert client.post(url, json=body).status_code == 409   # 중복
+print('OK human QA rework request: auth, input, approval gate, duplicate')
