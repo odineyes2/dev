@@ -386,11 +386,30 @@ function formatDuration(seconds){
 function completionTimeHtml(i){
   return ['done', 'closed'].includes(i.status) ? `<span class="completion-time" title="최초 작업 시작부터 종결까지 · 대기와 검토 시간 포함">${formatDuration(i.completion_seconds)}</span>` : '';
 }
+// 서버가 보존한 직접 실행분만 표시하며 미측정을 실제 0과 구분한다.
+function issueTokensHtml(i, detail = false){
+  const u = i.token_usage;
+  const number = n => Number(n).toLocaleString('ko-KR');
+  let text, explanation;
+  if(!u){ text = '미측정'; explanation = '토큰 집계 정보가 아직 없어요.'; }
+  else {
+    const measured = u.run_count > u.unmeasured_run_count;
+    const partial = u.partial || u.unmeasured_run_count > 0 || u.running_run_count > 0;
+    const total = number(u.total_tokens);
+    const unit = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e4, 'k']].find(([min]) => u.total_tokens >= min);
+    const compact = unit ? `${(u.total_tokens / (unit[1] === 'k' ? 1000 : unit[0])).toFixed(1)}${unit[1]}` : total;
+    text = !u.run_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${detail ? total : compact} 토큰${partial ? ' · 부분 집계' : ''}`;
+    if(u.running_run_count) text += ' · 실행 중';
+    explanation = `입력 ${number(u.input_tokens)} · 출력 ${number(u.output_tokens)} · 합계 ${total} 토큰 · 미측정 ${number(u.unmeasured_run_count)}회 · 실행 중 ${number(u.running_run_count)}회`;
+  }
+  explanation += ' · 이 Issue의 직접 실행분이에요. 하위 Task와 수집되지 않은 외부 대화는 합산하지 않아요.';
+  return `<span class="issue-tokens" title="${esc(explanation)}" aria-label="${esc(text + ' · ' + explanation)}">${esc(text)}</span>${detail ? `<p class="token-explanation">${esc(explanation)}</p>` : ''}`;
+}
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
-    <td class="title-cell">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}<div class="issue-badges">${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)}</div></td>
+    <td class="title-cell">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}<div class="issue-badges">${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)} ${issueTokensHtml(i)}</div></td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td>
-    <td class="hide-m">${processingAgentsHtml(i)}</td><td class="hide-m">${completionTimeHtml(i)}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
+    <td class="hide-m">${processingAgentsHtml(i)}</td><td class="hide-m">${completionTimeHtml(i)}</td><td class="hide-m token-cell">${issueTokensHtml(i)}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
 // Task는 부모 바로 아래에 들여써서 붙이고(부모가 아직 안 왔으면 오는 순간 끌어온다) 접고 펼 수 있다. 접힘은 부모 ref별로 기억한다.
 function collapsedSet(){ return new Set(JSON.parse(localStorage.getItem('dev.collapsed') || '[]')); }
@@ -547,7 +566,7 @@ async function loadMoreIssues(){
   L.done = !data.has_more;   // 예전 서버(has_more 없음)면 한 번으로 끝
   if(!body.querySelector('table, .empty')){
     body.innerHTML = items.length ? `<table class="issues"><thead><tr><th aria-sort="${L.qs.sort === 'id_asc' ? 'ascending' : L.qs.sort === 'id_desc' ? 'descending' : 'none'}"><button type="button" id="list-id-sort" class="list-sort" title="${L.qs.sort === 'id_asc' ? 'ID 내림차순으로 정렬해요' : L.qs.sort === 'id_desc' ? '최근 고친 순으로 정렬해요' : 'ID 오름차순으로 정렬해요'}">ID${L.qs.sort ? `<svg class="ico${L.qs.sort === 'id_desc' ? ' sort-desc' : ''}" aria-hidden="true"><use href="#i-arrow-up"/></svg>` : ''}</button></th><th>Title</th><th>Status</th>
-      <th class="hide-m history-heading">AGENT</th><th class="hide-m history-heading">TIME</th><th class="hide-m">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
+      <th class="hide-m history-heading">AGENT</th><th class="hide-m history-heading">TIME</th><th class="hide-m">TOKENS</th><th class="hide-m">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
   }
   const tbody = body.querySelector('tbody');
   if(tbody){ items.forEach(i => placeRow(tbody, i)); bindActions(tbody, L.actions, loadList); }
@@ -606,7 +625,7 @@ async function renderBoard(){
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
         <div class="t">${titleHtml(i)}</div><div class="meta">${approvalHtml(i.approval)}${labelsHtml(i.labels)}${typesHtml(i)}
-        ${processingAgentsHtml(i)}${completionTimeHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
+        ${processingAgentsHtml(i)}${completionTimeHtml(i)}${issueTokensHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
     </div></div>`;
   }).join('')}</div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
   loadJobs().catch(() => {});
@@ -896,7 +915,7 @@ async function renderIssue(ref, background = false){
         ${it.parent_ref ? '' : '<section class="panel qa-card" id="qa-card" aria-labelledby="qa-title"><h2 id="qa-title">QA</h2><p class="dim">불러오는 중…</p></section>'}
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues tasks">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
-            <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}<div class="task-history">${processingAgentsHtml(ch)} ${completionTimeHtml(ch)}</div></td><td>${statusHtml(ch.status)}${progressHtml(ch)}</td>
+            <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}<div class="task-history">${processingAgentsHtml(ch)} ${completionTimeHtml(ch)} ${issueTokensHtml(ch)}</div></td><td>${statusHtml(ch.status)}${progressHtml(ch)}</td>
             <td>${taskActionsHtml(it, ch)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
         ${it.superseded_children?.length ? `<details class="panel" id="superseded-tasks"><summary>이전 계획의 Task · ${it.superseded_children.length}개</summary>${it.superseded_children.map(ch => `<p><a href="#/issue/${esc(ch.ref)}">${esc(ch.ref)} · ${esc(ch.title)}</a> <span class="dim">계획서 v${ch.superseded_by_plan}으로 대체</span></p>`).join('')}</details>` : ''}
         <div class="panel"><h2>Activity</h2><ul class="timeline">${it.events.filter(e => e.kind !== 'claim').map(eventHtml).join('') || '<li class="dim empty-line">아직 활동이 없어요.</li>'}</ul>
@@ -906,6 +925,7 @@ async function renderIssue(ref, background = false){
         ${troubleshootingHtml(it)}
       </div>
       <aside class="side panel">
+        <div class="field issue-token-detail"><span>Tokens</span><div>${issueTokensHtml(it, true)}</div></div>
         <div class="field"><span>Status</span><select id="status">${STATUSES.map(s => `<option value="${s}"${s === it.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}</select>
           ${it.children.length || it.parent_ref ? '<button class="complete-tree" title="최상위 이슈와 모든 Task를 한 번에 Done으로">전체 완료</button>' : ''}</div>
         <div class="field" hidden><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>

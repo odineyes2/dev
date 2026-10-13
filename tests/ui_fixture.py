@@ -190,3 +190,13 @@ import app, uvicorn
 uvicorn.run(app.app, host='127.0.0.1', port=int(sys.argv[3]), lifespan='off')
 '''
 
+
+
+def token_usage_fixture():
+    """실행 상태와 큰 숫자를 외부 호출 없이 재현한다."""
+    def usage(total=0, runs=0, unknown=0, running=0):
+        return dict(input_tokens=total, output_tokens=0, total_tokens=total,
+                    run_count=runs, unmeasured_run_count=unknown,
+                    running_run_count=running, partial=bool(unknown or running))
+    return [usage(), usage(runs=1), usage(1500, 1), usage(300, 2, 1),
+            usage(runs=1, unknown=1), usage(400, 2, 1, 1), usage(1234567890123, 1)]

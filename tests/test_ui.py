@@ -3051,6 +3051,85 @@ def check_chat_connections(page, shots):
     page.set_viewport_size({'width': 1300, 'height': 850})
 
 
+def check_issue_tokens(page, shots):
+    """모의 집계를 목록·보드·상세·Task와 새로고침으로 확인한다."""
+    from ui_fixture import token_usage_fixture
+    previous = page.evaluate("({project: localStorage.getItem('dev.project'), theme: localStorage.getItem('dev.theme')})")
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    H = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=H, data={'key': 'TOK', 'name': '토큰 검사'}).ok
+    rows = []
+    for index, usage in enumerate(token_usage_fixture()):
+        response = page.request.post(BASE + '/api/issues', headers=H, data={
+            'project': 'TOK', 'title': f'토큰 상태 {index}',
+            **({'parent': rows[0]['ref']} if index else {})})
+        assert response.ok
+        rows.append(dict(response.json(), token_usage=usage))
+    by_ref = {row['ref']: row for row in rows}
+    def mock(route):
+        response = route.fetch()
+        data = response.json()
+        def decorate(row):
+            row['token_usage'] = by_ref[row['ref']]['token_usage']
+            for child in row.get('children', []):
+                decorate(child)
+        if 'issues' in data:
+            for row in data['issues']:
+                if row['ref'] in by_ref: decorate(row)
+        elif data.get('ref') in by_ref:
+            decorate(data)
+        route.fulfill(response=response, json=data)
+    page.route('**/api/issues?*', mock)
+    page.route('**/api/issues/TOK-*', lambda r: mock(r) if r.request.url.split('/')[-1] in by_ref else r.continue_())
+    expected = ['실행 없음', '0 토큰', '1,500 토큰', '측정된 300 토큰 · 부분 집계', '미측정', '측정된 400 토큰 · 부분 집계 · 실행 중', '1.2T 토큰']
+    page.evaluate("localStorage.setItem('dev.project', 'TOK')")
+    page.reload(); page.wait_for_selector('#shell:not([hidden])')
+    page.goto(BASE + '/#/?project=TOK')
+    page.wait_for_selector('.token-cell')
+    # 필터 선택으로 프로젝트 범위를 고정한다.
+    page.select_option('#project-filter', 'TOK')
+    page.wait_for_selector('tr[data-ref="TOK-1"]')
+    for row, label in zip(rows, expected):
+        cell = page.locator(f'tr[data-ref="{row["ref"]}"] .token-cell .issue-tokens')
+        assert cell.inner_text() == label
+    large = page.locator(f'tr[data-ref="{rows[-1]["ref"]}"] .token-cell .issue-tokens')
+    assert '1,234,567,890,123' in large.get_attribute('aria-label')
+    for route, selector in [('#/', '.token-cell'), ('#/board', '.card .issue-tokens'), ('#/issue/TOK-1', '.issue-token-detail')]:
+        page.goto(BASE + '/' + route); page.wait_for_selector(selector)
+        if route == '#/board':
+            for row, label in zip(rows, expected):
+                assert page.locator(f'.card[data-ref="{row["ref"]}"] .issue-tokens').inner_text() == label
+        if 'issue/' in route:
+            assert page.locator('.issue-token-detail .issue-tokens').inner_text() == '실행 없음'
+            for row, label in zip(rows[1:], expected[1:]):
+                assert page.locator(f'.tasks tr[data-ref="{row["ref"]}"] .issue-tokens').inner_text() == label
+            assert '직접 실행분' in page.inner_text('.token-explanation')
+        for theme in ('light', 'dark'):
+            for width in (1300, 390):
+                page.set_viewport_size({'width': width, 'height': 850})
+                page.emulate_media(color_scheme=theme)
+                page.evaluate("t => {localStorage.setItem('dev.theme', t); paintTheme()}", theme)
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+                page.screenshot(path=str(shots / f'tokens_{route.split("/")[-1] or "list"}_{theme}_{width}.png'), full_page=True)
+    by_ref['TOK-1']['token_usage'] = token_usage_fixture()[2]
+    page.evaluate("renderIssue('TOK-1', true)")
+    page.wait_for_function("document.querySelector('.issue-token-detail .issue-tokens').textContent === '1,500 토큰'")
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.goto(BASE + '/#/'); page.wait_for_selector('.token-cell')
+    assert page.locator('tr[data-ref="TOK-1"] .token-cell .issue-tokens').inner_text() == '1,500 토큰'
+    page.goto(BASE + '/#/board'); page.wait_for_selector('.card .issue-tokens')
+    assert page.locator('.card[data-ref="TOK-1"] .issue-tokens').inner_text() == '1,500 토큰'
+    page.goto(BASE + '/#/issue/' + rows[-1]['ref']); page.wait_for_selector('.issue-token-detail')
+    assert page.locator('.issue-token-detail .issue-tokens').inner_text() == '1,234,567,890,123 토큰'
+    # 생성·변경 응답에 집계 필드가 없어도 예외 없이 표시한다.
+    assert '미측정' in page.evaluate("issueTokensHtml({})")
+    page.unroute('**/api/issues?*')
+    page.unroute('**/api/issues/TOK-*')
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.emulate_media(color_scheme='light')
+    page.evaluate("s => {for(const key of ['project', 'theme']) {if(s[key] === null) localStorage.removeItem('dev.' + key); else localStorage.setItem('dev.' + key, s[key]);} paintTheme()}", previous)
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 (tmp / "capture_app.py").write_text(BOOTSTRAP, "utf-8")
@@ -3080,6 +3159,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--issue-tokens-only' in sys.argv:
+            check_issue_tokens(page, shots)
+            assert not errs, errs
+            print('OK: Issue tokens'); sys.exit(0)
         if '--auto-master-only' in sys.argv:
             check_auto_master(page)
             check_auto_settings(page, shots)
@@ -3890,6 +3973,7 @@ try:
         assert top in asked[0] and ta in asked[0] and tb in asked[0] and "주의" in asked[0] and f"{tb} — Backlog" in asked[0], asked
         assert all(page.request.get(f"{BASE}/api/issues/{r}").json()["status"] == "done" for r in (top, ta, tb))
 
+        check_issue_tokens(page, shots)
         check_issue_types(page, shots)
 
         check_progress_refresh(page, shots)

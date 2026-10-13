@@ -725,3 +725,11 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .qa-items, .qa-evidence{ padding-left:1.2em; margin:6px 0; }
 .qa-evidence code{ white-space:pre-wrap; overflow-wrap:anywhere; }
 #qa-rework fieldset label{ display:block; padding:4px 0; }
+
+/* 목록·Task·보드가 같은 토큰 상태를 표시한다. */
+.issue-tokens{ font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.token-cell{ min-width:112px; max-width:160px; }
+.token-explanation{ margin:var(--sp-2) 0 0; font-size:12px; color:var(--dim); overflow-wrap:anywhere; }
+.issue-token-detail > div{ min-width:0; }
+.task-history, .issue-history-mobile{ flex-wrap:wrap; }
+@media(max-width:800px){ .issue-history-mobile .issue-tokens{ flex-basis:100%; } }
