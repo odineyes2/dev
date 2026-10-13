@@ -792,6 +792,7 @@ def panel(issue: dict) -> dict | None:
     with db.connect() as c:
         parent = issues._issue_dict(issues._find(c, issue["parent_ref"]))
         row = c.execute("SELECT local_path FROM projects WHERE key=?", (issue["project_key"],)).fetchone()
+        prior_run = c.execute("SELECT 1 FROM runs WHERE issue_id=? AND mode='execute' LIMIT 1", (issue['id'],)).fetchone()
     repo = row["local_path"] if row else ""
     try:
         branch = branch_info(repo, issue["ref"])
@@ -801,7 +802,13 @@ def panel(issue: dict) -> dict | None:
     import regression
     import reproduce
     completed = orchestrate.completion(issue['ref'])
+    approval = issues.get_issue(issue['parent_ref']).get('approval')
+    manual_merge_available = bool(issue['status'] == 'in_review' and not prior_run and not completed
+        and branch and branch['commits'] and any(e['kind'] == 'commit' for e in issue.get('events', []))
+        and approval and not approval['stale'] and approval['verdict'] in ('approve', 'approve_notes')
+        and orchestrate.settings(issue['project_key']).get('auto_merge'))
     return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC,
+            "manual_merge_available": manual_merge_available,
             "retry_merge_available": orchestrate.retry_available(issue),
             "repair_available": repair_available(issue) and not _eligibility_reason(issue, parent),
             "reproduction": reproduce.panel(issue),

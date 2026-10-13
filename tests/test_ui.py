@@ -489,6 +489,61 @@ def check_register_repair(page, shots):
     print('retry merge stage UI OK')
 
 
+def check_manual_merge(page, shots, answers, asked):
+    """수동 커밋의 병합 버튼과 단건 Done 취소·진행 표시를 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers, data={'key':'MMUI','name':'수동 병합 화면'}).ok
+    parent = page.request.post(BASE + '/api/issues', headers=headers, data={'project':'MMUI','title':'부모'}).json()
+    task = page.request.post(BASE + '/api/issues', headers=headers, data={'project':'MMUI','title':'수동 커밋 Task','parent':parent['ref']}).json()
+    path = '/api/issues/' + task['ref']
+    assert page.request.get(BASE + path).json()['execute']['manual_merge_available'] is False
+    state = {'phase':'병합 대기', 'status':'in_review', 'available':True, 'posts':0}
+    pending = []
+    def detail(route):
+        if route.request.method != 'GET':
+            route.continue_(); return
+        data = route.fetch().json()
+        data.update(status=state['status'], merge_state=state['phase'])
+        data['execute']['manual_merge_available'] = state['available']
+        route.fulfill(json=data)
+    def merge(route):
+        state['posts'] += 1
+        pending.append(route)
+    page.route('**' + path, detail)
+    page.route('**' + path + '/manual-merge', merge)
+    page.goto(BASE + '/#/issue/' + task['ref']); page.wait_for_selector('#manual-merge')
+    assert page.locator('#stage #manual-merge').count() == 1
+    assert '수동 커밋 병합 대기' in page.inner_text('#stage')
+    for theme in ('light', 'dark'):
+        page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width':width,'height':850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path=str(shots / f'manual_merge_{theme}_{width}.png'))
+    page.set_viewport_size({'width':1300,'height':850})
+    answers.append(None)
+    page.select_option('#status', 'done')
+    assert '병합 대기' in asked[-1] and page.input_value('#status') == 'in_review'
+    assert state['posts'] == 0
+    answers.append(None)
+    page.click('#approve')
+    assert '병합 대기' in asked[-1] and page.locator('#approve').count() == 1
+    page.locator('#manual-merge').evaluate('b=>{b.click();b.click()}')
+    page.wait_for_function("document.querySelector('#manual-merge')?.disabled")
+    assert state['posts'] == 1 and '병합 시작 중' in page.inner_text('#manual-merge')
+    state.update(phase='병합 검사 중', status='in_progress', available=False)
+    pending.pop().fulfill(status=202, json={'status':'checking'})
+    page.wait_for_function("document.querySelector('#stage')?.textContent.includes('병합 검사 중')")
+    assert page.locator('#manual-merge').count() == 0
+    state.update(phase='병합됨', status='in_review')
+    page.reload(); page.wait_for_selector('#stage')
+    assert '병합됨' in page.inner_text('#stage')
+    assert page.locator('#manual-merge').count() == 0
+    page.unroute('**' + path + '/manual-merge', merge)
+    page.unroute('**' + path, detail)
+    print('manual merge UI OK')
+
+
 def check_project_restart(page, shots):
     """PM2를 호출하지 않고 관리자 버튼·복사·재연결 흐름만 검사한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -3571,6 +3626,10 @@ try:
             print('OK: failed check reproduction'); sys.exit(0)
         if '--register-repair-only' in sys.argv:
             check_register_repair(page, shots)
+            assert not errs, errs
+            sys.exit(0)
+        if '--manual-merge-only' in sys.argv:
+            check_manual_merge(page, shots, answers, asked)
             assert not errs, errs
             sys.exit(0)
         if '--troubleshooter-only' in sys.argv:

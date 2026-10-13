@@ -978,6 +978,8 @@ function stageHtml(it, liveMode, liveProvider){
   else if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
   else if(it.job) msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — ${esc(it.job.note || '앞의 일이 끝나면 차례로 시작해요.')}`;
   else if(x?.retry_merge_available) msg = mergeFailureLine(x);
+  else if(x?.manual_merge_available) msg = '수동 커밋 병합 대기 — 병합 진행을 누르면 서버 검사와 운영 반영을 시작해요.';
+  else if(it.merge_state === '병합됨') msg = '병합됨 — 결과를 확인해 주세요.';
   else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
   else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
   else if(!it.plan) msg = '계획서가 없어요 → Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
@@ -987,7 +989,8 @@ function stageHtml(it, liveMode, liveProvider){
     msg = next ? `계획 승인됨 → <a href="#/issue/${esc(next.ref)}">${esc(next.ref)}</a>에서 실행 맡기기` : it.children.length ? '모든 Task가 실행됐어요 — 결과를 확인해 주세요.' : '계획 승인됨.'; }
   // 상황별 버튼은 이 줄 하나에만 둔다(DEV-113) — 도는 중·대기 중이면 숨긴다
   const idle = x && !it.review_running && !it.job && !LIVE_MERGE.has(it.merge_state);
-  const actions = (idle && x.retry_merge_available ? '<button id="retry-merge" title="기존 구현 커밋으로 서버 검사·병합만 다시 진행해요. 회귀검사 설정과 자동 병합·재시작 정책이 적용돼요.">병합 재시도</button>' : '')
+  const actions = (idle && x.manual_merge_available ? '<button id="manual-merge" title="연결된 수동 커밋을 서버에서 검사하고 기존 병합 경로로 반영해요.">병합 진행</button>' : '')
+    + (idle && x.retry_merge_available ? '<button id="retry-merge" title="기존 구현 커밋으로 서버 검사·병합만 다시 진행해요. 회귀검사 설정과 자동 병합·재시작 정책이 적용돼요.">병합 재시도</button>' : '')
     + (idle && x.repair_available ? '<button class="register-repair" title="에이전트 재호출 없이 연결된 수정 커밋을 검사하고 기존 병합 정책으로 처리해요.">수정 커밋 검사·결과 등록</button>' : '');
   return `<div class="stage" id="stage"><span>${msg}</span>${actions ? `<span class="stage-actions">${actions}</span>` : ''}</div>`;
 }
@@ -1105,6 +1108,10 @@ async function renderIssue(ref, background = false){
   // done/closed로 끝내면 목록으로 돌아간다(DEV-5) — 끝난 이슈 화면에 머물 일은 없다.
   const setStatus = async (status, note) => {
     let updated;
+    if(status === 'done' && it.merge_state === '병합 대기'
+      && !confirm(`${it.ref}은(는) 아직 병합 대기 중이에요. Done으로 바꾸면 코드가 반영되지 않은 채 완료됩니다. 계속할까요?`)){
+      $('status').value = it.status; return;
+    }
     if(status === 'done' && !confirmChecks(it.human_checks)){ reload(); return; }
     try{ updated = await api('POST', `/api/issues/${R}/status`, { status, ...(note === undefined ? {} : { note }), ...(status === 'done' ? { confirm_checks: true } : {}) }); }
     catch(e){ reload(); return; }
@@ -1233,6 +1240,16 @@ ${QUEUE_LINE}`)) return;
     try{
       await api('POST', `/api/issues/${R}/retry-merge`, {});
       toast('기존 커밋으로 병합 재시도를 시작했어요.');
+    }catch(e){ /* api()가 오류를 알린다. */ }
+    finally{ if(location.hash === `#/issue/${it.ref}`) await reload(); }
+  };
+  if($('manual-merge')) $('manual-merge').onclick = async e => {
+    if(e.currentTarget.disabled) return;
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = '병합 시작 중…';
+    try{
+      await api('POST', `/api/issues/${R}/manual-merge`, {});
+      toast('수동 커밋의 검사와 병합을 시작했어요.');
     }catch(e){ /* api()가 오류를 알린다. */ }
     finally{ if(location.hash === `#/issue/${it.ref}`) await reload(); }
   };
