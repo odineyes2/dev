@@ -44,7 +44,7 @@ def _path(root, value, allow_root=False):
 
 
 def _git(repo, *args):
-    result = subprocess.run(['git', *args], cwd=repo, env=dict(os.environ), capture_output=True, text=True, encoding='utf-8')
+    result = subprocess.run(['git', '-c', 'core.longpaths=true', *args], cwd=repo, env=dict(os.environ), capture_output=True, text=True, encoding='utf-8')
     if result.returncode:
         raise BuildError('config', result.stderr.strip())
     return result.stdout.strip()
