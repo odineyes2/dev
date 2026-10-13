@@ -90,3 +90,64 @@ assert client.post(url, headers=headers).status_code == 409
 with db.connect() as c:
     assert c.execute('SELECT COUNT(*) FROM runs WHERE issue_id=?', (task['id'],)).fetchone()[0] == 1
 print('retry merge OK: same run, no agent, checked and merged')
+
+
+def manual_task():
+    task = issues.create_issue(me, 'RETRY', 'manual task', parent=parent['ref'])
+    worktree = execute.prepare_worktree(str(repo), task['ref'])
+    (worktree / ('manual-' + task['ref'] + '.txt')).write_text('manual feature')
+    assert orchestrate._git(str(worktree), 'add', '.').returncode == 0
+    assert orchestrate._git(str(worktree), 'commit', '-qm', 'manual change').returncode == 0
+    head = orchestrate._git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()
+    issues.link_commit(me, task['ref'], head[:12])
+    issues.set_status(me, task['ref'], 'in_progress')
+    issues.set_status(me, task['ref'], 'in_review')
+    return task, worktree, head
+
+
+task, wt, sha = manual_task()
+manual_url = '/api/issues/' + task['ref'] + '/manual-merge'
+with db.connect() as c:
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at) VALUES(?,'review','ok','human:admin',?,?)",
+              (task['id'], db.now_iso(), db.now_iso()))
+assert client.post(manual_url, headers={'Authorization': 'Bearer ' + key}).status_code == 403
+assert client.post(manual_url).status_code == 403
+assert TestClient(A.app).post(manual_url, headers=headers).status_code == 401
+orchestrate.SETTINGS.write_text('{"RETRY":{"auto_merge":false}}')
+assert client.post(manual_url, headers=headers).status_code == 409
+orchestrate.SETTINGS.write_text('{"RETRY":{"auto_merge":true}}')
+(wt / 'dirty.txt').write_text('dirty')
+assert client.post(manual_url, headers=headers).status_code == 409
+(wt / 'dirty.txt').unlink()
+issues.link_commit(me, task['ref'], git('rev-parse', 'main'))
+assert client.post(manual_url, headers=headers).status_code == 409
+issues.link_commit(me, task['ref'], sha[:12])
+with patch.object(orchestrate, 'threading') as thread_mock:
+    response = client.post(manual_url, headers=headers)
+    assert response.status_code == 202, response.text
+    assert response.json()['task_sha'] == sha
+    assert thread_mock.Thread.call_args.kwargs['args'][0] is orchestrate.handle
+    assert client.post(manual_url, headers=headers).status_code == 409
+record = orchestrate.completion(task['ref'])
+with db.connect() as c:
+    run = c.execute('SELECT * FROM runs WHERE id=?', (record['run_id'],)).fetchone()
+    assert run['provider'] == 'manual' and run['cost_usd'] is None and run['input_tokens'] is None
+with patch.object(orchestrate, 'run_tests', return_value=None):
+    assert orchestrate.handle(me, task['ref']) == 'merged'
+assert orchestrate.completion(task['ref'])['phase'] == 'complete'
+assert git('merge-base', '--is-ancestor', sha, 'main') == ''
+
+task, wt, sha = manual_task()
+manual_url = '/api/issues/' + task['ref'] + '/manual-merge'
+with patch.object(orchestrate, 'threading'):
+    assert client.post(manual_url, headers=headers).status_code == 202
+with patch.object(orchestrate, 'run_tests', return_value='manual test failure'):
+    assert orchestrate.handle(me, task['ref']) == 'changes_requested'
+assert orchestrate.completion(task['ref'])['phase'] == 'failed'
+retry_url = '/api/issues/' + task['ref'] + '/retry-merge'
+with patch.object(orchestrate, 'threading'):
+    assert client.post(retry_url, headers=headers).status_code == 200
+with patch.object(orchestrate, 'run_tests', return_value=None):
+    assert orchestrate.handle(me, task['ref']) == 'merged'
+assert orchestrate.completion(task['ref'])['phase'] == 'complete'
+print('manual merge OK: HTTP auth, refusal, merge, failure and retry')

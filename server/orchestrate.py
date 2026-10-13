@@ -386,6 +386,77 @@ def retry_available(issue, record=None, reproduction_id=None):
                 and record and record['auto_merge'] and record['phase'] in ('held', 'failed') and not record['merge_sha'])
 
 
+def manual_merge(actor, ref):
+    """Register a human-linked Task commit and hand it to the normal merge worker."""
+    import execute
+    import jobs
+    if actor['kind'] != 'human':
+        raise issues.StoreError('수동 병합은 관리자만 시작할 수 있습니다.', 403)
+    if not _lock.acquire(blocking=False):
+        raise issues.StoreError('다른 병합이 진행 중입니다.', 409)
+    try:
+        issue = issues.get_issue(ref)
+        ref = issue['ref']
+        if issue['status'] != 'in_review' or not issue.get('parent_ref'):
+            raise issues.StoreError('검토 중인 Task만 수동 병합할 수 있습니다.', 409)
+        parent = issues.get_issue(issue['parent_ref'])
+        why = execute._eligibility_reason(issue, parent)
+        if why:
+            raise issues.StoreError(why, 409)
+        cfg = settings(issue['project_key'])
+        if not cfg.get('auto_merge'):
+            raise issues.StoreError('프로젝트 자동 병합이 꺼져 있습니다.', 409)
+        repo = next((p['local_path'] for p in issues.list_projects() if p['key'] == issue['project_key']), '')
+        if not repo or not Path(repo).is_dir():
+            raise issues.StoreError('프로젝트 저장소를 찾을 수 없습니다.', 409)
+        commits = [e for e in issue['events'] if e['kind'] == 'commit']
+        if not commits:
+            raise issues.StoreError('연결된 커밋이 없습니다.', 409)
+        linked = commits[-1]
+        linked_sha = _git(repo, 'rev-parse', '--verify', linked['data']['sha'] + '^{commit}')
+        branch_sha = _git(repo, 'rev-parse', '--verify', 'refs/heads/' + branch_name(ref) + '^{commit}')
+        if linked_sha.returncode or branch_sha.returncode or linked_sha.stdout.strip() != branch_sha.stdout.strip():
+            raise issues.StoreError('최신 연결 커밋과 Task 브랜치 HEAD가 다릅니다.', 409)
+        sha = branch_sha.stdout.strip()
+        if not _git(repo, 'merge-base', '--is-ancestor', sha, BASE_BRANCH).returncode:
+            raise issues.StoreError('이미 반영된 Task 커밋입니다.', 409)
+        wt = execute.worktree_path(ref)
+        if wt.exists() and (_git(str(wt), 'status', '--porcelain').stdout.strip() or execute.merge_unfinished(wt)):
+            raise issues.StoreError('Task worktree에 미커밋 변경이나 미완료 병합이 있습니다.', 409)
+        with db.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            row = issues._find(c, ref)
+            current_parent = issues.get_issue(issue['parent_ref'])
+            approval = current_parent.get('approval')
+            current_commit = c.execute("SELECT id,data_json FROM events WHERE issue_id=? AND kind='commit' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
+            if (row['status'] != 'in_review' or not approval or approval['stale']
+                    or approval['verdict'] not in ('approve', 'approve_notes')
+                    or not current_commit or current_commit['id'] != linked['id']
+                    or c.execute("SELECT 1 FROM runs WHERE issue_id=? AND mode='execute'", (row['id'],)).fetchone()
+                    or c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND status='queued'", (row['id'],)).fetchone()):
+                raise issues.StoreError('Task 상태, 승인, 커밋 또는 실행 기록이 변경되었습니다.', 409)
+            import project_activity
+            if project_activity.audit_active(c, row['project_key']):
+                raise issues.StoreError('프로젝트 감사가 진행 중입니다.', 409)
+            now = db.now_iso()
+            note = '관리자가 연결한 수동 커밋. 에이전트 실행 없음.'
+            run_id = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,provider,note) VALUES(?,'execute','ok',?,?,?,?,?)",
+                               (row['id'], issues.actor_label(actor), now, now, 'manual', note)).lastrowid
+            c.execute('INSERT INTO task_execution_results(run_id,plan_version) VALUES(?,?)', (run_id, approval['plan_version']))
+            issues._set_status(c, actor, row, 'in_progress', note, {'run_id': run_id, 'source': 'manual'})
+            owner_event = c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status'", (row['id'],)).fetchone()[0]
+            c.execute('INSERT INTO execution_completion(run_id,issue_id,ref,actor,task_sha,auto_merge,phase,note,owner_event,cfg_json,updated_at) VALUES(?,?,?,?,?,1,?,?,?,?,?)',
+                      (run_id, row['id'], ref, issues.actor_label(actor), sha, 'ready', note, owner_event, json.dumps(cfg), now))
+        try:
+            threading.Thread(target=jobs.run_then_pump, args=(handle, actor, ref), daemon=True).start()
+        except Exception as error:
+            _finish(actor, completion(ref), 'on_hold', '수동 병합 스레드를 시작하지 못했습니다: ' + str(error))
+            raise issues.StoreError('수동 병합 스레드를 시작하지 못했습니다.', 503) from error
+        return {'ref': ref, 'run_id': run_id, 'task_sha': sha, 'status': 'checking'}
+    finally:
+        _lock.release()
+
+
 def retry_merge(actor, ref, *, reproduction_id=None):
     """미반영된 검증 완료 커밋을 에이전트 호출 없이 후처리로 다시 넘긴다."""
     import execute
