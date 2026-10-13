@@ -1,5 +1,6 @@
 """현재 보존된 직접 실행 기록을 프로젝트별로 집계한다."""
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import json
 import math
 
@@ -53,6 +54,86 @@ def issue_token_usage(c, issue_ids):
                 batch):
             _add_tokens(result[run['issue_id']], run)
     return result
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def issue_summary(period, project=None, *, as_of=None):
+    """보존된 Issue와 실행 기록의 기간별 게시판 합계."""
+    if period not in ('today', 'month', 'year', 'all'):
+        raise issues.StoreError('period는 today/month/year/all 중 하나여야 해요.')
+    now = _time(as_of) if as_of is not None else _now()
+    if now is None:
+        raise ValueError('as_of must be an ISO timestamp with a timezone')
+    local = now.astimezone(ZoneInfo('Asia/Seoul'))
+    begin = {'today': lambda: local.replace(hour=0, minute=0, second=0, microsecond=0),
+             'month': lambda: local.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+             'year': lambda: local.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)}
+    since = begin[period]().astimezone(timezone.utc) if period != 'all' else None
+    summary = _empty()
+    summary.update(created_issue_count=0, completed_issue_count=0, partial=False)
+    with db.connect() as c:
+        c.execute('BEGIN')
+        project_id = None
+        if project:
+            found = c.execute('SELECT id FROM projects WHERE key=?', (project.upper(),)).fetchone()
+            if found is None:
+                raise issues.StoreError('없는 프로젝트예요.', 404)
+            project_id = found['id']
+        scope = ' AND project_id=?' if project_id is not None else ''
+        args = (project_id,) if project_id is not None else ()
+        date_scope = (" AND (julianday(created_at)>=julianday(?) OR "
+                      "(status='done' AND julianday(last_done_at)>=julianday(?)))") if since else ''
+        date_args = (since.isoformat(), since.isoformat()) if since else ()
+        for row in c.execute('SELECT created_at,last_done_at,status FROM issues WHERE 1=1' + scope + date_scope,
+                             args + date_args):
+            created, done = _time(row['created_at']), _time(row['last_done_at'])
+            summary['created_issue_count'] += bool(created and (since is None or created >= since) and created <= now)
+            summary['completed_issue_count'] += bool(row['status'] == 'done' and done and
+                                                     (since is None or done >= since) and done <= now)
+
+        def collect(run, active, counts):
+            started = _time(run['started_at'])
+            if started is None or started > now:
+                return
+            ended = now if active else _time(run['ended_at'])
+            started_here = since is None or started >= since
+            overlaps = ended is not None and ended >= started and (since is None or ended > since)
+            unknown_duration = ended is None and started_here
+            if not (started_here or overlaps):
+                return
+            summary['run_count'] += 1
+            summary['running_run_count'] += active
+            if started_here:
+                summary['unmeasured_run_count'] += any(v is None for v in counts)
+                for key, value in zip(('input_tokens', 'output_tokens'), counts):
+                    summary[key] += value or 0
+            if overlaps:
+                summary['agent_seconds'] += max(0, (min(ended, now) - max(started, since or started)).total_seconds())
+            summary['unmeasured_duration_run_count'] += unknown_duration
+
+        run_scope = (" AND (julianday(r.started_at)>=julianday(?) OR "
+                     "julianday(r.ended_at)>julianday(?) OR r.status='running')") if since else ''
+        audit_scope = (" AND (julianday(started_at)>=julianday(?) OR "
+                       "julianday(ended_at)>julianday(?) OR status IN ('preparing','running','cancelling'))") if since else ''
+        for run in c.execute('SELECT r.* FROM runs r JOIN issues i ON i.id=r.issue_id WHERE 1=1' +
+                             (' AND i.project_id=?' if project_id is not None else '') + run_scope,
+                             args + date_args):
+            collect(run, run['status'] == 'running',
+                    [token_count(run[k]) for k in ('input_tokens', 'output_tokens')])
+        for run in c.execute('SELECT started_at,ended_at,status,usage_json FROM project_audits WHERE 1=1' +
+                             scope + audit_scope, args + date_args):
+            usage = json.loads(run['usage_json'])
+            collect(run, run['status'] in ('preparing', 'running', 'cancelling'),
+                    [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')])
+    summary['total_tokens'] = summary['input_tokens'] + summary['output_tokens']
+    summary['partial'] = bool(summary['unmeasured_run_count'] or summary['running_run_count'] or
+                              summary['unmeasured_duration_run_count'])
+    return dict(period=period, project=project.upper() if project else None,
+                as_of=now.isoformat(), since=since.isoformat() if since else None,
+                summary=summary, note='현재 보존된 기록 기준이에요. 병렬 실행 시간은 각각 합산하고 토큰은 시작 시각 기준이에요.')
 
 
 def project_usage(key, limit=50, offset=0, *, as_of=None):
