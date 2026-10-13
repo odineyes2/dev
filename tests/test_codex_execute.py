@@ -179,3 +179,26 @@ with patch.object(orchestrate, 'run_tests', side_effect=inspect_auto) as checked
 assert issues.get_issue(auto_task['ref'])['status'] == 'in_review'
 assert orchestrate.completion(auto_task['ref'])['phase'] == 'complete'
 print('OK Codex execute')
+
+# 같은 실행의 검사 재시도는 최초 기능 요약과 검사 결과를 보존한다.
+retry_task = issues.create_issue(base.me, 'EX', 'retry report', parent='EX-1')
+initial = {'outcome': 'ready', 'summary': 'Implement token usage', 'tests': ['usage passed', 'common passed']}
+repair = {'outcome': 'ready', 'summary': 'Repair QA fixture', 'tests': ['fixture passed', 'common passed']}
+fake.write_text("from pathlib import Path\nimport json\n"
+                "retry = Path('retry.txt').exists()\nPath('retry.txt').write_text('implemented')\n"
+                + 'result = ' + repr(repair) + ' if retry else ' + repr(initial) + '\n'
+                + "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(result)}}))\n"
+                + "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':120,'output_tokens':24}}))\n", 'utf-8')
+with patch.object(execute, 'codex_command_for', return_value=[sys.executable, str(fake), 'original prompt']), \
+     patch.object(orchestrate, 'run_tests', side_effect=['test_fixture.py: failed', None]), \
+     patch.object(orchestrate, 'handle'):
+    execute.start(base.me, retry_task['ref'], 'codex')
+    base.wait_idle()
+assert review.list_runs(retry_task['ref'])[0]['status'] == 'ok', review.list_runs(retry_task['ref'])[0]
+report = orchestrate.completion(retry_task['ref'])['note']
+assert 'Implement token usage' in report and 'Repair QA fixture' in report
+assert 'usage passed' in report and 'fixture passed' in report and report.count('common passed') == 1
+commit = next(e for e in issues.get_issue(retry_task['ref'])['events'] if e['kind'] == 'commit')
+assert 'Implement token usage' in commit['body']
+assert review.list_runs(retry_task['ref'])[0]['input_tokens'] == 240
+print('OK retry report preserves original implementation and measured usage')

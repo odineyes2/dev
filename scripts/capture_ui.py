@@ -91,7 +91,8 @@ def capture(route='#/', fixture='empty'):
     if output.is_symlink() or output.resolve().parent != ROOT.resolve():
         raise ValueError('산출물 폴더는 worktree 안에 있어야 한다')
     directory = Path(tempfile.mkdtemp(prefix='capture-', dir=output))
-    manifest = {'version': 1, 'route': route, 'fixture': fixture, 'captures': [], 'errors': []}
+    manifest = {'version': 1, 'route': route, 'fixture': fixture, 'captures': [], 'errors': [],
+                'purpose': 'test' if os.environ.get('DEV_TEST_RUN') == '1' else 'evidence'}
     processes, logs = [], []
     stage = 'startup'
     try:

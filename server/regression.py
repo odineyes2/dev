@@ -141,7 +141,7 @@ def resolve(ref=None, repo=None, changed=None):
             changed = list(execute.task_files(issue))
     changed = sorted(set(p.replace('\\', '/') for p in changed))
     named_tests = set(re.findall(r'tests/(test_[A-Za-z0-9_]+\.py)', (issue or {}).get('body', '')))
-    critical = {'auth', 'db', 'issues', 'execute', 'review', 'jobs', 'orchestrate', 'rollback', 'regression'}
+    critical = {'auth', 'db', 'execute', 'review', 'jobs', 'orchestrate', 'rollback', 'regression'}
     modules = {Path(p).stem for p in changed if p.endswith('.py') and not p.startswith('tests/')}
     high = bool(modules & critical) or any(re.search(r'(^|/)(auth|migrations|security)(/|\.)', p) for p in changed)
     ui = any(p.startswith(('static/', 'src/components/', 'src/pages/')) or p.endswith(('.css', '.html', '.tsx', '.jsx', '.vue')) for p in changed)

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+os.environ['DEV_TEST_RUN'] = '1'
 spec = importlib.util.spec_from_file_location('capture_ui', ROOT / 'scripts/capture_ui.py')
 capture_ui = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capture_ui)
@@ -18,6 +19,7 @@ class CaptureTests(unittest.TestCase):
     def test_global_auto_settings_route(self):
         _, manifest = capture_ui.capture('#/settings/auto', 'projects-empty')
         self.assertEqual(manifest['status'], 'ok', manifest['errors'])
+        self.assertEqual(manifest['purpose'], 'test')
         self.assertEqual(len(manifest['captures']), 4)
         self.assertEqual({(c['theme'], c['width']) for c in manifest['captures']},
                          {(t, w) for t in ('light', 'dark') for w in (1300, 390)})
@@ -83,6 +85,7 @@ class CaptureTests(unittest.TestCase):
         with patch.object(capture_ui.subprocess, 'Popen', side_effect=start), patch.object(capture_ui, 'wait_port', side_effect=RuntimeError('startup timeout')):
             directory, manifest = capture_ui.capture()
         self.assertEqual(manifest['status'], 'failed')
+        self.assertEqual(manifest['purpose'], 'test')
         self.assertEqual(manifest['errors'][0]['stage'], 'startup')
         self.assertTrue(all(p.poll() is not None for p in processes))
         self.assertEqual(json.loads((directory / 'manifest.json').read_text(encoding='utf-8')), manifest)

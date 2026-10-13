@@ -231,6 +231,8 @@ print('OK capture commit protection')
 import json, base64
 from unittest.mock import Mock
 import attachments
+import regression
+regression.update(me, {'agent_capture': 'on'})
 png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')
 for provider in ('claude', 'codex'):
     for result_status in ('ok', 'failed', 'timeout'):
@@ -256,6 +258,7 @@ for provider in ('claude', 'codex'):
         def completed(*args):
             assert len(attachments.list_for_issue(item['id'])) == 1
         with patch.object(review.subprocess, 'Popen', side_effect=process), \
+             patch.object(regression, 'enabled', return_value=True), \
              patch.object(review, '_kill_tree'), \
              patch.object(orchestrate, 'run_tests', return_value=None), \
              patch.object(execute, 'register_completion', side_effect=completed), \
@@ -269,3 +272,7 @@ with patch.object(attachments, 'collect_captures', side_effect=OSError('disk ful
     warning = execute.collect_execution_captures(me, item['ref'], run_id, capture_wt, set())
     assert 'disk full' in warning and '화면 캡처 수집 경고' in warning
 print('OK capture collection on both providers and failure paths')
+regression.update(me, {'agent_capture': 'off'})
+with patch.object(attachments, 'collect_captures', side_effect=AssertionError('OFF must not collect')):
+    assert execute.collect_execution_captures(me, item['ref'], run_id, capture_wt, set()) == ''
+regression.update(me, {'agent_capture': 'on'})

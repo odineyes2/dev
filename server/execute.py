@@ -360,6 +360,17 @@ def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> str | N
         raise issues.StoreError(str(why), 409)
     if not isinstance(result.get("summary"), str) or not result["summary"].strip() or not isinstance(result.get("tests"), list) or not all(isinstance(t, str) for t in result["tests"]):
         raise issues.StoreError("실행 결과 형식이 올바르지 않아요.", 409)
+    for message in reversed(messages[:-1]):
+        try:
+            previous = json.loads(message)
+        except ValueError:
+            continue
+        if (isinstance(previous, dict) and previous.get('outcome') == 'ready'
+                and isinstance(previous.get('summary'), str) and previous['summary'].strip()
+                and isinstance(previous.get('tests'), list) and all(isinstance(t, str) for t in previous['tests'])):
+            result['summary'] = previous['summary'] + '\n\n재시도 보완:\n' + result['summary']
+            result['tests'] = list(dict.fromkeys(previous['tests'] + result['tests']))
+            break
     if Path(cwd).resolve() != worktree_path(ref).resolve() or _git(cwd, "rev-parse", "--abbrev-ref", "HEAD") != branch_name(ref):
         raise issues.StoreError("Task worktree 또는 브랜치가 달라졌어요.", 409)
     issue = issues.get_issue(ref)
@@ -659,7 +670,10 @@ def scope_reason(issue: dict, projects: list[dict] | None = None) -> str | None:
 def collect_execution_captures(actor, ref, run_id, cwd, baseline):
     """첨부 실패는 경고로만 기록하며 구현 완료·실패 상태를 바꾸지 않는다."""
     import attachments
+    import regression
     try:
+        if not regression.enabled('agent_capture', ref):
+            return ''
         added, warnings = attachments.collect_captures(ref, run_id, cwd, baseline)
     except Exception as e:
         added, warnings = 0, [f'{type(e).__name__}: {str(e)[:500]}']

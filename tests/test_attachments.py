@@ -67,6 +67,15 @@ class AttachmentsTest(unittest.TestCase):
         attachments.delete(H, a['id'])
         self.assertEqual(attachments.list_for_issue(self.issue['id']), [])
 
+    def test_test_captures_are_not_issue_evidence_or_warnings(self):
+        root, folder, _ = self.capture()
+        path = folder / 'manifest.json'
+        manifest = json.loads(path.read_text())
+        manifest.update(purpose='test', errors=[{'stage': 'startup', 'reason': 'intentional failure'}])
+        path.write_text(json.dumps(manifest))
+        self.assertEqual(attachments.collect_captures(self.issue['ref'], self.capture_run(), root, set()), (0, []))
+        self.assertEqual(attachments.list_for_issue(self.issue['id']), [])
+
     def test_internal_capture_rejects_paths_format_and_limits(self):
         run = self.capture_run()
         for source in ('../screen.png', '/screen.png', 'C:/screen.png',

@@ -391,7 +391,7 @@ def _kill_tree(proc) -> None:
 def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[str], cwd, env, timeout: float, label: str, provider: str = "claude", baseline_plan_id: int = 0) -> str:
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     name = "Codex" if provider == "codex" else "Claude Code"
-    spent, earlier, held = {}, "", False
+    spent, earlier, earlier_out, held = {}, "", "", False
     with db.connect() as c:
         recovery = c.execute('SELECT 1 FROM troubleshoot_requests WHERE run_id=?', (run_id,)).fetchone()
     capture_before, capture_warning = None, ''
@@ -437,6 +437,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             status, note = "failed", "고친 뒤에도 전체 검사가 실패했어요:\n" + failed[-1500:]
             break
         earlier = text + "\n\n--- 서버 전체 검사 실패 → 재시도 ---\n" + failed + "\n\n"
+        earlier_out = out
         retry = ("\n\n이전 실행의 결과가 이 worktree에 그대로 남아 있다. 서버가 tests/test_*.py 전체 검사를 돌렸더니 아래가 실패했다. "
                  "실패한 검사에 관련된 원인만 고치고 해당 검사만 다시 확인한 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 마친다. 전체 검사는 서버가 다시 수행한다. "
                  "검사가 만든 파일을 커밋하지 말고 Task 범위 밖은 고치지 않는다.\n```\n" + failed[-6000:] + "\n```")
@@ -480,13 +481,13 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     if provider == "codex" and label == "실행" and status == "ok" and not held:
         import execute
         try:
-            held = execute.finalize_codex(actor, ref, cwd, out, run_id) == "held"
+            held = execute.finalize_codex(actor, ref, cwd, earlier_out + '\n' + out, run_id) == "held"
         except (issues.StoreError, ValueError, OSError) as e:
             status, note = "failed", f"Codex 실행을 완료하지 못했어요 — {e}"
     if provider == 'claude' and label == '실행' and status == 'ok' and not held:
         import execute
         try:
-            execute.register_completion(actor, ref, cwd, run_id, text)
+            execute.register_completion(actor, ref, cwd, run_id, earlier + text)
         except (issues.StoreError, ValueError, OSError) as e:
             status, note = 'failed', f'Claude 실행을 완료하지 못했어요 — {e}'
     log_path.write_text(earlier + text + ('\n\n' + capture_warning if capture_warning else '') + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")

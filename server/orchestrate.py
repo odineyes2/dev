@@ -170,7 +170,7 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
     def once(t):
         try:
             return subprocess.run([sys.executable, str(t)], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                  env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
+                                  env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
         except subprocess.TimeoutExpired as error:
             def decoded(value):
                 return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''

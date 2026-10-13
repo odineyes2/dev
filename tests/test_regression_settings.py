@@ -42,6 +42,7 @@ with patch.object(orchestrate.subprocess, 'run') as run:
     assert not run.called
     assert orchestrate.run_tests(repo, stage='server_completion') is None
     assert run.call_count == 1 and run.call_args.args[0][1].endswith('test_other.py')
+    assert run.call_args.kwargs['env']['DEV_TEST_RUN'] == '1'
 client.put(url, json={'checks': {'agent_related': 'off', 'agent_api': 'off', 'agent_capture': 'off'}}, headers=headers).raise_for_status()
 assert '실행하지 않고' in execute.test_scope('DEV-1')
 assert 'test_ui.py' in execute.test_scope('DEV-1')
