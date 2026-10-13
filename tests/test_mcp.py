@@ -19,6 +19,9 @@ db.init()
 HUMAN = {"kind": "human", "id": 1, "name": "admin", "model": None}
 issues.create_project(HUMAN, "NS", "nightshift")
 issues.create_issue(HUMAN, "NS", "보드 복사", "사람이 쓴 지시")
+with db.connect() as c:
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,input_tokens,output_tokens) VALUES(?,'review','failed','human:admin',?,17,3)",
+              (issues.get_issue('NS-1')['id'], db.now_iso()))
 samples = {}
 for name, data in [('x.md', b'a' * (attachments.TEXT_PREVIEW_BYTES + 10)), ('x.json', b'{"ok":true}'), ('x.png', b'\x89PNG\r\n\x1a\n' + b'x'), ('large.png', b'\x89PNG\r\n\x1a\n' + b'x' * attachments.IMAGE_CONTENT_BYTES), ('x.wav', b'RIFF0000WAVEdata')]:
     samples[name] = attachments.upload(HUMAN, name, [data])
@@ -98,6 +101,11 @@ async def main():
         assert (await call("whoami")).data["model"] == "claude-opus-5-5"
         lst = (await call("list_issues", status="backlog")).structured_content["result"]
         assert 'NS-1' in [i['ref'] for i in lst] and "body" not in lst[0]
+        expected = issues.get_issue('NS-1')['token_usage']
+        assert expected['total_tokens'] == 20
+        assert next(i for i in lst if i['ref'] == 'NS-1')['token_usage'] == expected
+        page = (await call('list_issues', project='NS', q='보드 복사', limit=1, offset=0)).structured_content['result']
+        assert len(page) == 1 and page[0]['token_usage'] == expected
         # MCP도 저장소 정렬 인자를 그대로 전달하고 잘못된 값은 거절한다.
         issues.create_project(HUMAN, 'MSORT', 'MCP 정렬 검사')
         for title in ('첫째', '둘째', '셋째'):
@@ -113,6 +121,7 @@ async def main():
             pass
         it = (await call("get_issue", ref="NS-1")).data
         assert it["body"] == "사람이 쓴 지시"
+        assert it['token_usage'] == expected
         assert len(it['attachments']) == len(samples)
         assert all('storage_key' not in a and 'owner' not in a for a in it['attachments'])
         import json, base64

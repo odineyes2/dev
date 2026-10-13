@@ -657,3 +657,55 @@ for terminal in ('done', 'closed'):
     issues.set_status(admin_actor, grandchild['ref'], 'backlog')
     assert issues.create_issue(admin_actor, 'SORT', 'allowed', parent=child['ref'])
 print('OK ID sort and terminal ancestor guards/repair')
+
+# 실제 REST 목록·상세의 직접 실행 집계와 인증/필터/페이지 계약을 검사한다.
+from unittest.mock import patch
+admin = {'kind': 'human', 'name': 'admin'}
+issues.create_project(admin, 'TOK', 'token usage')
+root = issues.create_issue(admin, 'TOK', 'token root')
+child = issues.create_issue(admin, 'TOK', 'token child', parent=root['ref'])
+zero = issues.create_issue(admin, 'TOK', 'token zero')
+foreign = issues.create_issue(admin, 'DEV', 'token foreign')
+with db.connect() as cx:
+    for item, mode, status, inp, out in [
+            (root, 'review', 'failed', 10, 2), (root, 'execute', 'timeout', None, 3),
+            (child, 'qa', 'ok', 100, 20), (child, 'execute', 'running', 5, None),
+            (zero, 'execute', 'ok', 0, 0), (foreign, 'review', 'ok', 999, 999)]:
+        cx.execute('INSERT INTO runs(issue_id,mode,status,actor,started_at,input_tokens,output_tokens) VALUES(?,?,?,?,?,?,?)',
+                   (item['id'], mode, status, 'human:admin', db.now_iso(), inp, out))
+expected = issues.get_issue(root['ref'])['token_usage']
+assert expected == dict(input_tokens=10, output_tokens=5, total_tokens=15, run_count=2,
+                        unmeasured_run_count=1, running_run_count=0, partial=True)
+with TestClient(A.app) as c:
+    # 앱 시작 시 고아 실행 복구가 끝난 뒤 실행 중 상태를 만든다.
+    with db.connect() as cx:
+        cx.execute("UPDATE runs SET status='running' WHERE issue_id=? AND mode='execute'", (child['id'],))
+    for url in ('/api/issues', '/api/issues/' + root['ref']):
+        assert c.get(url).status_code == 401
+        assert c.get(url, headers={'Authorization': 'Bearer invalid'}).status_code == 401
+        c.cookies.set('ns_session', 'adm')
+        with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
+            assert c.get(url).status_code == 403
+        c.cookies.clear()
+    for headers, cookie in [({}, True), ({'Authorization': 'Bearer ' + ka}, False)]:
+        if cookie:
+            c.cookies.set('ns_session', 'adm')
+        else:
+            c.cookies.clear()
+        detail = c.get('/api/issues/' + root['ref'], headers=headers)
+        assert detail.status_code == 200, detail.text
+        assert detail.json()['token_usage'] == expected
+        assert detail.json()['children'][0]['token_usage']['total_tokens'] == 125
+        assert detail.json()['children'][0]['token_usage']['running_run_count'] == 1
+        for offset, item, total in [(0, root, 15), (1, child, 125), (2, zero, 0)]:
+            response = c.get('/api/issues', headers=headers, params={
+                'project': 'TOK', 'status': 'backlog', 'q': 'token', 'sort': 'id_asc', 'limit': 1, 'offset': offset})
+            assert response.status_code == 200, response.text
+            page = response.json()
+            assert len(page['issues']) == 1 and page['has_more'] == (offset < 2)
+            assert page['issues'][0]['id'] == item['id']
+            assert page['issues'][0]['token_usage']['total_tokens'] == total
+        children = c.get('/api/issues', headers=headers, params={'parent': root['ref']}).json()['issues']
+        assert len(children) == 1 and children[0]['token_usage']['total_tokens'] == 125
+        assert c.get('/api/issues/TOK-99999', headers=headers).status_code == 404
+print('OK Issue token usage REST authentication, routing and pagination')

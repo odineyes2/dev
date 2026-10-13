@@ -68,6 +68,9 @@ assert not orchestrate.promote_parent(me, t2)   # 이미 올라가 있으면 다
 
 # 서버가 올린 최상위 상태도 수동 상태와 같은 영속 QA 대기에 한 번만 들어간다.
 import qa
+with db.connect() as c:
+    # 기본 OFF인 QA를 이 검사의 임시 DB에서만 켠다.
+    c.execute("INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES('qa_enabled','true',?,'human:admin')", (db.now_iso(),))
 qa.sync(); qa.sync()
 with db.connect() as c:
     rounds = c.execute('SELECT status FROM qa_rounds WHERE issue_id=?',(par['id'],)).fetchall()
