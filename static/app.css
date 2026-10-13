@@ -565,6 +565,8 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .auto-settings h3,.type-management h3{ font:600 12px var(--mono); letter-spacing:var(--track-label); margin:var(--sp-5) 0 var(--sp-3); }
 .setting-row{ display:flex; align-items:center; justify-content:space-between; gap:var(--sp-4); padding:var(--sp-4) 0; border-bottom:1px solid var(--border); }
 .setting-row > div{ min-width:0; }
+.auto-settings .auto-master-row h3{ margin:0; }
+.auto-master-row .switch-state{ white-space:nowrap; }
 .setting-row p{ margin:var(--sp-1) 0 0; font-size:13px; }
 .queue-limit{ display:flex; align-items:center; gap:var(--sp-2); flex-shrink:0; }
 .queue-limit input{ width:72px; }

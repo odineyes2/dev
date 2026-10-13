@@ -2365,10 +2365,11 @@ async function renderSettings(){
   catch(e){ if(current()) body.innerHTML = `<p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="settings-retry" type="button">다시 불러오기</button>`;
     body.querySelector('#settings-retry')?.addEventListener('click', renderSettings); return; }
   if(!current()) return;
-  body.innerHTML = `<h3>전체 · Auto</h3>
-    ${[['auto_review','Auto 검토 맡기기','사람이 등록한 Plan 없는 최상위 Backlog Issue를 검토해요. Goal과 기존 작업이 있는 Issue는 제외해요.'],
+  const delegationFields = ['auto_review','auto_plan_approve','auto_execute','auto_approve','auto_troubleshoot','auto_qa'];
+  body.innerHTML = `<div class="setting-row auto-master-row"><div><h3 id="auto-all-label">전체 · Auto</h3><p class="dim" id="auto-all-help">검토·계획 승인·실행·태스크 승인·트러블슈팅·QA 여섯 위임을 함께 켜고 꺼요. 유료 호출과 자동 승인이 발생할 수 있어요.</p><p class="dim" id="auto-all-hint"></p></div><button type="button" class="auto-switch" id="auto-all" role="switch" aria-labelledby="auto-all-label" aria-describedby="auto-all-help auto-all-hint" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>
+    ${[['auto_review','Auto 검토 위임','사람이 등록한 Plan 없는 최상위 Backlog Issue를 검토해요. Goal과 기존 작업이 있는 Issue는 제외해요.'],
        ['auto_plan_approve','Auto 계획 승인','Manual 중 완료된 Plan도 포함해 성공한 최신 검토의 유효한 Plan을 구조 검사 후 승인해요. 의미적·기술적 오류 검출은 보장하지 않으며, 사람의 기존 결정과 Goal은 유지해요.'],
-       ['auto_execute','Auto 실행맡기기','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],
+       ['auto_execute','Auto 실행 위임','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],
        ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.'],
        ['auto_troubleshoot','Auto 트러블슈팅','기본 꺼짐. 켠 이후의 코드·검사 실패를 원 실행당 1회 복구해요. 승인 Plan·기존 worktree 안에서 최대 10분 실행하며, OFF로 바꾸면 자동 미착수 대기를 취소해요. 실행 중 작업은 유지해요.'],
        ['auto_qa','Auto QA','기본 꺼짐. QA 통과 시 Issue와 Task를 자동 Done, 실패 시 관련 Task를 재작업해요(최대 5회 후 보류). 꺼져 있어도 검사는 하고 상태는 바꾸지 않아요. Goal·사람이 할 일이 남은 Issue는 자동 Done 하지 않아요.']].map(([field,label,help]) =>
@@ -2381,7 +2382,14 @@ async function renderSettings(){
   let busy = false;
   const status = body.querySelector('#settings-status');
   function paint(){
-    for(const field of ['auto_review','auto_plan_approve','auto_execute','auto_approve','auto_troubleshoot','auto_qa','token_exhaustion_fallback']){
+    const allOn = delegationFields.every(field => settings[field]);
+    const someOn = delegationFields.some(field => settings[field]);
+    const master = body.querySelector('#auto-all');
+    master.setAttribute('aria-checked', String(allOn));
+    master.disabled = busy || settings.auto_approve_available === false;
+    master.querySelector('.switch-state').textContent = busy ? '저장 중…' : allOn ? '켜짐' : someOn ? '일부 켜짐' : '꺼짐';
+    body.querySelector('#auto-all-hint').textContent = allOn ? '누르면 모두 꺼요.' : '누르면 모두 켜요.';
+    for(const field of [...delegationFields, 'token_exhaustion_fallback']){
       const b = body.querySelector(`#${field}`), on = settings[field];
       b.setAttribute('aria-checked', String(!!on)); b.disabled = busy || (field === 'auto_approve' && settings.auto_approve_available === false);
       b.querySelector('.switch-state').textContent = on ? '켜짐' : '꺼짐';
@@ -2407,7 +2415,11 @@ async function renderSettings(){
     catch(e){ if(!current()) return; settings = before; status.textContent = `${e.message} 이전 설정으로 복원했어요. 다시 시도해 주세요.`; }
     finally{ if(current()){ busy = false; paint(); body.querySelector(focus)?.focus(); } }
   }
-  body.querySelectorAll('.auto-switch:not(:disabled)').forEach(b => b.onclick = () => save({[b.id]: !settings[b.id]}, `#${b.id}`));
+  body.querySelector('#auto-all').onclick = () => {
+    const on = !delegationFields.every(field => settings[field]);
+    save(Object.fromEntries(delegationFields.map(field => [field, on])), '#auto-all');
+  };
+  body.querySelectorAll('.auto-switch:not(#auto-all):not(:disabled)').forEach(b => b.onclick = () => save({[b.id]: !settings[b.id]}, `#${b.id}`));
   body.querySelector('.role-cards').onclick = e => {
     const b = e.target.closest('[data-move]'); if(!b || b.disabled) return;
     const list = b.closest('ol'), field = list.dataset.field;
