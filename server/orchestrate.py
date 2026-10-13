@@ -53,6 +53,12 @@ def settings(project_key: str) -> dict:
         cfg = {"auto_merge": True, **(json.loads(SETTINGS.read_text(encoding="utf-8")).get(project_key) or {})}
     except (OSError, ValueError):
         cfg = {"auto_merge": True}
+    if project_key == 'MO':
+        cfg.setdefault('build', [{'cwd': 'apps/web', 'out': 'apps/web/out',
+            'install': ['npm', 'ci', '--ignore-scripts', '--offline'],
+            'run': ['npm', 'run', 'build'],
+            'expect': ['index.html', 'research/index.html', 'release.json'],
+            'when': ['apps/web/*', 'backend/*']}])
     with db.connect() as c:
         project = c.execute('SELECT service_app,service_port FROM projects WHERE key=?', (project_key,)).fetchone()
     if project:
@@ -167,9 +173,18 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
         regression.save_record('regression-selection:' + ref + ':' + stage, selection)
     if not policy[stage]['enabled']:
         return None
+    if stage == 'server_completion' and ref and ref.startswith('MO-'):
+        from execute import prepare_checks
+        try:
+            prepare_checks(repo, {'project_key': 'MO'}, build=True)
+        except issues.StoreError as error:
+            return str(error)
     def once(t):
         try:
-            return subprocess.run([sys.executable, str(t)], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            relative = (t.relative_to(Path(repo)) if t.is_relative_to(Path(repo)) else t).as_posix()
+            command = ([sys.executable, '-m', 'unittest', relative[:-3].replace('/', '.')]
+                       if relative.startswith('backend/tests/') else [sys.executable, str(t)])
+            return subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                   env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
         except subprocess.TimeoutExpired as error:
             def decoded(value):
@@ -179,7 +194,7 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
     cached = regression.load_record('regression-cache:' + ref) if ref else {}
     identity = regression.tree_identity(repo) if ref else None
     results = {}
-    for t in sorted(Path(repo, "tests").glob("test_*.py")):
+    for t in regression.test_files(repo):
         if not policy.get('file:' + t.name, {'enabled': True})['enabled']:
             results[t.name] = 'skipped'
             continue
@@ -252,9 +267,6 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
         sha = _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()
         # 검사 선택은 매 단계 확정하고 같은 트리·파일의 통과 결과만 재사용한다.
         changed = _git(str(worktree), 'diff', '--name-only', before, sha).stdout.splitlines()
-        failed = run_tests(str(worktree), ref=ref if expected_task else None, changed=changed)
-        if failed:
-            return 'changes_requested', f'시험 병합의 선택된 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
         cfg = cfg if cfg is not None else settings(ref.split('-')[0])
         try:
             specs = selected_builds(cfg, changed)
@@ -269,6 +281,14 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
                 return 'changes_requested', build_failure(error)
             if build_checkpoint:
                 build_checkpoint(str(build_dir), sha)
+            # 실제 웹 산출물 요청 검사는 시험 병합 사본에서도 같은 빌드 바이트로 실행한다.
+            import shutil
+            manifest = json.loads((Path(build_dir) / 'manifest.json').read_text(encoding='utf-8'))
+            for output in manifest['outputs']:
+                shutil.copytree(output['staged'], worktree / output['out'], dirs_exist_ok=True)
+        failed = run_tests(str(worktree), ref=ref if expected_task else None, changed=changed)
+        if failed:
+            return 'changes_requested', f'시험 병합의 선택된 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
         changed = _git(str(worktree), 'status', '--porcelain', '--untracked-files=no').stdout.strip()
         if _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip() != sha or changed:
             return 'changes_requested', ('검사 중 시험 병합 사본이 변경됐어요 — 검사 결과를 반영하지 않았어요. 검사가 커밋된 파일을 다시 쓰면 .gitignore에 넣거나 임시 폴더에 쓰게 고쳐 주세요.'

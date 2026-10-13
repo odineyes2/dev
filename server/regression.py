@@ -178,7 +178,7 @@ def resolve(ref=None, repo=None, changed=None):
                        'reason': reason if mode == 'auto' else '사람 설정: ' + mode.upper(), 'name': row['name']}
     # 다른 프로젝트의 독자 테스트는 이름 일치/고위험/계획 선택이 없으면 직접 실행 단계의 기본 검사로 본다.
     if repo:
-        for path in Path(repo, 'tests').glob('test_*.py'):
+        for path in test_files(repo):
             key = 'file:' + path.name
             if key not in checks:
                 auto = choice.get('checks', {}).get(key, True)
@@ -193,6 +193,12 @@ def resolve(ref=None, repo=None, changed=None):
         if checks[key]['mode'] == 'auto' and (key not in choice.get('checks', {}) or forced_file):
             checks[key].update(enabled=selected_files, reason='선택된 테스트 파일이 있어 실행' if selected_files else '선택된 테스트 파일 없음')
     return {'level': level, 'changed_files': changed, 'planned': bool(choice), 'checks': checks}
+
+
+def test_files(repo):
+    """루트 검사와 Moai의 패키지 검사를 모두 찾는다."""
+    return sorted({path for folder in ('tests', 'backend/tests')
+                   for path in Path(repo, folder).glob('test_*.py')})
 
 
 def tree_identity(repo):

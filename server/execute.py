@@ -294,6 +294,8 @@ def prompt_for(ref: str, parent_ref: str | None) -> str:
    그보다 크면 고치지 말고 사람에게 묻는다. {api_test_instructions(ref)}
 3. 고친 뒤 {test_scope(ref)} 기능 하나를 커밋 하나로 `git add`·`git commit` 한다(커밋 메시지 끝에 `({ref})` 표시,
    트레일러 `Co-Authored-By: Claude Code <noreply@anthropic.com>`).
+   Moai 검사는 `python -m unittest backend.tests.test_이름`, 웹 검사는 `npm --prefix apps/web run typecheck`와 `npm --prefix apps/web run build`를 사용한다.
+   필수 검사 실패·미실행이면 완료로 제출하지 않고 on_hold로 둔다.
 4. `git rev-parse HEAD`로 커밋 해시를 얻어 mcp__dev__link_commit으로 잇고, 마지막 응답에 확인하는 법을 적고(상태 전환은 서버가 수행한다),
    mcp__dev__release_issue로 놓는다.
 막히거나 사람의 결정이 필요하면 mcp__dev__add_comment로 묻고 on_hold로 둔다. push·브랜치 이동·다른 폴더 수정·서버 재시작은 할 수 없고 하지 않는다.
@@ -304,8 +306,12 @@ def prompt_for(ref: str, parent_ref: str | None) -> str:
 
 def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
     import review   # 검토 모드와 같은 claude 실행 파일·dev MCP 설정을 쓴다
+    allowed = list(ALLOWED_TOOLS)
+    if ref.startswith('MO-'):
+        allowed += ['Bash(python -m unittest backend.tests.*)', 'Bash(python backend/tests/*)',
+                    'Bash(npm --prefix apps/web run typecheck)', 'Bash(npm --prefix apps/web run build)']
     return [review.claude_bin(), "-p", prompt_for(ref, parent_ref), "--permission-mode", "acceptEdits",
-            "--strict-mcp-config", "--mcp-config", mcp_config, "--allowedTools", *ALLOWED_TOOLS, "--disallowedTools", *BLOCKED_TOOLS,
+            "--strict-mcp-config", "--mcp-config", mcp_config, "--allowedTools", *allowed, "--disallowedTools", *BLOCKED_TOOLS,
             "--max-budget-usd", str(BUDGET_USD), "--no-session-persistence", "--output-format", "json"]
 
 
@@ -640,7 +646,7 @@ def untested_routes(cwd) -> bool:
     added = _git(cwd, 'diff', f'{BASE_BRANCH}...HEAD', '--', '.', ':!tests')
     if not re.search(r"^\+\s*@\w+\.(?:get|post|put|patch|delete)\(", added, re.M):
         return False
-    return not re.search(r"""^\+.*["'`]/api/""", _git(cwd, 'diff', f'{BASE_BRANCH}...HEAD', '--', 'tests'), re.M)
+    return not re.search(r"""^\+.*["'`]/api/""", _git(cwd, 'diff', f'{BASE_BRANCH}...HEAD', '--', 'tests', 'backend/tests'), re.M)
 
 
 def scope_reason(issue: dict, projects: list[dict] | None = None) -> str | None:
@@ -698,6 +704,29 @@ def _run_then_merge(actor, ref, *args):
         issues.add_comment(actor, ref, f"⚠️ 자동 병합 중 오류: {e}")
 
 
+def prepare_checks(worktree, issue, *, build=False):
+    """모델 호출 전에 Moai의 검사·웹 의존성을 준비한다. 설치 실패는 재호출하지 않는다."""
+    if issue['project_key'] != 'MO':
+        return
+    import project_build, shutil, sys
+    commands = [[sys.executable, '-c', 'import fastapi, httpx']]
+    web = Path(worktree, 'apps/web')
+    if web.is_dir() and not (web / 'node_modules/next/dist/bin/next').is_file():
+        commands.append([shutil.which('npm') or 'npm', '--prefix', 'apps/web', 'ci', '--ignore-scripts', '--offline'])
+    if web.is_dir():
+        commands.append([shutil.which('npm') or 'npm', '--prefix', 'apps/web', 'run', 'build'] if build else
+                        [shutil.which('node') or 'node', 'apps/web/node_modules/typescript/bin/tsc', '--version'])
+    for command in commands:
+        try:
+            result = subprocess.run(command, cwd=worktree, env=project_build.environment(),
+                                    capture_output=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise issues.StoreError('모델 호출 전 검사 환경 준비 실패: ' + type(error).__name__, 409) from error
+        if result.returncode:
+            raise issues.StoreError(('완료 등록 전 웹 빌드 실패: ' if build else '모델 호출 전 검사 환경 준비 실패: ') +
+                                    ' '.join(command) + ' — 해당 명령의 의존성과 오류를 확인해 주세요.', 409)
+
+
 def start(actor: dict, ref: str, provider: str | None = None, model: str | None = None, *, troubleshoot_id=None) -> dict:
     """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
     import review
@@ -731,6 +760,7 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
     worktree = prepare_worktree(repo, ref)
     start_sha, conflicts = refresh_worktree(worktree, ref)
+    prepare_checks(worktree, issue)
     stale = stale_commits(repo, issue, parent)
     notice = (conflict_notice(conflicts) if conflicts else "") + (stale_notice(stale, parent["approval"]["plan_version"]) if stale else "")
     timeout = TIMEOUT_SEC
