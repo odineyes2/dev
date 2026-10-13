@@ -472,7 +472,7 @@ async function loadIssueSummary(){
       <div><span>완료 Issue</span><strong>${summaryNumber(s.completed_issue_count)}</strong></div>
       <div><span>에이전트 시간</span><strong>${summaryDuration(s.agent_seconds)}</strong></div>
       <div><span>토큰</span><strong>${summaryNumber(s.total_tokens)}${s.partial ? ' <small>부분 집계</small>' : ''}</strong></div>
-    </div><p class="issue-summary-note">${esc(data.note)}${s.partial ? ` 미측정 ${summaryNumber(s.unmeasured_run_count)}건 · 실행 중 ${summaryNumber(s.running_run_count)}건 · 시간 미측정 ${summaryNumber(s.unmeasured_duration_run_count)}건` : ''}</p>`;
+    </div>`;
   }catch(e){
     if(current()) content.innerHTML = `<span class="issue-summary-error">현황을 불러오지 못했어요. ${esc(e.message)}</span> <button type="button" class="issue-summary-retry">다시 불러오기</button>`;
   }finally{ if(current()) content.setAttribute('aria-busy', 'false'); }
