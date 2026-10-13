@@ -6,7 +6,7 @@ from urllib.parse import quote
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartParser, MultiPartException
@@ -543,6 +543,13 @@ def api_project_usage(key: str, limit: int = 50, offset: int = 0):
 def api_issue_summary(period: str = 'today', project: str | None = None):
     import usage
     return usage.issue_summary(period, project)
+
+
+@app.get("/api/trends")
+def api_trends(from_date: str | None = Query(None, alias='from'),
+               to_date: str | None = Query(None, alias='to'), project: str | None = None):
+    import usage
+    return usage.trends(from_date, to_date, project)
 
 
 @app.get("/api/settings/auto")

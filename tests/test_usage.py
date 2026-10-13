@@ -156,7 +156,8 @@ assert usage.issue_summary('all', 'SUM', as_of=fixed_now)['summary']['created_is
 assert usage.issue_summary('today', 'EMPTY', as_of=fixed_now)['summary']['total_tokens'] == 0
 assert usage.issue_summary('all', as_of=fixed_now)['summary']['created_issue_count'] >= 3
 
-with patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
+# TestClient 시작 시 db.init()는 합성 running 실행을 orphaned로 바꾸므로 보존한다.
+with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
     assert client.get('/api/issue-summary?period=today&project=SUM').status_code == 401
     client.cookies.set('ns_session', 'temporary')
     for period in ('today', 'month', 'year', 'all'):
@@ -168,4 +169,37 @@ with patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClien
     client.cookies.clear()
     with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
         assert client.get('/api/issue-summary?period=today').status_code == 403
+# 새 API는 실제 라우트에서 서울 날짜 버킷, 권한, 필터와 직접 실행 순위를 확인한다.
+with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
+    assert client.get('/api/trends').status_code == 401
+    client.cookies.set('ns_session', 'temporary')
+    response = client.get('/api/trends?from=2026-01-31&to=2026-02-01&project=sum')
+    assert response.status_code == 200, response.text
+    trend = response.json()
+    assert (trend['from_date'], trend['to_date'], trend['project']) == ('2026-01-31', '2026-02-01', 'SUM')
+    jan, feb = trend['days']
+    assert (jan['created_issue_count'], jan['completed_issue_count'], jan['agent_seconds'], jan['total_tokens']) == (2, 0, 3600, 4), jan
+    assert (feb['created_issue_count'], feb['completed_issue_count'], feb['agent_seconds'], feb['total_tokens']) == (1, 2, 5400, 33), feb
+    assert (feb['run_count'], feb['running_run_count'], feb['unmeasured_run_count'],
+            feb['unmeasured_duration_run_count']) == (5, 1, 2, 1), feb
+    assert feb['partial'] and trend['summary']['partial']
+    assert trend['summary']['total_tokens'] == 37
+    assert [(r['ref'], r['total_tokens']) for r in trend['top_issues']] == [
+        (summary_task['ref'], 17), (summary_parent['ref'], 4), (reopened['ref'], 1)]
+    assert len({r['ref'] for r in trend['top_issues']}) == len(trend['top_issues'])
+    assert sum(r['total_tokens'] for r in trend['top_issues']) == 22  # 점검 15는 순위에 넣지 않는다.
+    assert client.get('/api/trends?from=2026-02-01&to=2026-02-01&project=SUM').json()['days'][0]['agent_seconds'] == 5400
+    assert client.get('/api/trends?from=2026-01-31&to=2026-02-01').json()['summary']['total_tokens'] == 37
+    assert len(client.get('/api/trends?project=EMPTY').json()['days']) == 30
+    assert client.get('/api/trends?from=2026-02-03&to=2026-02-03&project=SUM').json()['summary']['total_tokens'] == 0
+    for query in ('from=bad', 'to=2026-02-30', 'from=2026-02-02&to=2026-02-01',
+                  'from=2025-01-01&to=2026-02-01'):
+        assert client.get('/api/trends?' + query).status_code == 400, query
+    assert client.get('/api/trends?project=MISSING').status_code == 404
+    client.cookies.clear()
+    key = auth.create_agent('trend-test')[1]
+    assert client.get('/api/trends', headers={'Authorization': 'Bearer ' + key}).status_code == 200
+    assert client.get('/api/trends', headers={'Authorization': 'Bearer invalid'}).status_code == 401
+    with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
+        assert client.get('/api/trends', cookies={'ns_session': 'temporary'}).status_code == 403
 print('OK usage')

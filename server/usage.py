@@ -1,8 +1,9 @@
 """현재 보존된 직접 실행 기록을 프로젝트별로 집계한다."""
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 import json
 import math
+import re
 
 import db
 import issues
@@ -134,6 +135,142 @@ def issue_summary(period, project=None, *, as_of=None):
     return dict(period=period, project=project.upper() if project else None,
                 as_of=now.isoformat(), since=since.isoformat() if since else None,
                 summary=summary, note='현재 보존된 기록 기준이에요. 병렬 실행 시간은 각각 합산하고 토큰은 시작 시각 기준이에요.')
+
+
+def trends(from_date=None, to_date=None, project=None, *, as_of=None):
+    """서울 날짜별 Issue와 직접 실행·프로젝트 점검 사용량을 조회한다."""
+    now = _time(as_of) if as_of is not None else _now()
+    if now is None:
+        raise ValueError('as_of must be an ISO timestamp with a timezone')
+    seoul = ZoneInfo('Asia/Seoul')
+
+    def parse(value, default):
+        if value is None:
+            return default
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+            raise issues.StoreError('날짜는 YYYY-MM-DD 형식이어야 해요.')
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            raise issues.StoreError('유효한 날짜를 입력해 주세요.')
+
+    today = now.astimezone(seoul).date()
+    end_day = parse(to_date, today)
+    start_day = parse(from_date, end_day - timedelta(days=min(29, end_day.toordinal() - 1)))
+    days = (end_day - start_day).days + 1
+    if not 1 <= days <= 366:
+        raise issues.StoreError('조회 기간은 시작일부터 종료일까지 1~366일이어야 해요.')
+    if end_day == date.max:
+        raise issues.StoreError('조회 가능한 종료일을 입력해 주세요.')
+    begin = datetime.combine(start_day, time.min, seoul).astimezone(timezone.utc)
+    finish = datetime.combine(end_day + timedelta(days=1), time.min, seoul).astimezone(timezone.utc)
+    rows = {}
+    for offset in range(days):
+        day = start_day + timedelta(days=offset)
+        rows[day] = {'date': day.isoformat(), 'created_issue_count': 0,
+                     'completed_issue_count': 0, **_empty(), 'partial': False}
+    ranking = {}
+
+    def day_of(value):
+        parsed = _time(value)
+        return parsed.astimezone(seoul).date() if parsed and parsed <= now else None
+
+    def collect(run, counts, active, issue_id=None):
+        started = _time(run['started_at'])
+        if started is None or started > now or started >= finish:
+            return
+        day = started.astimezone(seoul).date()
+        if day in rows:
+            bucket = rows[day]
+            bucket['run_count'] += 1
+            bucket['unmeasured_run_count'] += any(value is None for value in counts)
+            bucket['running_run_count'] += active
+            bucket['orphaned_run_count'] += run['status'] == 'orphaned'
+            for key, value in zip(('input_tokens', 'output_tokens'), counts):
+                bucket[key] += value or 0
+            if issue_id is not None:
+                ranking.setdefault(issue_id, [0, 0])
+                for index, value in enumerate(counts):
+                    ranking[issue_id][index] += value or 0
+        ended = now if active else _time(run['ended_at'])
+        if ended is None or ended < started:
+            if day in rows:
+                rows[day]['unmeasured_duration_run_count'] += 1
+            return
+        clipped_end = min(ended, now, finish)
+        if clipped_end <= begin:
+            return
+        cursor = max(started, begin)
+        while cursor < clipped_end:
+            local_day = cursor.astimezone(seoul).date()
+            next_day = datetime.combine(local_day + timedelta(days=1), time.min, seoul).astimezone(timezone.utc)
+            segment_end = min(clipped_end, next_day)
+            bucket = rows[local_day]
+            bucket['agent_seconds'] += (segment_end - cursor).total_seconds()
+            if local_day != day:
+                bucket['running_run_count'] += active
+            cursor = segment_end
+
+    with db.connect() as c:
+        c.execute('BEGIN')
+        project_id = None
+        if project:
+            found = c.execute('SELECT id FROM projects WHERE key=?', (project.upper(),)).fetchone()
+            if found is None:
+                raise issues.StoreError('없는 프로젝트예요.', 404)
+            project_id = found['id']
+        scope = ' AND project_id=?' if project_id is not None else ''
+        args = (project_id,) if project_id is not None else ()
+        # 날짜 조건은 보존된 기록 중 조회 범위와 겹치는 행만 읽는다.
+        for item in c.execute('SELECT created_at,last_done_at,status FROM issues WHERE 1=1' + scope +
+                              ' AND (julianday(created_at)<julianday(?) AND julianday(created_at)>=julianday(?)'
+                              " OR (status='done' AND julianday(last_done_at)>=julianday(?) AND julianday(last_done_at)<julianday(?)))",
+                              args + (finish.isoformat(), begin.isoformat(), begin.isoformat(), finish.isoformat())):
+            created = day_of(item['created_at'])
+            done = day_of(item['last_done_at']) if item['status'] == 'done' else None
+            if created in rows:
+                rows[created]['created_issue_count'] += 1
+            if done in rows:
+                rows[done]['completed_issue_count'] += 1
+        overlap = (' AND julianday(started_at)<julianday(?) AND '
+                   '(julianday(started_at)>=julianday(?) OR julianday(ended_at)>julianday(?) '
+                   "OR status IN ('preparing','running','cancelling'))")
+        run_overlap = (' AND julianday(r.started_at)<julianday(?) AND '
+                       '(julianday(r.started_at)>=julianday(?) OR julianday(r.ended_at)>julianday(?) OR r.status=?)')
+        bounds = (finish.isoformat(), begin.isoformat(), begin.isoformat())
+        for run in c.execute('SELECT r.issue_id,r.started_at,r.ended_at,r.status,r.input_tokens,r.output_tokens '
+                             'FROM runs r JOIN issues i ON i.id=r.issue_id WHERE 1=1' +
+                             (' AND i.project_id=?' if project_id is not None else '') + run_overlap,
+                             args + bounds + ('running',)):
+            collect(run, [token_count(run[k]) for k in ('input_tokens', 'output_tokens')],
+                    run['status'] == 'running', run['issue_id'])
+        for run in c.execute('SELECT started_at,ended_at,status,usage_json FROM project_audits WHERE 1=1' +
+                             scope + overlap, args + bounds):
+            usage = json.loads(run['usage_json'])
+            collect(run, [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')],
+                    run['status'] in ('preparing', 'running', 'cancelling'))
+        top = []
+        if ranking:
+            for start in range(0, len(ranking), 900):
+                batch = list(ranking)[start:start + 900]
+                for item in c.execute(
+                        f"SELECT i.id,i.title,{issues.ref_sql('i', 'p')} AS ref FROM issues i "
+                        f"JOIN projects p ON p.id=i.project_id WHERE i.id IN ({','.join('?' * len(batch))})", batch):
+                    inp, out = ranking[item['id']]
+                    top.append(dict(ref=item['ref'], title=item['title'], input_tokens=inp,
+                                    output_tokens=out, total_tokens=inp + out))
+    top.sort(key=lambda item: (-item['total_tokens'], item['ref']))
+    daily = list(rows.values())
+    for row in daily:
+        row['total_tokens'] = row['input_tokens'] + row['output_tokens']
+        row['partial'] = bool(row['unmeasured_run_count'] or row['running_run_count'] or
+                              row['unmeasured_duration_run_count'])
+    summary = {key: sum(row[key] for row in daily) for key in
+               ('created_issue_count', 'completed_issue_count', *_empty())}
+    summary['partial'] = any(row['partial'] for row in daily)
+    return dict(project=project.upper() if project else None, from_date=start_day.isoformat(),
+                to_date=end_day.isoformat(), as_of=now.isoformat(), days=daily, summary=summary,
+                top_issues=top[:10], note='현재 보존된 기록 기준이에요. 토큰과 실행 수는 시작일, 시간은 서울 날짜별로 나눠요. 프로젝트 점검은 일별 합계에만 포함하고 작업 순위에서 제외해요. 병렬 실행 시간은 각각 합산해요.')
 
 
 def project_usage(key, limit=50, offset=0, *, as_of=None):
