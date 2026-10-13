@@ -66,7 +66,9 @@ def key(value):
 def sync():
     """수동·서버 상태 전환을 같은 영속 대기 항목으로 수집한다."""
     with db.connect() as c:
-        refs = [r[0] for r in c.execute("SELECT id FROM issues WHERE parent_id IS NULL AND status='in_review'")]
+        # 재작업 묶음이 끝나기 전에는 중간 상태를 다시 검사하지 않는다.
+        refs = [r[0] for r in c.execute("""SELECT id FROM issues i WHERE parent_id IS NULL AND status='in_review'
+            AND NOT EXISTS(SELECT 1 FROM qa_rework_batches b WHERE b.issue_id=i.id AND b.status='registered')""")]
     for issue_id in refs:
         try:
             with db.connect() as c:
@@ -165,6 +167,136 @@ def finish(qid, status, note='', items=None, usage=None, run_status=None):
                       (run_status or ('ok' if status in ('passed','failed') else 'failed'),now,note,usage.get('input_tokens'),usage.get('output_tokens'),usage.get('cost_usd'),row['run_id']))
         issues._event(c,row['issue_id'],{'kind':'human','name':'system/qa'},'comment',
                       f"QA {row['round_number']}회: {status}. {note}", {'qa_id':qid,'qa_status':status})
+    apply(qid)
+
+
+REWORK_LIMIT = 5
+
+
+def _delegation(c, key):
+    """Auto QA를 켠 사람의 설정 위임. 꺼졌거나 사람이 켠 기록이 없으면 None."""
+    import auto_settings
+    if not auto_settings._settings(c, {'key': key})['auto_qa']:
+        return None
+    row = c.execute("""SELECT * FROM project_auto_settings_events WHERE scope='global'
+        AND json_extract(before_json,'$.auto_qa')=0 AND json_extract(after_json,'$.auto_qa')=1
+        ORDER BY id DESC LIMIT 1""").fetchone()
+    if not row or not row['actor'].startswith('human:') or row['actor'].startswith('human:auto/'):
+        return None
+    return row
+
+
+def _family(c, issue_id):
+    return [issues._find(c, r[0]) for r in c.execute("""WITH RECURSIVE t(id) AS (SELECT ? UNION
+        SELECT i.id FROM issues i JOIN t ON i.parent_id=t.id) SELECT id FROM t ORDER BY id""", (issue_id,))]
+
+
+def apply(qid):
+    """Auto QA ON에서만 판정을 상태에 반영한다. OFF·stale·goal·사람 검사·중복은 아무것도 바꾸지 않는다."""
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        row = c.execute('SELECT * FROM qa_rounds WHERE id=?', (qid,)).fetchone()
+        if not row or row['status'] not in ('passed', 'failed') or not valid(c, row):
+            return
+        value = json.loads(row['snapshot_json'])
+        delegation = _delegation(c, value['project_key'])
+        if not value.get('auto_qa') or not delegation:
+            return
+        actor = {'kind': 'human', 'name': 'auto/delegation/' + str(delegation['id'])}
+        data = {'source': 'auto', 'qa_id': qid, 'delegation_id': delegation['id'], 'delegated_by': delegation['actor']}
+        root = issues._find(c, row['issue_id'])
+        family = [r for r in _family(c, root['id']) if not r['superseded_by_plan']]
+        if c.execute("SELECT 1 FROM events WHERE issue_id=? AND json_extract(data_json,'$.qa_applied')=?", (root['id'], qid)).fetchone():
+            return
+        if row['status'] == 'passed':
+            plans = [c.execute('SELECT body FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1', (r['id'],)).fetchone() for r in family]
+            if any('goal' in json.loads(r['labels_json']) for r in family):
+                why = 'goal Issue는 사용자만 닫아요.'
+            elif any(p and issues.human_checks(p['body']) for p in plans):
+                why = "계획서의 '사람이 할 일'이 남아 있어요."
+            else:
+                why = ''
+            if why:
+                issues._event(c, root['id'], actor, 'comment', f'QA는 통과했지만 자동 Done 하지 않았어요 — {why} 확인 후 직접 Done 해 주세요.', {**data, 'qa_applied': qid})
+                return
+            for r in family:
+                if r['status'] not in ('done', 'closed'):
+                    issues._set_status(c, actor, r, 'done', 'Auto QA 통과로 완료했어요.', {**data, 'qa_applied': qid})
+            return
+        count = c.execute("SELECT COUNT(*) FROM qa_rework_batches WHERE issue_id=? AND status IN ('registered','complete')", (root['id'],)).fetchone()[0]
+        refs = sorted({t for item in c.execute("SELECT task_refs_json FROM qa_items WHERE qa_id=? AND verdict='fail'", (qid,))
+                       for t in json.loads(item[0])})
+        tasks = [r for r in family[1:] if r['ref'] in refs and r['status'] not in ('closed',)]
+        if 'goal' in json.loads(root['labels_json']) or any('goal' in json.loads(t['labels_json']) for t in tasks):
+            issues._event(c, root['id'], actor, 'comment', 'QA 실패예요. goal Issue는 자동 재작업하지 않아요 — 사람이 결정해 주세요.', {**data, 'qa_applied': qid})
+            return
+        if count >= REWORK_LIMIT or not tasks:
+            why = (f'재작업 {REWORK_LIMIT}회 후에도 QA 기준에 못 미쳤어요' if tasks or count >= REWORK_LIMIT
+                   else '기존 Task와 연결되지 않은 실패예요. 새 Task가 필요하면 계획서를 고쳐 승인해 주세요(승인 전에는 실행하지 않아요)')
+            issues._set_status(c, actor, root, 'on_hold', f'{why} — 사람에게 넘겨요.', {**data, 'qa_applied': qid})
+            return
+        c.execute("INSERT INTO qa_rework_batches(issue_id,qa_id,attempt,status,task_refs_json,created_at) VALUES(?,?,?,'registered',?,?)",
+                  (root['id'], qid, count + 1, _json([t['ref'] for t in tasks]), db.now_iso()))
+        memo = '\n'.join(f"- {i['requirement_id']}: {i['suggestion']}" for i in c.execute(
+            "SELECT * FROM qa_items WHERE qa_id=? AND verdict='fail' ORDER BY requirement_id", (qid,)))
+        for t in tasks:
+            if t['status'] != 'changes_requested':
+                issues._set_status(c, actor, t, 'changes_requested', f'QA 재작업 {count + 1}/{REWORK_LIMIT}:\n{memo}', data)
+        issues._event(c, root['id'], actor, 'comment',
+                      f"QA 재작업 {count + 1}/{REWORK_LIMIT}회를 등록했어요 — {', '.join(t['ref'] for t in tasks)}\n{memo}", {**data, 'qa_applied': qid})
+
+
+def rework_job_ok(c, issue, job=None):
+    """등록된 QA 재작업 묶음의 Task를 Auto 실행해도 되는지(선행·승인·설정을 다시 확인)."""
+    import execute
+    batch = c.execute("""SELECT b.* FROM qa_rework_batches b, json_each(b.task_refs_json) t
+        WHERE b.status='registered' AND t.value=? ORDER BY b.id DESC LIMIT 1""", (issue['ref'],)).fetchone()
+    if not batch or issue.get('claimed_by') or 'goal' in issue['labels']:
+        return False
+    expected = 'waiting' if job else 'changes_requested'
+    if issue['status'] != expected or (job and job['previous_status'] != 'changes_requested'):
+        return False
+    if not _delegation(c, issue['project_key']):
+        return False
+    parent = issues.get_issue(issue['parent_ref'])
+    if execute.blocked_reason(issue, parent) or not parent['approval']['actor'].startswith('human:'):
+        return False
+    return not job or parent['approval']['plan_version'] == job['approval_version']
+
+
+def sync_rework(c):
+    """재작업 Task를 선행 순서대로 Auto 대기열에 넣고, 병합된 Task를 위임으로 Done 처리해 다음 Task·재검사를 연다."""
+    import auto_settings
+    import automation
+    import jobs
+    for batch in c.execute("SELECT * FROM qa_rework_batches WHERE status='registered' ORDER BY id").fetchall():
+        root = issues._find(c, batch['issue_id'])
+        delegation = _delegation(c, root['project_key'])
+        if not delegation or root['status'] != 'in_review':
+            continue
+        actor = {'kind': 'human', 'name': 'auto/delegation/' + str(delegation['id'])}
+        refs = json.loads(batch['task_refs_json'])
+        for ref in refs:
+            row = issues._find(c, ref)
+            run = c.execute("SELECT * FROM runs WHERE issue_id=? AND mode='execute' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
+            if row['status'] == 'in_review' and run and run['status'] == 'ok' and run['started_at'] >= batch['created_at']:
+                issues._set_status(c, actor, row, 'done', 'QA 재작업 병합을 확인해 완료했어요.', {'source': 'auto', 'qa_rework': batch['id']})
+        if all(issues._find(c, ref)['status'] in ('done', 'closed') for ref in refs):
+            c.execute("UPDATE qa_rework_batches SET status='complete' WHERE id=?", (batch['id'],))
+            continue
+        if not auto_settings._settings(c, {'key': root['project_key']})['auto_execute']:
+            continue
+        for ref in refs:
+            issue = issues.get_issue(ref)
+            if not rework_job_ok(c, issue) or c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND status='queued'", (issue['id'],)).fetchone():
+                continue
+            provider = next((p for p in json.loads(c.execute("SELECT provider_order_json FROM global_project_auto_settings WHERE project_id=?", (issue['project_id'],)).fetchone()[0]) if automation.provider_available(p)), None)
+            if not provider:
+                continue
+            jid = c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,provider,source,delegation_id,approval_version,model) VALUES(?,'execute',?,'queued',?,?,'auto',?,?,?)",
+                            (issue['id'], 'human:' + actor['name'], db.now_iso(), provider, delegation['id'],
+                             issues.get_issue(issue['parent_ref'])['approval']['plan_version'], auto_settings.model_for(c, issue['id'], provider))).lastrowid
+            jobs._waiting(c, c.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
 
 
 def recover():

@@ -151,7 +151,13 @@ def passing(row,payload,folder,deadline):
     return result,counts
 with patch.object(qa_runner,'analyze',side_effect=passing): qa_runner.run(passed_row)
 assert latest(passed)['status'] == 'passed'
-assert issues.get_issue(passed['ref'])['status'] == 'in_review'
+# Auto QA ON(위 사람 설정 위임): 통과하면 트리 전체를 위임 actor로 Done 한다.
+done = issues.get_issue(passed['ref'])
+assert done['status'] == 'done' and all(ch['status'] == 'done' for ch in done['children'])
+assert done['events'][-1]['actor'].startswith('human:auto/delegation/')
+# 앞의 실패 회차는 관련 Task 재작업 1/5로 등록되고 최상위는 그대로다.
+assert issues.get_issue(child['ref'])['status'] == 'changes_requested'
+assert qa.panel(root['ref'])['rework_count'] == 1
 
 # 통과는 실제 성공한 검사와 모든 항목이 있어야 한다.
 value = json.loads(row['snapshot_json'])
@@ -258,6 +264,9 @@ assert not any(jobs._threads.values())
 print('OK QA direct failure evidence, result validation, isolation guards, independence, timeout, stale, restart, duplicate pump and concurrency')
 
 # base·본문·Plan·Task 결과·사람 설정 변경은 각각 기존 결과의 키를 무효화한다.
+with db.connect() as c: c.execute('UPDATE global_auto_settings SET auto_qa=0')   # OFF라 통과해도 in_review로 남는다
+passed,_ = make_issue('stable')
+with patch.object(qa_runner,'analyze',side_effect=passing): qa_runner.run(prepare(passed))
 stable = latest(passed)
 with db.connect() as c:
     assert qa.valid(c,stable)
@@ -286,3 +295,58 @@ with tempfile.TemporaryDirectory() as temp:
     assert command.call_count == 1 and checks['capture']['returncode'] is None
     assert '미실시' in checks['capture']['output']
 print('OK QA pass state invariance, snapshot invalidation and disabled capture evidence')
+
+# DEV-114-3: Auto QA 반영 — OFF 불변, goal·사람 검사 차단, 재작업 5회 후 on_hold, 새 Task 승인 전 실행 금지.
+def judge(root, verdict, task_refs=True):
+    row = prepare(root)
+    def answer(r,payload,folder,deadline):
+        result,counts = passing(r,payload,folder,deadline)
+        if payload['phase'] != 'checks':
+            for item in result['items']:
+                item['verdict'] = verdict
+                if not task_refs: item['task_refs'] = []
+        return result,counts
+    with patch.object(qa_runner,'analyze',side_effect=answer): qa_runner.run(row)
+    return latest(root)
+def statuses(root):
+    issue = issues.get_issue(root['ref'])
+    return [issue['status']] + [ch['status'] for ch in issue['children']]
+def set_auto_qa(on):
+    with db.connect() as c: c.execute('UPDATE global_auto_settings SET auto_qa=?', (int(on),))
+
+set_auto_qa(False)
+for verdict in ('pass','fail'):
+    off,_ = make_issue('off '+verdict)
+    assert judge(off,verdict)['status'] == ('passed' if verdict == 'pass' else 'failed')
+    assert statuses(off) == ['in_review','backlog'] and qa.panel(off['ref'])['rework_count'] == 0
+set_auto_qa(True)
+
+goal,_ = make_issue('goal')
+with db.connect() as c: c.execute("UPDATE issues SET labels_json='[\"goal\"]' WHERE id=?", (goal['id'],))
+assert judge(goal,'pass')['status'] == 'passed' and statuses(goal) == ['in_review','backlog']
+checked,_ = make_issue('human checks')
+with db.connect() as c:
+    c.execute("INSERT INTO plans(issue_id,version,body,author,created_at) VALUES(?,1,?,'human:admin',?)", (checked['id'],'## 사람이 할 일\n1. 실제 화면 확인',db.now_iso()))
+assert judge(checked,'pass')['status'] == 'passed' and statuses(checked) == ['in_review','backlog']
+
+newtask,_ = make_issue('new task')
+assert judge(newtask,'fail',task_refs=False)['status'] == 'failed'
+assert statuses(newtask) == ['on_hold','backlog'] and qa.panel(newtask['ref'])['rework_count'] == 0
+
+limit,task = make_issue('limit')
+for attempt in range(1, 6):
+    row = judge(limit,'fail')
+    assert row['status'] == 'failed' and statuses(limit) == ['in_review','changes_requested'], statuses(limit)
+    qa.apply(row['id'])   # 중복 반영은 횟수를 늘리지 않는다
+    assert qa.panel(limit['ref'])['rework_count'] == attempt
+    qa.sync(); assert latest(limit)['id'] == row['id']   # 묶음이 끝나기 전엔 재검사하지 않는다
+    # 재작업 실행이 병합돼 in_review가 되면 위임으로 Done 처리하고 묶음을 닫는다.
+    with db.connect() as c:
+        c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,provider) VALUES(?,'execute','ok','human:admin','9999','codex')", (task['id'],))
+        issues._set_status(c, human, issues._find(c, task['id']), 'in_review')
+        qa.sync_rework(c)
+    assert statuses(limit) == ['in_review','done']
+    with db.connect() as c: c.execute("UPDATE issues SET status='backlog' WHERE id=?", (task['id'],))
+assert judge(limit,'fail')['status'] == 'failed'
+assert statuses(limit)[0] == 'on_hold' and qa.panel(limit['ref'])['rework_count'] == 5
+print('OK Auto QA done/rework/on_hold, OFF invariance, goal·human-check·new-task gates')
