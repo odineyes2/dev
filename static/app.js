@@ -444,6 +444,39 @@ function placeRow(tbody, i){
   const parentTr = i.parent_ref && [...tbody.children].find(r => r.dataset.ref === i.parent_ref);
   orderKids(tbody, parentTr || row);
 }
+let issueSummaryPeriod = 'today', issueSummaryRequest = 0;
+const ISSUE_SUMMARY_PERIODS = { today: '오늘', month: '이번 달', year: '올해', all: '전체' };
+function summaryNumber(n){ return Number(n || 0).toLocaleString('ko-KR'); }
+function summaryDuration(seconds){
+  const minutes = Math.floor(Number(seconds || 0) / 60);
+  return minutes >= 60 ? `${summaryNumber(Math.floor(minutes / 60))}시간 ${minutes % 60}분` : `${minutes}분`;
+}
+async function loadIssueSummary(){
+  const box = view.querySelector('#issue-summary');
+  if(!box) return;
+  const request = ++issueSummaryRequest, project = currentProject(), period = issueSummaryPeriod;
+  const current = () => request === issueSummaryRequest && box === view.querySelector('#issue-summary') &&
+    currentProject() === project && issueSummaryPeriod === period;
+  box.querySelectorAll('[data-summary-period]').forEach(button =>
+    button.setAttribute('aria-pressed', String(button.dataset.summaryPeriod === period)));
+  const content = box.querySelector('.issue-summary-content');
+  content.setAttribute('aria-busy', 'true');
+  content.innerHTML = '<span class="dim">현황을 불러오는 중이에요…</span>';
+  try{
+    const data = await api('GET', '/api/issue-summary?' + new URLSearchParams({period, ...(project ? {project} : {})}),
+      undefined, current, {notifyErrors: false});
+    if(!current()) return;
+    const s = data.summary;
+    content.innerHTML = `<div class="issue-summary-values">
+      <div><span>생성 Issue</span><strong>${summaryNumber(s.created_issue_count)}</strong></div>
+      <div><span>완료 Issue</span><strong>${summaryNumber(s.completed_issue_count)}</strong></div>
+      <div><span>에이전트 시간</span><strong>${summaryDuration(s.agent_seconds)}</strong></div>
+      <div><span>토큰</span><strong>${summaryNumber(s.total_tokens)}${s.partial ? ' <small>부분 집계</small>' : ''}</strong></div>
+    </div><p class="issue-summary-note">${esc(data.note)}${s.partial ? ` 미측정 ${summaryNumber(s.unmeasured_run_count)}건 · 실행 중 ${summaryNumber(s.running_run_count)}건 · 시간 미측정 ${summaryNumber(s.unmeasured_duration_run_count)}건` : ''}</p>`;
+  }catch(e){
+    if(current()) content.innerHTML = `<span class="issue-summary-error">현황을 불러오지 못했어요. ${esc(e.message)}</span> <button type="button" class="issue-summary-retry">다시 불러오기</button>`;
+  }finally{ if(current()) content.setAttribute('aria-busy', 'false'); }
+}
 async function renderList(){
   const st = listState();
   view.innerHTML = `
@@ -454,7 +487,17 @@ async function renderList(){
       <span class="checks"><label class="dim"><input type="checkbox" id="show-closed" ${st.closed ? 'checked' : ''}> 끝난 것도</label>
       <label class="dim"><input type="checkbox" id="only-approved" ${st.approved ? 'checked' : ''}> 승인된 것만</label></span>
     </div>
+    <section id="issue-summary" class="issue-summary" aria-label="Issue 처리 현황">
+      <div class="issue-summary-head"><span class="issue-summary-title">처리 현황</span><div class="issue-summary-periods" role="group" aria-label="집계 기간">
+        ${Object.entries(ISSUE_SUMMARY_PERIODS).map(([key, label]) => `<button type="button" data-summary-period="${key}" aria-pressed="${key === issueSummaryPeriod}">${label}</button>`).join('')}
+      </div></div><div class="issue-summary-content" role="status" aria-live="polite"></div></section>
     <div class="ops-split"><div class="ops-main"><div id="list-body"></div><div id="list-more" class="list-more"></div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
+  view.querySelector('#issue-summary').addEventListener('click', e => {
+    const period = e.target.closest('[data-summary-period]');
+    if(period){ issueSummaryPeriod = period.dataset.summaryPeriod; loadIssueSummary(); }
+    else if(e.target.closest('.issue-summary-retry')) loadIssueSummary();
+  });
+  loadIssueSummary();
   loadJobs().catch(() => {});
   const save = (patch) => { localStorage.setItem('dev.list', JSON.stringify({ ...listState(), ...patch })); loadList(); };
   view.querySelector('#q').addEventListener('input', (e) => {
@@ -470,7 +513,7 @@ async function renderList(){
   view.querySelector('#only-approved').addEventListener('change', (e) => save({ approved: e.target.checked }));
   // 프로젝트 필터(DEV-11) — 탭 줄의 전역 필터와 같은 값(dev.project)을 쓴다. 여기서 바꾸면 그쪽도 따라간다.
   view.querySelector('#list-project').addEventListener('change', (e) => {
-    localStorage.setItem('dev.project', e.target.value); projectSel.value = e.target.value; loadList();
+    localStorage.setItem('dev.project', e.target.value); projectSel.value = e.target.value; loadList(); loadIssueSummary();
   });
   view.querySelector('#list-body').addEventListener('click', (e) => {
     if(e.target.closest('#list-id-sort')){

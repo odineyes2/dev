@@ -3157,6 +3157,74 @@ def check_issue_tokens(page, shots):
     page.evaluate("s => {for(const key of ['project', 'theme']) {if(s[key] === null) localStorage.removeItem('dev.' + key); else localStorage.setItem('dev.' + key, s[key]);} paintTheme()}", previous)
 
 
+def check_issue_summary(page):
+    """기간, 두 프로젝트 선택기, 오류/빈 값, 목록 다음 묶음과 키보드를 확인한다."""
+    from urllib.parse import parse_qs, urlsplit
+    headers = {'X-Requested-With': 'dev'}
+    for key in ('SUMA', 'SUMB'):
+        assert page.request.post(BASE + '/api/projects', data={'key': key, 'name': key}, headers=headers).ok
+    for n in range(52):
+        assert page.request.post(BASE + '/api/issues', data={'project': 'SUMA', 'title': f'요약 검사 {n}'}, headers=headers).ok
+    calls, fail = [], {'value': False}
+    def summary(route):
+        query = parse_qs(urlsplit(route.request.url).query)
+        calls.append(query)
+        if fail['value']:
+            route.fulfill(status=503, json={'detail': '임시 오류'})
+            return
+        empty = query['period'][0] == 'all'
+        route.fulfill(json={'period': query['period'][0], 'project': query.get('project', [None])[0],
+            'note': '현재 보존된 기록 기준이에요. 병렬 실행 시간은 각각 합산하고 토큰은 시작 시각 기준이에요.',
+            'summary': {'created_issue_count': 0 if empty else 52, 'completed_issue_count': 0,
+                        'agent_seconds': 0, 'total_tokens': 0 if empty else 1234,
+                        'partial': not empty, 'unmeasured_run_count': 1 if not empty else 0,
+                        'running_run_count': 0, 'unmeasured_duration_run_count': 0}})
+    page.route('**/api/issue-summary?*', summary)
+    page.evaluate("localStorage.setItem('dev.project','SUMA')")
+    page.evaluate('loadProjects()')
+    page.goto(BASE + '/#/')
+    page.wait_for_function("document.querySelector('.issue-summary-content')?.getAttribute('aria-busy') === 'false'")
+    assert page.locator('#issue-summary [aria-pressed="true"]').inner_text() == '오늘'
+    assert '1,234' in page.inner_text('#issue-summary') and '부분 집계' in page.inner_text('#issue-summary')
+    for key in ('month', 'year', 'all', 'today'):
+        page.locator(f'[data-summary-period="{key}"]').focus()
+        page.keyboard.press('Enter')
+        page.wait_for_function("key => document.querySelector(`[data-summary-period=${key}]`).getAttribute('aria-pressed') === 'true' && document.querySelector('.issue-summary-content').getAttribute('aria-busy') === 'false'", arg=key)
+        assert calls[-1]['period'] == [key]
+        if key == 'all':
+            assert page.locator('.issue-summary-values strong').all_inner_texts() == ['0', '0', '0분', '0']
+    page.select_option('#list-project', 'SUMB')
+    page.wait_for_function("document.querySelector('.issue-summary-content')?.getAttribute('aria-busy') === 'false' && document.querySelector('#list-project').value === 'SUMB'")
+    assert calls[-1].get('project') == ['SUMB'] and page.input_value('#project-filter') == 'SUMB'
+    page.select_option('#project-filter', 'SUMA')
+    page.wait_for_function("document.querySelector('#list-project')?.value === 'SUMA' && document.querySelector('.issue-summary-content')?.getAttribute('aria-busy') === 'false'")
+    assert calls[-1].get('project') == ['SUMA']
+    fail['value'] = True
+    page.click('[data-summary-period="month"]')
+    page.wait_for_selector('.issue-summary-retry')
+    assert '임시 오류' in page.inner_text('#issue-summary')
+    fail['value'] = False
+    page.locator('.issue-summary-retry').focus(); page.keyboard.press('Enter')
+    page.wait_for_selector('.issue-summary-values')
+    count = len(calls)
+    page.wait_for_selector('#list-body[aria-busy="false"]')
+    page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+    page.wait_for_function("document.querySelectorAll('#list-body tr.row').length === 52")
+    assert len(calls) == count and page.locator('#issue-summary').count() == 1
+    for theme in ('light', 'dark'):
+        page.evaluate("theme => {localStorage.setItem('dev.theme', theme); paintTheme()}", theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate("""() => {
+                const summary = document.querySelector('#issue-summary').getBoundingClientRect();
+                const jobs = document.querySelector('#jobs-box').getBoundingClientRect();
+                return summary.left >= 0 && summary.right <= innerWidth + 1 &&
+                    summary.bottom <= jobs.top && (innerWidth > 1100 || document.documentElement.scrollWidth <= innerWidth + 1);
+            }"""), (theme, width)
+    page.unroute('**/api/issue-summary?*')
+    page.evaluate("localStorage.removeItem('dev.project')")
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 (tmp / "capture_app.py").write_text(BOOTSTRAP, "utf-8")
@@ -3186,6 +3254,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--issue-summary-only' in sys.argv:
+            check_issue_summary(page)
+            assert not errs, errs
+            print('OK: Issue summary'); sys.exit(0)
         if '--issue-tokens-only' in sys.argv:
             check_issue_tokens(page, shots)
             assert not errs, errs
