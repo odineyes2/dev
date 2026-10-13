@@ -78,3 +78,211 @@ with patch.object(app.jobs, 'pump'), TestClient(app.app) as client:
     with patch.object(auth,'nightshift_user',return_value={'role':'member'}):
         assert client.get('/api/issues/QA-1/qa').status_code == 403
 print('OK QA migration, constraints, usage and API/settings permissions')
+
+# 임시 저장소와 가짜 provider로 실행·증거·오류를 검증한다. 운영 저장소는 변경하지 않는다.
+import subprocess, time, threading
+import qa, qa_runner, jobs, review, orchestrate
+repo = Path(tempfile.mkdtemp())
+(repo / 'tests').mkdir()
+(repo / 'tests/test_local.py').write_text("print('real local failure')\nraise SystemExit(1)\n",encoding='utf-8')
+(repo / 'tests/test_success.py').write_text("assert 6 * 7 == 42\nprint('real local success')\n",encoding='utf-8')
+(repo / 'tests/test_access.py').write_text("open(__import__('os').environ['QA_FORBIDDEN'])\n",encoding='utf-8')
+(repo / 'a.py').write_text('answer = 42\n',encoding='utf-8')
+def git(*args):
+    result = subprocess.run(['git','-c','user.name=qa','-c','user.email=qa@test',*args],cwd=repo,capture_output=True,text=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+git('init','-q','-b','main'); git('add','.'); git('commit','-qm','fixture')
+issues.create_project(human,'QR','runner',local_path=str(repo))
+auth.create_agent('independent Claude',vendor='anthropic',model='claude-opus-5-5')
+def make_issue(title='QA runner', provider='codex'):
+    root = issues.create_issue(human,'QR',title,body='요구를 직접 검사한다.\n실패 근거를 저장한다.',type_ids=[1])
+    child = issues.create_issue(human,'QR','Task',body='**바꿀 파일**: a.py, tests/test_local.py',parent=root['ref'],type_ids=[1])
+    with db.connect() as c:
+        c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,provider) VALUES(?,'execute','ok','human:admin',?,?)",(child['id'],db.now_iso(),provider))
+    issues.set_status(human,root['ref'],'in_review')
+    return root,child
+def latest(root):
+    with db.connect() as c:
+        return dict(c.execute('SELECT * FROM qa_rounds WHERE issue_id=? ORDER BY id DESC LIMIT 1',(root['id'],)).fetchone())
+def prepare(root):
+    qa.sync()
+    row = latest(root)
+    with db.connect() as c:
+        agent = qa.select_agent(c,json.loads(row['snapshot_json']))
+        rid = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,provider,model) VALUES(?,'qa','running','human:system/qa',?,?,?)",(root['id'],db.now_iso(),agent['provider'],agent['model'])).lastrowid
+        c.execute("UPDATE qa_rounds SET status='running',run_id=?,provider=?,model=? WHERE id=?",(rid,agent['provider'],agent['model'],row['id']))
+    return latest(root)
+def fake(row,payload,folder,deadline):
+    assert 'DEV_CODEX_AGENT_KEY' not in qa_runner.environment(folder,login=True)
+    if payload['phase'] == 'checks':
+        return {'checks':['tests/test_local.py']},{'input_tokens':2,'output_tokens':3,'cost_usd':0.1}
+    items = [{'requirement_id':r['id'],'verdict':'fail','evidence':[{'file':'a.py','line':1},{'check_id':'check:1'}],
+              'task_refs':[payload['snapshot']['family'][1]['ref']],'suggestion':'검사 실패를 고친다.'} for r in payload['snapshot']['requirements']]
+    return {'items':items},{'input_tokens':4,'output_tokens':5,'cost_usd':0.2}
+
+root,child = make_issue()
+row = prepare(root)
+assert row['provider'] == 'claude'
+before_status = issues.get_issue(root['ref'])['status']
+with patch.object(qa_runner,'analyze',side_effect=fake):
+    qa_runner.run(row)
+assert latest(root)['status'] == 'failed'
+assert issues.get_issue(root['ref'])['status'] == before_status == 'in_review'
+result = qa.panel(root['ref'])['rounds'][0]
+assert result['input_tokens'] == 6 and result['output_tokens'] == 8
+assert all(item['verdict']=='fail' for item in result['items'])
+assert result['checks']['check:1']['returncode'] == 1
+usage_row = next(r for r in usage.project_usage('QR')['issues'] if r['ref'] == root['ref'])
+assert usage_row['input_tokens'] == 6 and usage_row['output_tokens'] == 8
+logs = db.config.DATA_DIR / 'qa-evidence' / str(row['id'])
+assert 'real local failure' in (logs / 'check-1.log').read_text()
+assert not git('worktree','list','--porcelain').count('detached')
+qa.sync(); qa.sync()
+assert len(qa.panel(root['ref'])['rounds']) == 1
+
+passed,_ = make_issue('passed')
+passed_row = prepare(passed)
+def passing(row,payload,folder,deadline):
+    result,counts = fake(row,payload,folder,deadline)
+    if payload['phase'] == 'checks': result['checks'] = ['tests/test_success.py']
+    else:
+        for item in result['items']: item['verdict'] = 'pass'
+    return result,counts
+with patch.object(qa_runner,'analyze',side_effect=passing): qa_runner.run(passed_row)
+assert latest(passed)['status'] == 'passed'
+assert issues.get_issue(passed['ref'])['status'] == 'in_review'
+
+# 통과는 실제 성공한 검사와 모든 항목이 있어야 한다.
+value = json.loads(row['snapshot_json'])
+files = {'a.py':'answer = 42\n'}
+report = fake(row,{'phase':'verdict','snapshot':value},repo,time.monotonic()+1)[0]
+checks = {'check:1':{'returncode':0}}
+for item in report['items']: item['verdict'] = 'pass'
+assert qa.validate_report(report,value,files,checks)
+for invalid in ({'items':[]},{'items':report['items']*2},'bad json'):
+    try: qa.validate_report(invalid,value,files,checks)
+    except ValueError: pass
+    else: raise AssertionError(invalid)
+for field,replacement in [('evidence',[]),('evidence',[{'file':'../outside.py','line':1}]),('evidence',[{'check_id':'fake'}]),('task_refs',['QR-999'])]:
+    wrong = json.loads(json.dumps(report)); wrong['items'][0][field] = replacement
+    try: qa.validate_report(wrong,value,files,checks)
+    except ValueError: pass
+    else: raise AssertionError(wrong)
+try: qa.validate_report(report,value,files,{'check:1':{'returncode':1}})
+except ValueError: pass
+else: raise AssertionError('실패 검사를 통과로 인정함')
+
+# 잘못된 결과·timeout·소스 변경은 제품 실패/재작업으로 세지 않는다.
+for mode in ('invalid','timeout','modified','stale'):
+    root2,_ = make_issue(mode)
+    row2 = prepare(root2)
+    def broken(row,payload,folder,deadline):
+        if mode == 'timeout': raise TimeoutError('timeout fixture')
+        if payload['phase'] == 'verdict':
+            if mode == 'invalid': return {'items':[]},{}
+            if mode == 'modified': (qa_runner.worktree_path(row) / 'a.py').write_text('changed\n')
+            if mode == 'stale': issues.set_status(human,root2['ref'],'on_hold')
+        return fake(row,payload,folder,deadline)
+    with patch.object(qa_runner,'analyze',side_effect=broken): qa_runner.run(row2)
+    assert latest(root2)['status'] == ('stale' if mode == 'stale' else 'inconclusive'), latest(root2)
+    assert qa.panel(root2['ref'])['rework_count'] == 0
+    assert issues.get_issue(root2['ref'])['status'] == ('on_hold' if mode == 'stale' else 'in_review')
+    if mode == 'timeout':
+        assert review.list_runs(root2['ref'])[0]['status'] == 'timeout'
+
+# 운영 파일 접근과 임의 명령은 실제 검사 프로세스에서 거부한다.
+with tempfile.TemporaryDirectory() as temp:
+    scratch = Path(temp)
+    forbidden = Path(tempfile.mkdtemp()) / 'production.db'
+    forbidden.write_text('private fixture')
+    env = qa_runner.environment(scratch)
+    env['QA_FORBIDDEN'] = str(forbidden)
+    code,out,err = qa_runner.execute_command([sys.executable,'-c',qa_runner.CHECK_BOOTSTRAP,str(repo),str(scratch),'tests/test_access.py'],repo,env,time.monotonic()+5)
+    assert code != 0 and 'QA 운영/외부 데이터 접근 차단' in err and 'private fixture' not in out+err
+    try: qa_runner.direct_checks({'checks':['../production.py']},{},repo,scratch,scratch,time.monotonic()+5)
+    except ValueError: pass
+    else: raise AssertionError('저장소 밖 명령 허용')
+    fake_provider = scratch / 'provider.py'
+    fake_provider.write_text('import json; print(json.dumps({"result":json.dumps({"checks":["tests/test_local.py"]}),"usage":{"input_tokens":2,"output_tokens":1}}))')
+    with patch.object(qa_runner,'command',return_value=[sys.executable,str(fake_provider)]):
+        parsed,counts = qa_runner.analyze({'provider':'claude','model':'fake'},{},scratch,time.monotonic()+5)
+    assert parsed['checks'] == ['tests/test_local.py'] and counts['input_tokens'] == 2
+    fake_provider.write_text('import time; time.sleep(10)')
+    with patch.object(qa_runner,'command',return_value=[sys.executable,str(fake_provider)]):
+        try: qa_runner.analyze({'provider':'claude','model':'fake'},{},scratch,time.monotonic()+0.1)
+        except TimeoutError: pass
+        else: raise AssertionError('provider timeout 미작동')
+
+# 재시작은 과금 재실행 없이 orphaned로 종료하고 Issue 상태를 유지한다.
+orphan,_ = make_issue('orphan'); prepare(orphan)
+qa_runner.recover(); qa_runner.recover(); qa.sync()
+assert latest(orphan)['status'] == 'orphaned'
+assert issues.get_issue(orphan['ref'])['status'] == 'in_review'
+assert review.list_runs(orphan['ref'])[0]['status'] == 'orphaned'
+
+# 구현 이력 부재·혼합 provider에서는 같은 provider로 조용히 검사하지 않는다.
+mixed,second = make_issue('mixed')
+with db.connect() as c:
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,provider) VALUES(?,'execute','ok','human:admin',?,'claude')",(mixed['id'],db.now_iso()))
+    val = qa.snapshot(c,mixed['id'])
+    try: qa.select_agent(c,val)
+    except ValueError: pass
+    else: raise AssertionError('혼합 provider 독립성 위반')
+    val['implementations'] = []
+    try: qa.select_agent(c,val)
+    except ValueError: pass
+    else: raise AssertionError('이력 없는 provider 허용')
+
+# 펌프 중복·전체 상한: fake worker가 멈춰 있는 동안 다음 QA는 시작하지 않는다.
+queued,_ = make_issue('queue'); another,_ = make_issue('queue2')
+release = threading.Event(); entered = threading.Event()
+def held_worker(row):
+    entered.set(); release.wait(5); qa.finish(row['id'],'inconclusive','fixture')
+with db.connect() as c:
+    c.execute("INSERT OR REPLACE INTO app_settings VALUES('queue_concurrency','1',?,'human:admin')",(db.now_iso(),))
+with patch.object(qa_runner,'run',side_effect=held_worker), patch.object(jobs,'pump'):
+    qa_runner.pump()
+    if not entered.wait(3):
+        with db.connect() as c:
+            raise AssertionError(([dict(r) for r in c.execute('SELECT id,status,note FROM qa_rounds')], jobs.start_block(c,'QR','qa'),[dict(r) for r in c.execute("SELECT id,status,mode FROM runs WHERE status='running'")]))
+    qa_runner.pump()
+    with db.connect() as c:
+        assert c.execute("SELECT COUNT(*) FROM runs WHERE mode='qa' AND status='running'").fetchone()[0] == 1
+    assert issues.get_issue(queued['ref'])['status'] == 'in_review'
+    release.set()
+    for _ in range(100):
+        if not any(jobs._threads.values()): break
+        time.sleep(0.02)
+assert not any(jobs._threads.values())
+print('OK QA direct failure evidence, result validation, isolation guards, independence, timeout, stale, restart, duplicate pump and concurrency')
+
+# base·본문·Plan·Task 결과·사람 설정 변경은 각각 기존 결과의 키를 무효화한다.
+stable = latest(passed)
+with db.connect() as c:
+    assert qa.valid(c,stable)
+    c.execute('UPDATE issues SET body=body || ? WHERE id=?',('changed',passed['id']))
+    assert not qa.valid(c,stable)
+    c.rollback()
+    c.execute("INSERT INTO plans(issue_id,version,body,author,created_at) VALUES(?,1,'## 확인\n- 실제 성공','human:admin',?)",(passed['id'],db.now_iso()))
+    assert not qa.valid(c,stable)
+    c.rollback()
+    c.execute("UPDATE runs SET model='changed' WHERE issue_id IN (SELECT id FROM issues WHERE parent_id=?) AND mode='execute'",(passed['id'],))
+    assert not qa.valid(c,stable)
+    c.rollback()
+    c.execute('UPDATE global_auto_settings SET auto_qa=1-auto_qa WHERE singleton=1')
+    assert not qa.valid(c,stable)
+    c.rollback()
+    (repo / 'new.py').write_text('new = True\n')
+    git('add','.'); git('commit','-qm','new base fixture')
+    assert not qa.valid(c,stable)
+
+# 캡처 OFF는 실행하지 않고 근거에 미실시로 남긴다.
+with tempfile.TemporaryDirectory() as temp:
+    folder = Path(temp)
+    with patch('regression.enabled',side_effect=lambda key,*a:key != 'agent_capture'), patch.object(qa_runner,'execute_command',return_value=(0,'fixture','')) as command:
+        checks = qa_runner.direct_checks({'checks':['tests/test_success.py'],'capture':True},
+                    {'tests/test_success.py':'print(42)'},repo,folder,folder,time.monotonic()+5)
+    assert command.call_count == 1 and checks['capture']['returncode'] is None
+    assert '미실시' in checks['capture']['output']
+print('OK QA pass state invariance, snapshot invalidation and disabled capture evidence')

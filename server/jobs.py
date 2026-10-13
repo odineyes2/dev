@@ -476,6 +476,9 @@ def pump() -> None:
                 continue
             _set(j["id"], "started")
 
+        import qa_runner
+        qa_runner.pump()
+
 
 def run_then_pump(fn, *args, lane: tuple | None = None) -> None:
     """작업 스레드 — 끝나면(실행은 병합까지) 다음 항목을 꺼낸다. lane은 (프로젝트 키, mode)."""
