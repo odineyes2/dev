@@ -1040,9 +1040,9 @@ def check_auto_settings(page, shots):
     assert review.get_attribute('aria-checked') == 'false'
     approve = page.locator('#auto_approve')
     assert approve.is_enabled() and approve.get_attribute('aria-checked') == 'false'
-    assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'auto_troubleshoot', 'token_exhaustion_fallback']
-    # 세 역할 카드 — 준비 중 역할 표시, 지목된 안내문 삭제, 이관 스위치의 비용 안내
-    assert page.locator('.role-card h4').evaluate_all('(els) => els.map(e => e.textContent)') == ['오케스트레이터 준비 중', '작업 에이전트', '트러블슈터', 'Description 작성']
+    assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'auto_troubleshoot', 'auto_qa', 'token_exhaustion_fallback']
+    # 역할 카드 — 준비 중 역할 표시, 지목된 안내문 삭제, 이관 스위치의 비용 안내
+    assert page.locator('.role-card h4').evaluate_all('(els) => els.map(e => e.textContent)') == ['오케스트레이터 준비 중', '작업 에이전트', '트러블슈터', 'Description 작성', 'QA Agent']
     assert '신규 자동 등록 순서' not in page.locator('#settings-body').inner_text()
     assert '아직 실행되지 않아요' in page.locator('.role-card').first.inner_text()
     assert '금액 상한' in page.locator('#token_exhaustion_fallback-help').inner_text()
