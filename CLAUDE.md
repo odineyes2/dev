@@ -40,5 +40,5 @@
 
 ## 실패 검사 재현
 - Task의 최근 실패 검사 기록을 `server/reproduce.py`가 읽는다. 관리자 POST `/api/issues/{ref}/reproduce-checks`는 고정된 Task 커밋의 detached 사본에서 해당 검사만 실행한다. UI 검사는 traceback의 check 함수와 단일 검사 전용 CLI 옵션을 대조하며, 선택할 수 없으면 전체 UI 검사로 대체하지 않는다.
-- 결과는 `app_settings`의 `regression-reproduce:<ref>`, 전체 로그는 `data/check-reproductions/<id>/log.txt`에 남긴다. 재현 시작 시 Task는 In Progress, 통과 시 In Review, 실패 시 Changes Requested로 전환한다. Agent 실행·검사 통과 기록은 변경하지 않는다. 상태·커밋이 바뀌면 결과가 새 작업을 덮지 않으며 재시작 중단은 On Hold로 복구한다. 재현 통과로 In Review가 된 미병합 Task는 기존 병합 재시도를 사용할 수 있다(전체 병합 검증은 그대로 유지). 실행 중에는 새 Agent 착수와 Dev 자동 재시작을 기다리게 한다.
-- 확인: `python tests/test_reproduce.py`, `python tests/test_ui.py --reproduce-only`. UI는 기존 DESIGN.md의 1·7·8절에 맞춰 버튼·진행 상태·오류와 다음 행동을 표시한다.
+- 결과는 `app_settings`의 `regression-reproduce:<ref>`, 전체 로그는 `data/check-reproductions/<id>/log.txt`에 남긴다. 재현 시작 시 Task는 In Progress, 실패 시 Changes Requested로 전환한다. 통과하면 In Progress를 유지하고 기존 병합 처리기에 자동 인계하여 후속 검사·병합·운영 반영 확인 뒤에만 In Review로 전환한다. Agent 실행·검사 통과 기록은 변경하지 않는다. 상태·커밋이 바뀌면 결과가 새 작업을 덮지 않으며 재시작 중단은 On Hold로 복구한다. 자동 병합 OFF·승인 변경·정보 부족은 On Hold로 남긴다. 미반영 Task의 완료 승인은 UI·서버에서 막는다. 실행 중에는 새 Agent 착수와 Dev 자동 재시작을 기다리게 한다.
+- 확인: `python tests/test_reproduce.py`, `python tests/test_reproduce_followup.py`, `python tests/test_ui.py --reproduce-only`. UI는 기존 DESIGN.md의 1·7·8절에 맞춰 버튼·진행 상태·오류와 다음 행동을 표시한다.

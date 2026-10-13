@@ -96,17 +96,22 @@ def begin():
 
 passed = subprocess.CompletedProcess([], 0, 'passed', '')
 row = begin()
-with patch.object(orchestrate, 'run_test', return_value=passed):
+with patch.object(orchestrate, 'run_test', return_value=passed), patch.object(orchestrate, 'retry_merge', return_value={'status':'checking'}) as followup:
     reproduce.worker(ref, str(repo), row)
-assert issues.get_issue(ref)['status'] == 'in_review'
+assert issues.get_issue(ref)['status'] == 'in_progress'
+assert reproduce.result(ref)['followup'] == 'running'
+assert followup.call_args.kwargs == {'reproduction_id':row['id']}
 assert reproduce.result(ref)['status'] == 'passed'
 record = {'auto_merge':True, 'phase':'failed', 'merge_sha':'', 'task_sha':row['source_sha']}
-assert orchestrate.retry_available(issues.get_issue(ref), record)
+assert not orchestrate.retry_available(issues.get_issue(ref), record)
+assert orchestrate.retry_available(issues.get_issue(ref), record, row['id'])
 assert not orchestrate.retry_available(issues.get_issue(ref), {**record, 'task_sha':'different'})
 assert regression.load_record('regression-selection:' + ref + ':server_completion') == selection
 
+issues.set_status(me, ref, 'changes_requested', '후속 검사 실패')
 row = begin()
 issues.set_status(me, ref, 'on_hold', '사람이 변경한 상태')
+assert not orchestrate.retry_available(issues.get_issue(ref), record, row['id'])
 with patch.object(orchestrate, 'run_test', return_value=passed):
     reproduce.worker(ref, str(repo), row)
 assert issues.get_issue(ref)['status'] == 'on_hold'
@@ -131,6 +136,11 @@ with patch.object(reproduce, 'Thread') as thread:
     thread.return_value.start.side_effect = RuntimeError('cannot start')
     assert client.post(url, headers=headers, json={'token':state['token']}).status_code == 503
 assert issues.get_issue(ref)['status'] == 'changes_requested'
+row = begin()
+with patch.object(orchestrate, 'run_test', return_value=passed), patch.object(orchestrate, 'retry_merge', side_effect=issues.StoreError('승인 변경', 409)):
+    reproduce.worker(ref, str(repo), row)
+assert issues.get_issue(ref)['status'] == 'on_hold'
+assert reproduce.result(ref)['status'] == 'passed' and reproduce.result(ref)['followup'] == 'blocked'
 log.write_text('File "tests/test_ui.py", line 8, in check_unknown', encoding='utf-8')
 assert not reproduce.panel(issues.get_issue(ref))['available']
-print('Reproduction workflow: In Progress, pass→In Review, failure→Changes Requested, restart, ownership, SHA, auth, logs and preserved token records OK')
+print('Reproduction workflow: In Progress, pass→automatic follow-up, failure→Changes Requested, restart, ownership, SHA, auth, logs and preserved token records OK')

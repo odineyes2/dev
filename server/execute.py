@@ -800,9 +800,12 @@ def panel(issue: dict) -> dict | None:
     import orchestrate
     import regression
     import reproduce
+    completed = orchestrate.completion(issue['ref'])
     return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC,
             "retry_merge_available": orchestrate.retry_available(issue),
             "repair_available": repair_available(issue) and not _eligibility_reason(issue, parent),
             "reproduction": reproduce.panel(issue),
+            "result_approval_blocked": bool(completed and completed['auto_merge'] and
+                (completed['phase'] != 'complete' or not completed['merge_sha'])),
             "regression": regression.resolve(issue['ref'], worktree_path(issue['ref']) if worktree_path(issue['ref']).exists() else repo),
             "regression_results": {stage: regression.load_record('regression-selection:' + issue['ref'] + ':' + stage) for stage in ('server_completion', 'server_merge')}}

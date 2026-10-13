@@ -321,7 +321,9 @@ def check_reproduce(page, shots):
     state = {'posts':0, 'result':{}}
     def detail(route):
         data = route.fetch().json()
-        data['status'] = {'running':'in_progress','passed':'in_review','failed':'changes_requested'}.get(state['result'].get('status'),'changes_requested')
+        data['status'] = {'running':'in_progress','passed':'in_review' if state['result'].get('followup')=='complete' else 'in_progress','failed':'changes_requested'}.get(state['result'].get('status'),'changes_requested')
+        if state.get('force_review'): data['status']='in_review'
+        data['execute']['result_approval_blocked']=state['result'].get('status')=='passed' and state['result'].get('followup')!='complete'
         data['execute']['reproduction'] = {'available':state['result'].get('status')!='running', 'blocked':'',
             'targets':targets, 'source_sha':'a'*40, 'token':'snapshot', 'result':state['result']}
         route.fulfill(json=data)
@@ -351,10 +353,19 @@ def check_reproduce(page, shots):
             page.set_viewport_size({'width':width,'height':850})
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             page.locator('.check-reproduction').screenshot(path=str(shots/f'reproduction_{theme}_{width}.png'))
-    state['result']['status']='passed'
+    state['result'].update(status='passed',followup='running')
     state['result']['results'][0].update(status='passed',exit_code=0)
     page.reload();page.wait_for_function("document.querySelector('.check-reproduction')?.textContent.includes('재현 검사 통과')")
-    assert 'In Review' in page.inner_text('#view')
+    assert page.input_value('#status')=='in_progress'
+    assert '후속 검사·병합·운영 반영 진행 중' in page.inner_text('.check-reproduction')
+    state['force_review']=True
+    page.reload();page.wait_for_selector('#approve')
+    assert page.locator('#approve').is_disabled()
+    state['force_review']=False
+    state['result']['followup']='complete'
+    page.reload();page.wait_for_function("document.querySelector('.check-reproduction')?.textContent.includes('운영 반영 확인 완료')")
+    assert page.input_value('#status')=='in_review'
+    assert page.locator('#approve').is_enabled()
     page.unroute('**'+path,detail);page.unroute('**'+path+'/reproduce-checks',submit)
     print('reproduction UI OK')
 

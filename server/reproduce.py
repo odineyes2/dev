@@ -177,6 +177,7 @@ def worker(ref, repo, row):
 def finish(ref, row):
     """재현 결과와 소유한 Task 상태를 함께 기록한다. 다른 작업의 상태를 덮지 않는다."""
     row['ended_at'] = db.now_iso()
+    followup = False
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         saved = c.execute('SELECT value FROM app_settings WHERE key=?', (PREFIX + ref,)).fetchone()
@@ -200,7 +201,9 @@ def finish(ref, row):
                 status, note = 'on_hold', '재현 중 Task 커밋이 바뀌어 검토 전환을 보류했어요.'
                 row['note'] = note
             elif row['status'] == 'passed':
-                status, note = 'in_review', '실패 검사 재현이 통과했어요. 검사 결과와 로그를 확인해 주세요.'
+                status, note = 'in_progress', '실패 검사 재현이 통과했어요. 후속 검사·병합·운영 반영을 자동으로 진행해요.'
+                row['followup'] = 'pending'
+                followup = True
             elif row['status'] == 'interrupted':
                 status, note = 'on_hold', '서버 재시작으로 실패 검사 재현이 중단됐어요. 다시 실행해 주세요.'
             else:
@@ -211,15 +214,63 @@ def finish(ref, row):
             row['note'] = '재현 중 Task 상태가 바뀌어 검사 결과만 기록했어요.'
         c.execute('UPDATE app_settings SET value=?,updated_at=? WHERE key=?',
                   (json.dumps(row), db.now_iso(), PREFIX + ref))
+    if followup:
+        continue_followup(ref, row)
+
+
+def continue_followup(ref, row):
+    import orchestrate
+    try:
+        orchestrate.retry_merge(row['actor'], ref, reproduction_id=row['id'])
+        with db.connect() as c:
+            saved = c.execute('SELECT value FROM app_settings WHERE key=?', (PREFIX + ref,)).fetchone()
+            current = json.loads(saved[0]) if saved else {}
+            if current.get('id') == row['id'] and current.get('followup') == 'pending':
+                current['followup'] = 'running'
+                c.execute('UPDATE app_settings SET value=?,updated_at=? WHERE key=?',
+                          (json.dumps(current), db.now_iso(), PREFIX + ref))
+    except Exception as error:
+        with db.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            saved = c.execute('SELECT value FROM app_settings WHERE key=?', (PREFIX + ref,)).fetchone()
+            current = json.loads(saved[0]) if saved else {}
+            if current.get('id') != row['id']:
+                return
+            detail = str(error) if isinstance(error, issues.StoreError) else type(error).__name__
+            current.update(followup='blocked', note='후속 검사·병합을 시작하지 못했어요: ' + detail)
+            issue = issues._find(c, ref)
+            event = c.execute("SELECT data_json FROM events WHERE issue_id=? AND kind='status' ORDER BY id DESC LIMIT 1", (issue['id'],)).fetchone()
+            if issue['status'] == 'in_progress' and json.loads(event[0]).get('reproduction_id') == row['id']:
+                issues._set_status(c, row['actor'], issue, 'on_hold', current['note'])
+            c.execute('UPDATE app_settings SET value=?,updated_at=? WHERE key=?', (json.dumps(current), db.now_iso(), PREFIX + ref))
+
+
+def followup_finished(c, record, status, note):
+    owner = c.execute('SELECT data_json FROM events WHERE id=?', (record['owner_event'],)).fetchone()
+    reproduction_id = json.loads(owner[0]).get('reproduction_id') if owner else None
+    saved = c.execute('SELECT value FROM app_settings WHERE key=?', (PREFIX + record['ref'],)).fetchone()
+    current = json.loads(saved[0]) if saved else {}
+    if not reproduction_id or current.get('id') != reproduction_id or current.get('source_sha') != record['task_sha']:
+        return
+    current.update(followup='complete' if status == 'merged' else 'blocked' if status == 'on_hold' else 'failed',
+                   followup_ended_at=db.now_iso(), note='후속 검사·병합·운영 반영 확인을 마쳤어요.' if status == 'merged' else note)
+    c.execute('UPDATE app_settings SET value=?,updated_at=? WHERE key=?',
+              (json.dumps(current), db.now_iso(), PREFIX + record['ref']))
 
 
 def recover():
     """이전 서버가 소유한 재현의 In Progress를 보류 상태로 복구한다."""
     with db.connect() as c:
-        rows = c.execute("SELECT key,value FROM app_settings WHERE key LIKE ? AND json_extract(value,'$.status')='running'", (PREFIX + '%',)).fetchall()
+        rows = c.execute("SELECT key,value FROM app_settings WHERE key LIKE ? AND (json_extract(value,'$.status')='running' OR json_extract(value,'$.followup')='pending')", (PREFIX + '%',)).fetchall()
     for saved in rows:
         row = json.loads(saved['value'])
         if row.get('process') != PROCESS:
+            import orchestrate
+            ref = saved['key'][len(PREFIX):]
+            completion = orchestrate.completion(ref)
+            if row.get('followup') == 'pending' and completion and completion['phase'] in orchestrate.ACTIVE_PHASES and completion['task_sha'] == row['source_sha']:
+                regression.save_record(PREFIX + ref, {**row, 'followup': 'running'})
+                continue
             finish(saved['key'][len(PREFIX):], {**row, 'status': 'interrupted'})
 
 

@@ -935,6 +935,12 @@ def _checks_gate(c, rows, confirmed) -> list[str]:
     """Done으로 바꿀 이슈들의 최신 계획서에 `사람이 할 일`이 있으면 사람이 확인(confirmed)해야 한다. 확인한 항목을 돌려준다."""
     items = []
     for r in rows:
+        pending = c.execute("""WITH RECURSIVE t(id) AS (SELECT ? UNION ALL SELECT i.id FROM issues i JOIN t ON i.parent_id=t.id)
+            SELECT 1 FROM execution_completion e WHERE issue_id IN (SELECT id FROM t) AND auto_merge=1
+            AND run_id=(SELECT MAX(id) FROM runs WHERE issue_id=e.issue_id)
+            AND (phase<>'complete' OR merge_sha='') LIMIT 1""", (r['id'],)).fetchone()
+        if pending:
+            raise StoreError('후속 검사·병합·운영 반영 확인이 끝나지 않아 완료 승인할 수 없어요.', 409)
         plan = c.execute("SELECT body FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1", (r["id"],)).fetchone()
         items += human_checks(plan["body"]) if plan else []
     if items and not confirmed:

@@ -820,11 +820,12 @@ function reproductionHtml(it){
   const labels = {running:'실패 검사를 재현하고 있어요…',passed:'재현 검사 통과',failed:'재현 검사 실패',interrupted:'재현 중단'};
   const targets = r.targets.map(t => `${t.file} ${t.args.join(' ')}`).join(', ');
   return `<section class="check-reproduction" aria-label="실패 검사 재현"><div class="agent-sub">실패 검사 재현</div>
-    <button id="reproduce-checks" type="button" ${r.available ? '' : 'disabled'} title="마지막 실패 검사만 현재 Task 커밋의 임시 사본에서 실행해요. Agent 호출·병합·배포는 하지 않아요.">실패 검사만 재현</button>
+    <button id="reproduce-checks" type="button" ${r.available ? '' : 'disabled'} title="실패 검사를 재현하고 통과하면 후속 검사·병합·운영 반영 확인까지 자동으로 진행해요. Agent 호출은 추가하지 않아요.">실패 검사 재현 후 자동 반영</button>
     <p class="dim">${esc(targets)}${r.source_sha ? ` · 기준 ${esc(r.source_sha.slice(0,7))}` : ''}</p>
     ${r.blocked ? `<p class="dim">${esc(r.blocked)}</p>` : ''}
     ${result?.id ? `<div role="status" aria-live="polite"><p>${labels[result.status] || esc(result.status)}${result.source_sha ? ` · 검사 커밋 ${esc(result.source_sha.slice(0,7))}` : ''}</p>
     ${(result.results || []).map(t => `<div>${esc(t.file)} ${esc(t.args.join(' '))} · ${t.status === 'passed' ? '통과' : '실패'} · 종료 코드 ${Number(t.exit_code)}</div>`).join('')}
+    ${result.followup ? `<p>${({pending:'후속 검사·병합 대기',running:'후속 검사·병합·운영 반영 진행 중',complete:'후속 검사·병합·운영 반영 확인 완료',failed:'후속 검사 실패',blocked:'후속 처리 보류'})[result.followup] || esc(result.followup)}</p>` : ''}
     ${result.note ? `<p>${esc(result.note)}</p>` : ''}
     ${result.ended_at ? `<a href="/api/issues/${encodeURIComponent(it.ref)}/reproduce-checks/log" target="_blank" rel="noopener">전체 재현 로그 보기</a>` : ''}</div>` : ''}</section>`;
 }
@@ -878,7 +879,7 @@ function resultHtml(it){
   return `<div class="panel"><h2>Result <span class="meta">결과를 확인해 주세요</span></h2>
     <div class="decision" id="result"><div id="result-form" hidden><textarea id="result-note"></textarea>
       <div class="row-end"><button id="result-cancel">취소</button><button id="result-send"></button></div></div>
-    <div class="review-actions" id="result-actions"><button id="approve" class="primary">결과 승인 → 완료</button>
+    <div class="review-actions" id="result-actions"><button id="approve" class="primary" ${it.execute?.result_approval_blocked ? 'disabled title="후속 검사·병합·운영 반영 확인이 끝나야 승인할 수 있어요."' : ''}>결과 승인 → 완료</button>
       ${it.children.length || it.parent_ref ? '<button class="complete-tree">전체 완료</button>' : ''}
       <button data-to="changes_requested" id="request-changes">수정 요청</button>
       <button data-to="closed" class="danger">결과 거절</button></div></div></div>`;

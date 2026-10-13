@@ -371,31 +371,37 @@ def completion(ref):
         return dict(r) if r else None
 
 
-def retry_available(issue, record=None):
+def retry_available(issue, record=None, reproduction_id=None):
     record = record if record is not None else completion(issue['ref'])
     reviewed = False
-    if issue['status'] == 'in_review' and record:
+    if reproduction_id and issue['status'] == 'in_progress' and record:
         import reproduce
         checked = reproduce.result(issue['ref'])
-        reviewed = checked.get('status') == 'passed' and checked.get('source_sha') == record.get('task_sha')
-    return bool(issue.get('parent_ref') and (reviewed or issue['status'] in ('backlog', 'on_hold', 'changes_requested'))
+        event = next((e for e in reversed(issue.get('events', [])) if e['kind'] == 'status'), {})
+        reviewed = (checked.get('id') == reproduction_id and checked.get('status') == 'passed'
+                    and checked.get('source_sha') == record.get('task_sha')
+                    and event.get('data', {}).get('reproduction_id') == reproduction_id)
+    allowed = reviewed if reproduction_id else issue['status'] in ('backlog', 'on_hold', 'changes_requested')
+    return bool(issue.get('parent_ref') and allowed
                 and record and record['auto_merge'] and record['phase'] in ('held', 'failed') and not record['merge_sha'])
 
 
-def retry_merge(actor, ref):
+def retry_merge(actor, ref, *, reproduction_id=None):
     """미반영된 검증 완료 커밋을 에이전트 호출 없이 후처리로 다시 넘긴다."""
     import execute
     import jobs
     if actor['kind'] != 'human':
         raise issues.StoreError('병합 재시도는 사람만 할 수 있어요.', 403)
-    if not _lock.acquire(blocking=False):
+    acquired = _lock.acquire(blocking=False)
+    # 자동 후속 처리는 완료 기록을 먼저 등록하고 handle의 기존 잠금에서 차례를 기다린다.
+    if not acquired and not reproduction_id:
         raise issues.StoreError('다른 병합이 진행 중이에요. 끝난 뒤 다시 시도해 주세요.', 409)
     try:
         issue = issues.get_issue(ref)
         ref = issue['ref']
         record = completion(ref)
-        if not retry_available(issue, record):
-            raise issues.StoreError('미반영된 구현 완료 기록이 있는 보류·실패 Task 또는 재현 검사를 통과한 검토 Task만 병합 재시도할 수 있어요.', 409)
+        if not retry_available(issue, record, reproduction_id):
+            raise issues.StoreError('미반영된 구현 완료 기록이 있는 보류·실패 Task 또는 재현 통과 후 자동 처리 중인 Task만 병합 재시도할 수 있어요.', 409)
         parent = issues.get_issue(issue['parent_ref'])
         why = execute._eligibility_reason(issue, parent)
         if why:
@@ -426,9 +432,12 @@ def retry_merge(actor, ref):
                 raise issues.StoreError('구현 당시 승인 계획과 현재 계획이 달라요. 구현 결과를 다시 확인해 주세요.', 409)
             if row['status'] != issue['status'] or latest != record['run_id'] or current['phase'] != record['phase']:
                 raise issues.StoreError('Task 상태나 실행 기록이 바뀌었어요. 새로고침해 주세요.', 409)
+            if reproduction_id and not retry_available(issues.get_issue(ref), dict(current), reproduction_id):
+                raise issues.StoreError('검사 재현의 후속 처리 소유권이 바뀌었어요.', 409)
             if c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND status='queued' UNION ALL SELECT 1 FROM runs WHERE issue_id=? AND status='running'", (row['id'], row['id'])).fetchone():
                 raise issues.StoreError('대기 중이거나 실행 중인 작업이 있어요.', 409)
-            issues._set_status(c, actor, row, 'in_progress', '기존 구현 커밋으로 병합 재시도 — 에이전트 재실행 없음')
+            issues._set_status(c, actor, row, 'in_progress', '기존 구현 커밋으로 병합 재시도 — 에이전트 재실행 없음',
+                               {'reproduction_id': reproduction_id} if reproduction_id else None)
             event = c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status'", (row['id'],)).fetchone()[0]
             c.execute("UPDATE execution_completion SET phase='ready',worker_id=?,owner_event=?,actor=?,cfg_json=?,updated_at=? WHERE run_id=?",
                       (PROCESS_ID, event, issues.actor_label(actor), json.dumps(cfg), db.now_iso(), record['run_id']))
@@ -439,7 +448,8 @@ def retry_merge(actor, ref):
             raise issues.StoreError('병합 재시도를 시작하지 못했어요.', 409) from error
         return {'ref': ref, 'task_sha': record['task_sha'], 'status': 'checking'}
     finally:
-        _lock.release()
+        if acquired:
+            _lock.release()
 
 
 def pending():
@@ -484,6 +494,8 @@ def _finish(actor, record, status, note):
                            if status == 'merged' else '🔀 자동 병합: ' + note)
         c.execute('UPDATE execution_completion SET phase=?,updated_at=? WHERE run_id=?', (phase, db.now_iso(), record['run_id']))
         c.execute("UPDATE task_execution_results SET state=?,commit_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='commit'),status_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status') WHERE run_id=?", ('merged' if status == 'merged' else 'blocked',row['id'],row['id'],record['run_id']))
+        import reproduce
+        reproduce.followup_finished(c, record, status, note)
     if status == 'merged':
         _publish(actor, record)
     return status
