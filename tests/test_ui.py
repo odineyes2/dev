@@ -1015,6 +1015,77 @@ def check_issue_types(page, shots):
     page.emulate_media(color_scheme='light')
 
 
+def check_auto_master(page):
+    """전체 위임의 파생 상태·단일 저장·실패 복원·오래된 응답을 격리 검사한다."""
+    fields = ['auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'auto_troubleshoot', 'auto_qa']
+    headers = {'X-Requested-With': 'dev'}
+    url = BASE + '/api/settings/auto'
+    assert page.request.patch(url, headers=headers, data={f: False for f in fields}).ok
+    page.goto(BASE + '/#/settings/auto'); page.wait_for_selector('#auto-all')
+    master = page.locator('#auto-all')
+    assert master.get_attribute('aria-checked') == 'false'
+    assert master.locator('.switch-state').inner_text() == '꺼짐'
+    assert page.locator('#auto_review-label').inner_text() == 'Auto 검토 위임'
+    assert page.locator('#auto_execute-label').inner_text() == 'Auto 실행 위임'
+    assert master.get_attribute('aria-labelledby') == 'auto-all-label'
+    assert master.get_attribute('aria-describedby') == 'auto-all-help auto-all-hint'
+    requests = []
+    def record(route):
+        if route.request.method == 'PATCH':
+            requests.append(route.request.post_data_json)
+        route.continue_()
+    pattern = '**/api/settings/auto'
+    page.route(pattern, record)
+    before = page.request.get(url).json()
+    master.focus(); page.keyboard.press('Space')
+    page.wait_for_selector('#settings-body[aria-busy=false]')
+    assert requests == [{f: True for f in fields}]
+    saved = page.request.get(url).json()
+    assert all(saved[f] is True for f in fields)
+    assert {k: v for k, v in saved.items() if k not in fields and k not in ('updated_at', 'updated_by')} == {k: v for k, v in before.items() if k not in fields and k not in ('updated_at', 'updated_by')}
+    assert master.get_attribute('aria-checked') == 'true' and master.evaluate('e => e === document.activeElement')
+    page.reload(); page.wait_for_selector('#auto-all[aria-checked=true]')
+    page.click('#auto_qa'); page.wait_for_selector('#settings-body[aria-busy=false]')
+    assert master.get_attribute('aria-checked') == 'false'
+    assert master.locator('.switch-state').inner_text() == '일부 켜짐'
+    assert page.locator('#auto-all-hint').inner_text() == '누르면 모두 켜요.'
+    master.focus(); page.keyboard.press('Enter'); page.wait_for_selector('#settings-body[aria-busy=false]')
+    assert requests[-1] == {f: True for f in fields}
+    master.click(); page.wait_for_selector('#settings-body[aria-busy=false]')
+    assert requests[-1] == {f: False for f in fields}
+    assert all(page.request.get(url).json()[f] is False for f in fields)
+    page.unroute(pattern, record)
+    held = []
+    page.route(pattern, lambda r: held.append(r))
+    master.evaluate('e => { e.click(); e.click(); }')
+    page.wait_for_selector('#settings-body[aria-busy=true]')
+    page.wait_for_timeout(100)
+    assert len(held) == 1 and held[0].request.post_data_json == {f: True for f in fields}
+    assert master.locator('.switch-state').inner_text() == '저장 중…'
+    assert all(b.is_disabled() for b in page.locator('#settings-body .auto-switch').all())
+    held.pop().fulfill(status=500, json={'detail': '저장 실패'})
+    page.wait_for_selector('#settings-body[aria-busy=false]')
+    assert master.locator('.switch-state').inner_text() == '꺼짐'
+    assert all(page.locator('#' + f).get_attribute('aria-checked') == 'false' for f in fields)
+    assert '복원' in page.locator('#settings-status').inner_text()
+    assert master.evaluate('e => e === document.activeElement')
+    for fail in (False, True):
+        master.click(); page.wait_for_selector('#settings-body[aria-busy=true]')
+        page.goto(BASE + '/#/settings/types'); page.wait_for_selector('.type-management')
+        page.goto(BASE + '/#/settings/auto'); page.wait_for_selector('.settings-skeleton')
+        page.wait_for_timeout(100)
+        assert len(held) == 2
+        shared = page.request.get(url).json()
+        held.pop().fulfill(json=shared)
+        page.wait_for_selector('#auto-all')
+        held.pop().fulfill(status=500 if fail else 200, json={'detail': 'late error'} if fail else {**shared, **{f: True for f in fields}})
+        page.wait_for_timeout(100)
+        assert master.get_attribute('aria-checked') == 'false' and master.is_enabled()
+        assert page.locator('#settings-status').inner_text() == ''
+    page.unroute(pattern)
+    page.goto(BASE + '/#/'); page.wait_for_selector('#project-filter')
+
+
 def check_auto_settings(page, shots):
     """기존 프로젝트 UI의 전역 설정 호환·실패 복원·키보드와 네 화면을 확인한다."""
     H = {'X-Requested-With': 'dev'}
@@ -1040,7 +1111,7 @@ def check_auto_settings(page, shots):
     assert review.get_attribute('aria-checked') == 'false'
     approve = page.locator('#auto_approve')
     assert approve.is_enabled() and approve.get_attribute('aria-checked') == 'false'
-    assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'auto_troubleshoot', 'auto_qa', 'token_exhaustion_fallback']
+    assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto-all', 'auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'auto_troubleshoot', 'auto_qa', 'token_exhaustion_fallback']
     # 역할 카드 — 준비 중 역할 표시, 지목된 안내문 삭제, 이관 스위치의 비용 안내
     assert page.locator('.role-card h4').evaluate_all('(els) => els.map(e => e.textContent)') == ['오케스트레이터 준비 중', '작업 에이전트', '트러블슈터', 'Description 작성', 'QA Agent']
     assert '신규 자동 등록 순서' not in page.locator('#settings-body').inner_text()
@@ -2999,6 +3070,11 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--auto-master-only' in sys.argv:
+            check_auto_master(page)
+            check_auto_settings(page, shots)
+            assert not errs, errs
+            print('OK: Auto master and related settings'); sys.exit(0)
         if '--settings-navigation-only' in sys.argv:
             check_settings_navigation(page, shots)
             assert not errs, errs
@@ -3016,6 +3092,7 @@ try:
             assert not errs, errs
             print('OK: manual actions'); sys.exit(0)
         if '--global-auto-only' in sys.argv:
+            check_auto_master(page)
             check_auto_settings(page, shots)
             check_global_agent_orders(page, shots)
             check_published_notice(page, shots)
@@ -3191,6 +3268,7 @@ try:
         check_free_port(page, shots)
         check_service_diagnostic(page, shots)
         check_project_audits(page, shots)
+        check_auto_master(page)
         check_auto_settings(page, shots)
         check_attachments(page, shots)
         check_published_notice(page, shots)

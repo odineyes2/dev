@@ -1074,6 +1074,30 @@ with patch.object(jobs, 'pump') as pump, TestClient(A.app) as client:
     headers = {'X-Requested-With': 'dev'}
     def global_patch(changes):
         return client.patch(path, headers=headers, json=changes)
+    # 전체 스위치는 여섯 필드를 한 요청으로 저장하며 별도 설정·감사 경계를 유지한다.
+    fields = ('auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'auto_troubleshoot', 'auto_qa')
+    def audit_count():
+        with db.connect() as c:
+            return c.execute("SELECT COUNT(*) FROM project_auto_settings_events WHERE scope='global'").fetchone()[0]
+    for on in (True, False):
+        before = client.get(path).json()
+        count = audit_count()
+        result = global_patch({f: on for f in fields})
+        assert result.status_code == 200
+        after = result.json()
+        assert all(after[f] is on for f in fields)
+        assert client.get(path).json() == after
+        assert audit_count() == count + 1
+        with db.connect() as c:
+            event = c.execute("SELECT * FROM project_auto_settings_events WHERE scope='global' ORDER BY id DESC LIMIT 1").fetchone()
+        assert all(json.loads(event['after_json'])[f] is on for f in fields)
+        assert all(json.loads(event['before_json'])[f] == before[f] for f in fields)
+        for key in ('token_exhaustion_fallback', 'agent_orders', *auto_settings.ORDER_FIELDS):
+            assert after[key] == before[key]
+    for bad in ({**{f: True for f in fields}, 'auto_qa': 1}, {**{f: True for f in fields}, 'auto-all': True}):
+        count = audit_count()
+        assert global_patch(bad).status_code == 400
+        assert client.get(path).json() == after and audit_count() == count
     saved = global_patch({'auto_review': False, 'auto_execute': False, 'auto_approve': False,
                           'auto_plan_approve': False, 'token_exhaustion_fallback': False}).json()
     assert saved['scope'] == 'global' and saved['project_key'] is None
