@@ -23,6 +23,8 @@ from mcp_tools import mcp_app
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    import qa_runner
+    qa_runner.recover()
     issues.repair_terminal_children()
     import project_audit_runner
     project_audit_runner.recover()
