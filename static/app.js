@@ -230,6 +230,7 @@ async function route(){
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === (name || 'issues')));
   try{
     if(!name) await renderList();
+    else if(name === 'trends') await renderTrends();
     else if(name === 'board') await renderBoard();
     else if(name === 'issue' && arg) await renderIssue(decodeURIComponent(arg));
     else if(name === 'new') await renderNew(new URLSearchParams(location.hash.split('?')[1] || ''));
@@ -450,6 +451,88 @@ function summaryNumber(n){ return Number(n || 0).toLocaleString('ko-KR'); }
 function summaryDuration(seconds){
   const minutes = Math.floor(Number(seconds || 0) / 60);
   return minutes >= 60 ? `${summaryNumber(Math.floor(minutes / 60))}시간 ${minutes % 60}분` : `${minutes}분`;
+}
+
+// Trend는 서버가 서울 날짜로 나눈 값을 그대로 그린다. 필터는 이 화면에서만 유지한다.
+let trendRange = 30, trendDates = null, trendRequest = 0;
+const TREND_METRICS = [
+  ['created_issue_count', '생성 Issue', '개'],
+  ['completed_issue_count', '완료 Issue', '개'],
+  ['agent_seconds', '에이전트 시간', ''],
+  ['total_tokens', '토큰', '개']
+];
+function seoulToday(){ return new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Seoul', year:'numeric', month:'2-digit', day:'2-digit'}).format(new Date()); }
+function trendDateBefore(today, days){
+  const d = new Date(today + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+function trendValue(key, value){
+  if(key !== 'agent_seconds') return summaryNumber(value);
+  return Number(value) > 0 && Number(value) < 60 ? `${Math.round(value)}초` : summaryDuration(value);
+}
+function trendChart(days, key, label){
+  const values = days.map(d => Number(d[key] || 0));
+  const max = Math.max(1, ...values), width = 580, height = 130;
+  const points = values.map((v, i) => `${(i * width / Math.max(1, values.length - 1)).toFixed(1)},${(height - 8 - v * (height - 20) / max).toFixed(1)}`).join(' ');
+  return `<svg class="trend-chart" viewBox="0 0 580 130" role="img" aria-label="${esc(label)} 일별 추세, ${esc(days[0].date)}부터 ${esc(days.at(-1).date)}까지"><polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>
+    <div class="trend-axis"><span>${esc(days[0].date)}</span><span>${esc(days.at(-1).date)}</span></div>`;
+}
+async function renderTrends(){
+  const today = seoulToday();
+  if(!trendDates) trendDates = [trendDateBefore(today, 29), today];
+  view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">보존된 기록의 일별 사용 현황을 서울 날짜로 살펴봐요.</p></div></header>
+    <form id="trend-filter" class="trend-filter"><label>프로젝트<select id="trend-project">${projectOptionsHtml()}</select></label>
+      <div class="trend-periods" role="group" aria-label="빠른 기간">${[7,30,90].map(n => `<button type="button" data-trend-days="${n}" aria-pressed="${trendRange === n}">최근 ${n}일</button>`).join('')}</div>
+      <label>시작일<input id="trend-from" type="date" required value="${esc(trendDates[0])}"></label>
+      <label>종료일<input id="trend-to" type="date" required value="${esc(trendDates[1])}"></label>
+      <button type="submit" class="primary">조회</button></form>
+    <p id="trend-validation" class="error" role="alert" hidden></p><div id="trend-results" aria-live="polite"></div></div>`;
+  const root = view.querySelector('.trend-page'), form = root.querySelector('form');
+  root.querySelector('#trend-project').value = currentProject();
+  root.querySelector('#trend-project').addEventListener('change', e => {
+    localStorage.setItem('dev.project', e.target.value); paintProjectFilter(); loadTrend();
+  });
+  root.querySelectorAll('[data-trend-days]').forEach(button => button.addEventListener('click', () => {
+    trendRange = Number(button.dataset.trendDays); trendDates = [trendDateBefore(seoulToday(), trendRange - 1), seoulToday()];
+    form.elements['trend-from'].value = trendDates[0]; form.elements['trend-to'].value = trendDates[1];
+    root.querySelectorAll('[data-trend-days]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+    loadTrend();
+  }));
+  form.addEventListener('submit', e => {
+    e.preventDefault(); trendRange = 0;
+    root.querySelectorAll('[data-trend-days]').forEach(b => b.setAttribute('aria-pressed', 'false'));
+    trendDates = [form.elements['trend-from'].value, form.elements['trend-to'].value]; loadTrend();
+  });
+  root.addEventListener('click', e => { if(e.target.closest('#trend-retry')) loadTrend(); });
+  await loadTrend();
+}
+async function loadTrend(){
+  const root = view.querySelector('.trend-page'); if(!root) return;
+  const [from, to] = [root.querySelector('#trend-from').value, root.querySelector('#trend-to').value];
+  const error = root.querySelector('#trend-validation'), results = root.querySelector('#trend-results');
+  const days = from && to ? Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000) + 1 : 0;
+  error.hidden = true;
+  if(!days || days < 1 || days > 366){
+    ++trendRequest; results.innerHTML = ''; error.textContent = '시작일과 종료일을 선택하고 1~366일 범위로 지정해 주세요.'; error.hidden = false; return;
+  }
+  const request = ++trendRequest, project = currentProject();
+  const current = () => request === trendRequest && root === view.querySelector('.trend-page') && project === currentProject();
+  results.setAttribute('aria-busy', 'true');
+  results.innerHTML = '<div class="usage-loading" role="status">Trend를 불러오는 중이에요…<div class="usage-skeleton" aria-hidden="true"></div></div>';
+  try{
+    const data = await api('GET', '/api/trends?' + new URLSearchParams({from, to, ...(project ? {project} : {})}), undefined, current, {notifyErrors:false});
+    if(!current()) return;
+    const s = data.summary, noActivity = !data.days.some(d => TREND_METRICS.some(([key]) => Number(d[key] || 0) > 0));
+    results.innerHTML = `<p class="trend-context">${project ? esc(project) : '전체 프로젝트'} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · ${esc(new Date(data.as_of).toLocaleString('ko-KR', {timeZone:'Asia/Seoul'}))} 조회</p>
+      ${s.partial ? `<p class="trend-partial" role="status">부분 집계 · 토큰 미계측 실행 ${summaryNumber(s.unmeasured_run_count)}건, 시간 미계측 실행 ${summaryNumber(s.unmeasured_duration_run_count)}건, 진행 중 ${summaryNumber(s.running_run_count)}건</p>` : ''}
+      ${noActivity ? '<div class="empty">이 기간에는 기록된 활동이 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>' : `<div class="trend-grid">${TREND_METRICS.map(([key,label,unit]) => `<section class="trend-card" aria-label="${label}"><h2>${label}</h2><strong>${trendValue(key, s[key])}</strong><span class="dim">${unit ? unit + ' · ' : ''}기간 합계</span>${trendChart(data.days, key, label)}</section>`).join('')}</div>`}
+      <section class="trend-ranking"><h2>토큰 상위 작업</h2><p class="dim">선택 기간에 시작한 Issue와 Task의 직접 실행 토큰만 순위에 포함해요.</p>
+      ${data.top_issues.length ? `<ol>${data.top_issues.map(item => `<li><a href="#/issue/${encodeURIComponent(item.ref)}"><span class="ref">${esc(item.ref)}</span> ${esc(item.title)}</a><strong>${summaryNumber(item.total_tokens)}</strong></li>`).join('')}</ol>` : '<div class="empty">이 기간에 측정된 작업 토큰이 없어요.</div>'}</section>
+      <details class="trend-daily"><summary>일별 값 표로 보기</summary><div class="trend-table-wrap"><table><thead><tr><th>날짜</th>${TREND_METRICS.map(([,label]) => `<th>${label}</th>`).join('')}</tr></thead><tbody>${data.days.map(day => `<tr><th>${esc(day.date)}</th>${TREND_METRICS.map(([key]) => `<td>${trendValue(key, day[key])}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details>
+      <p class="dim trend-note">${esc(data.note)} 완료 Issue는 현재 Done 상태와 마지막 완료일을 기준으로 해요. 진행 중 실행은 조회 시각까지 포함해요. 미계측 값과 삭제된 기록은 합계에 포함되지 않아요.</p>`;
+  }catch(e){ if(current()) results.innerHTML = `<div class="empty" role="alert">Trend를 불러오지 못했어요. ${esc(e.message)} <button type="button" id="trend-retry">다시 불러오기</button></div>`; }
+  finally{ if(current()) results.setAttribute('aria-busy', 'false'); }
 }
 async function loadIssueSummary(){
   const box = view.querySelector('#issue-summary');

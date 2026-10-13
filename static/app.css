@@ -201,6 +201,48 @@ main:has(#list-body){ max-width:none; }
 .issue-summary-values small{ color:var(--dim); font:500 12px/1.4 var(--sans); }
 .issue-summary-error{ color:var(--danger); font-size:13px; }
 .issue-summary-retry{ min-height:40px; margin-left:var(--sp-2); }
+/* 전역 Trend */
+.trend-page{ max-width:1180px; margin:auto; min-width:0; }
+.trend-heading{ margin-bottom:var(--sp-5); }
+.trend-heading h1{ margin:0; font:650 24px/1.4 var(--sans); }
+.trend-heading p{ margin:var(--sp-1) 0; }
+.trend-heading .eyebrow{ color:var(--dim); font:600 11px/1.4 var(--mono); letter-spacing:var(--track-label); }
+.trend-filter{ display:flex; flex-wrap:wrap; align-items:end; gap:var(--sp-3); margin-bottom:var(--sp-3); padding:var(--sp-4); background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); }
+.trend-filter label{ display:flex; flex-direction:column; gap:var(--sp-1); font:600 12px/1.4 var(--mono); min-width:0; }
+.trend-filter input, .trend-filter select{ min-height:40px; max-width:100%; font:400 13px var(--sans); }
+.trend-filter button{ min-height:40px; }
+.trend-periods{ display:flex; flex-wrap:wrap; gap:var(--sp-1); }
+.trend-periods button{ border:1px solid var(--border); background:var(--panel); color:var(--dim); border-radius:var(--r-sm); }
+.trend-periods button[aria-pressed="true"]{ color:var(--accent); border-color:var(--accent); background:rgba(var(--accent-rgb),.1); }
+.trend-page :focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+.trend-context, .trend-note{ color:var(--dim); font-size:13px; }
+.trend-partial{ padding:var(--sp-3); border:1px solid var(--border); border-radius:var(--r-md); font-size:13px; }
+.trend-grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-4); margin:var(--sp-4) 0 var(--sp-5); }
+.trend-card, .trend-ranking, .trend-daily{ min-width:0; padding:var(--sp-4); background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); }
+.trend-card h2, .trend-ranking h2{ margin:0; font:600 12px/1.4 var(--mono); letter-spacing:var(--track-label); }
+.trend-card strong{ display:inline-block; margin:var(--sp-2) var(--sp-2) var(--sp-3) 0; font:600 24px/1.4 var(--mono); font-variant-numeric:tabular-nums; }
+.trend-chart{ display:block; width:100%; height:130px; color:var(--accent); border-bottom:1px solid var(--border); }
+.trend-axis{ display:flex; justify-content:space-between; color:var(--dim); font:11px/1.4 var(--mono); }
+.trend-ranking p{ margin:var(--sp-2) 0; font-size:13px; }
+.trend-ranking ol{ padding-left:var(--sp-5); margin-bottom:0; }
+.trend-ranking li{ padding:var(--sp-2) 0; border-top:1px solid var(--border); display:flex; align-items:baseline; justify-content:space-between; gap:var(--sp-4); overflow-wrap:anywhere; }
+.trend-ranking li a{ min-width:0; }
+.trend-ranking li strong{ font:600 13px var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.trend-daily{ margin-top:var(--sp-4); }
+.trend-daily summary{ cursor:pointer; min-height:40px; }
+.trend-table-wrap{ max-height:360px; overflow:auto; }
+.trend-daily table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+.trend-daily th, .trend-daily td{ padding:var(--sp-2); border-bottom:1px solid var(--border); text-align:right; white-space:nowrap; }
+.trend-daily th:first-child{ text-align:left; }
+@media(max-width:800px){
+  .trend-grid{ grid-template-columns:minmax(0,1fr); }
+  .trend-filter label:first-child, .trend-filter select, .trend-periods{ width:100%; }
+  .trend-periods button{ flex:1; }
+  .trend-filter label:has(input){ flex:1 1 120px; }
+  .trend-filter input{ width:100%; }
+  .trend-filter>button[type="submit"]{ flex:1 1 100%; }
+  .trend-card strong{ font-size:20px; }
+}
 @media(max-width:800px){
   .issue-summary{ padding:var(--sp-2) var(--sp-3); }
   .issue-summary-periods{ width:100%; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); }
