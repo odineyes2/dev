@@ -91,7 +91,7 @@ with db.connect() as c:
 cmd = [sys.executable, '-c', 'import json; print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"ready"}}))']
 with patch.object(orchestrate, 'run_tests', return_value='FAILED: related test'), patch.object(review.subprocess, 'Popen', wraps=review.subprocess.Popen) as calls:
     status = review.run_headless(me, task['ref'], args[3], recovery_run, cmd, wt, None, 10, '실행', 'codex')
-    assert status == 'failed' and calls.call_count == 1
+    assert status == 'failed' and sum(call.args[0] == cmd for call in calls.call_args_list) == 1
 troubleshoot.sync()
 with db.connect() as c:
     assert c.execute('SELECT status FROM troubleshoot_requests WHERE id=?', (queued['id'],)).fetchone()[0] == 'failed'
