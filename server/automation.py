@@ -223,6 +223,9 @@ def valid_job(c, job):
     settings = c.execute('SELECT s.*,p.archived FROM global_project_auto_settings s JOIN projects p ON p.id=s.project_id WHERE s.project_id=?', (issue['project_id'],)).fetchone()
     if not settings or settings['archived'] or not settings['auto_' + job['mode']]:
         return False
+    import qa
+    if job['mode'] == 'execute' and qa.rework_job_ok(c, issue, job):
+        return True
     if c.execute('SELECT 1 FROM provider_migration_attempts WHERE job_id=?', (job['id'],)).fetchone() and not c.execute(
             'SELECT token_exhaustion_fallback FROM global_project_auto_role_settings WHERE project_id=?', (issue['project_id'],)).fetchone()[0]:
         return False
@@ -381,3 +384,5 @@ def sync():
                 jid = c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,provider,source,delegation_id,approval_version,model) VALUES(?,?,?,'queued',?,?,'auto',?,?,?)", (issue['id'],mode,actor,db.now_iso(),provider,delegation['id'],version,auto_settings.model_for(c, issue['id'], provider))).lastrowid
                 issues._event(c, issue['id'], jobs._actor(actor), 'comment', 'Auto 설정 위임으로 작업을 등록했어요.', {'source':'auto','delegation_id':delegation['id'],'delegated_by':setting['updated_by'],'job_id':jid})
                 jobs._waiting(c, c.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
+        import qa
+        qa.sync_rework(c)
