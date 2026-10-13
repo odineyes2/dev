@@ -114,4 +114,58 @@ with patch.object(review.subprocess, 'Popen', side_effect=lambda *a, **kw: FakeP
 saved = review.list_runs(task['ref'])[0]
 assert (saved['input_tokens'], saved['output_tokens']) == (37, 6), saved
 assert issues.get_issue(task['ref'])['token_usage']['total_tokens'] == 58
+
+# 2026-02-01 00:30 KST: 하루·월·연 경계와 Task, 재개, 병렬 실행을 고정 시각으로 확인한다.
+issues.create_project(human, 'SUM', 'summary')
+summary_parent = issues.create_issue(human, 'SUM', 'summary parent')
+summary_task = issues.create_issue(human, 'SUM', 'summary task', parent=summary_parent['ref'])
+reopened = issues.create_issue(human, 'SUM', 'reopened')
+prior = '2026-01-31T14:00:00+00:00'
+today = '2026-01-31T15:10:00+00:00'
+fixed_now = '2026-01-31T15:30:00+00:00'
+with db.connect() as c:
+    c.execute("UPDATE issues SET created_at=?,last_done_at=?,status='done' WHERE id=?",
+              (prior, today, summary_parent['id']))
+    c.execute("UPDATE issues SET created_at=?,last_done_at=?,status='done' WHERE id=?",
+              (today, today, summary_task['id']))
+    c.execute("UPDATE issues SET created_at=?,last_done_at=?,status='in_progress' WHERE id=?",
+              (prior, today, reopened['id']))
+    for iid, begin, stop, status, inp, out in [
+        (summary_parent['id'], prior, today, 'ok', 3, 1),
+        (summary_task['id'], today, fixed_now, 'ok', 5, 2),
+        (summary_task['id'], today, fixed_now, 'ok', 7, 3),
+        (reopened['id'], today, None, 'running', None, None),
+        (reopened['id'], today, None, 'failed', 1, None)]:
+        c.execute('INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,input_tokens,output_tokens) VALUES(?,?,?,?,?,?,?,?)',
+                  (iid, 'review', status, 'human:admin', begin, stop, inp, out))
+    c.execute("""INSERT INTO project_audits(project_id,request_id,input_fingerprint,provider,actor,status,
+        usage_json,created_at,updated_at,started_at,ended_at) VALUES(?,'summary-audit','test','codex','human:admin',
+        'complete','{"input_tokens":11,"output_tokens":4}',?,?,?,?)""",
+        (summary_parent['project_id'], today, today, today, fixed_now,))
+result = usage.issue_summary('today', 'sum', as_of=fixed_now)
+totals = result['summary']
+assert result['since'] == '2026-01-31T15:00:00+00:00' and result['project'] == 'SUM'
+assert (totals['created_issue_count'], totals['completed_issue_count']) == (1, 2), totals
+assert (totals['input_tokens'], totals['output_tokens'], totals['total_tokens']) == (24, 9, 33), totals
+assert (totals['run_count'], totals['running_run_count'], totals['unmeasured_run_count'],
+        totals['unmeasured_duration_run_count'], totals['agent_seconds']) == (6, 1, 2, 1, 5400), totals
+assert totals['partial']
+assert usage.issue_summary('month', 'SUM', as_of=fixed_now)['summary']['created_issue_count'] == 1
+assert usage.issue_summary('year', 'SUM', as_of=fixed_now)['summary']['created_issue_count'] == 3
+assert usage.issue_summary('all', 'SUM', as_of=fixed_now)['summary']['created_issue_count'] == 3
+assert usage.issue_summary('today', 'EMPTY', as_of=fixed_now)['summary']['total_tokens'] == 0
+assert usage.issue_summary('all', as_of=fixed_now)['summary']['created_issue_count'] >= 3
+
+with patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
+    assert client.get('/api/issue-summary?period=today&project=SUM').status_code == 401
+    client.cookies.set('ns_session', 'temporary')
+    for period in ('today', 'month', 'year', 'all'):
+        response = client.get(f'/api/issue-summary?period={period}&project=SUM')
+        assert response.status_code == 200, response.text
+        assert response.json()['period'] == period
+    assert client.get('/api/issue-summary?period=bad').status_code == 400
+    assert client.get('/api/issue-summary?project=MISSING').status_code == 404
+    client.cookies.clear()
+    with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
+        assert client.get('/api/issue-summary?period=today').status_code == 403
 print('OK usage')

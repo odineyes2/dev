@@ -539,6 +539,12 @@ def api_project_usage(key: str, limit: int = 50, offset: int = 0):
     return usage.project_usage(key, limit, offset)
 
 
+@app.get("/api/issue-summary")
+def api_issue_summary(period: str = 'today', project: str | None = None):
+    import usage
+    return usage.issue_summary(period, project)
+
+
 @app.get("/api/settings/auto")
 def api_global_auto_settings():
     import auto_settings
