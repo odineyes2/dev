@@ -66,6 +66,9 @@ def key(value):
 def sync():
     """수동·서버 상태 전환을 같은 영속 대기 항목으로 수집한다."""
     with db.connect() as c:
+        import auto_settings
+        if not auto_settings.qa_enabled(c):
+            return
         # 재작업 묶음이 끝나기 전에는 중간 상태를 다시 검사하지 않는다.
         refs = [r[0] for r in c.execute("""SELECT id FROM issues i WHERE parent_id IS NULL AND status='in_review'
             AND NOT EXISTS(SELECT 1 FROM qa_rework_batches b WHERE b.issue_id=i.id AND b.status='registered')""")]
@@ -73,6 +76,8 @@ def sync():
         try:
             with db.connect() as c:
                 c.execute('BEGIN IMMEDIATE')
+                if not auto_settings.qa_enabled(c):
+                    return
                 value = snapshot(c, issue_id)
                 c.execute("INSERT OR IGNORE INTO qa_rounds(issue_id,round_number,snapshot_key,snapshot_json,created_at) VALUES(?,(SELECT COALESCE(MAX(round_number),0)+1 FROM qa_rounds WHERE issue_id=?),?,?,?)",
                           (issue_id, issue_id, key(value), _json(value), db.now_iso()))
@@ -176,7 +181,7 @@ REWORK_LIMIT = 5
 def _delegation(c, key):
     """Auto QA를 켠 사람의 설정 위임. 꺼졌거나 사람이 켠 기록이 없으면 None."""
     import auto_settings
-    if not auto_settings._settings(c, {'key': key})['auto_qa']:
+    if not auto_settings.qa_enabled(c) or not auto_settings._settings(c, {'key': key})['auto_qa']:
         return None
     row = c.execute("""SELECT * FROM project_auto_settings_events WHERE scope='global'
         AND json_extract(before_json,'$.auto_qa')=0 AND json_extract(after_json,'$.auto_qa')=1
@@ -303,6 +308,9 @@ def request_rework(actor, ref, qid, task_refs):
     """Auto QA OFF에서 사람이 카드의 재작업을 고른다 — 최신 실패 회차·승인된 Plan·상한·중복을 확인하고 Task만 되돌린다."""
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
+        import auto_settings
+        if not auto_settings.qa_enabled(c):
+            raise issues.StoreError('QA가 비활성화되어 있어요. Settings에서 QA 활성화를 켜 주세요.', 409)
         root = issues._find(c, ref)
         row = c.execute('SELECT * FROM qa_rounds WHERE id=? AND issue_id=?', (qid, root['id'])).fetchone()
         if not row:

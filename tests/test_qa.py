@@ -63,6 +63,11 @@ with patch.object(app.jobs, 'pump'), TestClient(app.app) as client:
         assert client.get('/api/issues/QA-999/qa').status_code == 404
         assert client.get('/api/issues/'+task['ref']+'/qa').status_code == 400
         settings = client.get('/api/settings/auto').json()
+        assert settings['qa_enabled'] is False
+        assert client.patch('/api/settings/auto',json={'qa_enabled':True}).json()['qa_enabled'] is True
+        assert client.get('/api/settings/auto').json()['qa_enabled'] is True
+        assert client.patch('/api/settings/auto',json={'qa_enabled':False}).json()['qa_enabled'] is False
+        assert client.patch('/api/settings/auto',json={'qa_enabled':1}).status_code == 400
         assert settings['auto_qa'] is False and 'qa_provider_order' in settings['agent_orders']
         change = {'auto_qa':True,'qa_provider_order':['codex','claude']}
         result = client.patch('/api/settings/auto',json=change)
@@ -82,6 +87,7 @@ print('OK QA migration, constraints, usage and API/settings permissions')
 # 임시 저장소와 가짜 provider로 실행·증거·오류를 검증한다. 운영 저장소는 변경하지 않는다.
 import subprocess, time, threading
 import qa, qa_runner, jobs, review, orchestrate
+auto_settings.update_settings(human,None,{'qa_enabled':True})
 repo = Path(tempfile.mkdtemp())
 (repo / 'tests').mkdir()
 (repo / 'tests/test_local.py').write_text("print('real local failure')\nraise SystemExit(1)\n",encoding='utf-8')
@@ -380,3 +386,50 @@ with patch.object(app.jobs, 'pump'), TestClient(app.app) as client:
         assert statuses(manual) == ['in_review','changes_requested']
         assert client.post(url, json=body).status_code == 409   # 중복
 print('OK human QA rework request: auth, input, approval gate, duplicate')
+
+# 전체 QA OFF는 Auto 위임과 독립적으로 수집·대기·직접 호출·실행 중 모델을 막는다.
+disabled, _ = make_issue('QA disabled')
+queued_row = prepare(disabled)
+with db.connect() as c:
+    c.execute("UPDATE qa_rounds SET status='queued',run_id=NULL WHERE id=?", (queued_row['id'],))
+    c.execute("UPDATE runs SET status='failed' WHERE id=?", (queued_row['run_id'],))
+auto_settings.update_settings(human,None,{'qa_enabled':False})
+assert latest(disabled)['status'] == 'stale'
+off_root, _ = make_issue('no QA while disabled')
+with db.connect() as c:
+    count = c.execute('SELECT COUNT(*) FROM qa_rounds').fetchone()[0]
+    assert qa._delegation(c,'QR') is None
+with patch.object(qa_runner.subprocess,'Popen') as spawn, patch.object(qa_runner,'analyze') as analyze:
+    qa.sync(); qa_runner.pump(); qa_runner.run(queued_row)
+    assert not spawn.called and not analyze.called
+with db.connect() as c:
+    assert c.execute('SELECT COUNT(*) FROM qa_rounds').fetchone()[0] == count
+with tempfile.TemporaryDirectory() as temp:
+    with patch.object(qa_runner.subprocess,'Popen') as spawn:
+        try: qa_runner.analyze({'provider':'claude','model':'fake'},{},Path(temp),time.monotonic()+5)
+        except ValueError as e: assert '비활성화' in str(e)
+        else: raise AssertionError('OFF에서 직접 모델 호출을 허용했다')
+        assert not spawn.called
+auto_settings.update_settings(human,None,{'auto_qa':True})
+assert not auto_settings.qa_enabled()   # 전체 위임만 켜도 QA 호출은 계속 OFF다.
+auto_settings.update_settings(human,None,{'qa_enabled':True})
+qa.sync()
+assert latest(off_root)['status'] == 'queued'
+with tempfile.TemporaryDirectory() as temp:
+    folder = Path(temp)
+    script = folder / 'sleep.py'
+    script.write_text('import time; time.sleep(10)',encoding='utf-8')
+    real_spawn = qa_runner.subprocess.Popen
+    spawned = []
+    def spawn_and_disable(*args, **kwargs):
+        proc = real_spawn(*args, **kwargs)
+        spawned.append(proc)
+        auto_settings.update_settings(human,None,{'qa_enabled':False})
+        return proc
+    with patch.object(qa_runner,'command',return_value=[sys.executable,str(script)]), patch.object(qa_runner.subprocess,'Popen',side_effect=spawn_and_disable):
+        try: qa_runner.analyze({'provider':'claude','model':'fake'},{},folder,time.monotonic()+5)
+        except ValueError as e: assert '비활성화' in str(e)
+        else: raise AssertionError('OFF로 바뀐 실행 중 모델을 중단하지 않았다')
+    assert spawned[0].poll() is not None
+assert auto_settings.get_settings()['qa_enabled'] is False
+print('OK QA global gate: default OFF, persistence, queued cancellation, no calls while OFF, running model terminated')

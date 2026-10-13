@@ -11,9 +11,18 @@ from issues import StoreError, actor_label
 
 PROVIDERS = ("claude", "codex")
 ORDER_FIELDS = ("provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "qa_provider_order")
-BOOL_FIELDS = ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "token_exhaustion_fallback", "auto_troubleshoot", "auto_qa")
+BOOL_FIELDS = ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "token_exhaustion_fallback", "auto_troubleshoot", "auto_qa", "qa_enabled")
 # agent_orders: {역할: [Agent id, …]} — 저장하면 그 역할의 provider 순서도 처음 나오는 provider 순으로 맞춘다.
-FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "token_exhaustion_fallback", "agent_orders", "auto_troubleshoot", "auto_qa", "qa_provider_order"}
+FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "token_exhaustion_fallback", "agent_orders", "auto_troubleshoot", "auto_qa", "qa_provider_order", "qa_enabled"}
+
+
+def qa_enabled(c=None):
+    """QA 호출은 사람이 켠 전역 설정에서만 허용한다. 기본은 OFF다."""
+    if c is None:
+        with db.connect() as c:
+            return qa_enabled(c)
+    row = c.execute("SELECT value FROM app_settings WHERE key='qa_enabled'").fetchone()
+    return bool(row and row['value'] == 'true')
 
 
 def _project(c, key):
@@ -48,6 +57,7 @@ def _settings(c, project):
     row = c.execute("SELECT * FROM global_auto_settings WHERE singleton=1", ()).fetchone()
     roles = c.execute("SELECT * FROM global_auto_role_settings WHERE singleton=1", ()).fetchone()
     result = _base_settings(row, roles, project)
+    result['qa_enabled'] = qa_enabled(c)
     candidates = _candidates(c)
     result["agent_orders"] = {f: _agent_order(c, project, f, result[f], candidates) for f in ORDER_FIELDS}
     return result
@@ -157,6 +167,12 @@ def update_settings(actor, key, changes):
              json.dumps(updated["description_provider_order"], separators=(",", ":"))))
         c.execute('UPDATE global_auto_settings SET auto_troubleshoot=? WHERE singleton=1', (updated['auto_troubleshoot'],))
         c.execute("UPDATE global_auto_settings SET auto_qa=? WHERE singleton=1", (updated["auto_qa"],))
+        if 'qa_enabled' in changes:
+            c.execute("""INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES('qa_enabled',?,?,?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+                (json.dumps(updated['qa_enabled']), now, who))
+            if not updated['qa_enabled']:
+                c.execute("UPDATE qa_rounds SET status='stale',ended_at=?,note='QA가 비활성화되어 대기를 취소했어요.' WHERE status='queued'", (now,))
         c.execute("UPDATE global_auto_role_settings SET qa_provider_order_json=? WHERE singleton=1", (json.dumps(updated["qa_provider_order"], separators=(",", ":")),))
         after = _settings(c, project)
         c.execute("""INSERT INTO project_auto_settings_events

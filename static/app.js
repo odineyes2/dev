@@ -2372,7 +2372,8 @@ async function renderSettings(){
        ['auto_execute','Auto 실행 위임','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],
        ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.'],
        ['auto_troubleshoot','Auto 트러블슈팅','기본 꺼짐. 켠 이후의 코드·검사 실패를 원 실행당 1회 복구해요. 승인 Plan·기존 worktree 안에서 최대 10분 실행하며, OFF로 바꾸면 자동 미착수 대기를 취소해요. 실행 중 작업은 유지해요.'],
-       ['auto_qa','Auto QA','기본 꺼짐. QA 통과 시 Issue와 Task를 자동 Done, 실패 시 관련 Task를 재작업해요(최대 5회 후 보류). 꺼져 있어도 검사는 하고 상태는 바꾸지 않아요. Goal·사람이 할 일이 남은 Issue는 자동 Done 하지 않아요.']].map(([field,label,help]) =>
+       ['auto_qa','Auto QA','QA 활성화가 켜져 있을 때 QA 통과 시 Issue와 Task를 자동 Done, 실패 시 관련 Task를 재작업해요(최대 5회 후 보류). 이 위임이 꺼져 있으면 검사 결과만 남겨요. Goal·사람이 할 일이 남은 Issue는 자동 Done 하지 않아요.'],
+       ['qa_enabled','QA 활성화','기본 꺼짐. OFF이면 모든 프로젝트의 QA 대기 등록·에이전트 호출을 막고 실행 중인 QA 모델 호출도 중단해요. 전체 · Auto와 별도로 켜야 해요.']].map(([field,label,help]) =>
       `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}
     <h3>Auto 에이전트 우선순위</h3>
     <div class="role-cards">${ROLE_CARDS.map(([field,id,title,help,ready]) =>
@@ -2389,7 +2390,7 @@ async function renderSettings(){
     master.disabled = busy || settings.auto_approve_available === false;
     master.querySelector('.switch-state').textContent = busy ? '저장 중…' : allOn ? '켜짐' : someOn ? '일부 켜짐' : '꺼짐';
     body.querySelector('#auto-all-hint').textContent = allOn ? '누르면 모두 꺼요.' : '누르면 모두 켜요.';
-    for(const field of [...delegationFields, 'token_exhaustion_fallback']){
+    for(const field of [...delegationFields, 'qa_enabled', 'token_exhaustion_fallback']){
       const b = body.querySelector(`#${field}`), on = settings[field];
       b.setAttribute('aria-checked', String(!!on)); b.disabled = busy || (field === 'auto_approve' && settings.auto_approve_available === false);
       b.querySelector('.switch-state').textContent = on ? '켜짐' : '꺼짐';

@@ -1096,6 +1096,16 @@ def check_auto_settings(page, shots):
     page.goto(BASE + '/#/settings')
     page.wait_for_selector('#auto_review')
     recovery = page.locator('#auto_troubleshoot')
+    qa_switch = page.locator('#qa_enabled')
+    assert qa_switch.get_attribute('aria-checked') == 'false'
+    qa_switch.focus(); page.keyboard.press('Space')
+    page.wait_for_function("document.querySelector('#qa_enabled').getAttribute('aria-checked')==='true' && !document.querySelector('#qa_enabled').disabled")
+    assert page.request.get(BASE+'/api/settings/auto').json()['qa_enabled'] is True
+    page.reload(); page.wait_for_selector('#qa_enabled')
+    assert qa_switch.get_attribute('aria-checked') == 'true'
+    qa_switch.click()
+    page.wait_for_function("document.querySelector('#qa_enabled').getAttribute('aria-checked')==='false' && !document.querySelector('#qa_enabled').disabled")
+    assert page.request.get(BASE+'/api/settings/auto').json()['qa_enabled'] is False
     assert recovery.get_attribute('aria-checked') == 'false'
     recovery.click()
     page.wait_for_function("document.querySelector('#auto_troubleshoot').getAttribute('aria-checked')==='true' && !document.querySelector('#auto_troubleshoot').disabled")
@@ -1111,7 +1121,7 @@ def check_auto_settings(page, shots):
     assert review.get_attribute('aria-checked') == 'false'
     approve = page.locator('#auto_approve')
     assert approve.is_enabled() and approve.get_attribute('aria-checked') == 'false'
-    assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto-all', 'auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'auto_troubleshoot', 'auto_qa', 'token_exhaustion_fallback']
+    assert page.locator('.setting-row .auto-switch').evaluate_all('(els) => els.map(e => e.id)') == ['auto-all', 'auto_review', 'auto_plan_approve', 'auto_execute', 'auto_approve', 'auto_troubleshoot', 'auto_qa', 'qa_enabled', 'token_exhaustion_fallback']
     # 역할 카드 — 준비 중 역할 표시, 지목된 안내문 삭제, 이관 스위치의 비용 안내
     assert page.locator('.role-card h4').evaluate_all('(els) => els.map(e => e.textContent)') == ['오케스트레이터 준비 중', '작업 에이전트', '트러블슈터', 'Description 작성', 'QA Agent']
     assert '신규 자동 등록 순서' not in page.locator('#settings-body').inner_text()
