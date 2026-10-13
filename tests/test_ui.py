@@ -742,6 +742,86 @@ def check_management_agents(page, shots):
     check_chat_connections(page, shots)
 
 
+def management_focus_diagnostic(page):
+    """값·비밀 없이 화면 경로와 실제 포커스 대상만 기록한다."""
+    return page.evaluate("""() => ({hash:location.hash,
+        focused:{tag:document.activeElement?.tagName,id:document.activeElement?.id},
+        activeTabs:[...document.querySelectorAll('.management-header [aria-current=page]')].map(e=>({
+            tag:e.tagName,href:e.getAttribute('href'),agent:e.dataset.agentTab,project:e.dataset.projectTab,settings:e.dataset.settings})),
+        busy:document.querySelectorAll('#view [aria-busy=true]').length})""")
+
+
+def management_active(page, route):
+    """목표 경로의 활성 탭과 로딩 완료를 확인한다. 이전 화면의 헤더는 허용하지 않는다."""
+    from urllib.parse import parse_qs
+    path, _, query = route.partition('?')
+    params = parse_qs(query)
+    if path == 'agents':
+        selector = '[data-agent-tab="'+params.get('tab',['execution'])[0]+'"][aria-current=page]'
+    elif path == 'projects' and params.get('project'):
+        selector = '[data-project-tab="'+params.get('tab',['manage'])[0]+'"][aria-current=page]'
+    elif path == 'projects':
+        selector = 'a[href="#/projects"][aria-current=page]'
+    else:
+        selector = '[data-settings="'+path.split('/')[1]+'"][aria-current=page]'
+    active = page.locator('.management-header '+selector)
+    try:
+        active.wait_for(state='visible')
+        if params.get('project'):
+            page.wait_for_function("key=>document.querySelector('.management-header')?.textContent.includes(key)",arg=params['project'][0])
+        page.wait_for_function("!document.querySelector('#view [aria-busy=true]')")
+        page.wait_for_function('document.getElementById("toast").hidden')
+    except Exception as error:
+        raise AssertionError(('관리 화면 준비 실패',route,management_focus_diagnostic(page))) from error
+    return active
+
+
+def check_management_delay_probe(page):
+    """API 응답을 포커스 검사 사이에 전달해 이전 헤더의 경합과 올바른 대기를 확인한다."""
+    page.goto(BASE+'/#/agents?tab=execution')
+    management_active(page,'agents?tab=execution')
+    catalog = page.request.get(BASE+'/api/model-catalog').json()
+    pending=[]
+    pattern='**/api/model-catalog'
+    page.route(pattern,lambda route:pending.append(route))
+    try:
+        page.goto(BASE+'/#/agents?tab=chat')
+        for _ in range(100):
+            if pending: break
+            page.wait_for_timeout(10)
+        assert pending, management_focus_diagnostic(page)
+        # 기존 일반 헤더/aria-busy 조건은 아직 execution 탭인데도 통과한다.
+        old=page.locator('.management-header [aria-current=page]')
+        if old.count() and old.is_visible() and old.is_enabled():
+            old.focus()
+        for route in pending: route.fulfill(json=catalog)
+        active=management_active(page,'agents?tab=chat')
+        active.focus()
+        assert active.evaluate('e=>e===document.activeElement'), management_focus_diagnostic(page)
+    finally:
+        page.unroute(pattern)
+    # 초기 로그인 로딩도 지연시켜 shell이 먼저 열려 중복 라우팅되지 않는지 확인한다.
+    page.goto(BASE+'/#/agents?tab=execution')
+    management_active(page,'agents?tab=execution')
+    projects=page.request.get(BASE+'/api/projects').json()
+    held=[]
+    page.route('**/api/projects',lambda route:held.append(route))
+    try:
+        page.reload()
+        for _ in range(100):
+            if held: break
+            page.wait_for_timeout(10)
+        assert held
+        assert page.locator('#shell').evaluate('e=>e.hidden')
+        for route in held: route.fulfill(json=projects)
+        active=management_active(page,'agents?tab=execution')
+        active.focus()
+        assert active.evaluate('e=>e===document.activeElement'), management_focus_diagnostic(page)
+    finally:
+        page.unroute('**/api/projects')
+    print('management delayed readiness OK')
+
+
 def check_management_layout(page, shots):
     """바뀐 관리 화면만 네 환경에서 캡처하고 탭 주소와 공통 구조를 확인한다."""
     assert page.locator('[data-nav=board]').count() == 0
@@ -754,13 +834,10 @@ def check_management_layout(page, shots):
     routes += ['settings/' + t for t in ('auto','types','regression')]
     for route in routes:
         page.goto(BASE + '/#/' + route)
-        page.wait_for_selector('.management-card .management-header')
-        page.wait_for_function("!document.querySelector('#view [aria-busy=true]')")
-        page.wait_for_function('document.getElementById("toast").hidden')
+        active=management_active(page,route)
         assert page.locator('.management-header [aria-current=page]').count() == 1
-        active = page.locator('.management-header [aria-current=page]')
         active.focus()
-        assert active.evaluate('e => e === document.activeElement')
+        assert active.evaluate('e => e === document.activeElement'), (route,management_focus_diagnostic(page))
         for theme in ('light','dark'):
             for width in (1300,390):
                 page.set_viewport_size({'width':width,'height':850})
@@ -3391,6 +3468,10 @@ try:
             check_management_agents(page, shots)
             assert not errs, errs
             print('OK: management agents'); sys.exit(0)
+        if '--management-delay-probe' in sys.argv:
+            check_management_delay_probe(page)
+            assert not errs, errs
+            sys.exit(0)
         if '--management-layout-only' in sys.argv:
             check_management_layout(page, shots)
             assert not errs, errs
@@ -4145,6 +4226,7 @@ try:
         check_reproduce(page, shots)
         # 로그아웃(사용자 메뉴 안)
         check_management_agents(page, shots)
+        check_management_delay_probe(page)
         check_management_layout(page, shots)
         check_troubleshooter(page, shots)
         check_global_agent_orders(page, shots)

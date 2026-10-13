@@ -210,6 +210,7 @@ function perfReport(name, t0){
 // ---- 라우팅 ----
 async function route(){
   stopLiveRefresh();
+  if(!me || document.getElementById('shell').hidden) return;
   issueRenderSeq++;
   settingsSession = null;
   actionSession = null;
@@ -2302,9 +2303,9 @@ async function boot(){
   document.getElementById('open-jupyter').hidden = false;
   document.getElementById('user-chip-name').textContent = me.name;
   document.getElementById('open-nightshift').href = data.nightshift_url;
+  await Promise.all([loadProjects(), loadAgents()]);
   document.getElementById('login').hidden = true;
   document.getElementById('shell').hidden = false;
-  await Promise.all([loadProjects(), loadAgents()]);
   route();
 }
 boot();
