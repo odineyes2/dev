@@ -9,6 +9,50 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_trends(page):
+    """Trend 필터·일별 값·상위 작업·부분 집계와 실패 상태를 임시 응답으로 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers, data={'key': 'TRND', 'name': 'Trend 검사'}).ok
+    calls = []
+    def respond(route):
+        calls.append(route.request.url)
+        query = route.request.url.split('?', 1)[-1]
+        if 'project=TRND' in query and 'from=2026-09-01' in query:
+            route.fulfill(status=503, json={'detail': '임시 오류'}); return
+        data = dict(from_date='2026-10-12', to_date='2026-10-13', as_of='2026-10-13T02:00:00+00:00',
+                    note='현재 보존된 기록 기준이에요.',
+                    days=[dict(date='2026-10-12', created_issue_count=1, completed_issue_count=0, agent_seconds=60, total_tokens=12),
+                          dict(date='2026-10-13', created_issue_count=2, completed_issue_count=1, agent_seconds=120, total_tokens=25)],
+                    summary=dict(created_issue_count=3, completed_issue_count=1, agent_seconds=180, total_tokens=37,
+                                 partial=True, unmeasured_run_count=1, unmeasured_duration_run_count=1, running_run_count=1),
+                    top_issues=[dict(ref='TRND-1', title='큰 작업', total_tokens=37)])
+        if 'project=TRND' in query and 'from=2026-01-01' in query:
+            data['days'] = [dict(date='2026-01-01', created_issue_count=0, completed_issue_count=0, agent_seconds=0, total_tokens=0)]
+            data['summary'] = dict.fromkeys(data['summary'], 0); data['top_issues'] = []
+        route.fulfill(json=data)
+    page.route('**/api/trends?*', respond)
+    page.goto(BASE + '/#/trends'); page.wait_for_selector('.trend-card')
+    assert page.locator('.trend-card').count() == 4
+    assert '부분 집계' in page.inner_text('#trend-results')
+    assert page.locator('.trend-chart').count() == 4
+    assert page.locator('.trend-ranking a').get_attribute('href') == '#/issue/TRND-1'
+    page.locator('.trend-daily summary').focus(); page.keyboard.press('Enter')
+    assert '2026-10-12' in page.inner_text('.trend-daily table')
+    page.select_option('#trend-project', 'TRND')
+    page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+    assert any('project=TRND' in url for url in calls)
+    page.locator('[data-trend-days="7"]').focus(); page.keyboard.press('Enter')
+    assert page.locator('[data-trend-days="7"]').get_attribute('aria-pressed') == 'true'
+    page.fill('#trend-from', '2026-10-14'); page.fill('#trend-to', '2026-10-13'); page.click('#trend-filter [type="submit"]')
+    assert '1~366일' in page.inner_text('#trend-validation')
+    page.fill('#trend-from', '2026-09-01'); page.click('#trend-filter [type="submit"]')
+    page.wait_for_selector('#trend-retry'); assert '임시 오류' in page.inner_text('#trend-results')
+    page.fill('#trend-from', '2026-01-01'); page.click('#trend-filter [type="submit"]')
+    page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+    assert '기록된 활동이 없어요' in page.inner_text('#trend-results')
+    page.unroute('**/api/trends?*')
+
+
 def check_free_port(page, shots):
     """빈 포트 조회는 저장·운영 연결과 분리하고 비동기 폼 경합을 검사한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -3393,6 +3437,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--trends-only' in sys.argv:
+            check_trends(page)
+            assert not errs, errs
+            print('OK: Trend'); sys.exit(0)
         if '--issue-summary-only' in sys.argv:
             check_issue_summary(page)
             assert not errs, errs
