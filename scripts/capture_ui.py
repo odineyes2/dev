@@ -74,7 +74,7 @@ def wait_screen(page, route):
                 'types': '.type-management', 'settings/types': '.type-management'}.get(name, '#view')
     page.wait_for_selector(selector)
     if name.startswith('issue/'):
-        page.wait_for_function("ref => document.querySelector('.detail .ref')?.textContent.trim() === ref", arg=name[6:])
+        page.wait_for_function("ref => document.querySelector('.detail .ref')?.textContent.trim().split(' · ')[0] === ref", arg=name[6:])
         page.wait_for_selector('h1#title')
     page.wait_for_function("document.querySelector('#view')?.textContent.trim().length > 0")
     page.wait_for_function("!document.querySelector('#view [aria-busy=true]')")
