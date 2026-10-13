@@ -373,7 +373,12 @@ def completion(ref):
 
 def retry_available(issue, record=None):
     record = record if record is not None else completion(issue['ref'])
-    return bool(issue.get('parent_ref') and issue['status'] in ('backlog', 'on_hold', 'changes_requested')
+    reviewed = False
+    if issue['status'] == 'in_review' and record:
+        import reproduce
+        checked = reproduce.result(issue['ref'])
+        reviewed = checked.get('status') == 'passed' and checked.get('source_sha') == record.get('task_sha')
+    return bool(issue.get('parent_ref') and (reviewed or issue['status'] in ('backlog', 'on_hold', 'changes_requested'))
                 and record and record['auto_merge'] and record['phase'] in ('held', 'failed') and not record['merge_sha'])
 
 
@@ -390,7 +395,7 @@ def retry_merge(actor, ref):
         ref = issue['ref']
         record = completion(ref)
         if not retry_available(issue, record):
-            raise issues.StoreError('미반영된 구현 완료 기록이 있는 보류·실패 Task만 병합 재시도할 수 있어요.', 409)
+            raise issues.StoreError('미반영된 구현 완료 기록이 있는 보류·실패 Task 또는 재현 검사를 통과한 검토 Task만 병합 재시도할 수 있어요.', 409)
         parent = issues.get_issue(issue['parent_ref'])
         why = execute._eligibility_reason(issue, parent)
         if why:

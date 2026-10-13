@@ -888,7 +888,8 @@ function stageHtml(it, liveMode, liveProvider){
   const a = it.approval, x = it.execute, ok = a && !a.stale && a.verdict !== 'reject';
   let msg = '';
   if(['done', 'closed'].includes(it.status)) return '';
-  if(LIVE_MERGE.has(it.merge_state)) msg = `${esc(it.merge_state)} — 운영 반영 확인이 끝나면 결과를 확인할 수 있어요.`;
+  if(it.execute?.reproduction?.result?.status === 'running') msg = '실패 검사 재현 중 — 검사 결과와 로그가 준비되면 상태가 갱신돼요.';
+  else if(LIVE_MERGE.has(it.merge_state)) msg = `${esc(it.merge_state)} — 운영 반영 확인이 끝나면 결과를 확인할 수 있어요.`;
   else if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
   else if(it.job) msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — ${esc(it.job.note || '앞의 일이 끝나면 차례로 시작해요.')}`;
   else if(x?.retry_merge_available) msg = mergeFailureLine(x);

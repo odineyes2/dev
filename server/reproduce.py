@@ -53,7 +53,8 @@ def panel(issue):
             repo = project['local_path']
             sha = project_build._git(repo, 'rev-parse', '--verify', execute.branch_name(ref) + '^{commit}')
             evidence = (run['note'] if run else '') + '\n' + (completion['note'] if completion else '')
-            evidence += '\n' + next((e['body'] for e in reversed(issue.get('events', [])) if e['kind'] == 'status'), '')
+            evidence += '\n' + next((e['body'] for e in reversed(issue.get('events', []))
+                                      if e['kind'] == 'status' and '전체 로그:' in e['body']), '')
             for name in failed:
                 if not re.fullmatch(r'test_[A-Za-z0-9_]+\.py', name):
                     raise ValueError('검사 파일 이름이 유효하지 않아요.')
@@ -119,14 +120,17 @@ def start(actor, ref, token):
         if busy:
             raise issues.StoreError(busy, 409)
         repo = c.execute('SELECT local_path FROM projects WHERE key=?', (ref.split('-')[0],)).fetchone()[0]
+        issue = issues._find(c, ref)
         row = {'id': uuid.uuid4().hex, 'status': 'running', 'process': PROCESS, 'source_sha': state['source_sha'],
-               'targets': state['targets'], 'results': [], 'started_at': db.now_iso(), 'note': ''}
+               'targets': state['targets'], 'results': [], 'started_at': db.now_iso(), 'note': '',
+               'issue_id': issue['id'], 'actor': actor, 'repo': repo}
         c.execute('INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by',
                   (PREFIX + ref, json.dumps(row), db.now_iso(), issues.actor_label(actor)))
+        issues._set_status(c, actor, issue, 'in_progress', '실패 검사 재현을 시작했어요.', {'reproduction_id': row['id']})
     try:
         Thread(target=worker, args=(ref, repo, row), daemon=True).start()
     except RuntimeError:
-        regression.save_record(PREFIX + ref, {**row, 'status': 'failed', 'note': '검사 스레드를 시작하지 못했어요.'})
+        finish(ref, {**row, 'status': 'failed', 'note': '검사 스레드를 시작하지 못했어요.'})
         raise issues.StoreError('검사 스레드를 시작하지 못했어요.', 503) from None
     return row
 
@@ -157,15 +161,66 @@ def worker(ref, repo, row):
                 project_build._git(repo, 'worktree', 'remove', '--force', str(work.resolve()))
             except project_build.BuildError:
                 row['note'] += ' 임시 사본 정리가 끝나지 않았어요.'
-        folder.mkdir(parents=True, exist_ok=True)
         text = '\n\n'.join(lines)
         import os
         for key, value in os.environ.items():
             if project_build._secret(key) and len(value) >= 8:
                 text = text.replace(value, '[REDACTED]')
-        (folder / 'log.txt').write_text(text, encoding='utf-8')
-        row['ended_at'] = db.now_iso()
-        regression.save_record(PREFIX + ref, row)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / 'log.txt').write_text(text, encoding='utf-8')
+        except OSError:
+            row.update(status='failed', note='재현 로그를 저장하지 못했어요.')
+        finish(ref, row)
+
+
+def finish(ref, row):
+    """재현 결과와 소유한 Task 상태를 함께 기록한다. 다른 작업의 상태를 덮지 않는다."""
+    row['ended_at'] = db.now_iso()
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        saved = c.execute('SELECT value FROM app_settings WHERE key=?', (PREFIX + ref,)).fetchone()
+        if not saved or json.loads(saved[0]).get('id') != row['id']:
+            return
+        try:
+            issue = issues._find(c, ref)
+        except issues.StoreError:
+            issue = None
+        event = c.execute("SELECT data_json FROM events WHERE issue_id=? AND kind='status' ORDER BY id DESC LIMIT 1",
+                          (row.get('issue_id'),)).fetchone()
+        owned = (issue is not None and issue['id'] == row.get('issue_id') and issue['status'] == 'in_progress'
+                 and event is not None and json.loads(event[0]).get('reproduction_id') == row['id'])
+        if owned:
+            import execute
+            try:
+                current_sha = project_build._git(row['repo'], 'rev-parse', execute.branch_name(ref))
+            except project_build.BuildError:
+                current_sha = ''
+            if current_sha != row['source_sha']:
+                status, note = 'on_hold', '재현 중 Task 커밋이 바뀌어 검토 전환을 보류했어요.'
+                row['note'] = note
+            elif row['status'] == 'passed':
+                status, note = 'in_review', '실패 검사 재현이 통과했어요. 검사 결과와 로그를 확인해 주세요.'
+            elif row['status'] == 'interrupted':
+                status, note = 'on_hold', '서버 재시작으로 실패 검사 재현이 중단됐어요. 다시 실행해 주세요.'
+            else:
+                status, note = 'changes_requested', '실패 검사 재현이 실패했어요. 재현 로그를 확인하고 수정해 주세요.'
+            issues._set_status(c, row['actor'], issue, status, note,
+                               {'reproduction_id': row['id'], 'source_sha': row['source_sha']})
+        elif row.get('issue_id'):
+            row['note'] = '재현 중 Task 상태가 바뀌어 검사 결과만 기록했어요.'
+        c.execute('UPDATE app_settings SET value=?,updated_at=? WHERE key=?',
+                  (json.dumps(row), db.now_iso(), PREFIX + ref))
+
+
+def recover():
+    """이전 서버가 소유한 재현의 In Progress를 보류 상태로 복구한다."""
+    with db.connect() as c:
+        rows = c.execute("SELECT key,value FROM app_settings WHERE key LIKE ? AND json_extract(value,'$.status')='running'", (PREFIX + '%',)).fetchall()
+    for saved in rows:
+        row = json.loads(saved['value'])
+        if row.get('process') != PROCESS:
+            finish(saved['key'][len(PREFIX):], {**row, 'status': 'interrupted'})
 
 
 def log(ref):

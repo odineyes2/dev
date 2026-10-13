@@ -1,9 +1,10 @@
-"""관리자만 실패 검사를 격리 재현하며 Agent·Task 상태·기존 검사 기록을 바꾸지 않는다."""
+"""실패 검사 재현 상태 전환·소유권·격리·기존 Agent와 검사 기록 보존을 확인한다."""
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 from unittest.mock import patch
 
 os.environ['DEV_DATA_DIR'] = tempfile.mkdtemp()
@@ -67,6 +68,7 @@ with patch.object(reproduce, 'Thread'):
     response = client.post(url, headers=headers, json={'token':state['token']})
 assert response.status_code == 202, response.text
 row = response.json()
+assert issues.get_issue(ref)['status'] == 'in_progress'
 assert client.post(url, headers=headers, json={'token':state['token']}).status_code == 409
 with db.connect() as c:
     assert reproduce.running(c)
@@ -85,9 +87,50 @@ assert git('rev-parse', 'HEAD') == before and not git('status', '--porcelain')
 with db.connect() as c:
     assert c.execute('SELECT COUNT(*),SUM(input_tokens) FROM runs').fetchone()[0] == 1
     assert c.execute('SELECT input_tokens FROM runs WHERE id=?', (rid,)).fetchone()[0] == 123
-regression.save_record(reproduce.PREFIX + ref, {**result, 'status':'running', 'process':'previous-server'})
-assert reproduce.result(ref)['status'] == 'interrupted'
+def begin():
+    state = reproduce.panel(issues.get_issue(ref))
+    with patch.object(reproduce, 'Thread'):
+        row = reproduce.start(me, ref, state['token'])
+    assert issues.get_issue(ref)['status'] == 'in_progress'
+    return row
+
+passed = subprocess.CompletedProcess([], 0, 'passed', '')
+row = begin()
+with patch.object(orchestrate, 'run_test', return_value=passed):
+    reproduce.worker(ref, str(repo), row)
+assert issues.get_issue(ref)['status'] == 'in_review'
+assert reproduce.result(ref)['status'] == 'passed'
+record = {'auto_merge':True, 'phase':'failed', 'merge_sha':'', 'task_sha':row['source_sha']}
+assert orchestrate.retry_available(issues.get_issue(ref), record)
+assert not orchestrate.retry_available(issues.get_issue(ref), {**record, 'task_sha':'different'})
+assert regression.load_record('regression-selection:' + ref + ':server_completion') == selection
+
+row = begin()
+issues.set_status(me, ref, 'on_hold', '사람이 변경한 상태')
+with patch.object(orchestrate, 'run_test', return_value=passed):
+    reproduce.worker(ref, str(repo), row)
+assert issues.get_issue(ref)['status'] == 'on_hold'
+assert issues.get_issue(ref)['events'][-1]['body'] == '사람이 변경한 상태'
+
+row = begin()
+(wt / 'changed.txt').write_text('new commit')
+project_build._git(str(wt), 'add', 'changed.txt')
+project_build._git(str(wt), 'commit', '-qm', 'changed during reproduction')
+with patch.object(orchestrate, 'run_test', return_value=passed):
+    reproduce.worker(ref, str(repo), row)
+assert issues.get_issue(ref)['status'] == 'on_hold'
+assert '커밋이 바뀌어' in reproduce.result(ref)['note']
+
+row = begin()
+regression.save_record(reproduce.PREFIX + ref, {**row, 'process':'previous-server'})
+reproduce.recover()
+assert reproduce.result(ref)['status'] == 'interrupted' and issues.get_issue(ref)['status'] == 'on_hold'
 assert reproduce.panel(issues.get_issue(ref))['available']
+state = reproduce.panel(issues.get_issue(ref))
+with patch.object(reproduce, 'Thread') as thread:
+    thread.return_value.start.side_effect = RuntimeError('cannot start')
+    assert client.post(url, headers=headers, json={'token':state['token']}).status_code == 503
+assert issues.get_issue(ref)['status'] == 'changes_requested'
 log.write_text('File "tests/test_ui.py", line 8, in check_unknown', encoding='utf-8')
 assert not reproduce.panel(issues.get_issue(ref))['available']
-print('Failed check reproduction: selection, isolation, duplicate, restart, auth, CSRF, logs, unchanged Task and token records OK')
+print('Reproduction workflow: In Progress, pass→In Review, failure→Changes Requested, restart, ownership, SHA, auth, logs and preserved token records OK')

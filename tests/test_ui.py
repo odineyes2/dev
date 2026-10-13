@@ -321,7 +321,7 @@ def check_reproduce(page, shots):
     state = {'posts':0, 'result':{}}
     def detail(route):
         data = route.fetch().json()
-        data['status'] = 'changes_requested'
+        data['status'] = {'running':'in_progress','passed':'in_review','failed':'changes_requested'}.get(state['result'].get('status'),'changes_requested')
         data['execute']['reproduction'] = {'available':state['result'].get('status')!='running', 'blocked':'',
             'targets':targets, 'source_sha':'a'*40, 'token':'snapshot', 'result':state['result']}
         route.fulfill(json=data)
@@ -338,6 +338,7 @@ def check_reproduce(page, shots):
     page.locator('#reproduce-checks').evaluate('b=>{b.click();b.click()}')
     page.wait_for_function("document.querySelector('.check-reproduction')?.textContent.includes('재현하고 있어요')")
     assert state['posts']==1 and page.locator('#reproduce-checks').is_disabled()
+    assert '실패 검사 재현 중' in page.inner_text('#stage')
     state['result'].update(status='failed', ended_at='2026-10-13T11:00:00Z',
         results=[dict(targets[0],status='failed',exit_code=1)])
     page.reload();page.wait_for_function("document.querySelector('.check-reproduction')?.textContent.includes('재현 검사 실패')")
@@ -350,6 +351,10 @@ def check_reproduce(page, shots):
             page.set_viewport_size({'width':width,'height':850})
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             page.locator('.check-reproduction').screenshot(path=str(shots/f'reproduction_{theme}_{width}.png'))
+    state['result']['status']='passed'
+    state['result']['results'][0].update(status='passed',exit_code=0)
+    page.reload();page.wait_for_function("document.querySelector('.check-reproduction')?.textContent.includes('재현 검사 통과')")
+    assert 'In Review' in page.inner_text('#view')
     page.unroute('**'+path,detail);page.unroute('**'+path+'/reproduce-checks',submit)
     print('reproduction UI OK')
 
