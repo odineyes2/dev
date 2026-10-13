@@ -39,6 +39,39 @@ p = usage.project_usage('US', 1, 1, as_of=end)['issues'][0]
 assert p['run_count'] == 1 and p['total_tokens'] == 0 and not p['partial']
 assert usage.project_usage('US', 1, 99)['issues'] == []
 assert usage.project_usage('OTHER')['summary']['total_tokens'] == 1998
+# Issue 조회는 시간·점검 사용량 없이 같은 직접 실행 토큰을 제공한다.
+for row in r['issues'] + [p]:
+    direct = issues.get_issue(row['ref'])['token_usage']
+    assert direct == {k: row[k] for k in direct}, (direct, row)
+assert issues.get_issue(parent['ref'])['children'][0]['token_usage']['total_tokens'] == 15
+empty = issues.create_issue(human, 'US', 'no runs')
+missing = issues.create_issue(human, 'US', 'unmeasured')
+with db.connect() as c:
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,input_tokens,output_tokens) VALUES(?,'qa','failed','human:admin',?,'broken',NULL)",
+              (missing['id'], start))
+    statements = []
+    c.set_trace_callback(statements.append)
+    direct = usage.issue_token_usage(c, [empty['id'], missing['id'], task['id']])
+    assert sum('FROM runs' in sql for sql in statements) == 1
+    assert usage.issue_token_usage(c, []) == {}
+    # 목록 상한이 SQLite 변수 제한을 넘더라도 묶음 수에 비례한다.
+    assert len(usage.issue_token_usage(c, range(1, 2002))) == 2001
+assert direct[empty['id']] == dict(input_tokens=0, output_tokens=0, total_tokens=0,
+                                  run_count=0, unmeasured_run_count=0, running_run_count=0, partial=False)
+assert direct[missing['id']]['run_count'] == direct[missing['id']]['unmeasured_run_count'] == 1
+assert direct[missing['id']]['total_tokens'] == 0 and direct[missing['id']]['partial']
+assert direct[task['id']]['running_run_count'] == 1
+# 프로젝트 점검은 프로젝트 합계에만 들어가고 Issue 직접 실행분은 보존한다.
+with db.connect() as c:
+    c.execute("""INSERT INTO project_audits(project_id,request_id,input_fingerprint,provider,actor,status,
+        usage_json,created_at,updated_at,started_at,ended_at) VALUES(?,'usage-audit','test','codex','human:admin',
+        'complete','{"input_tokens":50,"output_tokens":6,"cost_usd":0}',?,?,?,?)""",
+        (parent['project_id'], start, end, start, end))
+after_audit = usage.project_usage('US', as_of=end)
+assert after_audit['summary']['total_tokens'] == 71
+assert after_audit['audit_summary']['total_tokens'] == 56
+assert issues.get_issue(task['ref'])['token_usage'] == direct[task['id']]
+assert issues.get_issue(parent['ref'])['token_usage']['total_tokens'] == 0
 assert 'log_file' not in str(r) and 'local_path' not in str(r)
 issues.create_project(human, 'EMPTY', 'empty')
 assert usage.project_usage('EMPTY')['summary']['run_count'] == 0
@@ -80,4 +113,5 @@ with patch.object(review.subprocess, 'Popen', side_effect=lambda *a, **kw: FakeP
     assert review.run_headless(human, task['ref'], log, rid, ['codex', 'prompt'], None, None, 10, '실행', 'codex') == 'ok'
 saved = review.list_runs(task['ref'])[0]
 assert (saved['input_tokens'], saved['output_tokens']) == (37, 6), saved
+assert issues.get_issue(task['ref'])['token_usage']['total_tokens'] == 58
 print('OK usage')

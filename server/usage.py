@@ -27,6 +27,34 @@ def _empty():
                 unmeasured_duration_run_count=0, orphaned_run_count=0)
 
 
+def _add_tokens(row, run):
+    """유효한 측정값만 더하고 미측정과 실행 중 상태를 보존한다."""
+    row['run_count'] += 1
+    row['running_run_count'] += run['status'] == 'running'
+    counts = [token_count(run[k]) for k in ('input_tokens', 'output_tokens')]
+    row['unmeasured_run_count'] += any(v is None for v in counts)
+    for k, v in zip(('input_tokens', 'output_tokens'), counts):
+        row[k] += v if v is not None else 0
+    row['total_tokens'] = row['input_tokens'] + row['output_tokens']
+    row['partial'] = bool(row['unmeasured_run_count'] or row['running_run_count'])
+
+
+def issue_token_usage(c, issue_ids):
+    """호출자의 읽기 스냅샷에서 지정 Issue 직접 실행분을 묶음 조회한다."""
+    result = {iid: dict(input_tokens=0, output_tokens=0, total_tokens=0,
+                        run_count=0, unmeasured_run_count=0, running_run_count=0,
+                        partial=False) for iid in issue_ids}
+    ids = list(result)
+    # SQLite의 바인딩 변수 제한 안에서 목록 최대 크기도 처리한다.
+    for start in range(0, len(ids), 900):
+        batch = ids[start:start + 900]
+        for run in c.execute(
+                f"SELECT issue_id,status,input_tokens,output_tokens FROM runs WHERE issue_id IN ({','.join('?' * len(batch))})",
+                batch):
+            _add_tokens(result[run['issue_id']], run)
+    return result
+
+
 def project_usage(key, limit=50, offset=0, *, as_of=None):
     """같은 조회 시각·DB 스냅샷으로 요약과 페이지를 반환한다."""
     if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
@@ -47,13 +75,8 @@ def project_usage(key, limit=50, offset=0, *, as_of=None):
             row['ongoing_elapsed_seconds'] = None if row['status'] in ('done', 'closed') else _seconds(row['first_started_at'], as_of)
         for run in c.execute("SELECT r.* FROM runs r JOIN issues i ON i.id=r.issue_id WHERE i.project_id=?", (project['id'],)):
             row = by_id[run['issue_id']]
-            row['run_count'] += 1
-            row['running_run_count'] += run['status'] == 'running'
+            _add_tokens(row, run)
             row['orphaned_run_count'] += run['status'] == 'orphaned'
-            counts = [token_count(run[k]) for k in ('input_tokens', 'output_tokens')]
-            row['unmeasured_run_count'] += any(v is None for v in counts)
-            for k, v in zip(('input_tokens', 'output_tokens'), counts):
-                row[k] += v if v is not None else 0
             duration = _seconds(run['started_at'], as_of if run['status'] == 'running' else run['ended_at'])
             row['unmeasured_duration_run_count'] += duration is None
             row['agent_seconds'] += duration if duration is not None else 0
