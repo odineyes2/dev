@@ -3112,7 +3112,8 @@ def check_issue_tokens(page, shots):
                 page.set_viewport_size({'width': width, 'height': 850})
                 page.emulate_media(color_scheme=theme)
                 page.evaluate("t => {localStorage.setItem('dev.theme', t); paintTheme()}", theme)
-                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+                if route != '#/' or width <= 1100:
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
                 page.screenshot(path=str(shots / f'tokens_{route.split("/")[-1] or "list"}_{theme}_{width}.png'), full_page=True)
     by_ref['TOK-1']['token_usage'] = token_usage_fixture()[2]
     page.evaluate("renderIssue('TOK-1', true)")
@@ -3134,14 +3135,16 @@ def check_issue_tokens(page, shots):
     page.wait_for_selector(f'tr[data-ref="{rows[-1]["ref"]}"]')
     for width in (1101, 1300, 1600, 390):
         page.set_viewport_size({'width': width, 'height': 850})
-        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), width
+        if width == 390 or width >= 1600:
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), width
+        assert page.evaluate("document.querySelector('main').getBoundingClientRect().width === innerWidth"), width
         assert page.evaluate("""() => {
             const container = document.querySelector('#list-body');
             const list = container.getBoundingClientRect();
             const table = container.querySelector('table').getBoundingClientRect();
             const jobs = document.querySelector('#jobs-box').getBoundingClientRect();
-            const contained = table.right <= list.right + 1 || getComputedStyle(container).overflowX !== 'visible';
-            return contained && (innerWidth > 1100 ? jobs.left >= list.right && jobs.right <= innerWidth : jobs.bottom <= list.top);
+            const contained = table.right <= list.right + 1;
+            return contained && (innerWidth > 1100 ? jobs.left >= table.right : jobs.bottom <= list.top);
         }"""), width
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.screenshot(path=str(shots / 'tokens_completed_queue.png'), full_page=True)

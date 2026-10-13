@@ -173,6 +173,7 @@ input[type=checkbox]{ width:16px; height:16px; padding:0; accent-color:var(--acc
 .tab-bar-actions select, .tab-bar-actions .button{ padding:5px 10px; font-size:13px; }
 .new-issue .ico{ width:15px; height:15px; }
 main{ padding:28px; max-width:1320px; margin:0 auto; }
+main:has(#list-body){ max-width:none; }
 
 /* 목록 도구줄 */
 .toolbar{ display:flex; gap:var(--sp-3); align-items:center; flex-wrap:wrap; margin-bottom:var(--sp-4); }
@@ -408,10 +409,10 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
 /* 대기열 자리(DEV-92) — 좁으면 주 패널 위, PC 폭(>1100px)이면 오른쪽 열. 나중에 오케스트레이션 패널이 이 자리를 쓴다 */
 .ops-split{ display:flex; flex-direction:column; }
 .ops-main{ min-width:0; }
-#list-body{ overflow-x:auto; }
 .ops-side{ order:-1; }
 @media (min-width: 1101px){
   .ops-split{ display:grid; grid-template-columns:minmax(0, 1fr) 300px; gap:var(--sp-5); align-items:start; }
+  .ops-split:has(#list-body){ grid-template-columns:minmax(min-content, 1fr) 300px; }
   .ops-side{ order:0; position:sticky; top:calc(var(--tabbar-h) + 16px); }
   .ops-side .jobs-list{ max-height:calc(100dvh - var(--tabbar-h) - 120px); }
 }
