@@ -3066,11 +3066,14 @@ def check_issue_tokens(page, shots):
         assert response.ok
         rows.append(dict(response.json(), token_usage=usage))
     by_ref = {row['ref']: row for row in rows}
+    wide_history = False
     def mock(route):
         response = route.fetch()
         data = response.json()
         def decorate(row):
             row['token_usage'] = by_ref[row['ref']]['token_usage']
+            if wide_history and row['ref'] == rows[-1]['ref']:
+                row.update(completion_seconds=9876543210, processing_agents=['claude', 'codex'])
             for child in row.get('children', []):
                 decorate(child)
         if 'issues' in data:
@@ -3123,6 +3126,27 @@ def check_issue_tokens(page, shots):
     assert page.locator('.issue-token-detail .issue-tokens').inner_text() == '1,234,567,890,123 토큰'
     # 생성·변경 응답에 집계 필드가 없어도 예외 없이 표시한다.
     assert '미측정' in page.evaluate("issueTokensHtml({})")
+    # 끝난 이슈의 긴 완료 시간 때문에 표가 대기열 열로 넘치던 경우.
+    assert page.request.post(BASE + '/api/issues/' + rows[-1]['ref'] + '/status', headers=H, data={'status': 'done'}).ok
+    wide_history = True
+    page.goto(BASE + '/#/'); page.wait_for_selector('#show-closed')
+    page.check('#show-closed')
+    page.wait_for_selector(f'tr[data-ref="{rows[-1]["ref"]}"]')
+    for width in (1101, 1300, 1600, 390):
+        page.set_viewport_size({'width': width, 'height': 850})
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), width
+        assert page.evaluate("""() => {
+            const container = document.querySelector('#list-body');
+            const list = container.getBoundingClientRect();
+            const table = container.querySelector('table').getBoundingClientRect();
+            const jobs = document.querySelector('#jobs-box').getBoundingClientRect();
+            const contained = table.right <= list.right + 1 || getComputedStyle(container).overflowX !== 'visible';
+            return contained && (innerWidth > 1100 ? jobs.left >= list.right && jobs.right <= innerWidth : jobs.bottom <= list.top);
+        }"""), width
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.screenshot(path=str(shots / 'tokens_completed_queue.png'), full_page=True)
+    page.uncheck('#show-closed')
+    page.wait_for_function("document.querySelector('#list-body').getAttribute('aria-busy') === 'false'")
     page.unroute('**/api/issues?*')
     page.unroute('**/api/issues/TOK-*')
     page.set_viewport_size({'width': 1300, 'height': 850})
