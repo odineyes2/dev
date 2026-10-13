@@ -185,6 +185,31 @@ main:has(#list-body){ max-width:none; }
 .chip:hover{ border-color:var(--border-strong); color:var(--text); }
 .chip.on{ background:rgba(var(--accent-rgb),0.1); border-color:rgba(var(--accent-rgb),0.4); color:var(--accent); }
 
+/* 목록 기간별 처리 현황 — 넓은 표와 대기열 위에서 짧게 읽는다. */
+.issue-summary{ margin-bottom:var(--sp-4); padding:var(--sp-3) var(--sp-4); border:1px solid var(--border); border-radius:var(--r-md); background:var(--panel); }
+.issue-summary-head{ display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3); flex-wrap:wrap; }
+.issue-summary-title{ font:600 12px/1.4 var(--mono); letter-spacing:var(--track-label); }
+.issue-summary-periods{ display:flex; flex-wrap:wrap; gap:var(--sp-1); }
+.issue-summary-periods button{ min-height:40px; padding:var(--sp-2) var(--sp-3); border:1px solid transparent; border-radius:var(--r-sm); background:transparent; color:var(--dim); font-size:13px; }
+.issue-summary-periods button[aria-pressed="true"]{ border-color:rgba(var(--accent-rgb),.4); background:rgba(var(--accent-rgb),.1); color:var(--accent); }
+.issue-summary-periods button:focus-visible, .issue-summary-retry:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+.issue-summary-content{ min-height:34px; margin-top:var(--sp-2); }
+.issue-summary-values{ display:flex; gap:var(--sp-2) var(--sp-5); flex-wrap:wrap; font-variant-numeric:tabular-nums; }
+.issue-summary-values>div{ display:flex; align-items:baseline; gap:var(--sp-2); min-width:0; }
+.issue-summary-values span, .issue-summary-note{ color:var(--dim); font-size:12px; }
+.issue-summary-values strong{ font:600 14px/1.4 var(--mono); white-space:nowrap; }
+.issue-summary-values small{ color:var(--dim); font:500 12px/1.4 var(--sans); }
+.issue-summary-note{ margin:var(--sp-1) 0 0; line-height:1.4; }
+.issue-summary-error{ color:var(--danger); font-size:13px; }
+.issue-summary-retry{ min-height:40px; margin-left:var(--sp-2); }
+@media(max-width:800px){
+  .issue-summary{ padding:var(--sp-2) var(--sp-3); }
+  .issue-summary-periods{ width:100%; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .issue-summary-periods button{ padding:var(--sp-2) var(--sp-1); }
+  .issue-summary-values{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-1) var(--sp-2); }
+  .issue-summary-values>div{ flex-wrap:wrap; gap:0 var(--sp-2); }
+}
+
 /* 상태·우선순위·라벨·ID */
 .status{ display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:500; letter-spacing:-0.005em; white-space:nowrap; color:var(--text); }
 .status::before{ content:""; width:8px; height:8px; border-radius:50%; background:var(--sc); box-shadow:0 0 0 3px color-mix(in srgb, var(--sc) 18%, transparent); }
