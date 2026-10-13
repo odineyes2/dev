@@ -299,6 +299,45 @@ def sync_rework(c):
             jobs._waiting(c, c.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
 
 
+def request_rework(actor, ref, qid, task_refs):
+    """Auto QA OFF에서 사람이 카드의 재작업을 고른다 — 최신 실패 회차·승인된 Plan·상한·중복을 확인하고 Task만 되돌린다."""
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        root = issues._find(c, ref)
+        row = c.execute('SELECT * FROM qa_rounds WHERE id=? AND issue_id=?', (qid, root['id'])).fetchone()
+        if not row:
+            raise issues.StoreError('이 Issue의 QA 회차가 아니에요.', 404)
+        latest = c.execute('SELECT MAX(round_number) FROM qa_rounds WHERE issue_id=?', (root['id'],)).fetchone()[0]
+        if row['status'] != 'failed' or row['round_number'] != latest or not valid(c, row):
+            raise issues.StoreError('최신 실패 QA 회차만 재작업을 요청할 수 있어요(stale·판정 불가 제외).', 409)
+        if c.execute("SELECT 1 FROM qa_rework_batches WHERE qa_id=?", (qid,)).fetchone() or c.execute(
+                "SELECT 1 FROM events WHERE issue_id=? AND json_extract(data_json,'$.qa_applied')=?", (root['id'], qid)).fetchone():
+            raise issues.StoreError('이 QA 회차는 이미 처리했어요.', 409)
+        count = c.execute("SELECT COUNT(*) FROM qa_rework_batches WHERE issue_id=? AND status IN ('registered','complete')", (root['id'],)).fetchone()[0]
+        if count >= REWORK_LIMIT:
+            raise issues.StoreError(f'재작업 {REWORK_LIMIT}회를 모두 썼어요. 직접 판단해 주세요.', 409)
+        family = {r['ref']: r for r in _family(c, root['id'])[1:] if not r['superseded_by_plan']}
+        tasks = [family.get(t) for t in dict.fromkeys(task_refs)]
+        if not tasks or None in tasks or any(t['status'] == 'closed' or 'goal' in json.loads(t['labels_json']) for t in tasks):
+            raise issues.StoreError('이 Issue의 활성 Task를 하나 이상 골라 주세요(닫힌·goal Task 제외).', 400)
+        plan = c.execute("SELECT version FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1", (root['id'],)).fetchone()
+        decision = plan and c.execute("SELECT verdict FROM decisions WHERE issue_id=? AND gate='plan' AND plan_version=? ORDER BY id DESC LIMIT 1",
+                                      (root['id'], plan[0])).fetchone()
+        if not decision or decision[0] == 'reject':
+            raise issues.StoreError('최신 계획서가 승인돼야 재작업할 수 있어요.', 409)
+        c.execute("INSERT INTO qa_rework_batches(issue_id,qa_id,attempt,status,task_refs_json,created_at) VALUES(?,?,?,'registered',?,?)",
+                  (root['id'], qid, count + 1, _json([t['ref'] for t in tasks]), db.now_iso()))
+        memo = '\n'.join(f"- {i['requirement_id']}: {i['suggestion']}" for i in c.execute(
+            "SELECT * FROM qa_items WHERE qa_id=? AND verdict='fail' ORDER BY requirement_id", (qid,)))
+        data = {'qa_id': qid, 'source': 'human'}
+        for t in tasks:
+            if t['status'] != 'changes_requested':
+                issues._set_status(c, actor, t, 'changes_requested', f'QA 재작업 {count + 1}/{REWORK_LIMIT}(사람 요청):\n{memo}', data)
+        issues._event(c, root['id'], actor, 'comment',
+                      f"QA 재작업 {count + 1}/{REWORK_LIMIT}회를 요청했어요 — {', '.join(t['ref'] for t in tasks)}\n{memo}", {**data, 'qa_applied': qid})
+    return panel(ref)
+
+
 def recover():
     with db.connect() as c:
         c.execute("UPDATE runs SET status='orphaned',ended_at=?,note='서버 재시작으로 QA가 중단됐어요.' WHERE id IN (SELECT run_id FROM qa_rounds WHERE status='running') AND status='running'", (db.now_iso(),))
@@ -308,7 +347,7 @@ def recover():
 def panel(ref):
     issue = issues.get_issue(ref)
     if issue['parent_id'] is not None:
-        raise issues.StoreError('QA? ??? Issue?? ??? ???.', 400)
+        raise issues.StoreError('QA는 최상위 Issue에만 있어요.', 400)
     with db.connect() as c:
         rounds = []
         for row in c.execute("SELECT q.*,r.input_tokens,r.output_tokens,r.cost_usd,r.started_at FROM qa_rounds q LEFT JOIN runs r ON r.id=q.run_id WHERE q.issue_id=? ORDER BY q.round_number DESC", (issue['id'],)):

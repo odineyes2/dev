@@ -893,6 +893,7 @@ async function renderIssue(ref, background = false){
           ${it.plan && !['done', 'closed'].includes(it.status) ? decisionHtml(it) : ''}</div>
         ${it.superseded_by_plan ? `<div class="stage">계획서 v${it.superseded_by_plan}으로 대체된 이전 Task예요. 기록은 보존되며 실행 대상에서 제외됐어요.</div>` : ''}
         ${it.parent_ref ? '' : resultHtml(it)}
+        ${it.parent_ref ? '' : '<section class="panel qa-card" id="qa-card" aria-labelledby="qa-title"><h2 id="qa-title">QA</h2><p class="dim">불러오는 중…</p></section>'}
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues tasks">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}<div class="task-history">${processingAgentsHtml(ch)} ${completionTimeHtml(ch)}</div></td><td>${statusHtml(ch.status)}${progressHtml(ch)}</td>
@@ -982,6 +983,7 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
     catch(e){ reload(); return; }
     toast(`${root.ref} 묶음을 끝냈어요`); location.hash = '#/';
   }));
+  if(!it.parent_ref) void renderQa(it, $('qa-card'));
   if($('approve')){
     $('approve').addEventListener('click', () => setStatus('done'));
     let to = null;
@@ -2223,6 +2225,40 @@ async function boot(){
 boot();
 
 
+// QA 결과 카드(DEV-114) — 최신 회차의 항목·근거·재작업 n/5. 실패면 사람이 Task를 골라 재작업을 요청하고, 승인은 기존 전체 완료(사람 검사 확인 포함)를 쓴다.
+const QA_STATUS = {queued:'대기', running:'검사 중', passed:'통과', failed:'실패', stale:'stale — 다시 검사해야 해요', error:'판정 불가', timeout:'판정 불가(시간 초과)', orphaned:'판정 불가(중단)'};
+async function renderQa(it, box){
+  let qa;
+  try{ qa = await api('GET', `/api/issues/${encodeURIComponent(it.ref)}/qa`, undefined, () => box.isConnected, {notifyErrors: false}); }
+  catch(e){ if(box.isConnected) box.querySelector('p').textContent = e.message; return; }
+  if(!box.isConnected) return;
+  const r = qa.rounds[0], head = `<h2 id="qa-title">QA <span class="meta">재작업 ${qa.rework_count}/${qa.rework_limit}</span></h2>`;
+  if(!r){ box.innerHTML = `${head}<p class="dim">아직 QA 기록이 없어요. In Review가 되면 검사해요.</p>`; return; }
+  const usage = [r.provider && `${PROVIDER_NAME[r.provider] || r.provider}${r.model ? ' · ' + r.model : ''}`, r.input_tokens != null && `토큰 ${r.input_tokens}/${r.output_tokens ?? '-'}`, r.cost_usd != null && `$${Number(r.cost_usd).toFixed(2)}`].filter(Boolean).join(' · ');
+  const ev = e => typeof e === 'string' ? e : [e.kind, e.path || e.command || e.ref, e.result || e.summary].filter(Boolean).join(' · ') || JSON.stringify(e);
+  const failedTasks = [...new Set(r.items.filter(i => i.verdict === 'fail').flatMap(i => i.task_refs))];
+  const canRework = r.status === 'failed' && !r.rework_batches.length && qa.rework_count < qa.rework_limit && it.children.length;
+  box.innerHTML = `${head}<p><b>${r.round_number}회차</b> · <span class="qa-status qa-${esc(r.status)}">${esc(QA_STATUS[r.status] || r.status)}</span>${usage ? ` <span class="dim">· ${esc(usage)}</span>` : ''}</p>
+    ${r.note ? `<p class="dim">${esc(r.note)}</p>` : ''}
+    ${r.items.length ? `<ul class="qa-items">${r.items.map(i => `<li><b>${i.verdict === 'pass' ? '통과' : '실패'}</b> ${esc(i.requirement_id)}${i.task_refs.length ? ` <span class="dim">${i.task_refs.map(esc).join(', ')}</span>` : ''}
+      ${i.evidence.length ? `<ul class="qa-evidence">${i.evidence.map(e => `<li><code>${esc(ev(e))}</code></li>`).join('')}</ul>` : ''}${i.suggestion ? `<p class="dim">제안: ${esc(i.suggestion)}</p>` : ''}</li>`).join('')}</ul>` : ''}
+    ${r.rework_batches.map(b => `<p class="dim">재작업 ${b.attempt}회 등록 — ${b.task_refs.map(esc).join(', ')}</p>`).join('')}
+    ${canRework ? `<form id="qa-rework"><fieldset><legend>재작업할 Task</legend>${it.children.filter(ch => ch.status !== 'closed').map(ch => `<label><input type="checkbox" value="${esc(ch.ref)}"${failedTasks.includes(ch.ref) ? ' checked' : ''}> ${esc(ch.ref)} ${esc(ch.title)}</label>`).join('')}</fieldset>
+      <div class="row-end"><button type="button" id="qa-approve">승인하고 전체 완료</button><button type="submit" class="primary">재작업 요청</button></div><p id="qa-rework-status" role="status" aria-live="polite"></p></form>` : ''}`;
+  const form = box.querySelector('#qa-rework');
+  if(!form) return;
+  // 승인은 기존 전체 완료 버튼을 그대로 눌러 확인창·사람 검사 확인을 거친다.
+  form.querySelector('#qa-approve').onclick = () => view.querySelector('aside .complete-tree')?.click();
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const refs = [...form.querySelectorAll('input:checked')].map(i => i.value), status = form.querySelector('#qa-rework-status');
+    if(!refs.length){ status.textContent = '재작업할 Task를 하나 이상 골라 주세요.'; return; }
+    form.querySelectorAll('button').forEach(b => b.disabled = true); status.textContent = '요청 중…';
+    try{ await api('POST', `/api/issues/${encodeURIComponent(it.ref)}/qa/rework`, {qa_id: r.id, task_refs: refs}, () => box.isConnected, {notifyErrors: false}); toast('재작업을 요청했어요'); renderIssue(it.ref); }
+    catch(err){ if(box.isConnected){ status.textContent = err.message; form.querySelectorAll('button').forEach(b => b.disabled = false); } }
+  };
+}
+
 // ---- 프로젝트별 자동화 설정 — 이전 화면의 응답은 새 화면에 반영하지 않는다. ----
 let settingsSession = null;
 // [설정 필드, 목록 id, 제목, 설명, 실행에 쓰이는지] — 오케스트레이터·트러블슈터는 저장만 하고 아직 실행에 쓰지 않는다.
@@ -2231,6 +2267,7 @@ const ROLE_CARDS = [
   ['provider_order','provider-order','작업 에이전트','Auto 검토·실행을 이 순서로 맡겨요.',true],
   ['troubleshooter_provider_order','troubleshooter-order','트러블슈터','실패 Task의 복구에 사용할 Agent예요. 요청당 CLI 1회·최대 10분이며 추가 이관은 하지 않아요.',true],
   ['description_provider_order','description-order','Description 작성','프로젝트 Description 자동 작성을 이 순서로 맡겨요.',true],
+  ['qa_provider_order','qa-order','QA Agent','In Review가 된 최상위 Issue를 이 순서로 검사해요. 구현한 provider와 다른 Agent를 골라요.',true],
 ];
 // 공통 제목과 서브탭을 설정 카드 안에 함께 그린다.
 function settingsHeader(tab){
@@ -2333,7 +2370,8 @@ async function renderSettings(){
        ['auto_plan_approve','Auto 계획 승인','Manual 중 완료된 Plan도 포함해 성공한 최신 검토의 유효한 Plan을 구조 검사 후 승인해요. 의미적·기술적 오류 검출은 보장하지 않으며, 사람의 기존 결정과 Goal은 유지해요.'],
        ['auto_execute','Auto 실행맡기기','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],
        ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.'],
-       ['auto_troubleshoot','Auto 트러블슈팅','기본 꺼짐. 켠 이후의 코드·검사 실패를 원 실행당 1회 복구해요. 승인 Plan·기존 worktree 안에서 최대 10분 실행하며, OFF로 바꾸면 자동 미착수 대기를 취소해요. 실행 중 작업은 유지해요.']].map(([field,label,help]) =>
+       ['auto_troubleshoot','Auto 트러블슈팅','기본 꺼짐. 켠 이후의 코드·검사 실패를 원 실행당 1회 복구해요. 승인 Plan·기존 worktree 안에서 최대 10분 실행하며, OFF로 바꾸면 자동 미착수 대기를 취소해요. 실행 중 작업은 유지해요.'],
+       ['auto_qa','Auto QA','기본 꺼짐. QA 통과 시 Issue와 Task를 자동 Done, 실패 시 관련 Task를 재작업해요(최대 5회 후 보류). 꺼져 있어도 검사는 하고 상태는 바꾸지 않아요. Goal·사람이 할 일이 남은 Issue는 자동 Done 하지 않아요.']].map(([field,label,help]) =>
       `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}
     <h3>Auto 에이전트 우선순위</h3>
     <div class="role-cards">${ROLE_CARDS.map(([field,id,title,help,ready]) =>
@@ -2343,7 +2381,7 @@ async function renderSettings(){
   let busy = false;
   const status = body.querySelector('#settings-status');
   function paint(){
-    for(const field of ['auto_review','auto_plan_approve','auto_execute','auto_approve','auto_troubleshoot','token_exhaustion_fallback']){
+    for(const field of ['auto_review','auto_plan_approve','auto_execute','auto_approve','auto_troubleshoot','auto_qa','token_exhaustion_fallback']){
       const b = body.querySelector(`#${field}`), on = settings[field];
       b.setAttribute('aria-checked', String(!!on)); b.disabled = busy || (field === 'auto_approve' && settings.auto_approve_available === false);
       b.querySelector('.switch-state').textContent = on ? '켜짐' : '꺼짐';

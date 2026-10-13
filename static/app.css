@@ -719,3 +719,7 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 #app-restart-release{ white-space:pre-wrap; margin:16px 0; overflow-wrap:anywhere; }
 #app-restart-log pre{ white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:auto; }
 #app-restart-log p{ overflow-wrap:anywhere; }
+/* QA 결과 카드 — 근거가 길어도 줄바꿈해 가로 스크롤을 만들지 않는다. */
+.qa-items, .qa-evidence{ padding-left:1.2em; margin:6px 0; }
+.qa-evidence code{ white-space:pre-wrap; overflow-wrap:anywhere; }
+#qa-rework fieldset label{ display:block; padding:4px 0; }
