@@ -268,7 +268,7 @@ function followProgress(refresh, current){
   liveTimer = setTimeout(tick, 5000);
 }
 const LIVE_MERGE = new Set(['병합 검사 중', '운영 반영 중', '재시작 확인 중', '복구 중', '복구 확인 중']);
-function activeProgress(i){ return i.review_running || i.job || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
+function activeProgress(i){ return i.review_running || i.job || i.execute?.reproduction?.result?.status === 'running' || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
 function progressHtml(i){
   const text = i.job?.note || i.merge_state || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
   return text ? `<div class="progress-note">${esc(text)}</div>` : '';
@@ -814,6 +814,21 @@ function troubleshootingHtml(it){
     ${f ? `<p>원 실행 #${f.source_run_id} · Plan v${f.plan_version}</p><p class="dim">${esc(f.blocked || f.hint || '코드·테스트 실패를 복구할 수 있어요.')}</p>${f.available ? '<button id="ask-troubleshoot" title="승인된 Plan 안에서 기존 작업을 이어받아요. 추가 CLI 호출은 1회·최대 10분이며 사용량이 발생해요.">트러블슈팅 요청</button>' : ''}<button id="copy-troubleshooting" class="secondary">진단 복사</button><details><summary>실패 진단</summary><pre>${esc(f.diagnostic)}</pre></details>` : ''}
     ${t.requests.map(r => `<details><summary>TS-${r.id} · ${labels[r.status]} · 원 실행 #${r.source_run_id}${r.run_id ? ` → 복구 #${r.run_id}` : ''}</summary><p>${esc(r.provider || '대기')} · ${esc(r.model || '')} · ${r.automatic ? '자동' : '수동'}</p><p class="dim">요청: ${esc(r.actor || '')} · ${fmtTime(r.created_at)}${r.started_at ? `<br>시작: ${fmtTime(r.started_at)}` : ''}${r.ended_at ? `<br>종료: ${fmtTime(r.ended_at)}` : ''}</p><pre>${esc(r.diagnostic)}</pre><p class="dim">복구 호출의 토큰: 입력 ${r.input_tokens ?? '미측정'} · 출력 ${r.output_tokens ?? '미측정'} · 비용 ${r.cost_usd == null ? '미측정' : '$' + r.cost_usd}</p></details>`).join('')}</section>`;
 }
+function reproductionHtml(it){
+  const r = it.execute?.reproduction, result = r?.result;
+  if(!r || (!r.targets?.length && !result?.id)) return '';
+  const labels = {running:'실패 검사를 재현하고 있어요…',passed:'재현 검사 통과',failed:'재현 검사 실패',interrupted:'재현 중단'};
+  const targets = r.targets.map(t => `${t.file} ${t.args.join(' ')}`).join(', ');
+  return `<section class="check-reproduction" aria-label="실패 검사 재현"><div class="agent-sub">실패 검사 재현</div>
+    <button id="reproduce-checks" type="button" ${r.available ? '' : 'disabled'} title="마지막 실패 검사만 현재 Task 커밋의 임시 사본에서 실행해요. Agent 호출·병합·배포는 하지 않아요.">실패 검사만 재현</button>
+    <p class="dim">${esc(targets)}${r.source_sha ? ` · 기준 ${esc(r.source_sha.slice(0,7))}` : ''}</p>
+    ${r.blocked ? `<p class="dim">${esc(r.blocked)}</p>` : ''}
+    ${result?.id ? `<div role="status" aria-live="polite"><p>${labels[result.status] || esc(result.status)}${result.source_sha ? ` · 검사 커밋 ${esc(result.source_sha.slice(0,7))}` : ''}</p>
+    ${(result.results || []).map(t => `<div>${esc(t.file)} ${esc(t.args.join(' '))} · ${t.status === 'passed' ? '통과' : '실패'} · 종료 코드 ${Number(t.exit_code)}</div>`).join('')}
+    ${result.note ? `<p>${esc(result.note)}</p>` : ''}
+    ${result.ended_at ? `<a href="/api/issues/${encodeURIComponent(it.ref)}/reproduce-checks/log" target="_blank" rel="noopener">전체 재현 로그 보기</a>` : ''}</div>` : ''}</section>`;
+}
+
 function executeHtml(it, liveMode, liveProvider){
   const x = it.execute, running = it.review_running && liveMode === 'execute';
   const job = it.job && it.job.mode === 'execute' ? it.job : null;
@@ -826,7 +841,7 @@ function executeHtml(it, liveMode, liveProvider){
   const buttons = `<div class="agent-btns" id="exec-btns"><button id="ask-execute" title="격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>Claude에게 실행 맡기기</button>
     <button id="ask-codex-execute" title="Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>Codex에게 실행 맡기기</button></div>`;
   const merge = (b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
-      ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}</div>` : '') + checks;
+      ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}</div>` : '') + checks + reproductionHtml(it);
   return `<div class="exec"><div class="agent-sub">실행</div>${job ? jobHtml(job) : provider ? busyLine(provider, '실행') : `${stopped ? '' : buttons}${hint ? `<div class="dim hint">${hint}</div>` : ''}`}
     ${merge ? `<div class="agent-sub">병합</div>${merge}` : ''}</div>`;
 }
@@ -1140,6 +1155,11 @@ ${QUEUE_LINE}`)) return;
     toast('수정 커밋의 서버 검사와 결과 등록을 시작했어요.');
     if(location.hash === `#/issue/${it.ref}`) await reload();
   }));
+  if($('reproduce-checks')) $('reproduce-checks').onclick = e => whileBusy(e.currentTarget, async () => {
+    await api('POST', `/api/issues/${R}/reproduce-checks`, {token: it.execute.reproduction.token});
+    toast('실패 검사 재현을 시작했어요.');
+    if(location.hash === `#/issue/${it.ref}`) await reload();
+  });
   for(const [id, provider] of [['ask-execute', 'claude'], ['ask-codex-execute', 'codex']]) {
     if($(id)) $(id).addEventListener('click', async (e) => {
     if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;

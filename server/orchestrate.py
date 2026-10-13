@@ -87,6 +87,9 @@ def _busy(cfg, exclude_run: int | None = None) -> bool:
     if cfg.get("pm2_app") == jobs.SELF_PM2_APP:
         with db.connect() as c:
             import project_activity
+            import reproduce
+            if reproduce.running(c):
+                return True
             if project_activity.lanes(c):
                 return True
             if c.execute("SELECT 1 FROM runs WHERE status='running' AND id<>?", (exclude_run or 0,)).fetchone():
@@ -164,6 +167,20 @@ def _merged(repo, ref) -> bool:
     return _git(repo, "merge-base", "--is-ancestor", branch_name(ref), BASE_BRANCH).returncode == 0
 
 
+def run_test(repo, t, args=(), env=None):
+    """선택한 검사 하나를 기존 시간 제한과 출력 보존 규칙으로 실행한다."""
+    try:
+        relative = (t.relative_to(Path(repo)) if t.is_relative_to(Path(repo)) else t).as_posix()
+        command = ([sys.executable, '-m', 'unittest', relative[:-3].replace('/', '.')]
+                   if relative.startswith('backend/tests/') else [sys.executable, str(t)])
+        return subprocess.run(command + list(args), cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              env={**({k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env), "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
+    except subprocess.TimeoutExpired as error:
+        def decoded(value):
+            return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
+        return subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
+
+
 def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
     """발견한 검사를 한 번씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다."""
     import regression
@@ -179,17 +196,6 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
             prepare_checks(repo, {'project_key': 'MO'}, build=True)
         except issues.StoreError as error:
             return str(error)
-    def once(t):
-        try:
-            relative = (t.relative_to(Path(repo)) if t.is_relative_to(Path(repo)) else t).as_posix()
-            command = ([sys.executable, '-m', 'unittest', relative[:-3].replace('/', '.')]
-                       if relative.startswith('backend/tests/') else [sys.executable, str(t)])
-            return subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                  env={**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
-        except subprocess.TimeoutExpired as error:
-            def decoded(value):
-                return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
-            return subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
     failures = []
     cached = regression.load_record('regression-cache:' + ref) if ref else {}
     identity = regression.tree_identity(repo) if ref else None
@@ -202,7 +208,7 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
         if stamp and cached.get(t.name) == stamp:
             results[t.name] = 'reused'
             continue
-        r = once(t)
+        r = run_test(repo, t)
         results[t.name] = 'failed' if r.returncode else 'passed'
         if not r.returncode and stamp:
             cached[t.name] = stamp

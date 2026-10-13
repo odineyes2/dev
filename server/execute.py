@@ -799,8 +799,10 @@ def panel(issue: dict) -> dict | None:
         branch = None
     import orchestrate
     import regression
+    import reproduce
     return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC,
             "retry_merge_available": orchestrate.retry_available(issue),
             "repair_available": repair_available(issue) and not _eligibility_reason(issue, parent),
+            "reproduction": reproduce.panel(issue),
             "regression": regression.resolve(issue['ref'], worktree_path(issue['ref']) if worktree_path(issue['ref']).exists() else repo),
             "regression_results": {stage: regression.load_record('regression-selection:' + issue['ref'] + ':' + stage) for stage in ('server_completion', 'server_merge')}}

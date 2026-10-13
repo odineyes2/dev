@@ -37,3 +37,8 @@
 - Moai는 모델 호출 전에 Python 검사 의존성과 로컬 npm 캐시 설치·TypeScript 실행기를 확인한다. 코드 타입 오류는 모델이 수정할 수 있도록 준비 검사에서 컴파일하지 않는다.
 - 서버는 tests/와 backend/tests/를 모두 발견한다. Moai 완료 등록 전에 타입 검사·실제 웹 빌드를 실행하고, 실패하면 기존 완료 검사 경로로 차단한다. 병합은 격리 빌드 후 그 산출물로 백엔드 검사를 수행한다. MO 기본 빌드 선언은 기존 프로젝트별 명시 설정을 덮지 않는다.
 - 운영 웹 교체·복원·릴리스 확인은 기존 project_build와 orchestrate를 재사용한다. 계획서 Tasks 설명은 별도 절에 둔다.
+
+## 실패 검사 재현
+- Task의 최근 실패 검사 기록을 `server/reproduce.py`가 읽는다. 관리자 POST `/api/issues/{ref}/reproduce-checks`는 고정된 Task 커밋의 detached 사본에서 해당 검사만 실행한다. UI 검사는 traceback의 check 함수와 단일 검사 전용 CLI 옵션을 대조하며, 선택할 수 없으면 전체 UI 검사로 대체하지 않는다.
+- 결과는 `app_settings`의 `regression-reproduce:<ref>`, 전체 로그는 `data/check-reproductions/<id>/log.txt`에 남긴다. 기존 Task·Agent 실행·검사 통과 기록은 변경하지 않는다. 실행 중에는 새 Agent 착수와 Dev 자동 재시작을 기다리게 한다.
+- 확인: `python tests/test_reproduce.py`, `python tests/test_ui.py --reproduce-only`. UI는 기존 DESIGN.md의 1·7·8절에 맞춰 버튼·진행 상태·오류와 다음 행동을 표시한다.

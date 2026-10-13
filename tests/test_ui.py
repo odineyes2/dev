@@ -310,6 +310,50 @@ def check_troubleshooter(page, shots):
     print('troubleshooter UI OK')
 
 
+def check_reproduce(page, shots):
+    """실패 검사 재현 버튼·중복 방지·진행 상태·결과·로그 링크를 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    page.request.post(BASE+'/api/projects', headers=headers, data={'key':'REPRO','name':'실패 검사 재현'})
+    parent = page.request.post(BASE+'/api/issues', headers=headers, data={'project':'REPRO','title':'parent'}).json()
+    task = page.request.post(BASE+'/api/issues', headers=headers, data={'project':'REPRO','title':'실패 검사 재현','parent':parent['ref']}).json()
+    path = '/api/issues/'+task['ref']
+    targets = [{'file':'tests/test_ui.py','args':['--progress-only']}]
+    state = {'posts':0, 'result':{}}
+    def detail(route):
+        data = route.fetch().json()
+        data['status'] = 'changes_requested'
+        data['execute']['reproduction'] = {'available':state['result'].get('status')!='running', 'blocked':'',
+            'targets':targets, 'source_sha':'a'*40, 'token':'snapshot', 'result':state['result']}
+        route.fulfill(json=data)
+    def submit(route):
+        assert route.request.post_data_json == {'token':'snapshot'}
+        state['posts'] += 1
+        state['result'] = {'id':'b'*32,'status':'running','source_sha':'a'*40,'results':[]}
+        route.fulfill(status=202,json=state['result'])
+    page.route('**'+path, detail)
+    page.route('**'+path+'/reproduce-checks', submit)
+    page.goto(BASE+'/#/issue/'+task['ref']);page.wait_for_selector('#reproduce-checks')
+    assert 'tests/test_ui.py --progress-only' in page.inner_text('.check-reproduction')
+    assert 'Agent 호출' in page.locator('#reproduce-checks').get_attribute('title')
+    page.locator('#reproduce-checks').evaluate('b=>{b.click();b.click()}')
+    page.wait_for_function("document.querySelector('.check-reproduction')?.textContent.includes('재현하고 있어요')")
+    assert state['posts']==1 and page.locator('#reproduce-checks').is_disabled()
+    state['result'].update(status='failed', ended_at='2026-10-13T11:00:00Z',
+        results=[dict(targets[0],status='failed',exit_code=1)])
+    page.reload();page.wait_for_function("document.querySelector('.check-reproduction')?.textContent.includes('재현 검사 실패')")
+    assert page.locator('.check-reproduction a').get_attribute('href')==path+'/reproduce-checks/log'
+    assert page.locator('#reproduce-checks').is_enabled()
+    for theme in ('light','dark'):
+        page.evaluate("s=>{localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}",theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300,390):
+            page.set_viewport_size({'width':width,'height':850})
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+            page.locator('.check-reproduction').screenshot(path=str(shots/f'reproduction_{theme}_{width}.png'))
+    page.unroute('**'+path,detail);page.unroute('**'+path+'/reproduce-checks',submit)
+    print('reproduction UI OK')
+
+
 def check_register_repair(page, shots):
     headers = {'X-Requested-With': 'dev'}
     assert page.request.post(BASE+'/api/projects', headers=headers, data={'key':'REPAIR','name':'수정 결과 검사'}).ok
@@ -3376,6 +3420,10 @@ try:
             check_project_usage(page, shots)
             assert not errs, errs
             print('OK: project usage'); sys.exit(0)
+        if '--reproduce-only' in sys.argv:
+            check_reproduce(page, shots)
+            assert not errs, errs
+            print('OK: failed check reproduction'); sys.exit(0)
         if '--register-repair-only' in sys.argv:
             check_register_repair(page, shots)
             assert not errs, errs
@@ -4078,6 +4126,7 @@ try:
         check_issue_types(page, shots)
 
         check_progress_refresh(page, shots)
+        check_reproduce(page, shots)
         # 로그아웃(사용자 메뉴 안)
         check_management_agents(page, shots)
         check_management_layout(page, shots)

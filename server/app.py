@@ -802,6 +802,21 @@ async def api_register_repair(ref: str, request: Request):
     return await run_in_threadpool(execute.register_repair, human_only(request), ref)
 
 
+@app.post('/api/issues/{ref}/reproduce-checks', status_code=202)
+async def api_reproduce_checks(ref: str, request: Request):
+    import reproduce
+    me = human_only(request)
+    body = await json_body(request)
+    return await run_in_threadpool(reproduce.start, me, ref, body.get('token'))
+
+
+@app.get('/api/issues/{ref}/reproduce-checks/log')
+def api_reproduction_log(ref: str, request: Request):
+    import reproduce
+    human_only(request)
+    return Response(reproduce.log(ref), media_type='text/plain', headers={'Cache-Control': 'no-store'})
+
+
 @app.get("/api/jobs")
 def api_jobs():
     return {"jobs": jobs.list_jobs(), "in_progress": jobs.list_in_progress()}

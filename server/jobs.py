@@ -110,6 +110,9 @@ def busy() -> bool:
 def start_block(c, project_key: str, mode: str) -> str | None:
     """이 줄에서 지금 새로 시작하면 안 되는 이유. 없으면 None."""
     import project_restart
+    import reproduce
+    if reproduce.running(c):
+        return '실패 검사 재현이 끝난 뒤 시작해요.'
     block = project_restart.block(c, project_key)
     if block:
         return block
