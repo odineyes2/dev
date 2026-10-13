@@ -42,6 +42,7 @@ def output_script(result, edit=True):
                "  pathlib.Path(root, name).write_text('capture artifact')\n" if edit else '')
             + ("pathlib.Path('.ui-captures/capture-test/screen.png').write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='))\n"
                "pathlib.Path('.ui-captures/capture-test/manifest.json').write_text(json.dumps({'version':1,'captures':[{'path':'.ui-captures/capture-test/screen.png'}],'errors':[]}))\n" if edit else '')
+            + 'print(\'{"type":"error","message":"Reconnecting... high demand"}\')\n'
             + 'print(' + repr(final) + ')\n'
             + 'print(\'{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":24}}\')\n')
 

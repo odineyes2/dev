@@ -196,6 +196,11 @@ with TestClient(A.app) as c:
     assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers={'Authorization': 'Bearer ' + key}).status_code == 403
 # 다중 턴은 한 번씩 누적하고 누락된 턴을 실제 0으로 꾸미지 않는다.
 import json
+assert review.codex_failure('{"type":"error","message":"Reconnecting"}\n{"type":"turn.completed"}') is None
+assert review.codex_failure('{"type":"error","message":"disconnected"}') == 'disconnected'
+assert review.codex_failure('{"type":"turn.completed"}\n{"type":"error","message":"late failure"}') == 'late failure'
+assert review.codex_failure('{"type":"turn.failed","error":"failed"}\n{"type":"turn.completed"}') == 'failed'
+assert review.codex_failure('not json\n[]\n{"type":"turn.completed"}') is None
 multi = '\n'.join(json.dumps({'type': 'turn.completed', 'usage': u}) for u in (
     {'input_tokens': 100, 'output_tokens': 12}, {'input_tokens': 20, 'output_tokens': 3}))
 stats = review._parse(multi, 'codex')[1]

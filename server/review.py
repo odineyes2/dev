@@ -388,6 +388,26 @@ def _kill_tree(proc) -> None:
         proc.kill()
 
 
+def codex_failure(out: str) -> str | None:
+    """완료 전에 복구된 스트림 오류와 실제 턴 실패를 구분한다."""
+    pending = None
+    for line in out.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get('type')
+        if kind == 'turn.failed':
+            return str(event.get('error') or event.get('message') or 'turn.failed')
+        if kind == 'error':
+            pending = str(event.get('message') or event.get('error') or 'error')
+        elif kind == 'turn.completed':
+            pending = None
+    return pending
+
+
 def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[str], cwd, env, timeout: float, label: str, provider: str = "claude", baseline_plan_id: int = 0) -> str:
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     name = "Codex" if provider == "codex" else "Claude Code"
@@ -419,6 +439,8 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             status = "failed"
         text, stats = _parse(out, provider)
         _add_usage(spent, stats)
+        if provider == 'codex' and status == 'ok' and (failure := codex_failure(out)):
+            status, note = 'failed', f'Codex {label}가 실패했어요 — {failure[:1500]}'
         if status != "ok" or label != "실행":
             break
         now = issues.get_issue(ref)
@@ -453,14 +475,6 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
                 status, note = 'failed', 'Claude 실행 결과가 오류를 보고했어요.'
         except (ValueError, AttributeError):
             pass
-    if provider == "codex" and status == "ok":
-        for line in out.splitlines():
-            try:
-                event = json.loads(line)
-                if isinstance(event, dict) and event.get("type") in ("error", "turn.failed"):
-                    status, note = "failed", f"Codex {label}가 실패했어요 — 로그를 확인해 주세요."
-            except ValueError:
-                pass
     if provider == "codex" and label == "검토" and status == "ok":
         result = issues.get_issue(ref)
         if project_description.request_provider(result["id"]):   # Description 요청은 계획서 대신 설명 저장 이력을 본다
