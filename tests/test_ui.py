@@ -3186,6 +3186,8 @@ def check_issue_summary(page):
     page.wait_for_function("document.querySelector('.issue-summary-content')?.getAttribute('aria-busy') === 'false'")
     assert page.locator('#issue-summary [aria-pressed="true"]').inner_text() == '오늘'
     assert '1,234' in page.inner_text('#issue-summary') and '부분 집계' in page.inner_text('#issue-summary')
+    assert page.locator('.issue-summary-note').count() == 0
+    assert '현재 보존된 기록' not in page.inner_text('#issue-summary')
     for key in ('month', 'year', 'all', 'today'):
         page.locator(f'[data-summary-period="{key}"]').focus()
         page.keyboard.press('Enter')
