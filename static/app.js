@@ -419,7 +419,7 @@ function issueTokensHtml(i, detail = false){
     const measured = u.run_count > u.unmeasured_run_count;
     const partial = u.partial || u.unmeasured_run_count > 0 || u.running_run_count > 0;
     const total = number(u.total_tokens);
-    text = !u.run_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${formatTokens(u.total_tokens)} 토큰${partial ? ' · 부분 집계' : ''}`;
+    text = !u.run_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${formatTokens(u.total_tokens)}`;
     if(u.running_run_count) text += ' · 실행 중';
     explanation = `입력 ${number(u.input_tokens)} · 출력 ${number(u.output_tokens)} · 합계 ${total} 토큰 · 미측정 ${number(u.unmeasured_run_count)}회 · 실행 중 ${number(u.running_run_count)}회`;
   }

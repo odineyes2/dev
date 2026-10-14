@@ -3333,7 +3333,7 @@ def check_issue_tokens(page, shots):
         route.fulfill(response=response, json=data)
     page.route('**/api/issues?*', mock)
     page.route('**/api/issues/TOK-*', lambda r: mock(r) if r.request.url.split('/')[-1] in by_ref else r.continue_())
-    expected = ['실행 없음', '0 토큰', '1,500 토큰', '측정된 300 토큰 · 부분 집계', '미측정', '측정된 400 토큰 · 부분 집계 · 실행 중', '1.2T 토큰']
+    expected = ['실행 없음', '0', '1,500', '측정된 300', '미측정', '측정된 400 · 실행 중', '1.2T']
     page.evaluate("localStorage.setItem('dev.project', 'TOK')")
     page.reload(); page.wait_for_selector('#shell:not([hidden])')
     page.goto(BASE + '/#/?project=TOK')
@@ -3344,6 +3344,23 @@ def check_issue_tokens(page, shots):
     for row, label in zip(rows, expected):
         cell = page.locator(f'tr[data-ref="{row["ref"]}"] .token-cell .issue-tokens')
         assert cell.inner_text() == label
+        assert '토큰' not in cell.inner_text() and '부분 집계' not in cell.inner_text()
+    page.set_viewport_size({'width': 1280, 'height': 850})
+    assert page.evaluate("""() => {
+        const row = document.querySelector('#list-body tr.row');
+        const action = row.querySelector('.action-cell');
+        const previous = action.innerHTML;
+        action.innerHTML = actionHtml({ref:'TOK-ACTION', status:'backlog',
+            action_context:{has_active_job:false, has_children:false, plan_version:0}});
+        const cells = [...row.cells].map(cell => cell.getBoundingClientRect());
+        const buttons = [...row.querySelectorAll('.action-cell button')].map(button => button.getBoundingClientRect());
+        const valid = cells[1].width >= 240 && cells[1].width === Math.max(...cells.map(cell => cell.width)) &&
+            cells[0].width < cells[1].width && cells[7].width < cells[1].width &&
+            buttons.length === 2 && buttons.every(button => Math.abs(button.top - buttons[0].top) < 1);
+        action.innerHTML = previous;
+        return valid;
+    }""")
+    page.set_viewport_size({'width': 1300, 'height': 850})
     large = page.locator(f'tr[data-ref="{rows[-1]["ref"]}"] .token-cell .issue-tokens')
     assert '1,234,567,890,123' in large.get_attribute('aria-label')
     for route, selector in [('#/', '.token-cell'), ('#/board', '.card .issue-tokens'), ('#/issue/TOK-1', '.issue-token-detail')]:
@@ -3366,14 +3383,14 @@ def check_issue_tokens(page, shots):
                 page.screenshot(path=str(shots / f'tokens_{route.split("/")[-1] or "list"}_{theme}_{width}.png'), full_page=True)
     by_ref['TOK-1']['token_usage'] = token_usage_fixture()[2]
     page.evaluate("renderIssue('TOK-1', true)")
-    page.wait_for_function("document.querySelector('.issue-token-detail .issue-tokens').textContent === '1,500 토큰'")
+    page.wait_for_function("document.querySelector('.issue-token-detail .issue-tokens').textContent === '1,500'")
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.goto(BASE + '/#/'); page.wait_for_selector('.token-cell')
-    assert page.locator('tr[data-ref="TOK-1"] .token-cell .issue-tokens').inner_text() == '1,500 토큰'
+    assert page.locator('tr[data-ref="TOK-1"] .token-cell .issue-tokens').inner_text() == '1,500'
     page.goto(BASE + '/#/board'); page.wait_for_selector('.card .issue-tokens')
-    assert page.locator('.card[data-ref="TOK-1"] .issue-tokens').inner_text() == '1,500 토큰'
+    assert page.locator('.card[data-ref="TOK-1"] .issue-tokens').inner_text() == '1,500'
     page.goto(BASE + '/#/issue/' + rows[-1]['ref']); page.wait_for_selector('.issue-token-detail')
-    assert page.locator('.issue-token-detail .issue-tokens').inner_text() == '1.2T 토큰'
+    assert page.locator('.issue-token-detail .issue-tokens').inner_text() == '1.2T'
     # 생성·변경 응답에 집계 필드가 없어도 예외 없이 표시한다.
     assert '미측정' in page.evaluate("issueTokensHtml({})")
     # 끝난 이슈의 긴 완료 시간 때문에 표가 대기열 열로 넘치던 경우.
@@ -3393,7 +3410,7 @@ def check_issue_tokens(page, shots):
             const table = container.querySelector('table').getBoundingClientRect();
             const jobs = document.querySelector('#jobs-box').getBoundingClientRect();
             const contained = table.right <= list.right + 1;
-            return contained && (innerWidth > 1100 ? jobs.left >= table.right : jobs.bottom <= list.top);
+            return contained && (innerWidth > 1450 ? jobs.left >= table.right : jobs.bottom <= list.top);
         }"""), width
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.screenshot(path=str(shots / 'tokens_completed_queue.png'), full_page=True)
@@ -3406,10 +3423,10 @@ def check_issue_tokens(page, shots):
     page.wait_for_function("document.querySelector('#token-status').textContent.includes('저장했어요')")
     assert page.request.get(BASE + '/api/settings/tokens').json()['unit'] == 'k'
     page.goto(BASE + '/#/issue/' + rows[-1]['ref']); page.wait_for_selector('.issue-token-detail')
-    assert '1,234,567,890k 토큰' in page.inner_text('.issue-token-detail')
+    assert page.locator('.issue-token-detail .issue-tokens').inner_text() == '1,234,567,890k'
     assert '1,234,567,890,123' in page.locator('.issue-token-detail .issue-tokens').get_attribute('title')
     page.reload(); page.wait_for_selector('.issue-token-detail')
-    assert '1,234,567,890k 토큰' in page.inner_text('.issue-token-detail')
+    assert page.locator('.issue-token-detail .issue-tokens').inner_text() == '1,234,567,890k'
     for theme in ('light', 'dark'):
         page.evaluate("t => {localStorage.setItem('dev.theme', t); paintTheme()}", theme)
         for width in (1300, 390):
@@ -3417,7 +3434,7 @@ def check_issue_tokens(page, shots):
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
             page.screenshot(path=str(shots / f'tokens_k_detail_{theme}_{width}.png'), full_page=True)
     page.goto(BASE + '/#/board'); page.wait_for_selector('.card .issue-tokens')
-    assert page.locator('.card[data-ref="TOK-1-1"] .issue-tokens').inner_text() == '0 토큰'
+    assert page.locator('.card[data-ref="TOK-1-1"] .issue-tokens').inner_text() == '0'
     page.goto(BASE + '/#/settings/tokens'); page.wait_for_selector('#token-unit')
     assert page.input_value('#token-unit') == 'k'
     def reject_unit(route): route.fulfill(status=503, json={'detail':'임시 저장 오류'})
@@ -3451,7 +3468,7 @@ def check_issue_tokens(page, shots):
     page.set_viewport_size({'width':1300, 'height':850})
     page.goto(BASE + '/#/'); page.wait_for_selector('.token-cell')
     page.check('#show-closed'); page.wait_for_selector(f'tr[data-ref="{rows[-1]["ref"]}"]')
-    assert page.locator(f'tr[data-ref="{rows[-1]["ref"]}"] .token-cell .issue-tokens').inner_text() == '1,234,568M 토큰'
+    assert page.locator(f'tr[data-ref="{rows[-1]["ref"]}"] .token-cell .issue-tokens').inner_text() == '1,234,568M'
     for theme in ('light', 'dark'):
         page.evaluate("t => {localStorage.setItem('dev.theme', t); paintTheme()}", theme)
         for width in (1300, 390):
