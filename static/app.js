@@ -534,9 +534,9 @@ function paintTrendTable(root){
 async function renderTrends(){
   const today = seoulToday();
   if(!trendDates) trendDates = [trendDateBefore(today, 29), today];
-  view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">보존된 기록의 일별 사용 현황을 서울 날짜로 살펴봐요.</p></div>
-    <label class="trend-marks">차트 표시<select id="trend-marks"><option value="line">추세선</option><option value="marks">마크</option><option value="values">마크 및 수치</option></select></label></header>
+  view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">보존된 기록의 일별 사용 현황을 서울 날짜로 살펴봐요.</p></div></header>
     <form id="trend-filter" class="trend-filter"><label>프로젝트<select id="trend-project">${projectOptionsHtml()}</select></label>
+      <label>차트 표시<select id="trend-marks"><option value="line">추세선</option><option value="marks">마크</option><option value="values">마크 및 수치</option></select></label>
       <div class="trend-periods" role="group" aria-label="빠른 기간">${[7,30,90].map(n => `<button type="button" data-trend-days="${n}" aria-pressed="${trendRange === n}">최근 ${n}일</button>`).join('')}</div>
       <label>시작일<input id="trend-from" type="date" required value="${esc(trendDates[0])}"></label>
       <label>종료일<input id="trend-to" type="date" required value="${esc(trendDates[1])}"></label>
