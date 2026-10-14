@@ -11,9 +11,13 @@ from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTR
 
 def check_trends(page):
     """Trend 필터·일별 값·상위 작업·부분 집계와 실패 상태를 임시 응답으로 확인한다."""
+    from datetime import date
+    from urllib.parse import parse_qs, urlsplit
     headers = {'X-Requested-With': 'dev'}
     assert page.request.post(BASE + '/api/projects', headers=headers, data={'key': 'TRND', 'name': 'Trend 검사'}).ok
     page.reload(); page.wait_for_selector('#shell:not([hidden])')
+    page.goto(BASE + '/#/board'); page.wait_for_selector('.kanban')
+    page.select_option('#project-filter', 'TRND')
     calls = []
     def respond(route):
         calls.append(route.request.url)
@@ -33,6 +37,18 @@ def check_trends(page):
         route.fulfill(json=data)
     page.route('**/api/trends?*', respond)
     page.goto(BASE + '/#/trends'); page.wait_for_selector('.trend-card')
+    assert page.locator('#project-filter').input_value() == ''
+    assert page.locator('#trend-project').input_value() == ''
+    assert page.locator('#trend-marks').input_value() == 'values'
+    assert page.locator('[data-trend-days="7"]').get_attribute('aria-pressed') == 'true'
+    assert page.locator('[data-trend-days="30"]').get_attribute('aria-pressed') == 'false'
+    from_day, to_day = page.locator('#trend-from').input_value(), page.locator('#trend-to').input_value()
+    assert (date.fromisoformat(to_day) - date.fromisoformat(from_day)).days == 6
+    assert to_day == page.evaluate("new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Seoul', year:'numeric', month:'2-digit', day:'2-digit'}).format(new Date())")
+    query = parse_qs(urlsplit(calls[-1]).query)
+    assert query == {'from': [from_day], 'to': [to_day]}
+    assert page.locator('.trend-chart circle').count() == 8
+    assert page.locator('.trend-chart text').count() == 8
     assert page.locator('.trend-card').count() == 4
     assert '부분 집계' in page.inner_text('#trend-results')
     assert page.locator('.trend-chart').count() == 4
@@ -46,6 +62,7 @@ def check_trends(page):
     assert page.locator('.trend-daily th[aria-sort]').get_attribute('aria-sort') == 'descending'
     page.locator('.trend-sort').focus(); page.keyboard.press('Space'); assert rows() == ['2026-10-12', '2026-10-13']
     page.keyboard.press('Enter'); assert rows() == ['2026-10-13', '2026-10-12']
+    page.select_option('#trend-marks', 'line')
     assert page.locator('.trend-chart circle').count() == 0
     page.select_option('#trend-marks', 'marks')
     assert page.locator('.trend-chart circle').count() == 8 and page.locator('.trend-chart text').count() == 0
@@ -58,6 +75,18 @@ def check_trends(page):
     assert page.locator('#trend-marks').input_value() == 'values' and page.locator('.trend-chart text').count() == 8
     assert rows() == ['2026-10-13', '2026-10-12']
     assert any('project=TRND' in url for url in calls)
+    assert page.locator('#project-filter').input_value() == 'TRND'
+    page.click('[data-trend-days="30"]')
+    assert page.locator('[data-trend-days="30"]').get_attribute('aria-pressed') == 'true'
+    assert (date.fromisoformat(page.locator('#trend-to').input_value()) - date.fromisoformat(page.locator('#trend-from').input_value())).days == 29
+    assert page.locator('#trend-project').input_value() == 'TRND'
+    assert page.locator('#trend-marks').input_value() == 'values'
+    page.goto(BASE + '/#/board'); page.wait_for_selector('.kanban')
+    page.goto(BASE + '/#/trends'); page.wait_for_selector('.trend-card')
+    assert page.locator('#project-filter').input_value() == page.locator('#trend-project').input_value() == ''
+    assert page.locator('#trend-marks').input_value() == 'values'
+    assert page.locator('[data-trend-days="7"]').get_attribute('aria-pressed') == 'true'
+    assert parse_qs(urlsplit(calls[-1]).query) == {'from': [from_day], 'to': [to_day]}
     page.locator('[data-trend-days="7"]').focus(); page.keyboard.press('Enter')
     assert page.locator('[data-trend-days="7"]').get_attribute('aria-pressed') == 'true'
     page.fill('#trend-from', '2026-10-14'); page.fill('#trend-to', '2026-10-13'); page.click('#trend-filter [type="submit"]')

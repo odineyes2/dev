@@ -482,7 +482,7 @@ function summaryDuration(seconds){
 }
 
 // Trend는 서버가 서울 날짜로 나눈 값을 그대로 그린다. 필터는 이 화면에서만 유지한다.
-let trendRange = 30, trendDates = null, trendRequest = 0;
+let trendRange = 7, trendDates = null, trendRequest = 0;
 const TREND_METRICS = [
   ['created_issue_count', '생성 Issue', '개'],
   ['completed_issue_count', '완료 Issue', '개'],
@@ -502,7 +502,7 @@ function trendValue(key, value){
 }
 function trendText(key, value){ return key === 'total_tokens' ? formatTokens(value) : String(trendValue(key, value)); }
 // 표시 옵션(line·marks·values)과 날짜 정렬은 Trend 화면을 쓰는 동안 유지한다. 차트 시간축은 항상 과거→현재.
-let trendMarks = 'line', trendSortAsc = true, trendData = null;
+let trendMarks = 'values', trendSortAsc = true, trendData = null;
 function trendChart(days, key, label){
   const values = days.map(d => Number(d[key] || 0)), n = values.length;
   const max = Math.max(1, ...values), height = 130, marks = trendMarks !== 'line';
@@ -533,7 +533,13 @@ function paintTrendTable(root){
 }
 async function renderTrends(){
   const today = seoulToday();
-  if(!trendDates) trendDates = [trendDateBefore(today, 29), today];
+  if(!view.querySelector('.trend-page')){
+    trendRange = 7;
+    trendDates = [trendDateBefore(today, 6), today];
+    trendMarks = 'values';
+    localStorage.setItem('dev.project', '');
+    paintProjectFilter();
+  }
   view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">보존된 기록의 일별 사용 현황을 서울 날짜로 살펴봐요.</p></div></header>
     <form id="trend-filter" class="trend-filter"><label>프로젝트<select id="trend-project">${projectOptionsHtml()}</select></label>
       <label>차트 표시<select id="trend-marks"><option value="line">추세선</option><option value="marks">마크</option><option value="values">마크 및 수치</option></select></label>
