@@ -296,6 +296,7 @@ table.issues:not(.tasks) .title-cell{ width:100%; min-width:240px; overflow-wrap
 .issue-badges .label:first-child{ margin-left:0; }
 .goal-badge{ color:var(--accent); font-size:12px; font-weight:500; white-space:nowrap; }
 .issue-badges{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }
+.row-rating{ font-size:12px; font-weight:600; color:var(--accent); white-space:nowrap; }
 .title-cell .sub{ font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:var(--track-label); color:var(--faint); font-weight:500; }
 .list-more{ min-height:1px; padding:14px; text-align:center; color:var(--dim); font-size:13px; }
 .empty{ padding:64px var(--sp-4); text-align:center; color:var(--dim); background:var(--panel); border:1px dashed var(--border); border-radius:var(--r-md); }

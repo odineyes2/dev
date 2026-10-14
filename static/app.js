@@ -436,7 +436,7 @@ function issueTokensHtml(i, detail = false){
 }
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
-    <td class="title-cell">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}<div class="issue-badges">${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)} ${issueTokensHtml(i)}</div></td>
+    <td class="title-cell">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}<div class="issue-badges">${i.rating ? `<span class="row-rating" title="평점 ${i.rating}/5" aria-label="평점 ${i.rating}점">★${i.rating}</span>` : ''}${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)} ${issueTokensHtml(i)}</div></td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td>
     <td class="hide-m">${processingAgentsHtml(i)}</td><td class="hide-m">${completionTimeHtml(i)}</td><td class="hide-m token-cell">${issueTokensHtml(i)}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
