@@ -1172,7 +1172,9 @@ def check_rating(page, shots):
     H = {'X-Requested-With': 'dev'}
     page.request.post(BASE + '/api/projects', headers=H, data={'key': 'RATE', 'name': '평가 검사'})
     ref = page.request.post(BASE + '/api/issues', headers=H, data={'project': 'RATE', 'title': '평가 UI 검사'}).json()['ref']
-    page.goto(BASE + '/#/issue/' + ref); page.wait_for_selector('#rating-editor')
+    page.goto(BASE + '/#/issue/' + ref)
+    page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim().split(' · ')[0] === ref", arg=ref)
+    page.wait_for_selector('#rating-editor')
     page.locator('#rating-editor label[title="4점"]').click(); page.fill('#rating-review', '잘 처리함')
     stars = lambda: page.locator('#rating-editor .stars span').all_text_contents().count('★')
     assert stars() == 4                                                         # 클릭 즉시 별 모양 갱신
@@ -1189,6 +1191,13 @@ def check_rating(page, shots):
     assert (got['rating'], got['review']) == (4, '잘 처리함')
     page.reload(); page.wait_for_selector('#rating-editor')
     assert page.input_value('#rating-review') == '잘 처리함' and page.locator('#rating-editor input:checked').get_attribute('value') == '4'
+    other = page.request.post(BASE + '/api/issues', headers=H, data={'project': 'RATE', 'title': '평점 없는 행'}).json()['ref']
+    page.goto(BASE + '/#/'); page.wait_for_selector('#project-filter'); page.select_option('#project-filter', 'RATE'); page.wait_for_selector(f'tr.row[data-ref="{ref}"]')   # 목록: 평점 있는 행에만 ★N
+    assert page.inner_text(f'tr.row[data-ref="{ref}"] .row-rating') == '★4' and page.locator(f'tr.row[data-ref="{other}"] .row-rating').count() == 0
+    page.set_viewport_size({'width': 390, 'height': 800}); assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+    page.set_viewport_size({'width': 1300, 'height': 850}); page.goto(BASE + '/#/issue/' + ref)
+    page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim().split(' · ')[0] === ref", arg=ref)
+    page.wait_for_selector('#rating-editor')
     for scheme in ('light', 'dark'):
         for size in ({'width': 1300, 'height': 850}, {'width': 390, 'height': 800}):
             page.emulate_media(color_scheme=scheme); page.set_viewport_size(size)

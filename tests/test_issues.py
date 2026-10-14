@@ -728,6 +728,8 @@ with TestClient(A.app) as c:
     assert r.status_code == 200 and (r.json()['rating'], r.json()['review'], r.json()['rated_by']) == (4, '잘 했어요', 'human:admin')
     assert r.json()['updated_at'] == rt['updated_at']
     assert c.get('/api/issues/' + rt['ref'], headers=H).json()['rating'] == 4
+    lst = {i['ref']: i for i in c.get('/api/issues?project=DEV', headers=H).json()['issues']}
+    assert lst[rt['ref']]['rating'] == 4   # 목록 응답에도 평점이 실린다
     for bad in (0, 6, '3', 2.5, True):
         assert c.put(url, headers=H, json={'rating': bad}).status_code == 400, bad
     assert c.put('/api/issues/DEV-99999/rating', headers=H, json={'rating': 3}).status_code == 404
