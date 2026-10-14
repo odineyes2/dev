@@ -1109,6 +1109,7 @@ async function renderIssue(ref, background = false){
           <div class="stars" role="radiogroup" aria-label="평점">${[1, 2, 3, 4, 5].map(n => `<label title="${n}점"><input type="radio" name="rating" value="${n}"${it.rating === n ? ' checked' : ''} aria-label="${n}점"><span aria-hidden="true">${n <= (it.rating || 0) ? '★' : '☆'}</span></label>`).join('')}</div>
           <textarea id="rating-review" rows="3" maxlength="2000" aria-label="리뷰" placeholder="에이전트가 얼마나 잘 처리했나요?">${esc(it.review || '')}</textarea>
           <div class="row-end"><button id="rating-clear" type="button">지우기</button><button id="rating-save" type="button">평가 저장</button></div>
+          <p id="rating-status" class="rating-status" role="status"></p>
           ${it.rated_at ? `<p class="dim">${esc(actorName(it.rated_by))} · ${fmtTime(it.rated_at)}</p>` : ''}</div>
         <div class="field"><span>AGENT</span>${processingAgentsHtml(it)}</div>
         ${['done', 'closed'].includes(it.status) ? `<div class="field"><span>TIME</span>${completionTimeHtml(it)}</div>` : ''}
@@ -1136,8 +1137,26 @@ async function renderIssue(ref, background = false){
   const R = encodeURIComponent(it.ref);
   const reload = () => renderIssue(it.ref);
   const $ = (id) => view.querySelector('#' + id);
-  const saveRating = (rating, review) => api('PUT', `/api/issues/${R}/rating`, {rating, review}).then(reload).catch(() => {});
-  $('rating-save').onclick = () => saveRating(Number(view.querySelector('#rating-editor input:checked')?.value) || null, $('rating-review').value.trim());
+  const ratingBox = $('rating-editor');
+  const paintStars = () => ratingBox.querySelectorAll('.stars label').forEach(l => { l.querySelector('span').textContent = l.querySelector('input').checked || l.dataset.on ? '★' : '☆'; });
+  const starsUpTo = (v) => ratingBox.querySelectorAll('.stars label').forEach((l, i) => { l.dataset.on = i < v ? '1' : ''; });
+  let curRating = it.rating || 0;
+  starsUpTo(curRating);
+  ratingBox.querySelectorAll('.stars input').forEach(inp => inp.onclick = () => {
+    const v = Number(inp.value);
+    if(v === curRating){ inp.checked = false; curRating = 0; } else curRating = v;   // 같은 별을 다시 누르면 해제
+    starsUpTo(curRating); paintStars();
+  });
+  const saveRating = async (rating, review) => {
+    const btns = [...ratingBox.querySelectorAll('button')];
+    if(btns.some(b => b.disabled)) return;
+    btns.forEach(b => b.disabled = true);
+    const st = $('rating-status'); st.textContent = '저장 중…';
+    try{ await api('PUT', `/api/issues/${R}/rating`, {rating, review}); await reload(); const n = $('rating-status'); if(n) n.textContent = '저장했어요.'; }
+    catch(e){ if(st.isConnected) st.textContent = `${e.message} 다시 시도해 주세요.`; }
+    finally{ btns.forEach(b => b.disabled = false); }
+  };
+  $('rating-save').onclick = () => saveRating(curRating || null, $('rating-review').value.trim());
   $('rating-clear').onclick = () => saveRating(null, '');
   view.querySelectorAll('tr.row').forEach(r => r.addEventListener('click', (e) => { if(!e.target.closest('a')) location.hash = `#/issue/${r.dataset.ref}`; }));
   // done/closed로 끝내면 목록으로 돌아간다(DEV-5) — 끝난 이슈 화면에 머물 일은 없다.

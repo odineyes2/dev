@@ -837,4 +837,5 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .stars label{ position:relative; cursor:pointer; font-size:22px; line-height:1; color:var(--accent); padding:2px; }
 .stars input{ position:absolute; opacity:0; inset:0; margin:0; cursor:pointer; }
 .stars label:has(input:focus-visible){ outline:2px solid var(--accent); border-radius:4px; }
+.rating-status{ margin:var(--sp-2) 0 0; font-size:13px; min-height:1em; overflow-wrap:anywhere; }
 #rating-review{ width:100%; min-height:72px; font-family:var(--sans); font-size:14px; resize:vertical; margin:var(--sp-2) 0; }
