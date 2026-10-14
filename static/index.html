@@ -77,7 +77,6 @@
     <a class="tab-btn" href="#/settings" data-nav="settings" title="Settings — 설정" aria-label="설정"><svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg><span class="tab-label">Settings</span></a>
     <span class="tab-bar-actions">
       <select id="project-filter" title="프로젝트"></select>
-      <a href="#/new" class="button primary new-issue" title="새 이슈"><svg class="ico"><use href="#i-plus"/></svg><span class="hide-m">새 이슈</span></a>
     </span>
   </div></div>
   <template id="management-header"><header class="management-header"><h2></h2><nav class="management-nav" aria-label="관리 하위 메뉴"></nav></header></template>
@@ -93,6 +92,7 @@
     </nav>
   </template>
   <main id="view"></main>
+  <button type="button" id="fab-new" class="fab" title="새 이슈 (`)" aria-label="새 이슈" hidden><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg></button>
   <form id="composer" class="composer" hidden aria-label="빠른 이슈 발행">
     <div id="cmp-files" class="cmp-files" aria-live="polite"></div>
     <textarea id="cmp-body" rows="1" aria-label="이슈 내용" placeholder="예: 목록에서 백틱으로 입력창을 열어 줘 — Enter로 보내요"></textarea>
