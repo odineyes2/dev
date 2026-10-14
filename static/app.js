@@ -1504,7 +1504,7 @@ async function renderNew(params){
   }); });
 }
 
-// ---- 빠른 발행 입력창(DEV-93) — 목록·Board에서 백틱으로 열고, Enter로 #/new를 거치지 않고 바로 발행한다 ----
+// ---- 빠른 발행 입력창(DEV-93) — 목록·Board에서 백틱으로 열고(우하단 FAB는 정식 발행 페이지 #/new 링크), Enter로 #/new를 거치지 않고 바로 발행한다 ----
 const composer = document.getElementById('composer'), cmpBody = document.getElementById('cmp-body');
 // 입력창이 커져도 발행 알림이 입력창과 겹치지 않도록 높이를 공유한다.
 new ResizeObserver(() => document.documentElement.style.setProperty('--composer-height', `${composer.offsetHeight}px`)).observe(composer);
@@ -1539,7 +1539,6 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
   if(composer.hidden) void openComposer(); else closeComposer();   // 열린 상태에서 백틱(입력칸 밖)이면 닫는다(DEV-96)
 });
-document.getElementById('fab-new').addEventListener('click', () => { void openComposer(); });
 composer.addEventListener('keydown', (e) => { if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeComposer(); } });
 cmpBody.addEventListener('keydown', (e) => {
   if(e.key !== 'Enter' || e.shiftKey) return;   // Shift+Enter는 줄바꿈
