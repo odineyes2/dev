@@ -1174,9 +1174,17 @@ def check_rating(page, shots):
     ref = page.request.post(BASE + '/api/issues', headers=H, data={'project': 'RATE', 'title': '평가 UI 검사'}).json()['ref']
     page.goto(BASE + '/#/issue/' + ref); page.wait_for_selector('#rating-editor')
     page.locator('#rating-editor label[title="4점"]').click(); page.fill('#rating-review', '잘 처리함')
+    stars = lambda: page.locator('#rating-editor .stars span').all_text_contents().count('★')
+    assert stars() == 4                                                         # 클릭 즉시 별 모양 갱신
+    page.locator('#rating-editor label[title="4점"]').click(); assert stars() == 0   # 같은 별 재클릭은 해제
+    page.locator('#rating-editor label[title="4점"]').click(); assert stars() == 4
     page.evaluate(f'renderIssue("{ref}", true)'); page.wait_for_timeout(300)   # 편집 중 갱신은 입력을 지우지 않는다
-    assert page.input_value('#rating-review') == '잘 처리함' and page.locator('#rating-editor input:checked').get_attribute('value') == '4'
+    assert page.input_value('#rating-review') == '잘 처리함' and page.locator('#rating-editor input:checked').get_attribute('value') == '4' and stars() == 4
     page.click('#rating-save'); page.wait_for_selector('#rating-editor .dim')
+    assert '저장했어요' in page.inner_text('#rating-status') and stars() == 4
+    page.route('**/rating', lambda r: r.fulfill(status=500, content_type='application/json', body='{"detail":"서버 오류"}'))
+    page.click('#rating-save'); page.wait_for_function("document.querySelector('#rating-status').textContent.includes('다시 시도')")
+    assert not page.is_disabled('#rating-save'); page.unroute('**/rating')
     got = page.request.get(BASE + '/api/issues/' + ref).json()
     assert (got['rating'], got['review']) == (4, '잘 처리함')
     page.reload(); page.wait_for_selector('#rating-editor')
