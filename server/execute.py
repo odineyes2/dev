@@ -623,6 +623,33 @@ def _eligibility_reason(issue: dict, parent: dict | None, wait: bool = True) -> 
     return None
 
 
+def predecessor_merge_reason(issue: dict) -> str | None:
+    """Done 선행 Task의 relay HEAD가 현재 base에 포함됐는지 확인한다."""
+    done = [b["ref"] for b in issue.get("blocked_by", []) if b["status"] == "done"]
+    if not done:
+        return None
+    repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
+    if not repo or not Path(repo).is_dir():
+        return "선행 Task 병합 확인 불가 — 프로젝트 저장소 경로를 확인해 주세요."
+    try:
+        base = _run_git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{BASE_BRANCH}^{{commit}}")
+        if base.returncode:
+            return f"선행 Task 병합 확인 불가 — {BASE_BRANCH} 브랜치를 확인해 주세요."
+        for ref in done:
+            branch = branch_name(ref)
+            head = _run_git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}")
+            if head.returncode:
+                return f"선행 {ref} 병합 확인 불가 — {branch} 브랜치를 확인해 주세요."
+            check = _run_git(repo, "merge-base", "--is-ancestor", head.stdout.strip(), base.stdout.strip())
+            if check.returncode == 1:
+                return f"선행 {ref} 병합 대기"
+            if check.returncode:
+                return f"선행 {ref} 병합 확인 불가 — Git 저장소를 확인해 주세요."
+    except OSError:
+        return "선행 Task 병합 확인 불가 — Git 실행 환경을 확인해 주세요."
+    return None
+
+
 def task_files(issue: dict) -> set[str]:
     """Task 본문의 `바꿀 파일:` 목록."""
     fields = re.findall(r"(?:\*\*)?(?:바꿀 파일|파일)(?:\*\*)?\s*:\s*([^\n|]+)", issue.get("body", ""))
@@ -753,6 +780,9 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     why = blocked_reason(issue, parent)
     if why:
         raise issues.StoreError(why, 409)
+    why = predecessor_merge_reason(issue)
+    if why:
+        raise issues.StoreError(why, 409)
     with db.connect() as c:
         busy = jobs.start_block(c, issue["project_key"], "execute")   # worktree를 만들기 전에 줄이 비었는지 본다
     if busy:
@@ -770,6 +800,14 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     cmd = codex_command_for(ref, issue["parent_ref"]) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
     cmd = review.with_model(with_notice(cmd, provider, notice), provider, model)
     env = safe_env(repo)
+    issue = issues.get_issue(ref)
+    parent = issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None
+    why = blocked_reason(issue, parent)
+    if why:
+        raise issues.StoreError(why, 409)
+    why = predecessor_merge_reason(issue)
+    if why:
+        raise issues.StoreError(why, 409)
     log_path, run_id = review.begin(actor, issue, "execute", provider, model)
     with db.connect() as c:
         c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (start_sha, run_id))

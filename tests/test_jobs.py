@@ -208,10 +208,14 @@ with db.connect() as c:
 jid = queued('execute')
 jobs.pump()
 assert jobs.list_jobs()[0]['id'] == jid and issues.get_issue(ref)['status'] == 'waiting'
+before_runs = len(review.list_runs(ref))
 issues.set_status(me, dependency['ref'], 'done')
+jobs.pump()
+assert issues.get_issue(ref)['status'] == 'waiting' and len(review.list_runs(ref)) == before_runs
+assert '선행 Task 병합 확인 불가' in jobs.list_jobs()[0]['note']
 def fake_start(actor, task_ref, provider, model=None):
     review.begin(actor, issues.get_issue(task_ref), 'execute', provider)
-with patch.object(execute, 'start', side_effect=fake_start):
+with patch.object(execute, 'predecessor_merge_reason', return_value=None), patch.object(execute, 'start', side_effect=fake_start):
     jobs.pump()
 assert issues.get_issue(ref)['status'] == 'in_progress' and not jobs.list_jobs()
 with db.connect() as c:

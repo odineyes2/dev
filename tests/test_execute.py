@@ -123,6 +123,8 @@ def linked_completion(actor, ref, cwd, run_id, note):
 execute.register_completion = linked_completion
 me = {"kind": "human", "name": "admin"}
 issues.create_project(me, "EX", "ex", "", str(repo))
+assert "EX-404 병합 확인 불가" in execute.predecessor_merge_reason(
+    {"project_key": "EX", "blocked_by": [{"ref": "EX-404", "status": "done"}]})
 issues.create_issue(me, "EX", "부모", status="triage")
 issues.post_plan(me, "EX-1", "## Tasks\n1. 먼저\n2. 나중 | 선행: 1")
 issues.decide(me, "EX-1", "approve", "", plan_version=1)   # EX-1-1(먼저), EX-1-2(나중, 선행 EX-1-1)
@@ -151,6 +153,12 @@ with TestClient(A.app) as c:
     wait_idle()
     assert review.list_runs("EX-1-2") == []
     issues.set_status(me, "EX-1-1", "done")
+    jobs.pump()
+    assert review.list_runs("EX-1-2") == []
+    assert "선행 EX-1-1 병합 대기" in jobs.list_jobs()[0]["note"]
+    assert not execute.worktree_path("EX-1-2").exists()
+    assert "선행 EX-1-1 병합 대기" in rejects(execute.start, me, "EX-1-2")
+    git(repo, "merge", "--ff-only", "relay/EX-1-1")
     jobs.pump()
     wait_idle()                                                         # 선행 done → EX-1-1이 끝나면 EX-1-2가 이어서 돈다
     assert review.list_runs("EX-1-2")[0]["status"] == "ok" and jobs.list_jobs() == []
