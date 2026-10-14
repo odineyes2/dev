@@ -1961,7 +1961,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       await loadProjects();
       if(!form.isConnected) return;
       dialog?.close();
-      renderProjects(ed?.key); view.querySelector(ed ? '#p-name' : '#project-add').focus();
+      renderProjects(ed?.key); if(!ed) view.querySelector('#project-add').focus();
       toast(ed ? '고쳤어요' : '만들었어요');
     }catch(error){
       if(form.isConnected) view.querySelector('#project-error').textContent = `${error.message} 입력을 확인하고 다시 시도해 주세요.`;
@@ -2015,7 +2015,6 @@ function renderProjects(editKey, projectTab = 'manage'){
       status.innerHTML = `<a href="#/issue/${esc(r.ref)}">${esc(r.ref)}</a>로 ${r.reused ? '이미 등록돼 있어요' : '등록했어요'} · 선택된 에이전트: ${PROVIDER_NAME[r.provider] || esc(r.provider)}${r.queue_error ? ` · ${esc(r.queue_error)}` : ''}`;
     });
   });
-  if(ed && projectTab === 'manage') view.querySelector('#p-name').focus();
   view.querySelectorAll('[data-project-tab]').forEach(b => b.onclick = () => {
     renderProjects(ed.key, b.dataset.projectTab);
     view.querySelector(`[data-project-tab="${b.dataset.projectTab}"]`).focus();
