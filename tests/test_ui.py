@@ -3551,6 +3551,22 @@ def check_issue_summary(page):
         page.evaluate("theme => {localStorage.setItem('dev.theme', theme); paintTheme()}", theme)
         for width in (1300, 390):
             page.set_viewport_size({'width': width, 'height': 850})
+            styles = page.evaluate("""() => {
+                const row = document.querySelector('.issue-summary-values > div:last-child');
+                const label = getComputedStyle(row.querySelector(':scope > span'));
+                const strong = getComputedStyle(row.querySelector('strong'));
+                const value = getComputedStyle(row.querySelector('strong span'));
+                const dim = document.createElement('span');
+                dim.className = 'dim'; document.body.append(dim);
+                const dimColor = getComputedStyle(dim).color; dim.remove();
+                return {labelSize: label.fontSize, labelColor: label.color,
+                    dimColor, valueSize: value.fontSize,
+                    valueFamily: value.fontFamily, strongFamily: strong.fontFamily,
+                    valueColor: value.color, textColor: getComputedStyle(document.body).color};
+            }""")
+            assert styles['labelSize'] == '12px' and styles['labelColor'] == styles['dimColor'], (theme, width, styles)
+            assert styles['valueSize'] == '14px' and styles['valueFamily'] == styles['strongFamily'], (theme, width, styles)
+            assert 'IBM Plex Mono' in styles['valueFamily'] and styles['valueColor'] == styles['textColor'], (theme, width, styles)
             assert page.evaluate("""() => {
                 const summary = document.querySelector('#issue-summary').getBoundingClientRect();
                 const jobs = document.querySelector('#jobs-box').getBoundingClientRect();
