@@ -4375,7 +4375,7 @@ try:
                     b = document.querySelector(m).getBoundingClientRect();
                     return j.left >= b.right && j.top < b.bottom && b.top < j.bottom ? 'side' : j.bottom <= b.top ? 'above' : 'other'; }""", main)
                 page.wait_for_selector('#list-body tr.row')   # 목록이 아직 비어 있으면(높이 0) 자리를 잴 수 없다
-                assert side_of('#list-body') == ('side' if tag == 'desktop' else 'above'), (scheme, tag)
+                assert side_of('#list-body') == 'above', (scheme, tag)   # 목록은 1450px 이하에서 표 전체 폭을 쓰려고 대기열을 위로(DEV-123-1)
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
                 page.click('[data-st="waiting"]')
