@@ -54,8 +54,9 @@ for needle in ["e.key !== '`'", "['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagN
 for needle in ['id="composer"', 'id="cmp-attach"', 'aria-label="파일 첨부"', 'id="cmp-project"', 'id="cmp-agent"',
                'id="cmp-send"', 'aria-label="보내기"', 'id="i-x"', 'id="fab-new"', 'aria-label="새 이슈"']:
     assert needle in html, needle
-assert "new-issue" not in html and 'href="#/new"' not in html   # 탭 바 새 이슈 버튼은 FAB로 옮겼다(DEV-125)
-assert "fab-new').hidden = !composerAllowed()" in js and "getElementById('fab-new').addEventListener('click'" in js
+assert "new-issue" not in html and html.count('href="#/new"') == 1   # 탭 바 새 이슈 버튼은 지우고 FAB만 #/new 링크(DEV-125)
+assert '<a id="fab-new" class="fab" href="#/new"' in html
+assert "fab-new').hidden = !composerAllowed()" in js and "getElementById('fab-new').addEventListener" not in js
 # 마지막 줄 순서: 왼쪽 첨부·프로젝트·에이전트, 오른쪽 보내기
 bar = html[html.index('class="cmp-bar"'):]
 assert bar.index("cmp-attach") < bar.index("cmp-project") < bar.index("cmp-agent") < bar.index("cmp-send")

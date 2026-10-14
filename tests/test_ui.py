@@ -3319,7 +3319,7 @@ def check_chat_connections(page, shots):
 
 
 def check_fab(page):
-    """탭 바에는 새 이슈 버튼이 없고, 목록·Board 우하단 FAB가 composer를 연다(DEV-125)."""
+    """탭 바에는 새 이슈 버튼이 없고, 목록·Board 우하단 FAB는 #/new 링크, composer는 백틱 전용(DEV-125)."""
     for size in ({'width': 1300, 'height': 850}, {'width': 390, 'height': 800}):
         page.set_viewport_size(size)
         page.goto(BASE + '/#/'); page.wait_for_selector('#project-filter')
@@ -3328,7 +3328,10 @@ def check_fab(page):
             page.goto(BASE + route); page.wait_for_selector('#fab-new', state='visible')
             box = page.locator('#fab-new').bounding_box()
             assert size['width'] - box['x'] - box['width'] <= 24 and size['height'] - box['y'] - box['height'] <= 24, box
-        page.click('#fab-new'); page.wait_for_selector('#composer', state='visible')
+        page.click('#fab-new'); page.wait_for_selector('#new-form', state='visible')
+        assert page.evaluate('location.hash') == '#/new' and not page.locator('#fab-new').is_visible()
+        page.goto(BASE + '/#/'); page.wait_for_selector('#fab-new', state='visible')
+        page.evaluate('openComposer()'); page.wait_for_selector('#composer', state='visible')
         assert not page.locator('#fab-new').is_visible()
         page.keyboard.press('Escape'); page.wait_for_selector('#fab-new', state='visible')
     for route in ('/#/agents', '/#/settings'):
