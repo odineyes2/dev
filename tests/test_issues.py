@@ -695,7 +695,11 @@ with TestClient(A.app) as c:
         detail = c.get('/api/issues/' + root['ref'], headers=headers)
         assert detail.status_code == 200, detail.text
         assert detail.json()['token_usage'] == expected
+        assert detail.json()['task_token_usage'] == dict(input_tokens=105, output_tokens=20,
+            total_tokens=125, run_count=2, unmeasured_run_count=1,
+            running_run_count=1, partial=True, task_count=1)
         assert detail.json()['children'][0]['token_usage']['total_tokens'] == 125
+        assert detail.json()['children'][0]['task_token_usage'] is None
         assert detail.json()['children'][0]['token_usage']['running_run_count'] == 1
         for offset, item, total in [(0, root, 15), (1, child, 125), (2, zero, 0)]:
             response = c.get('/api/issues', headers=headers, params={
@@ -705,7 +709,9 @@ with TestClient(A.app) as c:
             assert len(page['issues']) == 1 and page['has_more'] == (offset < 2)
             assert page['issues'][0]['id'] == item['id']
             assert page['issues'][0]['token_usage']['total_tokens'] == total
+            assert page['issues'][0]['task_token_usage'] == (detail.json()['task_token_usage'] if offset == 0 else None)
         children = c.get('/api/issues', headers=headers, params={'parent': root['ref']}).json()['issues']
         assert len(children) == 1 and children[0]['token_usage']['total_tokens'] == 125
+        assert children[0]['task_token_usage'] is None
         assert c.get('/api/issues/TOK-99999', headers=headers).status_code == 404
 print('OK Issue token usage REST authentication, routing and pagination')

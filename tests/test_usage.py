@@ -61,6 +61,7 @@ assert direct[empty['id']] == dict(input_tokens=0, output_tokens=0, total_tokens
 assert direct[missing['id']]['run_count'] == direct[missing['id']]['unmeasured_run_count'] == 1
 assert direct[missing['id']]['total_tokens'] == 0 and direct[missing['id']]['partial']
 assert direct[task['id']]['running_run_count'] == 1
+
 # 프로젝트 점검은 프로젝트 합계에만 들어가고 Issue 직접 실행분은 보존한다.
 with db.connect() as c:
     c.execute("""INSERT INTO project_audits(project_id,request_id,input_fingerprint,provider,actor,status,
@@ -203,3 +204,32 @@ with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._t
     with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
         assert client.get('/api/trends', cookies={'ns_session': 'temporary'}).status_code == 403
 print('OK usage')
+
+# 하위 Task만 더하고 실행 중 여부로 합계 표시 가능 시점을 판단한다.
+aggregate_parent = issues.create_issue(human, 'US', 'aggregate parent')
+measured = issues.create_issue(human, 'US', 'measured', parent=aggregate_parent['ref'])
+unmeasured = issues.create_issue(human, 'US', 'unmeasured task', parent=aggregate_parent['ref'])
+issues.create_issue(human, 'US', 'no run task', parent=aggregate_parent['ref'])
+superseded = issues.create_issue(human, 'US', 'superseded task', parent=aggregate_parent['ref'])
+with db.connect() as c:
+    for item, status, inp, out in [(measured, 'ok', 11, 4),
+                                   (unmeasured, 'running', None, 2),
+                                   (superseded, 'ok', 999, 999)]:
+        c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,input_tokens,output_tokens) "
+                  "VALUES(?,'review',?,'human:admin',?,?,?)", (item['id'], status, start, inp, out))
+    issues._event(c, superseded['id'], human, 'comment',
+                  data={'superseded_by_plan': 2})
+    totals = usage.task_token_usage(c, [aggregate_parent['id'], empty['id']])
+    assert usage.task_token_usage(c, []) == {}
+    assert len(usage.task_token_usage(c, range(1, 2002))) == 2001
+assert totals[empty['id']] is None
+assert totals[aggregate_parent['id']] == dict(input_tokens=11, output_tokens=6, total_tokens=17,
+                                              run_count=2, unmeasured_run_count=1,
+                                              running_run_count=1, partial=True, task_count=3)
+with db.connect() as c:
+    c.execute("UPDATE runs SET status='timeout' WHERE issue_id=?", (unmeasured['id'],))
+    settled = usage.task_token_usage(c, [aggregate_parent['id']])[aggregate_parent['id']]
+assert settled['running_run_count'] == 0 and settled['partial']
+assert settled['unmeasured_run_count'] == 1 and settled['task_count'] == 3
+assert issues.get_issue(aggregate_parent['ref'])['token_usage']['total_tokens'] == 0
+print('OK task token usage')
