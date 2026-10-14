@@ -1040,6 +1040,15 @@ WHEN NEW.issue_id<>(SELECT issue_id FROM qa_rounds WHERE id=NEW.qa_id)
 BEGIN SELECT RAISE(ABORT,'QA ??? Issue? ???'); END;
 """)
 
+# 사용자가 이슈마다 남기는 평점(1~5, NULL=미평가)·리뷰. 사람만 쓴다.
+MIGRATIONS.append("""
+ALTER TABLE issues ADD COLUMN rating INTEGER CHECK (rating IS NULL OR rating BETWEEN 1 AND 5);
+ALTER TABLE issues ADD COLUMN review TEXT NOT NULL DEFAULT '';
+ALTER TABLE issues ADD COLUMN rated_at TEXT;
+ALTER TABLE issues ADD COLUMN rated_by TEXT;
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

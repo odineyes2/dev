@@ -735,6 +735,11 @@ async def api_update_issue(ref: str, request: Request):
     return issues.update_issue(actor(request), ref, await json_body(request))
 
 
+@app.put("/api/issues/{ref}/rating")
+async def api_set_rating(ref: str, request: Request):
+    return issues.set_rating(actor(request), ref, await json_body(request))
+
+
 @app.delete("/api/issues/{ref}", status_code=204)
 def api_delete_issue(ref: str, request: Request):
     issues.delete_issue(actor(request), ref)

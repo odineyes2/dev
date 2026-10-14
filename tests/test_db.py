@@ -83,7 +83,7 @@ with db.connect() as c:
         after = [tuple(r) for r in c.execute(f'SELECT * FROM {table}')]
         added = {'jobs': (None, 'manual', None, None, None, None, 1, None), 'projects': ('', '', 0, '', 'auto'), 'runs': ('', None), 'plans': ('',), 'agents': ('agent',)}.get(table, ())   # 끝 None: DEV-89-4 model, plans ''는 base_sha
         if table == 'issues':
-            assert after == [r + (now if r[0] == 2 else None, None) for r in before[table]], table
+            assert after == [r + (now if r[0] == 2 else None, None, None, '', None, None) for r in before[table]], table
         else:
             assert after == [r + added for r in before[table]], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=2').fetchone()
@@ -206,7 +206,7 @@ assert db.init() == len(db.MIGRATIONS) and db.init() == len(db.MIGRATIONS)
 audit_insert = '''INSERT INTO project_audits(project_id,request_id,input_fingerprint,provider,actor,created_at,updated_at)
     VALUES(?,?,'fingerprint','codex','human:admin',?,?)'''
 with db.connect() as c:
-    assert [tuple(r) for r in c.execute('SELECT * FROM issues')] == prior_issues
+    assert [tuple(r) for r in c.execute('SELECT * FROM issues')] == [tuple(r) + (None, '', None, None) for r in prior_issues]   # 평점 컬럼 4개
     assert not c.execute('PRAGMA foreign_key_check').fetchall()
     aid = c.execute(audit_insert, (1,'request',now,now)).lastrowid
 assert rejected(audit_insert, (999,'missing-project',now,now))
@@ -286,3 +286,7 @@ with db.connect() as c:
     columns = {r[1] for r in c.execute('PRAGMA table_info(execution_completion)')}
     assert {'build_dir', 'release_sha'} <= columns
 print('OK persistent build completion columns')
+
+with db.connect() as c:   # 평점 컬럼 — 기존 이슈는 미평가로 남는다
+    assert {'rating', 'review', 'rated_at', 'rated_by'} <= {r[1] for r in c.execute('PRAGMA table_info(issues)')}
+print('OK rating columns')

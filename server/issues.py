@@ -666,6 +666,29 @@ def _create_issue(c, actor, project, title, body="", priority="none", labels=Non
     return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (iid,)).fetchone())
 
 
+def set_rating(actor, ref, fields: dict) -> dict:
+    """사람이 이슈 처리 평점(1~5|null)·리뷰를 남긴다. 둘 다 비면 지운다. updated_at은 건드리지 않는다."""
+    if not _is_human(actor):
+        raise _forbidden("평점은 사람만 남길 수 있어요.")
+    rating = fields.get("rating")
+    if rating is not None and (type(rating) is not int or not 1 <= rating <= 5):
+        raise StoreError("평점은 1~5 사이 정수예요.")
+    review = _text(fields.get("review"), "리뷰").strip()
+    with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = _find(c, ref)
+        if (row["rating"], row["review"]) == (rating, review):
+            return _issue_dict(row)
+        cleared = rating is None and not review
+        c.execute("UPDATE issues SET rating=?, review=?, rated_at=?, rated_by=? WHERE id=?",
+                  (rating, review, None if cleared else db.now_iso(), None if cleared else actor_label(actor), row["id"]))
+        body = "평점·리뷰 지움" if cleared else f"평점 {rating}/5" if rating else "리뷰만 기록"
+        if review and rating:
+            body += " · 리뷰 있음"
+        _event(c, row["id"], actor, "edit", body, {"fields": ["rating", "review"], "rating": rating})
+        return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
+
+
 def update_issue(actor, ref, fields: dict) -> dict:
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")

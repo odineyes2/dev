@@ -715,3 +715,28 @@ with TestClient(A.app) as c:
         assert children[0]['task_token_usage'] is None
         assert c.get('/api/issues/TOK-99999', headers=headers).status_code == 404
 print('OK Issue token usage REST authentication, routing and pagination')
+
+# 평점·리뷰 — 사람 전용 PUT, 범위 검사, 지우기, 타임라인, updated_at 불변.
+with TestClient(A.app) as c:
+    c.cookies.set('ns_session', 'adm')
+    rt = issues.create_issue(admin, 'DEV', 'rating target')
+    url = '/api/issues/' + rt['ref'] + '/rating'
+    assert rt['rating'] is None and rt['review'] == ''
+    ag = {'Authorization': 'Bearer ' + ka}
+    assert c.put(url, headers=H, json={'rating': 4}).status_code == 200
+    r = c.put(url, headers=H, json={'rating': 4, 'review': ' 잘 했어요 '})
+    assert r.status_code == 200 and (r.json()['rating'], r.json()['review'], r.json()['rated_by']) == (4, '잘 했어요', 'human:admin')
+    assert r.json()['updated_at'] == rt['updated_at']
+    assert c.get('/api/issues/' + rt['ref'], headers=H).json()['rating'] == 4
+    for bad in (0, 6, '3', 2.5, True):
+        assert c.put(url, headers=H, json={'rating': bad}).status_code == 400, bad
+    assert c.put('/api/issues/DEV-99999/rating', headers=H, json={'rating': 3}).status_code == 404
+    c.cookies.clear()
+    assert c.put(url, json={'rating': 3}, headers=ag).status_code == 403
+    assert c.put(url, json={'rating': 3}, headers=H).status_code == 401
+    c.cookies.set('ns_session', 'adm')
+    r = c.put(url, headers=H, json={'rating': None, 'review': ''})
+    assert r.status_code == 200 and r.json()['rating'] is None and r.json()['rated_at'] is None
+    ev = [e['body'] for e in c.get('/api/issues/' + rt['ref'], headers=H).json()['events'] if e['data'].get('fields') == ['rating', 'review']]
+    assert ev == ['평점 4/5', '평점 4/5 · 리뷰 있음', '평점·리뷰 지움'], ev
+print('OK Issue rating REST')
