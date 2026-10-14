@@ -202,7 +202,12 @@ main:has(#list-body){ max-width:none; }
 .issue-summary-retry{ min-height:40px; margin-left:var(--sp-2); }
 /* 전역 Trend */
 .trend-page{ max-width:1180px; margin:auto; min-width:0; }
-.trend-heading{ margin-bottom:var(--sp-5); }
+.trend-heading{ display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:var(--sp-3); margin-bottom:var(--sp-5); }
+.trend-marks{ display:flex; flex-direction:column; gap:var(--sp-1); font:600 12px/1.4 var(--mono); }
+.trend-marks select{ min-height:40px; font:400 13px var(--sans); }
+.trend-scroll{ overflow-x:auto; max-width:100%; }
+.trend-chart text{ fill:currentColor; font:11px var(--mono); }
+.trend-sort{ min-height:40px; padding:0 var(--sp-1); background:none; border:0; color:inherit; font:inherit; cursor:pointer; }
 .trend-heading h1{ margin:0; font:650 24px/1.4 var(--sans); }
 .trend-heading p{ margin:var(--sp-1) 0; }
 .trend-heading .eyebrow{ color:var(--dim); font:600 11px/1.4 var(--mono); letter-spacing:var(--track-label); }
