@@ -2457,11 +2457,11 @@ def check_list_sort(page, shots):
                     const child = firstGlyph(document.querySelector('#list-body tr[data-ref="TEST-61-1"] td.ref'));
                     const font = getComputedStyle(document.querySelector('#list-body td.ref')).font;
                     const canvas = document.createElement('canvas').getContext('2d'); canvas.font = font;
-                    return {gap: child.left - parent.left, twoChars: canvas.measureText('00').width,
+                    return {gap: child.left - parent.left, oneChar: canvas.measureText('0').width,
                         parentRight: parent.right, childRight: child.right,
                         scrollWidth: document.documentElement.scrollWidth};
                 }""")
-                assert abs(positions['gap'] - positions['twoChars']) <= 5, (theme, width, positions)
+                assert abs(positions['gap'] - positions['oneChar']) <= 5, (theme, width, positions)
                 assert max(positions['parentRight'], positions['childRight']) <= width, (theme, width, positions)
                 assert positions['scrollWidth'] <= width, (theme, width, positions)
                 if width != 960:
