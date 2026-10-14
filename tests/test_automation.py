@@ -35,7 +35,7 @@ with db.connect() as c:
     for table in tables:
         added = (None, None) if table == 'jobs' else (0,) if table == 'project_auto_settings' else ("project",) if table == 'project_auto_settings_events' else ('',) if table == 'runs' else ()
         model = (None,) if table in ('jobs', 'runs') else ()   # DEV-89-4 model 컬럼
-        lifecycle = (None, None) if table == 'issues' else ()   # 근거 없는 생애 시각은 NULL로 확장한다.
+        lifecycle = (None, None, None, '', None, None) if table == 'issues' else ()   # 근거 없는 생애 시각은 NULL, 평점·리뷰·평가 시각·평가자(DEV-126-1)는 NULL·''로 확장한다.
         service = ('', 0, '', 'auto') if table == 'projects' else ()
         assert [r + added + ((r[0],) if table == 'jobs' else ()) + model + lifecycle + service for r in before[table]] ==[tuple(r) for r in c.execute(f'SELECT * FROM "{table}"')], table
     job = c.execute('SELECT * FROM jobs WHERE issue_id=?', (legacy['id'],)).fetchone()
@@ -421,7 +421,7 @@ with patch.object(config, 'DB_PATH', old_path):
                 assert after[-1][2] == 'system:migration/task-result-approval'
                 assert json.loads(after[-1][4])['auto_approve'] is False
             elif table == 'issues':
-                assert after == [r + (None, None) for r in snapshot[table]], table
+                assert after == [r + (None, None, None, '', None, None) for r in snapshot[table]], table
             elif table == 'projects':
                 assert after == [r + ('', 0, '', 'auto') for r in snapshot[table]], table
             else:
