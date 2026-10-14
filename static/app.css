@@ -806,6 +806,10 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 
 /* 목록·Task·보드가 같은 토큰 상태를 표시한다. */
 .issue-tokens{ font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.issue-tokens-lines{ display:inline-flex; flex-direction:column; align-items:flex-start; gap:2px; min-width:0; vertical-align:middle; }
+.issue-tokens-own{ display:inline-flex; align-items:baseline; gap:4px; min-width:0; }
+.issue-tokens-label{ flex:none; white-space:nowrap; font-size:11px; color:var(--dim); }
+.issue-tokens-tasks{ white-space:nowrap; }
 @media(min-width:801px) and (max-width:1100px){ .token-cell{ min-width:112px; max-width:160px; } }
 @media(min-width:1101px) and (max-width:1450px){
   .ops-split:has(#list-body){ display:flex; flex-direction:column; align-items:stretch; }
@@ -822,4 +826,4 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .token-explanation{ margin:var(--sp-2) 0 0; font-size:12px; color:var(--dim); overflow-wrap:anywhere; }
 .issue-token-detail > div{ min-width:0; }
 .task-history, .issue-history-mobile{ flex-wrap:wrap; }
-@media(max-width:800px){ .issue-history-mobile .issue-tokens{ flex-basis:100%; } }
+@media(max-width:800px){ .issue-history-mobile .issue-tokens, .issue-history-mobile .issue-tokens-lines{ flex-basis:100%; } }

@@ -200,3 +200,10 @@ def token_usage_fixture():
                     running_run_count=running, partial=bool(unknown or running))
     return [usage(), usage(runs=1), usage(1500, 1), usage(300, 2, 1),
             usage(runs=1, unknown=1), usage(400, 2, 1, 1), usage(1234567890123, 1)]
+
+
+def task_token_usage_fixture(running=0):
+    """완료된 Task 둘의 합계와 실행 중인 합계를 재현한다."""
+    return dict(input_tokens=1500, output_tokens=300, total_tokens=1800,
+                run_count=2, unmeasured_run_count=0, running_run_count=running,
+                partial=bool(running), task_count=2)

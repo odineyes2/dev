@@ -3320,7 +3320,7 @@ def check_chat_connections(page, shots):
 
 def check_issue_tokens(page, shots):
     """모의 집계를 목록·보드·상세·Task와 새로고침으로 확인한다."""
-    from ui_fixture import token_usage_fixture
+    from ui_fixture import token_usage_fixture, task_token_usage_fixture
     previous = page.evaluate("({project: localStorage.getItem('dev.project'), theme: localStorage.getItem('dev.theme')})")
     page.set_viewport_size({'width': 1300, 'height': 850})
     H = {'X-Requested-With': 'dev'}
@@ -3339,6 +3339,7 @@ def check_issue_tokens(page, shots):
         data = response.json()
         def decorate(row):
             row['token_usage'] = by_ref[row['ref']]['token_usage']
+            row['task_token_usage'] = by_ref[row['ref']].get('task_token_usage')
             if wide_history and row['ref'] == rows[-1]['ref']:
                 row.update(completion_seconds=9876543210, processing_agents=['claude', 'codex'])
             for child in row.get('children', []):
@@ -3519,6 +3520,28 @@ def check_issue_tokens(page, shots):
     assert '6.1M' in page.inner_text('.trend-daily table')
     page.unroute('**/api/trends?*', trends)
     page.request.put(BASE + '/api/settings/tokens', headers=H, data={'unit':'auto'})
+    by_ref['TOK-1']['task_token_usage'] = task_token_usage_fixture(running=1)
+    page.goto(BASE + '/#/?project=TOK'); page.wait_for_selector('tr[data-ref="TOK-1"]')
+    assert page.locator('tr[data-ref="TOK-1"] .issue-tokens-tasks').count() == 0
+    assert page.locator('tr[data-ref="TOK-1-1"] .issue-tokens-tasks').count() == 0
+    by_ref['TOK-1']['task_token_usage'] = task_token_usage_fixture()
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    for route, selector in [('#/?project=TOK', 'tr[data-ref="TOK-1"] .token-cell'),
+                            ('#/board', '.card[data-ref="TOK-1"]'),
+                            ('#/issue/TOK-1', '.issue-token-detail')]:
+        page.goto(BASE + '/' + route); page.wait_for_selector(selector)
+        box = page.locator(selector)
+        assert box.locator('.issue-tokens').first.inner_text() == '1,500'
+        assert box.locator('.issue-tokens-tasks').inner_text() == 'Task 합계 1,800'
+        assert box.locator('.issue-tokens-label').inner_text() == '자신'
+        assert '1,800' in box.locator('.issue-tokens-tasks').get_attribute('title')
+        for theme in ('light', 'dark'):
+            page.evaluate("t => {localStorage.setItem('dev.theme', t); paintTheme()}", theme)
+            for width in (1300, 390):
+                page.set_viewport_size({'width': width, 'height': 850})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), (route, theme, width)
+                page.screenshot(path=str(shots / f'tokens_tasks_{route.split("/")[1].split("?")[0] or "list"}_{theme}_{width}.png'), full_page=True)
+    page.set_viewport_size({'width': 1300, 'height': 850})
     page.unroute('**/api/issues?*')
     page.unroute('**/api/issues/TOK-*')
     page.set_viewport_size({'width': 1300, 'height': 850})
@@ -4352,7 +4375,7 @@ try:
                     b = document.querySelector(m).getBoundingClientRect();
                     return j.left >= b.right && j.top < b.bottom && b.top < j.bottom ? 'side' : j.bottom <= b.top ? 'above' : 'other'; }""", main)
                 page.wait_for_selector('#list-body tr.row')   # 목록이 아직 비어 있으면(높이 0) 자리를 잴 수 없다
-                assert side_of('#list-body') == ('side' if tag == 'desktop' else 'above'), (scheme, tag)
+                assert side_of('#list-body') == 'above', (scheme, tag)   # 목록은 1450px 이하에서 표 전체 폭을 쓰려고 대기열을 위로(DEV-123-1)
                 assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
                 page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
                 page.click('[data-st="waiting"]')

@@ -409,22 +409,29 @@ function formatDuration(seconds){
 function completionTimeHtml(i){
   return ['done', 'closed'].includes(i.status) ? `<span class="completion-time" title="최초 작업 시작부터 종결까지 · 대기와 검토 시간 포함">${formatDuration(i.completion_seconds)}</span>` : '';
 }
-// 서버가 보존한 직접 실행분만 표시하며 미측정을 실제 0과 구분한다.
+// 직접 실행분과 확정된 하위 Task 합계를 분리해 표시한다.
 function issueTokensHtml(i, detail = false){
   const u = i.token_usage;
   const number = n => Number(n).toLocaleString('ko-KR');
-  let text, explanation;
-  if(!u){ text = '미측정'; explanation = '토큰 집계 정보가 아직 없어요.'; }
-  else {
+  const describe = usage => {
+    if(!usage) return {text:'미측정', explanation:'토큰 집계 정보가 아직 없어요.'};
+    const u = usage;
     const measured = u.run_count > u.unmeasured_run_count;
     const partial = u.partial || u.unmeasured_run_count > 0 || u.running_run_count > 0;
     const total = number(u.total_tokens);
-    text = !u.run_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${formatTokens(u.total_tokens)}`;
+    let text = !u.run_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${formatTokens(u.total_tokens)}`;
     if(u.running_run_count) text += ' · 실행 중';
-    explanation = `입력 ${number(u.input_tokens)} · 출력 ${number(u.output_tokens)} · 합계 ${total} 토큰 · 미측정 ${number(u.unmeasured_run_count)}회 · 실행 중 ${number(u.running_run_count)}회`;
-  }
-  explanation += ' · 이 Issue의 직접 실행분이에요. 하위 Task와 수집되지 않은 외부 대화는 합산하지 않아요.';
-  return `<span class="issue-tokens" title="${esc(explanation)}" aria-label="${esc(text + ' · ' + explanation)}">${esc(text)}</span>${detail ? `<p class="token-explanation">${esc(explanation)}</p>` : ''}`;
+    return {text, explanation:`입력 ${number(u.input_tokens)} · 출력 ${number(u.output_tokens)} · 합계 ${total} 토큰 · 미측정 ${number(u.unmeasured_run_count)}회 · 실행 중 ${number(u.running_run_count)}회`};
+  };
+  const own = describe(u);
+  const explanation = own.explanation + ' · 이 Issue의 직접 실행분이에요. 수집되지 않은 외부 대화는 합산하지 않아요.';
+  const ownHtml = `<span class="issue-tokens" title="${esc(explanation)}" aria-label="${esc(own.text + ' · ' + explanation)}">${esc(own.text)}</span>`;
+  const tasks = i.task_token_usage;
+  if(!tasks || !tasks.task_count || tasks.running_run_count) return ownHtml + (detail ? `<p class="token-explanation">${esc(explanation)}</p>` : '');
+  const task = describe(tasks);
+  const taskExplanation = task.explanation + ` · 하위 Task ${number(tasks.task_count)}개의 직접 실행분 합계예요.`;
+  const taskHtml = `<span class="issue-tokens issue-tokens-tasks" title="${esc(taskExplanation)}" aria-label="${esc('Task 합계 ' + task.text + ' · ' + taskExplanation)}">Task 합계 ${esc(task.text)}</span>`;
+  return `<span class="issue-tokens-lines"><span class="issue-tokens-own"><span class="issue-tokens-label">자신</span>${ownHtml}</span>${taskHtml}</span>${detail ? `<p class="token-explanation">${esc(explanation)}<br>${esc(taskExplanation)}</p>` : ''}`;
 }
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
