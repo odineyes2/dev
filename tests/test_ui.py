@@ -2442,12 +2442,30 @@ def check_list_sort(page, shots):
         page.click('.tog')
         assert page.locator('tr.child:visible').count() == 3
         for theme in ('light', 'dark'):
-            for width in (1300, 390):
+            for width in (1300, 960, 390):
                 page.evaluate("s => {document.documentElement.dataset.theme=s}", theme)
                 page.set_viewport_size({'width': width, 'height': 850})
                 page.wait_for_timeout(150)
-                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-                page.screenshot(path=str(shots / f'list-sort-{theme}-{width}.png'), full_page=True)
+                positions = page.evaluate("""() => {
+                    const firstGlyph = cell => {
+                        const node = [...cell.childNodes].find(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+                        const start = node.textContent.search(/\\S/), range = document.createRange();
+                        range.setStart(node, start); range.setEnd(node, start + 1);
+                        return range.getBoundingClientRect();
+                    };
+                    const parent = firstGlyph(document.querySelector('#list-body tr[data-ref="TEST-61"] td.ref'));
+                    const child = firstGlyph(document.querySelector('#list-body tr[data-ref="TEST-61-1"] td.ref'));
+                    const font = getComputedStyle(document.querySelector('#list-body td.ref')).font;
+                    const canvas = document.createElement('canvas').getContext('2d'); canvas.font = font;
+                    return {gap: child.left - parent.left, twoChars: canvas.measureText('00').width,
+                        parentRight: parent.right, childRight: child.right,
+                        scrollWidth: document.documentElement.scrollWidth};
+                }""")
+                assert abs(positions['gap'] - positions['twoChars']) <= 5, (theme, width, positions)
+                assert max(positions['parentRight'], positions['childRight']) <= width, (theme, width, positions)
+                assert positions['scrollWidth'] <= width, (theme, width, positions)
+                if width != 960:
+                    page.screenshot(path=str(shots / f'list-sort-{theme}-{width}.png'), full_page=True)
     finally:
         page.unroute('**/api/issues?*')
         page.unroute('**/api/projects/TEST/auto-settings')
