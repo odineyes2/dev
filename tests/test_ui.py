@@ -13,6 +13,7 @@ def check_trends(page):
     """Trend 필터·일별 값·상위 작업·부분 집계와 실패 상태를 임시 응답으로 확인한다."""
     headers = {'X-Requested-With': 'dev'}
     assert page.request.post(BASE + '/api/projects', headers=headers, data={'key': 'TRND', 'name': 'Trend 검사'}).ok
+    page.reload(); page.wait_for_selector('#shell:not([hidden])')
     calls = []
     def respond(route):
         calls.append(route.request.url)
@@ -2139,6 +2140,15 @@ def check_project_usage(page, shots):
     assert '실행 시간 미계측 1회' in page.inner_text('.usage-measurement')
     assert page.evaluate('window.usageXSS') is None
     assert page.locator('#usage-prev').is_disabled() and page.locator('#usage-next').is_disabled()
+    with sqlite3.connect(tmp / 'data/dev.db') as db:
+        db.execute('UPDATE runs SET input_tokens=6100000 WHERE issue_id=?', (parent['id'],))
+    page.request.put(BASE + '/api/settings/tokens', headers=H, data={'unit':'k'})
+    page.reload(); page.wait_for_selector('#usage-body[aria-busy="false"]')
+    assert '6,100k' in page.inner_text('.usage-summary')
+    page.request.put(BASE + '/api/settings/tokens', headers=H, data={'unit':'M'})
+    page.reload(); page.wait_for_selector('#usage-body[aria-busy="false"]')
+    assert '6.1M' in page.inner_text('.usage-summary')
+    assert '6.1M' in page.inner_text('.usage-table')
     for theme in ('light', 'dark'):
         for width, height in ((1300, 850), (390, 800)):
             page.set_viewport_size({'width': width, 'height': height})
@@ -2149,6 +2159,9 @@ def check_project_usage(page, shots):
             page.keyboard.press('Enter'); page.wait_for_selector('#usage-body[aria-busy="false"]')
             assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
             page.screenshot(path=str(shots / f'usage_{theme}_{width}.png'), full_page=True)
+    page.request.put(BASE + '/api/settings/tokens', headers=H, data={'unit':'auto'})
+    with sqlite3.connect(tmp / 'data/dev.db') as db:
+        db.execute('UPDATE runs SET input_tokens=100 WHERE issue_id=?', (parent['id'],))
     page.set_viewport_size({'width': 1300, 'height': 850})
     link = page.locator(f'.usage-issue[href="#/issue/{parent["ref"]}"]')
     link.focus(); page.keyboard.press('Enter'); page.wait_for_selector('#title')
@@ -3360,7 +3373,7 @@ def check_issue_tokens(page, shots):
     page.goto(BASE + '/#/board'); page.wait_for_selector('.card .issue-tokens')
     assert page.locator('.card[data-ref="TOK-1"] .issue-tokens').inner_text() == '1,500 토큰'
     page.goto(BASE + '/#/issue/' + rows[-1]['ref']); page.wait_for_selector('.issue-token-detail')
-    assert page.locator('.issue-token-detail .issue-tokens').inner_text() == '1,234,567,890,123 토큰'
+    assert page.locator('.issue-token-detail .issue-tokens').inner_text() == '1.2T 토큰'
     # 생성·변경 응답에 집계 필드가 없어도 예외 없이 표시한다.
     assert '미측정' in page.evaluate("issueTokensHtml({})")
     # 끝난 이슈의 긴 완료 시간 때문에 표가 대기열 열로 넘치던 경우.
@@ -3386,6 +3399,91 @@ def check_issue_tokens(page, shots):
     page.screenshot(path=str(shots / 'tokens_completed_queue.png'), full_page=True)
     page.uncheck('#show-closed')
     page.wait_for_function("document.querySelector('#list-body').getAttribute('aria-busy') === 'false'")
+    # 전역 단위를 바꾸고 화면 이동·새로고침 뒤 같은 수치를 사용한다.
+    page.goto(BASE + '/#/settings/tokens'); page.wait_for_selector('#token-unit')
+    assert page.input_value('#token-unit') == 'auto'
+    page.select_option('#token-unit', 'k')
+    page.wait_for_function("document.querySelector('#token-status').textContent.includes('저장했어요')")
+    assert page.request.get(BASE + '/api/settings/tokens').json()['unit'] == 'k'
+    page.goto(BASE + '/#/issue/' + rows[-1]['ref']); page.wait_for_selector('.issue-token-detail')
+    assert '1,234,567,890k 토큰' in page.inner_text('.issue-token-detail')
+    assert '1,234,567,890,123' in page.locator('.issue-token-detail .issue-tokens').get_attribute('title')
+    page.reload(); page.wait_for_selector('.issue-token-detail')
+    assert '1,234,567,890k 토큰' in page.inner_text('.issue-token-detail')
+    for theme in ('light', 'dark'):
+        page.evaluate("t => {localStorage.setItem('dev.theme', t); paintTheme()}", theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width':width, 'height':850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.screenshot(path=str(shots / f'tokens_k_detail_{theme}_{width}.png'), full_page=True)
+    page.goto(BASE + '/#/board'); page.wait_for_selector('.card .issue-tokens')
+    assert page.locator('.card[data-ref="TOK-1-1"] .issue-tokens').inner_text() == '0 토큰'
+    page.goto(BASE + '/#/settings/tokens'); page.wait_for_selector('#token-unit')
+    assert page.input_value('#token-unit') == 'k'
+    def reject_unit(route): route.fulfill(status=503, json={'detail':'임시 저장 오류'})
+    page.route('**/api/settings/tokens', reject_unit)
+    page.select_option('#token-unit', 'full')
+    page.wait_for_function("document.querySelector('#token-status').textContent.includes('임시 저장 오류')")
+    assert page.input_value('#token-unit') == 'k'
+    page.unroute('**/api/settings/tokens', reject_unit)
+    page.select_option('#token-unit', 'M')
+    page.wait_for_function("document.querySelector('#token-status').textContent.includes('저장했어요')")
+    assert page.evaluate("formatTokens(6100000)") == '6.1M'
+    assert page.evaluate("formatTokens(12)") == '12'
+    assert page.evaluate("formatTokens(0)") == '0'
+    assert page.evaluate("formatTokens(null)") == '미측정'
+    def qa_round(route):
+        route.fulfill(json={'rework_count':0, 'rework_limit':5, 'rounds':[
+            {'round_number':1, 'status':'passed', 'provider':'codex', 'model':'test',
+             'input_tokens':6100000, 'output_tokens':0, 'cost_usd':None,
+             'items':[], 'rework_batches':[], 'note':''}]})
+    page.route('**/api/issues/TOK-1/qa', qa_round)
+    page.goto(BASE + '/#/issue/TOK-1'); page.wait_for_selector('.qa-status')
+    assert '6.1M/0' in page.inner_text('#qa-card')
+    assert '6,100,000' in page.locator('#qa-card span[title]').first.get_attribute('title')
+    for theme in ('light', 'dark'):
+        page.evaluate("t => {localStorage.setItem('dev.theme', t); paintTheme()}", theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width':width, 'height':850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.screenshot(path=str(shots / f'tokens_m_qa_{theme}_{width}.png'), full_page=True)
+    page.unroute('**/api/issues/TOK-1/qa', qa_round)
+    page.set_viewport_size({'width':1300, 'height':850})
+    page.goto(BASE + '/#/'); page.wait_for_selector('.token-cell')
+    page.check('#show-closed'); page.wait_for_selector(f'tr[data-ref="{rows[-1]["ref"]}"]')
+    assert page.locator(f'tr[data-ref="{rows[-1]["ref"]}"] .token-cell .issue-tokens').inner_text() == '1,234,568M 토큰'
+    for theme in ('light', 'dark'):
+        page.evaluate("t => {localStorage.setItem('dev.theme', t); paintTheme()}", theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width':width, 'height':850})
+            page.screenshot(path=str(shots / f'tokens_m_list_{theme}_{width}.png'), full_page=True)
+            actual = page.evaluate('document.documentElement.scrollWidth')
+            assert actual <= width + 1, (theme, width, actual)
+    def summary(route):
+        route.fulfill(json={'summary': {'created_issue_count': 1, 'completed_issue_count': 0,
+            'agent_seconds': 0, 'total_tokens': 6100000, 'partial': True}})
+    page.route('**/api/issue-summary?*', summary)
+    page.reload(); page.wait_for_selector('.issue-summary-content strong span[title]')
+    assert '6.1M' in page.inner_text('.issue-summary-content')
+    assert '부분 집계' not in page.inner_text('.issue-summary-content')
+    assert '6,100,000' in page.locator('.issue-summary-content strong span[title]').get_attribute('title')
+    page.unroute('**/api/issue-summary?*', summary)
+    def trends(route):
+        route.fulfill(json={'from_date':'2026-10-13', 'to_date':'2026-10-13',
+            'as_of':'2026-10-13T00:00:00+00:00', 'note':'임시 자료',
+            'summary':{'created_issue_count':1, 'completed_issue_count':0, 'agent_seconds':0,
+                       'total_tokens':6100000, 'partial':False},
+            'days':[{'date':'2026-10-13', 'created_issue_count':1, 'completed_issue_count':0,
+                     'agent_seconds':0, 'total_tokens':6100000}],
+            'top_issues':[{'ref':'TOK-1', 'title':'토큰 상태', 'total_tokens':6100000}]})
+    page.route('**/api/trends?*', trends)
+    page.goto(BASE + '/#/trends'); page.wait_for_selector('.trend-card')
+    assert '6.1M' in page.locator('.trend-card[aria-label="토큰"]').inner_text()
+    assert '6.1M' in page.inner_text('.trend-ranking')
+    page.locator('.trend-daily summary').click()
+    assert '6.1M' in page.inner_text('.trend-daily table')
+    page.unroute('**/api/trends?*', trends)
+    page.request.put(BASE + '/api/settings/tokens', headers=H, data={'unit':'auto'})
     page.unroute('**/api/issues?*')
     page.unroute('**/api/issues/TOK-*')
     page.set_viewport_size({'width': 1300, 'height': 850})
@@ -3421,7 +3519,7 @@ def check_issue_summary(page):
     page.goto(BASE + '/#/')
     page.wait_for_function("document.querySelector('.issue-summary-content')?.getAttribute('aria-busy') === 'false'")
     assert page.locator('#issue-summary [aria-pressed="true"]').inner_text() == '오늘'
-    assert '1,234' in page.inner_text('#issue-summary') and '부분 집계' in page.inner_text('#issue-summary')
+    assert '1,234' in page.inner_text('#issue-summary') and '부분 집계' not in page.inner_text('#issue-summary')
     assert page.locator('.issue-summary-note').count() == 0
     assert '현재 보존된 기록' not in page.inner_text('#issue-summary')
     for key in ('month', 'year', 'all', 'today'):

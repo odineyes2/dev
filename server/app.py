@@ -560,6 +560,19 @@ def api_global_auto_settings():
     return auto_settings.get_settings()
 
 
+@app.get('/api/settings/tokens')
+def api_token_settings(request: Request):
+    human_only(request)
+    import token_settings
+    return token_settings.get_settings()
+
+
+@app.put('/api/settings/tokens')
+async def api_update_token_settings(request: Request):
+    import token_settings
+    return token_settings.update_settings(human_only(request), await json_body(request))
+
+
 @app.patch("/api/settings/auto")
 async def api_update_global_auto_settings(request: Request):
     import auto_settings

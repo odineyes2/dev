@@ -11,11 +11,31 @@ let me = null;
 let restartGraceUntil = 0;
 let projects = [];
 let agentsById = new Map();
+let tokenUnit = 'auto';
 const view = document.getElementById('view');
 
 // ---- 공용 ----
 function esc(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function formatTokens(value){
+  if(value == null) return '미측정';
+  const n = Number(value);
+  if(!Number.isFinite(n)) return '미측정';
+  if(n === 0) return '0';
+  let unit = tokenUnit;
+  if(unit === 'auto') unit = Math.abs(n) >= 1e12 ? 'T' : Math.abs(n) >= 1e9 ? 'B' : Math.abs(n) >= 1e6 ? 'M' : Math.abs(n) >= 1e4 ? 'k' : 'full';
+  if(unit === 'full') return n.toLocaleString('ko-KR');
+  const divisor = {k:1e3, M:1e6, B:1e9, T:1e12}[unit];
+  const scaled = n / divisor;
+  if(Math.abs(scaled) < 0.1) return n.toLocaleString('ko-KR');
+  const digits = Math.abs(scaled) >= 100 ? 0 : 1;
+  return `${Number(scaled.toFixed(digits)).toLocaleString('ko-KR', {maximumFractionDigits:digits})}${unit}`;
+}
+function tokenHtml(value){
+  const label = formatTokens(value);
+  const exact = value == null ? '' : ` title="${esc(Number(value).toLocaleString('ko-KR'))} 토큰"`;
+  return `<span${exact}>${esc(label)}</span>`;
 }
 function toast(msg){
   const el = document.getElementById('toast');
@@ -251,6 +271,7 @@ async function route(){
     else if(name === 'settings' && settingsTab === 'types') await renderTypes();
     else if(name === 'settings' && settingsTab === 'regression') await renderRegressionSettings();
     else if(name === 'settings' && settingsTab === 'fonts') renderFontSettings();
+    else if(name === 'settings' && settingsTab === 'tokens') await renderTokenSettings();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
   }catch(e){ if(!view.innerHTML) view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   perfReport(name || 'issues', t0);
@@ -398,9 +419,7 @@ function issueTokensHtml(i, detail = false){
     const measured = u.run_count > u.unmeasured_run_count;
     const partial = u.partial || u.unmeasured_run_count > 0 || u.running_run_count > 0;
     const total = number(u.total_tokens);
-    const unit = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e4, 'k']].find(([min]) => u.total_tokens >= min);
-    const compact = unit ? `${(u.total_tokens / (unit[1] === 'k' ? 1000 : unit[0])).toFixed(1)}${unit[1]}` : total;
-    text = !u.run_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${detail ? total : compact} 토큰${partial ? ' · 부분 집계' : ''}`;
+    text = !u.run_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${formatTokens(u.total_tokens)} 토큰${partial ? ' · 부분 집계' : ''}`;
     if(u.running_run_count) text += ' · 실행 중';
     explanation = `입력 ${number(u.input_tokens)} · 출력 ${number(u.output_tokens)} · 합계 ${total} 토큰 · 미측정 ${number(u.unmeasured_run_count)}회 · 실행 중 ${number(u.running_run_count)}회`;
   }
@@ -469,6 +488,7 @@ function trendDateBefore(today, days){
   return d.toISOString().slice(0, 10);
 }
 function trendValue(key, value){
+  if(key === 'total_tokens') return tokenHtml(value);
   if(key !== 'agent_seconds') return summaryNumber(value);
   return Number(value) > 0 && Number(value) < 60 ? `${Math.round(value)}초` : summaryDuration(value);
 }
@@ -529,7 +549,7 @@ async function loadTrend(){
       ${s.partial ? `<p class="trend-partial" role="status">부분 집계 · 토큰 미계측 실행 ${summaryNumber(s.unmeasured_run_count)}건, 시간 미계측 실행 ${summaryNumber(s.unmeasured_duration_run_count)}건, 진행 중 ${summaryNumber(s.running_run_count)}건</p>` : ''}
       ${noActivity ? '<div class="empty">이 기간에는 기록된 활동이 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>' : `<div class="trend-grid">${TREND_METRICS.map(([key,label,unit]) => `<section class="trend-card" aria-label="${label}"><h2>${label}</h2><strong>${trendValue(key, s[key])}</strong><span class="dim">${unit ? unit + ' · ' : ''}기간 합계</span>${trendChart(data.days, key, label)}</section>`).join('')}</div>`}
       <section class="trend-ranking"><h2>토큰 상위 작업</h2><p class="dim">선택 기간에 시작한 Issue와 Task의 직접 실행 토큰만 순위에 포함해요.</p>
-      ${data.top_issues.length ? `<ol>${data.top_issues.map(item => `<li><a href="#/issue/${encodeURIComponent(item.ref)}"><span class="ref">${esc(item.ref)}</span> ${esc(item.title)}</a><strong>${summaryNumber(item.total_tokens)}</strong></li>`).join('')}</ol>` : '<div class="empty">이 기간에 측정된 작업 토큰이 없어요.</div>'}</section>
+      ${data.top_issues.length ? `<ol>${data.top_issues.map(item => `<li><a href="#/issue/${encodeURIComponent(item.ref)}"><span class="ref">${esc(item.ref)}</span> ${esc(item.title)}</a><strong>${tokenHtml(item.total_tokens)}</strong></li>`).join('')}</ol>` : '<div class="empty">이 기간에 측정된 작업 토큰이 없어요.</div>'}</section>
       <details class="trend-daily"><summary>일별 값 표로 보기</summary><div class="trend-table-wrap"><table><thead><tr><th>날짜</th>${TREND_METRICS.map(([,label]) => `<th>${label}</th>`).join('')}</tr></thead><tbody>${data.days.map(day => `<tr><th>${esc(day.date)}</th>${TREND_METRICS.map(([key]) => `<td>${trendValue(key, day[key])}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details>
       <p class="dim trend-note">${esc(data.note)} 완료 Issue는 현재 Done 상태와 마지막 완료일을 기준으로 해요. 진행 중 실행은 조회 시각까지 포함해요. 미계측 값과 삭제된 기록은 합계에 포함되지 않아요.</p>`;
   }catch(e){ if(current()) results.innerHTML = `<div class="empty" role="alert">Trend를 불러오지 못했어요. ${esc(e.message)} <button type="button" id="trend-retry">다시 불러오기</button></div>`; }
@@ -555,7 +575,7 @@ async function loadIssueSummary(){
       <div><span>생성 Issue</span><strong>${summaryNumber(s.created_issue_count)}</strong></div>
       <div><span>완료 Issue</span><strong>${summaryNumber(s.completed_issue_count)}</strong></div>
       <div><span>에이전트 시간</span><strong>${summaryDuration(s.agent_seconds)}</strong></div>
-      <div><span>토큰</span><strong>${summaryNumber(s.total_tokens)}${s.partial ? ' <small>부분 집계</small>' : ''}</strong></div>
+      <div><span>토큰</span><strong>${tokenHtml(s.total_tokens)}</strong></div>
     </div>`;
   }catch(e){
     if(current()) content.innerHTML = `<span class="issue-summary-error">현황을 불러오지 못했어요. ${esc(e.message)}</span> <button type="button" class="issue-summary-retry">다시 불러오기</button>`;
@@ -827,14 +847,13 @@ function decisionQuestions(body){   // 계획서의 "정해야 할 것" 절의 �
 const RUN_STATUS = { running: ['in_progress', '도는 중'], ok: ['done', '완료'], failed: ['changes_requested', '실패'], timeout: ['in_progress', '시간 초과'], orphaned: ['on_hold', '끊김'] };
 const PROVIDER_NAME = { claude: 'Claude', codex: 'Codex' };
 const RUN_MODE = { review: '검토', execute: '실행' };
-function fmtTokens(n){ return n == null ? '' : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
 function runsHtml(runs){
   if(!runs.length) return '<div class="dim hint">아직 실행 기록이 없어요.</div>';
   return `<ul class="runs">${runs.map(r => {
     const [color, label] = RUN_STATUS[r.status] || ['closed', r.status];
     const sec = r.ended_at ? Math.round((new Date(r.ended_at) - new Date(r.started_at)) / 1000) : null;
     const dur = sec == null ? '' : sec >= 60 ? `${Math.floor(sec / 60)}분 ${sec % 60}초` : `${sec}초`;
-    const tok = r.input_tokens == null && r.output_tokens == null ? '' : `토큰 ${fmtTokens(r.input_tokens)} → ${fmtTokens(r.output_tokens)}${r.cost_usd != null ? ` · $${r.cost_usd.toFixed(2)}` : ''}`;
+    const tok = r.input_tokens == null && r.output_tokens == null ? '' : `토큰 ${tokenHtml(r.input_tokens)} → ${tokenHtml(r.output_tokens)}${r.cost_usd != null ? ` · $${r.cost_usd.toFixed(2)}` : ''}`;
     return `<li><div><span class="status" style="--sc:var(--s-${color})">${label}</span> ${PROVIDER_NAME[r.provider] || 'Claude'} ${RUN_MODE[r.mode] || r.mode}${r.model ? `<span class="model">${esc(r.model)}</span>` : ''} <span class="dim">${fmtTime(r.started_at)}</span></div>
       <div class="dim">${[dur, tok].filter(Boolean).join(' · ')}</div>
       ${r.note ? `<div class="dim">${esc(r.note)}</div>` : ''}${r.log_file ? `<div class="dim"><code>${esc(r.log_file)}</code></div>` : ''}</li>`;
@@ -896,7 +915,7 @@ function troubleshootingHtml(it){
   const f = t.failure, labels = {queued:'대기',running:'복구 실행 중',succeeded:'코드 복구 완료',failed:'복구 실패',cancelled:'취소',needs_input:'확인 필요'};
   return `<section class="panel troubleshooting"><h2>트러블슈팅</h2>
     ${f ? `<p>원 실행 #${f.source_run_id} · Plan v${f.plan_version}</p><p class="dim">${esc(f.blocked || f.hint || '코드·테스트 실패를 복구할 수 있어요.')}</p>${f.available ? '<button id="ask-troubleshoot" title="승인된 Plan 안에서 기존 작업을 이어받아요. 추가 CLI 호출은 1회·최대 10분이며 사용량이 발생해요.">트러블슈팅 요청</button>' : ''}<button id="copy-troubleshooting" class="secondary">진단 복사</button><details><summary>실패 진단</summary><pre>${esc(f.diagnostic)}</pre></details>` : ''}
-    ${t.requests.map(r => `<details><summary>TS-${r.id} · ${labels[r.status]} · 원 실행 #${r.source_run_id}${r.run_id ? ` → 복구 #${r.run_id}` : ''}</summary><p>${esc(r.provider || '대기')} · ${esc(r.model || '')} · ${r.automatic ? '자동' : '수동'}</p><p class="dim">요청: ${esc(r.actor || '')} · ${fmtTime(r.created_at)}${r.started_at ? `<br>시작: ${fmtTime(r.started_at)}` : ''}${r.ended_at ? `<br>종료: ${fmtTime(r.ended_at)}` : ''}</p><pre>${esc(r.diagnostic)}</pre><p class="dim">복구 호출의 토큰: 입력 ${r.input_tokens ?? '미측정'} · 출력 ${r.output_tokens ?? '미측정'} · 비용 ${r.cost_usd == null ? '미측정' : '$' + r.cost_usd}</p></details>`).join('')}</section>`;
+    ${t.requests.map(r => `<details><summary>TS-${r.id} · ${labels[r.status]} · 원 실행 #${r.source_run_id}${r.run_id ? ` → 복구 #${r.run_id}` : ''}</summary><p>${esc(r.provider || '대기')} · ${esc(r.model || '')} · ${r.automatic ? '자동' : '수동'}</p><p class="dim">요청: ${esc(r.actor || '')} · ${fmtTime(r.created_at)}${r.started_at ? `<br>시작: ${fmtTime(r.started_at)}` : ''}${r.ended_at ? `<br>종료: ${fmtTime(r.ended_at)}` : ''}</p><pre>${esc(r.diagnostic)}</pre><p class="dim">복구 호출의 토큰: 입력 ${tokenHtml(r.input_tokens)} · 출력 ${tokenHtml(r.output_tokens)} · 비용 ${r.cost_usd == null ? '미측정' : '$' + r.cost_usd}</p></details>`).join('')}</section>`;
 }
 function reproductionHtml(it){
   const r = it.execute?.reproduction, result = r?.result;
@@ -2170,7 +2189,7 @@ function bindProjectAudits(project){
     // 재조회에서 발행됐거나 발행 불가가 된 후보는 선택에서 제거한다.
     const eligible = new Set((r.report?.candidates || []).filter(c => ['new_work', 'reuse_issue'].includes(c.disposition) && !publications.has(c.id) && !r.stale).map(c => c.id));
     for(const id of checked) if(!eligible.has(id)) checked.delete(id);
-    detail.innerHTML = `<h4 tabindex="-1" id="audit-report-title">점검 #${r.id} ${state(r.status)}</h4><p class="audit-meta">${esc(r.provider)} · 요청 모델 ${esc(r.model)} · 실제 모델 ${esc(r.actual_model || '아직 미확인')}<br>시작 ${time(r.started_at)} · 종료 ${time(r.ended_at)}<br>기준 ${esc(r.base_branch || '미확인')} · ${esc(r.base_sha || '미확인')}<br>${esc(limitsText(r.limits))}<br>측정 비용 ${r.usage?.cost_measured ? `$${esc(r.usage.cost_usd)}` : '미계측'} · 입력 토큰 ${esc(r.usage?.input_tokens ?? '미계측')} · 출력 토큰 ${esc(r.usage?.output_tokens ?? '미계측')}</p>${r.stale ? `<p class="audit-notice" role="status">오래된 결과예요. ${esc(r.stale_reason)} 새 후보 발행 전에 다시 점검해 주세요.</p>` : ''}${r.error ? `<p class="error" role="alert">${esc(r.error)} 도구와 실행 조건을 확인하고 새 점검을 시작해 주세요.</p>` : ''}${active(r.status) ? `<p role="status">${esc(r.phase || states[r.status])} · 진행 상태를 자동으로 확인해요.</p><button type="button" id="audit-cancel" ${r.status === 'cancelling' || busy ? 'disabled' : ''}>${r.status === 'cancelling' ? '취소 중…' : '점검 취소'}</button>` : ''}
+    detail.innerHTML = `<h4 tabindex="-1" id="audit-report-title">점검 #${r.id} ${state(r.status)}</h4><p class="audit-meta">${esc(r.provider)} · 요청 모델 ${esc(r.model)} · 실제 모델 ${esc(r.actual_model || '아직 미확인')}<br>시작 ${time(r.started_at)} · 종료 ${time(r.ended_at)}<br>기준 ${esc(r.base_branch || '미확인')} · ${esc(r.base_sha || '미확인')}<br>${esc(limitsText(r.limits))}<br>측정 비용 ${r.usage?.cost_measured ? `$${esc(r.usage.cost_usd)}` : '미계측'} · 입력 토큰 ${tokenHtml(r.usage?.input_tokens)} · 출력 토큰 ${tokenHtml(r.usage?.output_tokens)}</p>${r.stale ? `<p class="audit-notice" role="status">오래된 결과예요. ${esc(r.stale_reason)} 새 후보 발행 전에 다시 점검해 주세요.</p>` : ''}${r.error ? `<p class="error" role="alert">${esc(r.error)} 도구와 실행 조건을 확인하고 새 점검을 시작해 주세요.</p>` : ''}${active(r.status) ? `<p role="status">${esc(r.phase || states[r.status])} · 진행 상태를 자동으로 확인해요.</p><button type="button" id="audit-cancel" ${r.status === 'cancelling' || busy ? 'disabled' : ''}>${r.status === 'cancelling' ? '취소 중…' : '점검 취소'}</button>` : ''}
       ${snapshot ? `<details class="audit-materials"><summary>기준 자료와 누락 · 문서 ${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).length}개</summary>${list(snapshot.warnings)}<ul>${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).map(s => `<li>${esc(s.path || s.id)}<small class="dim">${esc(s.hash)}</small></li>`).join('')}</ul><ul>${(snapshot.omissions || []).map(o => `<li>${esc(o.source_id)} · ${esc(o.reason)}</li>`).join('')}</ul>${snapshot.omissions_truncated ? `<p>누락 ${snapshot.omitted_count}개 중 일부만 표시해요.</p>` : ''}</details>` : ''}
       ${r.report ? `<p class="audit-summary">${esc(r.report.summary)}</p><h4>요구사항별 판단</h4>${r.report.requirements.map(q => `<article class="audit-card"><h5>${esc(q.title)} <span class="audit-judgment">${esc(judgments[q.status])}</span></h5><p>${esc(q.assessment)}</p>${evidence(q.evidence, snapshot)}</article>`).join('') || '<div class="empty">판단할 요구사항 근거가 없어요.</div>'}<h4>후속 Issue 후보</h4><p class="dim">선택한 개발 후보를 새 Issue로 발행하고 관련 Issue를 본문에 기재해요. Plan 제안은 자동으로 승인하거나 실행하지 않아요.</p>${r.report.candidates.map(c => {
         const published = publications.get(c.id), selectable = ['new_work', 'reuse_issue'].includes(c.disposition) && !published && !r.stale;
@@ -2191,7 +2210,7 @@ function bindProjectAudits(project){
       `도구: ${r.provider}`, `요청 모델: ${r.model || '미확인'}`, `실제 모델: ${r.actual_model || '미확인'}`,
       `생성: ${r.created_at || '미계측'}`, `시작: ${r.started_at || '미계측'}`, `종료: ${r.ended_at || '미계측'}`,
       `기준 브랜치: ${r.base_branch || '미확인'}`, `기준 커밋: ${r.base_sha || '미확인'}`,
-      limitsText(r.limits), `입력 토큰: ${r.usage?.input_tokens ?? '미계측'} · 출력 토큰: ${r.usage?.output_tokens ?? '미계측'}`,
+      limitsText(r.limits), `입력 토큰: ${formatTokens(r.usage?.input_tokens)} · 출력 토큰: ${formatTokens(r.usage?.output_tokens)}`,
       `측정 비용: ${r.usage?.cost_measured ? `$${r.usage.cost_usd}` : '미계측'}`
     ].join('\n');
     const box = document.createElement('section'); box.className = 'audit-diagnostic';
@@ -2313,7 +2332,7 @@ function bindProjectUsage(project){
       const s = data.summary;
       body.innerHTML = `<dl class="usage-summary">
         ${metric('에이전트 실행 시간', duration(s.agent_seconds), `${number(s.run_count)}회 실행 · ${s.unmeasured_duration_run_count ? `미계측 ${number(s.unmeasured_duration_run_count)}회` : '보존된 실행 기록 기준이에요'}`)}
-        ${metric('측정된 토큰', number(s.total_tokens), `입력 ${number(s.input_tokens)} · 출력 ${number(s.output_tokens)}${s.partial ? ' · 부분 집계예요' : ''}`)}
+         ${metric('측정된 토큰', tokenHtml(s.total_tokens), `입력 ${tokenHtml(s.input_tokens)} · 출력 ${tokenHtml(s.output_tokens)}${s.partial ? ' · 부분 집계예요' : ''}`)}
         ${metric('완료 경과 시간 합계', duration(s.completed_elapsed_seconds), `Done ${number(s.completed_issue_count)}개 · 경과 시간 미계측 ${number(s.unmeasured_completed_issue_count)}개`)}
       </dl><p class="usage-measurement">${esc(missing(s) || '모든 보존된 실행의 토큰과 실행 시간을 측정했어요.')}</p>
       <p class="dim usage-notes">${data.notes.map(esc).join(' ')} 부모 Issue와 Task는 자신의 직접 실행분만 표시해요. 현재 보존된 ${number(s.issue_count)}개 Issue 기준 · ${time(data.as_of)} 조회</p>
@@ -2323,7 +2342,7 @@ function bindProjectUsage(project){
         <td data-label="최초 시작 / 마지막 Done"><div>시작 ${time(row.first_started_at)}</div><div>마지막 Done ${time(row.last_done_at)}</div></td>
         <td data-label="경과 시간"><div>${ongoing ? '진행 경과' : row.status === 'done' ? '완료 경과' : '과거 Done 경과'} ${duration(ongoing ? row.ongoing_elapsed_seconds : row.elapsed_seconds)}</div>${ongoing && row.last_done_at ? `<small class="dim">과거 Done 경과 ${duration(row.elapsed_seconds)}</small>` : ''}</td>
         <td data-label="실행 시간">${duration(row.agent_seconds)}<small class="dim">${number(row.run_count)}회${row.unmeasured_duration_run_count ? ` · 미계측 ${number(row.unmeasured_duration_run_count)}회` : ''}</small></td>
-        <td data-label="측정된 토큰"><div>${number(row.total_tokens)}${row.partial ? ' · 부분 집계' : ''}</div><small class="dim">입력 ${number(row.input_tokens)} · 출력 ${number(row.output_tokens)}</small><small class="dim">${esc(missing(row))}</small></td></tr>`;
+        <td data-label="측정된 토큰"><div>${tokenHtml(row.total_tokens)}${row.partial ? ' · 부분 집계' : ''}</div><small class="dim">입력 ${tokenHtml(row.input_tokens)} · 출력 ${tokenHtml(row.output_tokens)}</small><small class="dim">${esc(missing(row))}</small></td></tr>`;
       }).join('')}</tbody></table><div class="usage-pagination"><button type="button" id="usage-prev" ${offset === 0 ? 'disabled' : ''}>이전</button><span>${number(offset + 1)}–${number(offset + data.issues.length)} / ${number(data.total)}개</span><button type="button" id="usage-next" ${data.has_more ? '' : 'disabled'}>다음</button></div>` : '<div class="empty">아직 Issue가 없어요. Issue를 만들면 사용량을 여기서 확인할 수 있어요.</div>'}`;
       body.querySelector('#usage-prev')?.addEventListener('click', () => load(Math.max(0, offset - data.limit), 'usage-prev'));
       body.querySelector('#usage-next')?.addEventListener('click', () => load(offset + data.limit, 'usage-next'));
@@ -2403,7 +2422,7 @@ async function boot(){
   document.getElementById('open-jupyter').hidden = false;
   document.getElementById('user-chip-name').textContent = me.name;
   document.getElementById('open-nightshift').href = data.nightshift_url;
-  await Promise.all([loadProjects(), loadAgents()]);
+  await Promise.all([loadProjects(), loadAgents(), loadTokenSettings()]);
   document.getElementById('login').hidden = true;
   document.getElementById('shell').hidden = false;
   route();
@@ -2420,11 +2439,11 @@ async function renderQa(it, box){
   if(!box.isConnected) return;
   const r = qa.rounds[0], head = `<h2 id="qa-title">QA <span class="meta">재작업 ${qa.rework_count}/${qa.rework_limit}</span></h2>`;
   if(!r){ box.innerHTML = `${head}<p class="dim">아직 QA 기록이 없어요. In Review가 되면 검사해요.</p>`; return; }
-  const usage = [r.provider && `${PROVIDER_NAME[r.provider] || r.provider}${r.model ? ' · ' + r.model : ''}`, r.input_tokens != null && `토큰 ${r.input_tokens}/${r.output_tokens ?? '-'}`, r.cost_usd != null && `$${Number(r.cost_usd).toFixed(2)}`].filter(Boolean).join(' · ');
+  const usage = [r.provider && `${esc(PROVIDER_NAME[r.provider] || r.provider)}${r.model ? ' · ' + esc(r.model) : ''}`, (r.input_tokens != null || r.output_tokens != null) && `토큰 ${tokenHtml(r.input_tokens)}/${tokenHtml(r.output_tokens)}`, r.cost_usd != null && `$${Number(r.cost_usd).toFixed(2)}`].filter(Boolean).join(' · ');
   const ev = e => typeof e === 'string' ? e : [e.kind, e.path || e.command || e.ref, e.result || e.summary].filter(Boolean).join(' · ') || JSON.stringify(e);
   const failedTasks = [...new Set(r.items.filter(i => i.verdict === 'fail').flatMap(i => i.task_refs))];
   const canRework = r.status === 'failed' && !r.rework_batches.length && qa.rework_count < qa.rework_limit && it.children.length;
-  box.innerHTML = `${head}<p><b>${r.round_number}회차</b> · <span class="qa-status qa-${esc(r.status)}">${esc(QA_STATUS[r.status] || r.status)}</span>${usage ? ` <span class="dim">· ${esc(usage)}</span>` : ''}</p>
+  box.innerHTML = `${head}<p><b>${r.round_number}회차</b> · <span class="qa-status qa-${esc(r.status)}">${esc(QA_STATUS[r.status] || r.status)}</span>${usage ? ` <span class="dim">· ${usage}</span>` : ''}</p>
     ${r.note ? `<p class="dim">${esc(r.note)}</p>` : ''}
     ${r.items.length ? `<ul class="qa-items">${r.items.map(i => `<li><b>${i.verdict === 'pass' ? '통과' : '실패'}</b> ${esc(i.requirement_id)}${i.task_refs.length ? ` <span class="dim">${i.task_refs.map(esc).join(', ')}</span>` : ''}
       ${i.evidence.length ? `<ul class="qa-evidence">${i.evidence.map(e => `<li><code>${esc(ev(e))}</code></li>`).join('')}</ul>` : ''}${i.suggestion ? `<p class="dim">제안: ${esc(i.suggestion)}</p>` : ''}</li>`).join('')}</ul>` : ''}
@@ -2447,6 +2466,29 @@ async function renderQa(it, box){
 
 // ---- 프로젝트별 자동화 설정 — 이전 화면의 응답은 새 화면에 반영하지 않는다. ----
 let settingsSession = null;
+async function loadTokenSettings(){
+  try{ tokenUnit = (await api('GET', '/api/settings/tokens', undefined, () => !!me, {notifyErrors:false})).unit; }
+  catch(e){ tokenUnit = 'auto'; }
+}
+async function renderTokenSettings(){
+  const session = {};
+  settingsSession = session;
+  const current = () => settingsSession === session && location.hash.split('?')[0] === '#/settings/tokens';
+  view.innerHTML = `<section class="panel management-card token-settings">${settingsHeader('tokens')}<h3>토큰 표시 단위</h3><p class="dim">모든 화면의 토큰 수치에 적용해요. 원본 수치는 숫자 위에 커서를 올리면 볼 수 있어요.</p><div class="setting-row"><label for="token-unit">표시 단위</label><select id="token-unit"><option value="auto">자동</option><option value="k">k</option><option value="M">M</option><option value="full">전체 숫자</option></select></div><p id="token-status" role="status" aria-live="polite"></p></section>`;
+  const select = view.querySelector('#token-unit'), status = view.querySelector('#token-status');
+  select.value = tokenUnit;
+  select.onchange = async () => {
+    const previous = tokenUnit, next = select.value;
+    select.disabled = true;
+    try{
+      const saved = await api('PUT', '/api/settings/tokens', {unit:next}, current, {notifyErrors:false});
+      if(!current()) return;
+      tokenUnit = saved.unit;
+      status.textContent = '저장했어요. 다른 화면에도 바로 적용돼요.';
+    }catch(e){ if(current()){ select.value = previous; status.textContent = `${e.message} 이전 설정을 유지했어요.`; } }
+    finally{ if(current()) select.disabled = false; }
+  };
+}
 // [설정 필드, 목록 id, 제목, 설명, 실행에 쓰이는지] — 오케스트레이터·트러블슈터는 저장만 하고 아직 실행에 쓰지 않는다.
 const ROLE_CARDS = [
   ['orchestrator_provider_order','orchestrator-order','오케스트레이터','준비 중인 역할이에요. 순서는 저장되지만 아직 실행되지 않아요.',false],
