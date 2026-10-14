@@ -1850,6 +1850,9 @@ def check_project_row(page, shots):
     form = page.locator('#project-form')
     assert page.locator('#project-create, [data-edit]').count() == 0
     assert page.locator('.projects-table tbody > tr:last-child button').count() == 1
+    assert page.locator('#project-add span').inner_text() == 'Add New Project'
+    assert page.locator('#project-add').evaluate("e => getComputedStyle(e).borderTopWidth === '0px'")
+    assert page.locator('#project-add').evaluate("e => { const b=e.getBoundingClientRect(), t=e.closest('table').getBoundingClientRect(); return Math.abs((b.left+b.right-t.left-t.right)/2) <= 2 }")
     assert not form.is_visible()
     for key in ('Enter', 'Space'):
         page.focus('#project-add'); page.keyboard.press(key)
@@ -1928,6 +1931,13 @@ def check_project_navigation(page):
     link = page.locator('[data-project-link="NAV"]')
     link.wait_for()
     assert link.get_attribute('href') == '#/projects?project=NAV&tab=manage'
+    for cell in (1, 3, 4):
+        page.locator(f'[data-project-row="NAV"] td:nth-child({cell})').click()
+        page.wait_for_selector('#p-key:disabled')
+        assert page.url.endswith('project=NAV&tab=manage')
+        assert page.input_value('#p-key') == 'NAV'
+        page.click('.management-back')
+        link.wait_for()
     link.focus(); page.keyboard.press('Enter')
     page.wait_for_selector('#p-key:disabled')
     assert page.input_value('#p-key') == 'NAV'
