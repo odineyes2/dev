@@ -39,8 +39,24 @@ def check_trends(page):
     assert page.locator('.trend-ranking a').get_attribute('href') == '#/issue/TRND-1'
     page.locator('.trend-daily summary').focus(); page.keyboard.press('Enter')
     assert '2026-10-12' in page.inner_text('.trend-daily table')
+    rows = lambda: page.locator('.trend-daily tbody th').all_text_contents()
+    assert rows() == ['2026-10-12', '2026-10-13']
+    assert page.locator('.trend-daily th[aria-sort]').get_attribute('aria-sort') == 'ascending'
+    page.click('.trend-sort'); assert rows() == ['2026-10-13', '2026-10-12']
+    assert page.locator('.trend-daily th[aria-sort]').get_attribute('aria-sort') == 'descending'
+    page.locator('.trend-sort').focus(); page.keyboard.press('Space'); assert rows() == ['2026-10-12', '2026-10-13']
+    page.keyboard.press('Enter'); assert rows() == ['2026-10-13', '2026-10-12']
+    assert page.locator('.trend-chart circle').count() == 0
+    page.select_option('#trend-marks', 'marks')
+    assert page.locator('.trend-chart circle').count() == 8 and page.locator('.trend-chart text').count() == 0
+    page.select_option('#trend-marks', 'values')
+    assert page.locator('.trend-chart text').count() == 8
+    assert '25' in page.locator('.trend-card[aria-label="토큰"] .trend-chart').text_content()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     page.select_option('#trend-project', 'TRND')
     page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+    assert page.locator('#trend-marks').input_value() == 'values' and page.locator('.trend-chart text').count() == 8
+    assert rows() == ['2026-10-13', '2026-10-12']
     assert any('project=TRND' in url for url in calls)
     page.locator('[data-trend-days="7"]').focus(); page.keyboard.press('Enter')
     assert page.locator('[data-trend-days="7"]').get_attribute('aria-pressed') == 'true'
@@ -52,6 +68,20 @@ def check_trends(page):
     page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
     assert '기록된 활동이 없어요' in page.inner_text('#trend-results')
     page.unroute('**/api/trends?*')
+    def long(route):
+        from datetime import date, timedelta
+        d0 = date(2025, 10, 1)
+        days = [dict(date=str(d0 + timedelta(i)), created_issue_count=i % 3, completed_issue_count=0, agent_seconds=0, total_tokens=1234567 * (i % 5)) for i in range(366)]
+        route.fulfill(json=dict(from_date=days[0]['date'], to_date=days[-1]['date'], as_of='2026-10-13T02:00:00+00:00', note='n', days=days,
+                                summary=dict(created_issue_count=1, completed_issue_count=0, agent_seconds=0, total_tokens=1, partial=False), top_issues=[]))
+    page.route('**/api/trends?*', long)
+    for size in ({'width': 1300, 'height': 900}, {'width': 390, 'height': 800}):
+        page.set_viewport_size(size); page.click('#trend-filter [type="submit"]')
+        page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+        assert page.locator('.trend-chart circle').count() == 4 * 366
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert page.evaluate("document.querySelector('.trend-card').scrollWidth <= document.querySelector('.trend-card').clientWidth")
+    page.set_viewport_size({'width': 1300, 'height': 900}); page.unroute('**/api/trends?*')
 
 
 def check_free_port(page, shots):
