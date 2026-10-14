@@ -4225,7 +4225,7 @@ try:
         assert "runs" not in page.request.get(f"{BASE}/api/issues/{pr}").json()
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector(".runs li")
         txt = page.inner_text(".runs")
-        assert "끊김" in txt and "실패" in txt and "3분 20초" in txt and "토큰 18.5k → 2.3k · $0.42" in txt and "서버가 다시 떠서" in txt, txt
+        assert "끊김" in txt and "실패" in txt and "3분 20초" in txt and "토큰 18.5k → 2,300 · $0.42" in txt and "서버가 다시 떠서" in txt, txt
         assert page.locator(".runs li").first.inner_text().startswith("끊김")   # 최근 것이 먼저
         for scheme in ("light", "dark"):
             for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
