@@ -57,6 +57,32 @@ def issue_token_usage(c, issue_ids):
     return result
 
 
+def task_token_usage(c, parent_ids):
+    """지정 Issue의 현재 하위 Task 직접 실행분과 Task 수를 묶음 집계한다."""
+    result = {iid: None for iid in parent_ids}
+    ids = list(result)
+    for start in range(0, len(ids), 900):
+        batch = ids[start:start + 900]
+        seen = set()
+        for run in c.execute(
+                f"SELECT t.parent_id,t.id AS task_id,r.status,r.input_tokens,r.output_tokens "
+                f"FROM issues t LEFT JOIN runs r ON r.issue_id=t.id "
+                f"WHERE t.parent_id IN ({','.join('?' * len(batch))}) "
+                "AND NOT EXISTS (SELECT 1 FROM events e WHERE e.issue_id=t.id "
+                "AND json_extract(e.data_json,'$.superseded_by_plan') IS NOT NULL)", batch):
+            parent_id = run['parent_id']
+            if result[parent_id] is None:
+                result[parent_id] = dict(input_tokens=0, output_tokens=0, total_tokens=0,
+                                         run_count=0, unmeasured_run_count=0, running_run_count=0,
+                                         partial=False, task_count=0)
+            if run['task_id'] not in seen:
+                result[parent_id]['task_count'] += 1
+                seen.add(run['task_id'])
+            if run['status'] is not None:
+                _add_tokens(result[parent_id], run)
+    return result
+
+
 def _now():
     return datetime.now(timezone.utc)
 

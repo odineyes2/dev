@@ -476,14 +476,16 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
         sql = _ISSUE_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY " + orders[sort] + " LIMIT ? OFFSET ?"
         rows = c.execute(sql, (*args, max(1, min(int(limit), 2001)), max(0, int(offset)))).fetchall()
         contexts = _list_action_context(c, rows)
-        from usage import issue_token_usage
+        from usage import issue_token_usage, task_token_usage
         tokens = issue_token_usage(c, (r['id'] for r in rows))
+        task_tokens = task_token_usage(c, (r['id'] for r in rows))
     out = []
     for r in rows:
         d = _issue_dict(r)
         d.pop("body")   # 목록에는 본문을 싣지 않는다(에이전트 토큰 절약) — get_issue로 읽는다
         d["action_context"] = contexts[r["id"]]
         d['token_usage'] = tokens[r['id']]
+        d['task_token_usage'] = task_tokens[r['id']]
         out.append(d)
     return out
 
@@ -522,10 +524,12 @@ def get_issue(ref) -> dict:
         d["blocked_by"] = blockers(row["id"])
         d["children"] = [{**{k: v for k, v in _issue_dict(ch).items() if k != "body"}, "blocked_by": blockers(ch["id"])} for ch in
                          c.execute(_ISSUE_SELECT + " WHERE i.parent_id=? ORDER BY i.id", (row["id"],))]
-        from usage import issue_token_usage
+        from usage import issue_token_usage, task_token_usage
         tokens = issue_token_usage(c, [d['id'], *(ch['id'] for ch in d['children'])])
+        task_tokens = task_token_usage(c, [d['id'], *(ch['id'] for ch in d['children'])])
         for item in [d, *d['children']]:
             item['token_usage'] = tokens[item['id']]
+            item['task_token_usage'] = task_tokens[item['id']]
         d['superseded_children'] = [ch for ch in d['children'] if ch['superseded_by_plan']]
         d['children'] = [ch for ch in d['children'] if not ch['superseded_by_plan']]
         par = c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["parent_id"],)).fetchone() if row["parent_id"] else None
