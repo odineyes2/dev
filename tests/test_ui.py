@@ -3318,6 +3318,25 @@ def check_chat_connections(page, shots):
     page.set_viewport_size({'width': 1300, 'height': 850})
 
 
+def check_fab(page):
+    """탭 바에는 새 이슈 버튼이 없고, 목록·Board 우하단 FAB가 composer를 연다(DEV-125)."""
+    for size in ({'width': 1300, 'height': 850}, {'width': 390, 'height': 800}):
+        page.set_viewport_size(size)
+        page.goto(BASE + '/#/'); page.wait_for_selector('#project-filter')
+        assert page.locator('.tab-bar a[href="#/new"]').count() == 0
+        for route in ('/#/', '/#/board'):
+            page.goto(BASE + route); page.wait_for_selector('#fab-new', state='visible')
+            box = page.locator('#fab-new').bounding_box()
+            assert size['width'] - box['x'] - box['width'] <= 24 and size['height'] - box['y'] - box['height'] <= 24, box
+        page.click('#fab-new'); page.wait_for_selector('#composer', state='visible')
+        assert not page.locator('#fab-new').is_visible()
+        page.keyboard.press('Escape'); page.wait_for_selector('#fab-new', state='visible')
+    for route in ('/#/agents', '/#/settings'):
+        page.goto(BASE + route); page.wait_for_function('document.getElementById("fab-new").hidden')
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.goto(BASE + '/#/')
+
+
 def check_issue_tokens(page, shots):
     """모의 집계를 목록·보드·상세·Task와 새로고침으로 확인한다."""
     from ui_fixture import token_usage_fixture, task_token_usage_fixture
@@ -3818,7 +3837,7 @@ try:
             assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
                                      data={'key': 'NS', 'name': '점검 이후 발행 검사'}).ok
             page.reload(); page.wait_for_selector('[data-project-link="NS"]')
-            page.click('a[href="#/new"]'); page.wait_for_selector('#new-form')
+            page.goto(BASE + '/#/new'); page.wait_for_selector('#new-form')
             assert page.input_value('#n-project') == 'NS'
             page.fill('#n-title', '점검 이후 첫 Issue')
             page.click('#new-form button[type=submit]')
@@ -3874,7 +3893,7 @@ try:
             sys.exit(0)
 
         # 프로젝트 없이 New issue → 안내
-        page.click("a[href=\"#/new\"]")
+        page.goto(BASE + "/#/new")
         page.wait_for_selector("text=먼저")
         page.goto(BASE + "/#/projects")
         if len(sys.argv) == 1:
@@ -3937,7 +3956,7 @@ try:
         assert page.locator('#project-dialog').is_hidden()
         assert page.locator('#project-dialog[open]').count() == 0
 
-        page.click("a[href=\"#/new\"]")
+        page.goto(BASE + "/#/new")
         page.fill("#n-title", "보드 카드 복사")
         page.fill("#n-body", "## 요구\n- 우클릭 메뉴\n- `Ctrl+C`\n\n<script>alert(1)</script> NS-1 참고")
         assert page.locator('#n-priority').is_hidden()
@@ -4498,6 +4517,7 @@ try:
         assert top in asked[0] and ta in asked[0] and tb in asked[0] and "주의" in asked[0] and f"{tb} — Backlog" in asked[0], asked
         assert all(page.request.get(f"{BASE}/api/issues/{r}").json()["status"] == "done" for r in (top, ta, tb))
 
+        check_fab(page)
         check_issue_tokens(page, shots)
         check_issue_types(page, shots)
 

@@ -237,6 +237,7 @@ async function route(){
   disposeList();
   cleanupBoard();
   if(!composerAllowed()) closeComposer(true);
+  document.getElementById('fab-new').hidden = !composerAllowed();
   let h = location.hash.replace(/^#\/?/, '').split('?')[0];
   // 기존 주소를 같은 설정 영역의 하위 주소로 정규화한다.
   if(h === 'settings' || h === 'types'){
@@ -1538,6 +1539,7 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
   if(composer.hidden) void openComposer(); else closeComposer();   // 열린 상태에서 백틱(입력칸 밖)이면 닫는다(DEV-96)
 });
+document.getElementById('fab-new').addEventListener('click', () => { void openComposer(); });
 composer.addEventListener('keydown', (e) => { if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeComposer(); } });
 cmpBody.addEventListener('keydown', (e) => {
   if(e.key !== 'Enter' || e.shiftKey) return;   // Shift+Enter는 줄바꿈
