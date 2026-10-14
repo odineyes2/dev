@@ -416,7 +416,8 @@ def pump() -> None:
                 if j["mode"] == "execute":
                     try:
                         issue = issues.get_issue(j["ref"])
-                        own = waits.get(j["id"]) or execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None)
+                        own = (execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None)
+                               or execute.predecessor_merge_reason(issue) or waits.get(j["id"]))
                     except issues.StoreError:
                         pass
                 _note(j["id"], own or block)
@@ -453,7 +454,7 @@ def pump() -> None:
                         _set(j["id"], "skipped", never)
                         issues.add_comment(actor, j["ref"], f"⏭ 대기열의 실행을 건너뛰었어요 — {never}")
                         continue
-                    why = waits.get(j["id"]) or execute.blocked_reason(issue, parent)
+                    why = execute.blocked_reason(issue, parent) or execute.predecessor_merge_reason(issue) or waits.get(j["id"])
                     if why:   # 선행·겹치는 파일 대기 — 뒤 항목을 먼저 본다
                         _set(j["id"], "queued", why)
                         continue
