@@ -1053,8 +1053,8 @@ async function renderIssue(ref, background = false){
   const [it, { runs }, catalog] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), api('GET', '/api/issue-types?include_inactive=true'), agentsById.size ? null : loadAgents()]);
   if(seq !== issueRenderSeq || hash !== location.hash) return;
   if(background && (pendingActions.size || pendingTasks.size || pendingExecutions.size || pendingReviews.size || document.activeElement?.matches('input, select'))) return;
-  if(background && [...view.querySelectorAll('textarea, .edit-title')].some(el => el.id !== 'comment' && el.offsetParent)) return;
-  if(background && [...view.querySelectorAll('#labels, #issue-type-editor input')].some(el => el.type === 'checkbox' ? el.checked !== el.defaultChecked : el.value !== el.defaultValue)) return;
+  if(background && [...view.querySelectorAll('textarea, .edit-title')].some(el => el.id !== 'comment' && el.id !== 'rating-review' && el.offsetParent)) return;
+  if(background && [...view.querySelectorAll('#labels, #issue-type-editor input, #rating-editor input, #rating-review')].some(el => ['checkbox', 'radio'].includes(el.type) ? el.checked !== el.defaultChecked : el.value !== el.defaultValue)) return;
   const previousEditor = view.querySelector('#issue-type-editor');
   if(background && previousEditor && JSON.stringify(selectedTypes(previousEditor)) !== previousEditor.dataset.initialTypes) return;
   const comment = background ? view.querySelector('#comment')?.value : null;
@@ -1105,6 +1105,11 @@ async function renderIssue(ref, background = false){
         <div class="field" hidden><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
         <div class="field"><span>Assignee</span><select id="assignee">${agentOpts}</select></div>
         <div class="field" id="issue-type-editor">${typePicker(catalog.types, it.type_ids || [])}<p class="dim">${(it.types || []).some(t => t.source === 'agent') ? '자동 분류 결과예요.' : ''}</p><button id="save-types" type="button">종류 저장</button><p id="types-status" role="status"></p></div><div class="field"><span>Labels (쉼표로)</span><input id="labels" value="${esc(it.labels.join(', '))}"></div>
+        <div class="field" id="rating-editor"><span>평가</span>
+          <div class="stars" role="radiogroup" aria-label="평점">${[1, 2, 3, 4, 5].map(n => `<label title="${n}점"><input type="radio" name="rating" value="${n}"${it.rating === n ? ' checked' : ''} aria-label="${n}점"><span aria-hidden="true">${n <= (it.rating || 0) ? '★' : '☆'}</span></label>`).join('')}</div>
+          <textarea id="rating-review" rows="3" maxlength="2000" aria-label="리뷰" placeholder="에이전트가 얼마나 잘 처리했나요?">${esc(it.review || '')}</textarea>
+          <div class="row-end"><button id="rating-clear" type="button">지우기</button><button id="rating-save" type="button">평가 저장</button></div>
+          ${it.rated_at ? `<p class="dim">${esc(actorName(it.rated_by))} · ${fmtTime(it.rated_at)}</p>` : ''}</div>
         <div class="field"><span>AGENT</span>${processingAgentsHtml(it)}</div>
         ${['done', 'closed'].includes(it.status) ? `<div class="field"><span>TIME</span>${completionTimeHtml(it)}</div>` : ''}
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
@@ -1131,6 +1136,9 @@ async function renderIssue(ref, background = false){
   const R = encodeURIComponent(it.ref);
   const reload = () => renderIssue(it.ref);
   const $ = (id) => view.querySelector('#' + id);
+  const saveRating = (rating, review) => api('PUT', `/api/issues/${R}/rating`, {rating, review}).then(reload).catch(() => {});
+  $('rating-save').onclick = () => saveRating(Number(view.querySelector('#rating-editor input:checked')?.value) || null, $('rating-review').value.trim());
+  $('rating-clear').onclick = () => saveRating(null, '');
   view.querySelectorAll('tr.row').forEach(r => r.addEventListener('click', (e) => { if(!e.target.closest('a')) location.hash = `#/issue/${r.dataset.ref}`; }));
   // done/closed로 끝내면 목록으로 돌아간다(DEV-5) — 끝난 이슈 화면에 머물 일은 없다.
   const setStatus = async (status, note) => {

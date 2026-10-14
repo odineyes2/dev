@@ -1167,6 +1167,31 @@ def check_published_notice(page, shots):
         page.select_option('#project-filter', '')
 
 
+def check_rating(page, shots):
+    """상세의 평가 필드: 저장·유지·지우기·편집 중 백그라운드 갱신 보존, 낮·밤 캡처(DEV-126)."""
+    H = {'X-Requested-With': 'dev'}
+    page.request.post(BASE + '/api/projects', headers=H, data={'key': 'RATE', 'name': '평가 검사'})
+    ref = page.request.post(BASE + '/api/issues', headers=H, data={'project': 'RATE', 'title': '평가 UI 검사'}).json()['ref']
+    page.goto(BASE + '/#/issue/' + ref); page.wait_for_selector('#rating-editor')
+    page.locator('#rating-editor label[title="4점"]').click(); page.fill('#rating-review', '잘 처리함')
+    page.evaluate(f'renderIssue("{ref}", true)'); page.wait_for_timeout(300)   # 편집 중 갱신은 입력을 지우지 않는다
+    assert page.input_value('#rating-review') == '잘 처리함' and page.locator('#rating-editor input:checked').get_attribute('value') == '4'
+    page.click('#rating-save'); page.wait_for_selector('#rating-editor .dim')
+    got = page.request.get(BASE + '/api/issues/' + ref).json()
+    assert (got['rating'], got['review']) == (4, '잘 처리함')
+    page.reload(); page.wait_for_selector('#rating-editor')
+    assert page.input_value('#rating-review') == '잘 처리함' and page.locator('#rating-editor input:checked').get_attribute('value') == '4'
+    for scheme in ('light', 'dark'):
+        for size in ({'width': 1300, 'height': 850}, {'width': 390, 'height': 800}):
+            page.emulate_media(color_scheme=scheme); page.set_viewport_size(size)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.locator('#rating-editor').screenshot(path=str(shots / f"rating_{scheme}_{size['width']}.png"))
+    page.emulate_media(color_scheme='light'); page.set_viewport_size({'width': 1300, 'height': 850})
+    page.click('#rating-clear'); page.wait_for_selector('#rating-editor .dim', state='detached')
+    got = page.request.get(BASE + '/api/issues/' + ref).json()
+    assert got['rating'] is None and got['review'] == ''
+
+
 def check_issue_types(page, shots):
     """복수 선택·관리·실패 재시도와 네 화면의 배치를 확인한다."""
     H = {'X-Requested-With': 'dev'}
@@ -3694,6 +3719,10 @@ try:
             check_issue_summary(page)
             assert not errs, errs
             print('OK: Issue summary'); sys.exit(0)
+        if '--rating-only' in sys.argv:
+            check_rating(page, shots)
+            assert not errs, errs
+            print('OK: Rating'); sys.exit(0)
         if '--issue-tokens-only' in sys.argv:
             check_issue_tokens(page, shots)
             assert not errs, errs
@@ -4523,6 +4552,7 @@ try:
         check_fab(page)
         check_issue_tokens(page, shots)
         check_issue_types(page, shots)
+        check_rating(page, shots)
 
         check_progress_refresh(page, shots)
         check_reproduce(page, shots)
