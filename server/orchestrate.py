@@ -739,7 +739,6 @@ def promote_parent(actor: dict, ref: str) -> bool:
     if parent.get("plan") and (not parent.get("approval") or parent["approval"].get("stale")):
         return False   # 새 판이 결정을 기다린다 — 이전 판 Task가 다 끝났다고 올리면 새 요구가 묻힌다(DEV-86)
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == parent["project_key"]), "")
-    lines, checks, warns = [], [], [f"- ☐ {i}" for i in parent.get("human_checks", [])]   # 계획서의 사람이 할 일 — Done 전에 확인받는다
     for ch in parent["children"]:
         finished = ch["status"] in ("done", "closed")
         if not finished and not (ch["status"] == "in_review" and _merged(repo, ch["ref"])):
@@ -747,6 +746,9 @@ def promote_parent(actor: dict, ref: str) -> bool:
         record = completion(ch['ref'])
         if not finished and record and (not record['auto_merge'] or record['phase'] != 'complete'):
             return False
+    # 요약용 조회는 올릴 게 확정된 뒤에만 — recover()가 펌프마다 부르므로 남은 Task가 있는 동안 git을 반복하지 않는다.
+    lines, checks, warns = [], [], [f"- ☐ {i}" for i in parent.get("human_checks", [])]   # 계획서의 사람이 할 일 — Done 전에 확인받는다
+    for ch in parent["children"]:
         full = issues.get_issue(ch["ref"])
         sha = _git(repo, "log", "-1", "--merges", "--fixed-strings", f"--grep=({ch['ref']})", "--format=%h", BASE_BRANCH).stdout.strip()
         restart = next((e["body"][2:].strip() for e in reversed(full["events"]) if e["kind"] == "comment" and e["body"].startswith("🔁")), "")

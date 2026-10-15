@@ -47,7 +47,8 @@ def worktree_path(ref: str) -> Path:
 
 
 def _run_git(cwd, *args):
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)   # pm2 아래에선 git마다 콘솔 창이 깜빡인다
 
 
 def _git(cwd, *args) -> str:
