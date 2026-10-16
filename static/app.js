@@ -1661,6 +1661,8 @@ function managementHeader(title, tabs, back = ''){
   return container.innerHTML;
 }
 // ---- Harness (DEV-132) — 에이전트가 실제로 받는 글을 층별로 보여 주고 1·2층 파일만 고친다 ----
+// 펼친 Harness 층 — 저장·취소로 다시 그려도 사람이 열어 둔 카드는 열린 채로 둔다
+const harnessOpen = new Set();
 async function renderHarness(){
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   if(!projects.length) await loadProjects();
@@ -1689,7 +1691,7 @@ async function renderHarness(){
     <div class="harness-content">${f.note ? `<p class="dim">${esc(f.note)}</p>` : f.exists ? pre(f.content) : '<p class="dim">아직 없는 파일이에요. 편집해서 저장하면 새로 만들어요.</p>'}</div>
     <div class="harness-result" role="status"></div></article>`;
   const list = a => a && a.length ? `<ul>${a.map(x => `<li><code>${esc(x)}</code></li>`).join('')}</ul>` : '<p class="dim">없음</p>';
-  const layer = (n, title, source, inner, editable) => `<details class="harness-layer" data-layer="${n}" open><summary><h3>${n}층 · ${esc(title)}</h3> <span class="chip-static">${editable ? '편집 가능' : '읽기 전용'}</span></summary><p class="dim">출처 ${esc(source)}</p>${inner}</details>`;
+  const layer = (n, title, source, inner, editable) => `<details class="harness-layer" data-layer="${n}"${harnessOpen.has(String(n)) ? ' open' : ''}><summary><h3>${n}층 · ${esc(title)}</h3> <span class="chip-static">${editable ? '편집 가능' : '읽기 전용'}</span></summary><p class="dim">출처 ${esc(source)}</p>${inner}</details>`;
   const chip = x => `<code class="chip-static">{${esc(x)}}</code>`;
   const slotChips = f => `<p class="harness-slots dim">쓸 수 있는 자리표시: ${f.slots.length ? f.slots.map(chip).join(' ') : '없음'}${f.required.length ? ` · 꼭 있어야 하는 것: ${f.required.map(chip).join(' ')}` : ''}</p>`;
   const P = L.prompts, S = L.settings;
@@ -1712,6 +1714,7 @@ async function renderHarness(){
     ${layer(4, '코드 속 프롬프트', 'dev 저장소 harness/prompts/*.md', P.files.map(f => fileCard(f, 'prompts', f.path, slotChips(f))).join('') +
       `<div class="harness-filled"><b>코드가 채우는 부분</b><p class="dim">아래는 파일이 아니라 코드가 상황에 따라 덧붙여요.</p>${list(P.code_filled)}</div>`, true)}
     ${layer(5, '코드 속 설정값', 'server/review.py · server/execute.py', S.items.map(setting).join('') + '<p class="dim">바꾸려면 이슈로 요청해 주세요.</p>', false)}`;
+  body.querySelectorAll('.harness-layer').forEach(d => d.addEventListener('toggle', () => d.open ? harnessOpen.add(d.dataset.layer) : harnessOpen.delete(d.dataset.layer)));
   body.querySelectorAll('.harness-edit').forEach(btn => btn.addEventListener('click', async () => {
     const card = btn.closest('.harness-file'), { scope, path } = card.dataset;
     const content = card.querySelector('.harness-content'), result = card.querySelector('.harness-result');

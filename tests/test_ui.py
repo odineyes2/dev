@@ -3787,12 +3787,16 @@ def check_harness(page, shots):
     assert titles[3].endswith('코드 속 프롬프트') and titles[4].endswith('코드 속 설정값'), titles
     # 2층: 읽는 에이전트 표시
     assert page.locator('[data-layer="2"] .harness-readers').count() >= 1
-    # 아코디언 접고 펼치기
+    # 층마다 카드 하나, 처음엔 모두 접힘 — 제목 줄로 펼치고 접는다
+    assert layers.locator('xpath=self::*[@open]').count() == 0
     first = layers.nth(0)
+    assert first.locator('.harness-file').first.is_hidden()
     first.locator('summary').click()
-    assert first.get_attribute('open') is None and first.locator('.harness-file').first.is_hidden()
+    assert first.get_attribute('open') is not None and first.locator('.harness-file').first.is_visible()
     first.locator('summary').click()
-    assert first.get_attribute('open') is not None
+    assert first.get_attribute('open') is None
+    assert page.evaluate("getComputedStyle(document.querySelector('.harness-layer')).borderTopStyle") == 'solid'
+    page.locator('[data-layer="5"] > summary').click()
     # 5층: 접힌 네 줄
     rows = page.locator('[data-layer="5"] details.harness-setting')
     assert rows.count() == 4 and rows.locator('xpath=self::*[@open]').count() == 0
@@ -3800,6 +3804,7 @@ def check_harness(page, shots):
     rows.nth(0).locator('summary').click()
     assert rows.nth(0).locator('dl').is_visible()
     # 4층: 자리표시 안내와 차단
+    page.locator('[data-layer="4"] > summary').click()
     card = page.locator('[data-layer="4"] .harness-file[data-path="harness/prompts/review_claude.md"]')
     assert '{ref}' in card.locator('.harness-slots').inner_text()
     card.locator('.harness-edit').click()
@@ -3814,6 +3819,10 @@ def check_harness(page, shots):
     card.locator('.harness-save').click()
     card.locator('.harness-result:has-text("저장했어요")').wait_for()
     page.unroute('**/api/harness/file')
+    # 다시 그려도(편집 취소) 사람이 펼친 층은 열린 채로 — 저장 뒤에도 편집 칸은 열려 있어 취소로 닫는다
+    card.locator('.harness-cancel').click()
+    page.wait_for_selector('#harness-body:not([aria-busy]) [data-layer="4"][open]')
+    assert page.locator('[data-layer="1"][open]').count() == 0
     for theme in ('light', 'dark'):
         for width in (1300, 390):
             page.set_viewport_size({'width': width, 'height': 850})
