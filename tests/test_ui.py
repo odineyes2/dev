@@ -3824,10 +3824,11 @@ def check_harness(page, shots):
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.evaluate("document.documentElement.dataset.theme='light'")
     assert page.request.delete(BASE + '/api/projects/HARN', headers={'X-Requested-With': 'dev'}).ok
-    page.evaluate("projects = projects.filter(p => p.key !== 'HARN')")
+    page.evaluate("localStorage.removeItem('dev.project')")
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-add')
 
 
-tmp =Path(tempfile.mkdtemp())
+tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 (tmp / "capture_app.py").write_text(BOOTSTRAP, "utf-8")
 ns_port, dev_port = free_port(), free_port()
