@@ -1,4 +1,5 @@
-"""??? Issue? QA ??? ????? ?? ??? ????."""
+"""최상위 In Review Issue의 QA(DEV-114) — 판정 대상 스냅샷·요구 항목 고정, 회차·결과 저장과 대기열 연결. 명령 실행은 qa_runner.
+(처음 커밋 때 인코딩이 깨져 '?'만 남았던 설명을 다시 썼다.)"""
 import json
 import hashlib
 import subprocess

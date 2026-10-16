@@ -95,10 +95,16 @@ def section(ref: str, execution: bool = False) -> str:
             import execute
             wt = execute.worktree_path(ref)
             repo = str(wt) if wt.is_dir() else repo
-        text = build(repo) if repo and Path(repo).is_dir() else ""
+        body = build(repo) if repo and Path(repo).is_dir() else ""
     except Exception:   # 지도는 보조 자료라 실패해도 검토·실행을 막지 않는다
         return ""
-    if not text:
+    if not body:
         return ""
     return ("## 파일 지도 — dev가 지금 저장소에서 자동으로 만든 것(추적 파일과 각 파일 첫머리 설명)\n"
-            "이 지도로 바로 해당 파일을 연다. 여기 없는 것만 Grep/Glob로 찾는다.\n" + text + "\n\n---\n\n")
+            "이 지도로 바로 해당 파일을 연다. 여기 없는 것만 Grep/Glob로 찾는다.\n" + body + "\n\n---\n\n")
+
+
+if __name__ == "__main__":   # 대화형 세션용 — 에이전트 프롬프트에 붙는 것과 같은 지도: python ~/Projects/dev/server/filemap.py <저장소>
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8")
+    print(build(sys.argv[1] if len(sys.argv) > 1 else "."))
