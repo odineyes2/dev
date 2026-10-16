@@ -3768,6 +3768,66 @@ def check_issue_summary(page):
     page.evaluate("localStorage.removeItem('dev.project')")
 
 
+def check_harness(page, shots):
+    """Harness 탭 — Project 필터만, 5개 층 아코디언, 4층 저장/차단, 5층 접힌 네 줄을 확인한다."""
+    repo = Path(tempfile.mkdtemp())
+    (repo / 'AGENTS.md').write_text('# 확인용 규칙\n', 'utf-8')
+    r = page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
+                          data={'key': 'HARN', 'name': 'Harness 확인', 'local_path': str(repo)})
+    assert r.ok, r.text()
+    page.reload(); page.wait_for_selector('#shell:not([hidden])')
+    page.goto(BASE + '/#/harness?project=HARN')
+    page.wait_for_selector('#harness-body:not([aria-busy]) .harness-layer')
+    assert page.locator('.harness-pick select').count() == 1 and page.locator('#h-project').count() == 1
+    assert page.locator('#h-provider, #h-stage').count() == 0
+    layers = page.locator('details.harness-layer')
+    assert layers.count() == 5
+    titles = [t.strip() for t in layers.locator('summary h3').all_inner_texts()]
+    assert [t.split(' · ')[0] for t in titles] == ['1층', '2층', '3층', '4층', '5층'], titles
+    assert titles[3].endswith('코드 속 프롬프트') and titles[4].endswith('코드 속 설정값'), titles
+    # 2층: 읽는 에이전트 표시
+    assert page.locator('[data-layer="2"] .harness-readers').count() >= 1
+    # 아코디언 접고 펼치기
+    first = layers.nth(0)
+    first.locator('summary').click()
+    assert first.get_attribute('open') is None and first.locator('.harness-file').first.is_hidden()
+    first.locator('summary').click()
+    assert first.get_attribute('open') is not None
+    # 5층: 접힌 네 줄
+    rows = page.locator('[data-layer="5"] details.harness-setting')
+    assert rows.count() == 4 and rows.locator('xpath=self::*[@open]').count() == 0
+    assert rows.nth(0).locator('dl').is_hidden()
+    rows.nth(0).locator('summary').click()
+    assert rows.nth(0).locator('dl').is_visible()
+    # 4층: 자리표시 안내와 차단
+    card = page.locator('[data-layer="4"] .harness-file[data-path="harness/prompts/review_claude.md"]')
+    assert '{ref}' in card.locator('.harness-slots').inner_text()
+    card.locator('.harness-edit').click()
+    card.locator('textarea').fill('자리표시가 없는 글')
+    card.locator('.harness-save').click()
+    card.locator('.harness-error').wait_for()
+    assert '{ref}' in card.locator('.harness-error').inner_text()
+    # 저장 성공 표시는 서버 응답을 흉내 낸다(운영 저장소에 커밋하지 않도록)
+    page.route('**/api/harness/file', lambda route: route.fulfill(
+        status=200, content_type='application/json',
+        body='{"commit":"abcdef0123456789","base_sha":"b2","diff":"+새 줄"}'))
+    card.locator('.harness-save').click()
+    card.locator('.harness-result:has-text("저장했어요")').wait_for()
+    page.unroute('**/api/harness/file')
+    for theme in ('light', 'dark'):
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.evaluate('t => document.documentElement.dataset.theme=t', theme)
+            page.wait_for_timeout(150)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), (theme, width)
+            page.screenshot(path=str(shots / f'harness-{theme}-{width}.png'), full_page=True)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("document.documentElement.dataset.theme='light'")
+    assert page.request.delete(BASE + '/api/projects/HARN', headers={'X-Requested-With': 'dev'}).ok
+    page.evaluate("localStorage.removeItem('dev.project')")
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-add')
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 (tmp / "capture_app.py").write_text(BOOTSTRAP, "utf-8")
@@ -3876,6 +3936,10 @@ try:
             check_project_initialization(page, shots)
             assert not errs, errs
             print('OK: project registration'); sys.exit(0)
+        if '--harness-only' in sys.argv:
+            check_harness(page, shots)
+            assert not errs, errs
+            print('OK: harness'); sys.exit(0)
         if '--management-agents-only' in sys.argv:
             check_management_agents(page, shots)
             assert not errs, errs
@@ -4028,6 +4092,7 @@ try:
         check_attachments(page, shots)
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)
+        check_harness(page, shots)
         if '--project-flows-only' in sys.argv:
             assert not errs, errs
             print('OK: project flows')
