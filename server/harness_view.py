@@ -20,9 +20,9 @@ STAGES = ("review", "execute")
 MAX_FILE = 256 * 1024
 HIDDEN = "(비공개)"
 # 프로젝트 하네스 탭 허용 목록 — 디렉터리를 훑지 않는다
-PROJECT_FILES = ("AGENTS.md", "CLAUDE.md")
+PROJECT_FILES = ("AGENTS.md", "CLAUDE.md", "docs/DESIGN.md")
 PROJECT_DOCS = ("docs/project/00_*.md", "docs/project/01_*.md", "docs/project/02_*.md",
-                "docs/project/03_*.md", "docs/project/04_*.md", "docs/project/05_*.md")
+                "docs/project/04_*.md", "docs/project/05_*.md")
 
 
 def _read(path: Path, root: Path | None = None) -> dict:
@@ -40,8 +40,16 @@ def _read(path: Path, root: Path | None = None) -> dict:
         return out
 
 
+def location(path: Path) -> str:
+    """화면에 보일 저장 위치 — 홈 아래면 `~/…`. 경로만 봐도 공통(dev 저장소)인지 프로젝트 전용인지 보인다."""
+    try:
+        return "~/" + Path(path).resolve().relative_to(Path.home().resolve()).as_posix()
+    except ValueError:
+        return Path(path).as_posix()
+
+
 def _file(layer: int, label: str, source: str, path: Path, root: Path | None = None, editable: bool = True) -> dict:
-    return {"layer": layer, "label": label, "source": source, "editable": editable, **_read(path, root)}
+    return {"layer": layer, "label": label, "source": source, "location": location(path), "editable": editable, **_read(path, root)}
 
 
 def _flag_values(cmd: list[str], flag: str) -> list[str]:
@@ -100,7 +108,8 @@ PROMPT_LABELS = {
     "description_claude.md": "Description · Claude", "description_codex.md": "Description · Codex",
     "capture.md": "캡처 안내",
 }
-READERS = {"AGENTS.md": "Codex가 직접 · Claude는 CLAUDE.md를 통해", "CLAUDE.md": "Claude"}
+READERS = {"AGENTS.md": "Codex가 직접 · Claude는 CLAUDE.md를 통해", "CLAUDE.md": "Claude",
+           "docs/DESIGN.md": "화면 작업 때 Claude·Codex 모두(공통 하네스 규칙)"}
 
 
 def _prompt_files() -> list[dict]:
@@ -166,7 +175,6 @@ def build(key: str) -> dict:
         for pattern in PROJECT_DOCS:
             for p in sorted(repo.glob(pattern)):
                 layer2.append(_file(2, p.relative_to(repo).as_posix(), f"{key} 저장소 {p.relative_to(repo).as_posix()}", p, repo))
-    layer2.append(_file(2, "docs/DESIGN.md (공통 디자인, dev 저장소)", "dev 저장소 docs/DESIGN.md", execute.DESIGN_DOC, editable=True))
     settings = []
     for stage in STAGES:
         for provider in PROVIDERS:

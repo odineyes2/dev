@@ -14,9 +14,9 @@ import orchestrate
 import prompts
 
 MAX_FILE = 256 * 1024
-COMMON = "common"   # 공통 하네스(dev의 harness/COMMON.md)과 공통 디자인(dev의 docs/DESIGN.md)
-COMMON_PATHS = ("harness/COMMON.md", "docs/DESIGN.md")
-PROJECT_RE = re.compile(r"^(AGENTS\.md|CLAUDE\.md|docs/project/0[0-5]_[A-Za-z0-9._-]+\.md)$")
+COMMON = "common"   # 공통 하네스(dev의 harness/COMMON.md). 디자인 문서는 프로젝트마다 docs/DESIGN.md(프로젝트 범위)
+COMMON_PATHS = ("harness/COMMON.md",)
+PROJECT_RE = re.compile(r"^(AGENTS\.md|CLAUDE\.md|docs/DESIGN\.md|docs/project/0[0-5]_[A-Za-z0-9._-]+\.md)$")
 PROMPTS = "prompts"   # 코드 속 프롬프트(dev의 harness/prompts/*.md) — prompts.SLOTS에 있는 파일만
 PROMPTS_DIR = "harness/prompts/"
 EDITOR = ["-c", "user.name=dev harness editor", "-c", "user.email=harness@dev.local"]

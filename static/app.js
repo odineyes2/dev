@@ -1698,7 +1698,7 @@ async function renderHarness(force = false){
   const L = data.layers;
   const pre = text => `<pre class="harness-text">${esc(text)}</pre>`;
   const fileCard = (f, scope, path, extra = '') => `<article class="harness-file" data-path="${esc(path)}" data-scope="${esc(scope)}">
-    <header><b>${esc(f.label)}</b><span class="dim">${esc(f.source)}</span>
+    <header><b>${esc(f.label)}</b><code class="dim harness-loc" title="저장 위치">${esc(f.location || f.source)}</code>
     ${f.editable ? `<button type="button" class="harness-edit">편집</button>` : ''}</header>${extra}
     <div class="harness-content">${f.note ? `<p class="dim">${esc(f.note)}</p>` : f.exists ? pre(f.content) : '<p class="dim">아직 없는 파일이에요. 편집해서 저장하면 새로 만들어요.</p>'}</div>
     <div class="harness-result" role="status"></div></article>`;
@@ -1719,8 +1719,7 @@ async function renderHarness(force = false){
   const panels = {
     common: () => panel(L.common.source, fileCard(L.common, 'common', 'harness/COMMON.md'), true),
     project: () => panel(`${key} 저장소의 규칙 파일`, L.project.map(f => {
-      const design = f.label.startsWith('docs/DESIGN.md');
-      return fileCard(f, design ? 'common' : key, design ? 'docs/DESIGN.md' : f.label, f.readers ? `<p class="dim harness-readers">읽는 에이전트: ${esc(f.readers)}</p>` : '');
+      return fileCard(f, key, f.label, f.readers ? `<p class="dim harness-readers">읽는 에이전트: ${esc(f.readers)}</p>` : '');
     }).join(''), true),
     map: () => panel(L.file_map.source, (L.file_map.rows || []).length ? `<p class="dim">에이전트 프롬프트에 붙는 지도예요. 내용은 각 파일 첫머리의 설명 한 줄이에요.</p>
       <div class="harness-map-wrap"><table class="issues harness-map"><thead><tr><th>경로</th><th>파일명</th><th>내용</th></tr></thead><tbody>${
@@ -1739,7 +1738,7 @@ async function renderHarness(force = false){
     try{
       const q = `scope=${encodeURIComponent(scope)}&path=${encodeURIComponent(path)}`;
       let base = (await api('GET', `/api/harness/history?${q}`, undefined, current)).base_sha;
-      const f = scope === 'prompts' ? P.files.find(x => x.path === path) : scope === 'common' ? (path === 'docs/DESIGN.md' ? L.project.find(x => x.label.startsWith('docs/DESIGN.md')) : L.common) : L.project.find(x => x.label === path);
+      const f = scope === 'prompts' ? P.files.find(x => x.path === path) : scope === 'common' ? L.common : L.project.find(x => x.label === path);
       content.innerHTML = `<textarea class="harness-area" rows="14" aria-label="${esc(path)} 내용">${esc(f?.content || '')}</textarea>
         <div class="harness-actions"><button type="button" class="primary harness-save">저장</button><button type="button" class="harness-cancel">취소</button></div>`;
       content.querySelector('.harness-cancel').addEventListener('click', () => renderHarness());

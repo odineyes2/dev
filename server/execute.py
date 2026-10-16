@@ -28,7 +28,6 @@ import prompts
 BASE_BRANCH = os.environ.get("DEV_EXEC_BASE") or "main"
 BUDGET_USD = float(os.environ.get("DEV_EXEC_BUDGET_USD") or 2)
 TIMEOUT_SEC = float(os.environ.get("DEV_EXEC_TIMEOUT_SEC") or 1800)
-DESIGN_DOC = Path(__file__).resolve().parent.parent / "docs" / "DESIGN.md"   # dev·nightshift 공통 — Task worktree에는 없다
 # 8.3 짧은 경로면 Claude가 쓰기 권한을 못 알아본다(resolve). 데이터 폴더가 dev 저장소 안(운영 기본값)이면 worktree는 저장소 옆에 둔다 —
 # 안에 두면 Claude가 상위 폴더의 dev 규칙 파일(CLAUDE.md→AGENTS.md)까지 읽어 다른 프로젝트 Task에 dev 규칙이 섞인다(DEV-131). 검사의 임시 데이터 폴더는 그 안에.
 _DATA = config.DATA_DIR.resolve()
@@ -288,7 +287,7 @@ def capture_instructions(viewer, ref=None):
 
 def prompt_for(ref: str, parent_ref: str | None) -> str:
     import review
-    return review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("Read", ref) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), design_doc=DESIGN_DOC, api_test=api_test_instructions(ref),
+    return review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("Read", ref) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), api_test=api_test_instructions(ref),
         test_scope=test_scope(ref), parent_line=f'부모 {parent_ref}도 get_issue로 읽어 계획서를 확인한다(계획서보다 사람의 조건부 승인 메모가 우선).' if parent_ref else '')
 
 
@@ -306,7 +305,7 @@ def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
 def codex_command_for(ref: str, parent_ref: str | None) -> list[str]:
     """코드 수정·검사는 worktree 안에서, 커밋과 결과 등록은 서버가 수행한다."""
     import review
-    prompt = review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("이미지 보기 도구", ref) + prompts.render("execute_codex.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref, design_doc=DESIGN_DOC,
+    prompt = review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("이미지 보기 도구", ref) + prompts.render("execute_codex.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref,
         api_test=api_test_instructions(ref), test_scope=test_scope(ref))
     cmd = review.codex_command(prompt, ["whoami", "get_issue", "list_projects", "read_attachment"], web="cached")
     return cmd[:-1] + ["--output-schema", str(Path(__file__).with_name("codex_execute.schema.json")),

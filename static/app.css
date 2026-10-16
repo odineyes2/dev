@@ -872,6 +872,7 @@ table.harness-map td:nth-child(1){ width:22%; } table.harness-map td:nth-child(2
 .harness-file header{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2) var(--sp-3); }
 .harness-file header button{ margin-left:auto; }
 .harness-file header b, .harness-enf code{ overflow-wrap:anywhere; }
+.harness-loc{ min-width:0; overflow-wrap:anywhere; font-size:12px; background:none; }   /* 저장 위치 — 긴 경로도 좁은 화면에서 줄바꿈 */
 .harness-actions{ display:flex; gap:var(--sp-2); margin-top:var(--sp-2); }
 .harness-enf{ display:grid; grid-template-columns:max-content minmax(0,1fr); gap:var(--sp-2) var(--sp-4); margin:0; }
 .harness-enf dt{ color:var(--dim); } .harness-enf dd{ margin:0; min-width:0; } .harness-enf ul{ margin:0; padding-left:var(--sp-4); }

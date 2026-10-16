@@ -118,7 +118,7 @@ DOCUMENTS = (
     ('docs/project/00_PRODUCT_BRIEF.md', '프로젝트 정체성, 비전, 대상 고객, 핵심 가치'),
     ('docs/project/01_PRD.md', '제품 요구사항, 기능 범위, 사용자 시나리오'),
     ('docs/project/02_TECH_SPEC.md', '기술 스택, 시스템 아키텍처, DB, API 설계'),
-    ('docs/project/03_DESIGN_SYSTEM.md', 'UI/UX 원칙, 컬러, 타이포그래피, 공통 컴포넌트'),
+    ('docs/DESIGN.md', 'UI/UX 원칙, 컬러, 타이포그래피, 공통 컴포넌트 — 화면 작업 때 에이전트가 따르는 디자인 방향'),
     ('docs/project/04_ROADMAP.md', 'MVP, 개발 우선순위, 버전별 목표'),
     ('docs/project/05_DECISIONS.md', '중요한 의사결정과 변경 사유 기록'),
     ('AGENTS.md', 'AI 개발 에이전트 작업 규칙과 위 문서 참조 지침'),

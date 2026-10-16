@@ -3792,6 +3792,8 @@ def check_harness(page, shots):
     # 기본은 공통 하네스 탭 하나만 보인다
     assert page.locator('.harness-tab.active').inner_text().strip() == '공통 하네스'
     assert page.locator('.harness-panel').count() == 1 and page.locator('.harness-panel[data-tab="common"] .harness-file').count() == 1
+    # 파일 카드마다 저장 위치 — 경로만 봐도 공통(dev 저장소)인지 프로젝트 전용인지 보인다
+    assert page.locator('.harness-panel[data-tab="common"] .harness-loc').inner_text().endswith('harness/COMMON.md')
     def open_tab(name):
         page.locator('.harness-tab[data-tab="%s"]' % name).click()
         page.wait_for_selector('#harness-body:not([aria-busy]) .harness-panel[data-tab="%s"]' % name)
@@ -3799,6 +3801,7 @@ def check_harness(page, shots):
     # 프로젝트 하네스: 읽는 에이전트 표시
     open_tab('project')
     assert page.locator('.harness-readers').count() >= 1
+    assert page.locator('.harness-file[data-path="AGENTS.md"] .harness-loc').inner_text().endswith('/AGENTS.md')
     open_tab('map')
     assert page.locator('table.harness-map thead th').all_inner_texts() == ['경로', '파일명', '내용']
     row = page.locator('table.harness-map tbody tr:has-text("app.py")')

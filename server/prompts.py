@@ -15,8 +15,8 @@ SLOTS = {
     "review_codex.md": {"ref", "web_domains"},
     "description_claude.md": {"ref"},
     "description_codex.md": {"ref"},
-    "execute_claude.md": {"ref", "branch", "parent_line", "design_doc", "api_test", "test_scope"},
-    "execute_codex.md": {"ref", "branch", "parent_ref", "design_doc", "api_test", "test_scope"},
+    "execute_claude.md": {"ref", "branch", "parent_line", "api_test", "test_scope"},
+    "execute_codex.md": {"ref", "branch", "parent_ref", "api_test", "test_scope"},
     "capture.md": {"viewer"},
 }
 # 빠지면 에이전트가 어느 이슈·어떤 검사 범위인지 모르게 되는 자리표시
