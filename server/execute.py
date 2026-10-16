@@ -30,7 +30,7 @@ BUDGET_USD = float(os.environ.get("DEV_EXEC_BUDGET_USD") or 2)
 TIMEOUT_SEC = float(os.environ.get("DEV_EXEC_TIMEOUT_SEC") or 1800)
 DESIGN_DOC = Path(__file__).resolve().parent.parent / "docs" / "DESIGN.md"   # dev·nightshift 공통 — Task worktree에는 없다
 # 8.3 짧은 경로면 Claude가 쓰기 권한을 못 알아본다(resolve). 데이터 폴더가 dev 저장소 안(운영 기본값)이면 worktree는 저장소 옆에 둔다 —
-# 안에 두면 Claude가 상위 폴더의 dev/CLAUDE.md까지 읽어 다른 프로젝트 Task에 dev 규칙이 섞인다(DEV-131). 검사의 임시 데이터 폴더는 그 안에.
+# 안에 두면 Claude가 상위 폴더의 dev 규칙 파일(CLAUDE.md→AGENTS.md)까지 읽어 다른 프로젝트 Task에 dev 규칙이 섞인다(DEV-131). 검사의 임시 데이터 폴더는 그 안에.
 _DATA = config.DATA_DIR.resolve()
 WORKTREE_DIR = (config.REPO_ROOT.parent.resolve() / ".dev-worktrees" if _DATA.is_relative_to(config.REPO_ROOT.resolve())
                 else _DATA / "worktrees")
