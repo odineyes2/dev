@@ -640,6 +640,24 @@ def api_harness(request: Request, project: str, provider: str = "claude", stage:
     return harness_view.build(project, provider, stage)
 
 
+@app.put("/api/harness/file")
+async def api_harness_save(request: Request):
+    human_only(request)
+    import harness_edit
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "본문 형식이 달라요.")
+    return await run_in_threadpool(harness_edit.save, str(body.get("scope") or ""), body.get("path"),
+                                   body.get("content"), str(body.get("base_sha") or ""))
+
+
+@app.get("/api/harness/history")
+def api_harness_history(request: Request, scope: str, path: str):
+    human_only(request)
+    import harness_edit
+    return harness_edit.history(scope, path)
+
+
 @app.get("/api/issue-types")
 def api_issue_types(include_inactive: bool = False):
     return {"types": issues.list_issue_types(include_inactive)}
