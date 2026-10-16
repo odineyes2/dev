@@ -12,12 +12,12 @@ import execute
 import filemap
 import harness
 import issues
+import prompts
 import review
 
 PROVIDERS = ("claude", "codex")
 STAGES = ("review", "execute")
 MAX_FILE = 256 * 1024
-SECTION_END = "\n\n---\n\n"
 HIDDEN = "(비공개)"
 # 2층 허용 목록 — 디렉터리를 훑지 않는다
 PROJECT_FILES = ("AGENTS.md", "CLAUDE.md")
@@ -91,20 +91,27 @@ def _scrub(text: str) -> str:
     return text
 
 
-def _segments(prompt: str, map_text: str) -> list[dict]:
-    """프롬프트를 층으로 나눈다 — 공통 하네스(1층) · 파일 지도(자동 생성) · 나머지(dev 프롬프트, 3층)."""
-    segs, rest = [], prompt
-    head = harness.prompt_section()
-    if head and rest.startswith(head):
-        segs.append({"layer": 1, "label": "공통 하네스", "source": "harness/COMMON.md", "text": head})
-        rest = rest[len(head):]
-    if rest.startswith("## 파일 지도"):
-        n = rest.find(SECTION_END)
-        n = len(rest) if n < 0 else n + len(SECTION_END)
-        segs.append({"layer": "map", "label": "파일 지도(자동 생성)", "source": "server/filemap.py", "text": rest[:n]})
-        rest = rest[n:]
-    segs.append({"layer": 3, "label": "dev 프롬프트", "source": "server/review.py · server/execute.py의 prompt_for", "text": rest})
-    return segs
+# 4층에서 코드가 채우는 부분 — 이름만 안내한다(글은 코드·DB에 있다)
+CODE_FILLED = ("검사 범위(검사 선택·Settings)", "같은 프로젝트의 진행 중인 이슈·남은 Task 파일", "낡은 계획 알림(다른 이슈가 바꾼 Task 커밋 목록)",
+               "이어 쓰는 worktree의 base 병합·충돌 해결 지시", "이전 실행의 실패 검사 재시도 안내")
+PROMPT_LABELS = {
+    "review_claude.md": "검토 · Claude", "review_codex.md": "검토 · Codex",
+    "execute_claude.md": "실행 · Claude", "execute_codex.md": "실행 · Codex",
+    "description_claude.md": "Description · Claude", "description_codex.md": "Description · Codex",
+    "capture.md": "캡처 안내",
+}
+READERS = {"AGENTS.md": "Codex가 직접 · Claude는 CLAUDE.md를 통해", "CLAUDE.md": "Claude"}
+
+
+def _prompt_files() -> list[dict]:
+    import harness_edit
+    out = []
+    for name in prompts.SLOTS:
+        rel = f"harness/prompts/{name}"
+        f = _file(4, PROMPT_LABELS.get(name, name), rel, prompts.DIR / name, config.REPO_ROOT)
+        out.append({**f, "name": name, "path": rel, "slots": sorted(prompts.SLOTS[name]), "required": sorted(prompts.REQUIRED[name]),
+                    "base_sha": harness_edit.blob_sha(config.REPO_ROOT, rel)})
+    return out
 
 
 def _command(key: str, provider: str, stage: str) -> list[str]:
@@ -139,46 +146,40 @@ def enforcement(provider: str, stage: str, args: list[str], cmd: list[str]) -> d
     return items
 
 
-def build(key: str, provider: str, stage: str) -> dict:
-    if provider not in PROVIDERS or stage not in STAGES:
-        raise issues.StoreError("provider는 claude|codex, stage는 review|execute예요.", 400)
+def build(key: str) -> dict:
     project = next((p for p in issues.list_projects() if p["key"] == key), None)
     if not project:
         raise issues.StoreError("프로젝트를 찾을 수 없어요.", 404)
     root = Path(project["local_path"]) if project["local_path"] else None
     repo = root if root and root.is_dir() else None
-    cmd = _command(key, provider, stage)
-    prompt, args = split_command(cmd, provider)
     map_text = ""
     if repo:
         try:
-            body = filemap.build(repo)
+            map_text = filemap.build(repo)
         except Exception:   # 지도는 보조 자료 — 못 만들면 없이 보여준다
-            body = ""
-        if body:
-            map_text = ("## 파일 지도 — dev가 지금 저장소에서 자동으로 만든 것(추적 파일과 각 파일 첫머리 설명)\n"
-                        "이 지도로 바로 해당 파일을 연다. 여기 없는 것만 Grep/Glob로 찾는다.\n" + body + SECTION_END)
-    head = harness.prompt_section()
-    if map_text and not prompt[len(head):].startswith("## 파일 지도"):   # 없는 이슈라 프롬프트가 지도를 못 만들었다 — 같은 글을 하네스 다음에 끼운다
-        prompt = head + map_text + prompt[len(head):] if prompt.startswith(head) else map_text + prompt
-    prompt = _scrub(prompt)
+            map_text = ""
     layer2 = []
     if repo:
         for name in PROJECT_FILES:
-            layer2.append(_file(2, name, f"{key} 저장소 {name}", repo / name, repo))
+            layer2.append({**_file(2, name, f"{key} 저장소 {name}", repo / name, repo), "readers": READERS[name]})
         for pattern in PROJECT_DOCS:
             for p in sorted(repo.glob(pattern)):
                 layer2.append(_file(2, p.relative_to(repo).as_posix(), f"{key} 저장소 {p.relative_to(repo).as_posix()}", p, repo))
     layer2.append(_file(2, "docs/DESIGN.md (공통 디자인, dev 저장소)", "dev 저장소 docs/DESIGN.md", execute.DESIGN_DOC, editable=True))
+    settings = []
+    for stage in STAGES:
+        for provider in PROVIDERS:
+            cmd = _command(key, provider, stage)
+            _, args = split_command(cmd, provider)
+            settings.append({"stage": stage, "provider": provider, **enforcement(provider, stage, args, cmd), "editable": False})
     return {
-        "project": key, "provider": provider, "stage": stage, "preview_ref": f"{key}-0",
-        "note": "{ref} 등은 미리보기용 없는 이슈 번호로 채워져 있어요. 1층 저장은 다음 실행부터, MCP 안내문은 재시작 뒤에 반영돼요.",
+        "project": key,
+        "note": "1층 저장은 다음 실행부터, MCP 안내문은 재시작 뒤에 반영돼요.",
         "layers": {
             "common": _file(1, "공통 하네스", "harness/COMMON.md", harness.PATH, config.REPO_ROOT),
             "project": layer2,
-            "file_map": {"label": "파일 지도(자동 생성)", "source": "server/filemap.py(DEV-134)", "editable": False, "content": map_text.removesuffix(SECTION_END)},
-            "prompt": {"layer": 3, "editable": False, "source": "server/review.py · server/execute.py", "text": prompt,
-                       "segments": _segments(prompt, map_text)},
-            "enforcement": {"layer": 4, "editable": False, **enforcement(provider, stage, args, cmd)},
+            "file_map": {"layer": 3, "label": "파일 지도(자동 생성)", "source": "server/filemap.py(DEV-134)", "editable": False, "content": map_text},
+            "prompts": {"layer": 4, "files": _prompt_files(), "code_filled": list(CODE_FILLED)},
+            "settings": {"layer": 5, "editable": False, "items": settings},
         },
     }

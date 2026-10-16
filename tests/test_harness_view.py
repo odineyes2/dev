@@ -15,6 +15,7 @@ import auth  # noqa: E402
 import harness  # noqa: E402
 import harness_view  # noqa: E402
 import issues  # noqa: E402
+import prompts  # noqa: E402
 import review  # noqa: E402
 
 root = Path(tempfile.mkdtemp())
@@ -43,33 +44,42 @@ with TestClient(A.app) as client:
     common = harness.text()
     assert common
     for key in ('NS', 'DEV', 'MO'):
-        for provider in ('claude', 'codex'):
-            for stage in ('review', 'execute'):
-                r = client.get('/api/harness', params={'project': key, 'provider': provider, 'stage': stage})
-                assert r.status_code == 200, (key, provider, stage, r.text)
-                d = r.json()
-                prompt = d['layers']['prompt']['text']
-                assert prompt.startswith(common[:200]), (key, provider, stage)
-                segs = d['layers']['prompt']['segments']
-                assert [s['layer'] for s in segs][:2] == [1, 'map'], [s['layer'] for s in segs]
-                assert 'app.py — ' + key + ' 앱 본체.' in d['layers']['file_map']['content']
-                assert d['layers']['file_map']['source'].startswith('server/filemap.py') and not d['layers']['file_map']['editable']
-                assert d['layers']['common']['editable'] and d['layers']['common']['source'] == 'harness/COMMON.md'
-                names = [f['label'] for f in d['layers']['project']]
-                assert 'AGENTS.md' in names and not any('.env' in n or 'mcp' in n or 'auth' in n for n in names), names
-                assert next(f for f in d['layers']['project'] if f['label'] == 'AGENTS.md')['content'] == f'# {key} 규칙\n'
-                e = d['layers']['enforcement']
-                assert not e['editable'] and any(t.startswith('mcp__dev__') for t in e['allowed_tools'])
-                if provider == 'claude':
-                    assert e['blocked_tools']
-                if stage == 'execute':
-                    assert e['limits']['budget_usd'] and e['merge_rules'] and 'GH_TOKEN' in e['secret_env_removed']
-                body = r.text
-                assert str(review.MCP_CONFIG) not in body and '--mcp-config' not in body, (key, provider, stage)
-                assert str(review.MCP_CONFIG).replace('\\', '/') not in body
-                assert 'SECRET=zzz' not in body and 'bearer_token_env_var' not in body and 'DEV_CODEX_AGENT_KEY' not in str(e['args'])
+        r = client.get('/api/harness', params={'project': key})
+        assert r.status_code == 200, (key, r.text)
+        d = r.json()
+        L = d['layers']
+        assert list(L) == ['common', 'project', 'file_map', 'prompts', 'settings'], list(L)
+        assert 'prompt' not in L and 'enforcement' not in L
+        assert 'app.py — ' + key + ' 앱 본체.' in L['file_map']['content']
+        assert L['file_map']['source'].startswith('server/filemap.py') and not L['file_map']['editable']
+        assert L['common']['editable'] and L['common']['source'] == 'harness/COMMON.md'
+        names = [f['label'] for f in L['project']]
+        assert 'AGENTS.md' in names and not any('.env' in n or 'mcp' in n or 'auth' in n for n in names), names
+        agents = next(f for f in L['project'] if f['label'] == 'AGENTS.md')
+        assert agents['content'] == f'# {key} 규칙\n' and 'Codex' in agents['readers'] and 'CLAUDE.md' in agents['readers']
+        # 4층 — 프롬프트 파일 7개, 자리표시 안내
+        files = L['prompts']['files']
+        assert sorted(f['name'] for f in files) == sorted(prompts.SLOTS), [f['name'] for f in files]
+        for f in files:
+            assert f['exists'] and f['content'] and f['slots'] == sorted(prompts.SLOTS[f['name']]) and f['editable']
+            assert f['path'] == 'harness/prompts/' + f['name'] and 'base_sha' in f
+        assert next(f for f in files if f['name'] == 'execute_claude.md')['required'] == ['ref', 'test_scope']
+        assert L['prompts']['code_filled']
+        # 5층 — 네 조합
+        items = L['settings']['items']
+        assert [(i['stage'], i['provider']) for i in items] == [('review', 'claude'), ('review', 'codex'), ('execute', 'claude'), ('execute', 'codex')]
+        for e in items:
+            assert not e['editable'] and any(t.startswith('mcp__dev__') for t in e['allowed_tools'])
+            if e['provider'] == 'claude':
+                assert e['blocked_tools']
+            if e['stage'] == 'execute':
+                assert e['limits']['budget_usd'] and e['merge_rules'] and 'GH_TOKEN' in e['secret_env_removed']
+            assert 'DEV_CODEX_AGENT_KEY' not in str(e['args'])
+        body = r.text
+        assert str(review.MCP_CONFIG) not in body and '--mcp-config' not in body, key
+        assert str(review.MCP_CONFIG).replace('\\', '/') not in body
+        assert 'SECRET=zzz' not in body and 'bearer_token_env_var' not in body
     # 입력 검증
-    assert client.get('/api/harness', params={'project': 'NS', 'provider': 'x'}).status_code == 400
     assert client.get('/api/harness', params={'project': 'NOPE'}).status_code == 404
     assert client.get('/api/harness').status_code == 422
     # 비로그인·에이전트 키 거절
