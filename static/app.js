@@ -1724,7 +1724,7 @@ async function renderHarness(force = false){
     }).join(''), true),
     map: () => panel(L.file_map.source, (L.file_map.rows || []).length ? `<p class="dim">에이전트 프롬프트에 붙는 지도예요. 내용은 각 파일 첫머리의 설명 한 줄이에요.</p>
       <div class="harness-map-wrap"><table class="issues harness-map"><thead><tr><th>경로</th><th>파일명</th><th>내용</th></tr></thead><tbody>${
-        L.file_map.rows.map(r => `<tr><td class="dim">${r.dir === '.' ? '(최상위)' : esc(r.dir) + '/'}</td><td><code>${esc(r.name)}</code></td><td>${r.desc ? esc(r.desc) : '<span class="dim">설명 없음</span>'}</td></tr>`).join('')
+        L.file_map.rows.map(r => `<tr><td class="dim">${r.dir === '.' ? '/' : esc(r.dir) + '/'}</td><td><code>${esc(r.name)}</code></td><td>${r.desc ? esc(r.desc) : '<span class="dim">설명 없음</span>'}</td></tr>`).join('')
       }</tbody></table></div>${(L.file_map.dropped || []).length ? `<p class="dim">크기 상한으로 파일 수만 넣은 폴더: ${L.file_map.dropped.map(d => `${esc(d.dir)}/ (${d.files}개)`).join(', ')}</p>` : ''}`
       : '<p class="dim">지도를 만들 수 없어요.</p>', false),
     prompts: () => panel('dev 저장소 harness/prompts/*.md', P.files.map(f => fileCard(f, 'prompts', f.path, slotChips(f))).join('') +

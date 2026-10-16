@@ -3802,7 +3802,7 @@ def check_harness(page, shots):
     open_tab('map')
     assert page.locator('table.harness-map thead th').all_inner_texts() == ['경로', '파일명', '내용']
     row = page.locator('table.harness-map tbody tr:has-text("app.py")')
-    assert row.locator('td').all_inner_texts() == ['(최상위)', 'app.py', '앱 진입점.'], row.locator('td').all_inner_texts()
+    assert row.locator('td').all_inner_texts() == ['/', 'app.py', '앱 진입점.'], row.locator('td').all_inner_texts()
     for theme in ('light', 'dark'):   # 지도 표 — 좁은 화면에서도 페이지가 옆으로 넘치지 않는다
         for width in (1300, 390):
             page.set_viewport_size({'width': width, 'height': 850})

@@ -66,7 +66,7 @@ def entries(repo) -> tuple[list[dict], list[dict]] | None:
 
 
 def _block_text(d: str, block: list[dict]) -> str:
-    return "\n".join([f"{'(최상위)' if d == '.' else d + '/'}"] + [f"  {e['name']}" + (f" — {e['desc']}" if e["desc"] else "") for e in block])
+    return "\n".join([f"{'/' if d == '.' else d + '/'}"] + [f"  {e['name']}" + (f" — {e['desc']}" if e["desc"] else "") for e in block])
 
 
 def build(repo) -> str:
