@@ -11,12 +11,21 @@ import db
 import execute
 import issues
 import orchestrate
+import prompts
 
 MAX_FILE = 256 * 1024
 COMMON = "common"   # 1층(dev의 harness/COMMON.md)과 공통 디자인(dev의 docs/DESIGN.md)
 COMMON_PATHS = ("harness/COMMON.md", "docs/DESIGN.md")
 PROJECT_RE = re.compile(r"^(AGENTS\.md|CLAUDE\.md|docs/project/0[0-5]_[A-Za-z0-9._-]+\.md)$")
+PROMPTS = "prompts"   # 4층(dev의 harness/prompts/*.md) — prompts.SLOTS에 있는 파일만
+PROMPTS_DIR = "harness/prompts/"
 EDITOR = ["-c", "user.name=dev harness editor", "-c", "user.email=harness@dev.local"]
+
+
+def _prompt_name(path: str) -> str:
+    """harness/prompts/<파일>이고 알려진 프롬프트 파일이면 파일명, 아니면 빈 문자열."""
+    name = path[len(PROMPTS_DIR):] if path.startswith(PROMPTS_DIR) else ""
+    return name if name in prompts.SLOTS else ""
 
 
 def _target(scope: str, path: str) -> tuple[Path, str]:
@@ -25,6 +34,10 @@ def _target(scope: str, path: str) -> tuple[Path, str]:
         raise issues.StoreError("허용되지 않은 경로예요.", 400)
     if scope == COMMON:
         if path not in COMMON_PATHS:
+            raise issues.StoreError("허용되지 않은 경로예요.", 400)
+        repo = config.REPO_ROOT
+    elif scope == PROMPTS:
+        if not _prompt_name(path):
             raise issues.StoreError("허용되지 않은 경로예요.", 400)
         repo = config.REPO_ROOT
     else:
@@ -58,7 +71,7 @@ def _running(scope: str) -> bool:
     sql = ("SELECT 1 FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id "
            "WHERE r.status='running'")
     with db.connect() as c:
-        if scope == COMMON:
+        if scope in (COMMON, PROMPTS):
             return c.execute(sql).fetchone() is not None
         return c.execute(sql + " AND p.key=?", (scope,)).fetchone() is not None
 
@@ -71,6 +84,10 @@ def save(scope: str, path: str, content: str, base_sha: str) -> dict:
     if not isinstance(content, str) or len(content.encode("utf-8")) > MAX_FILE:
         raise issues.StoreError("내용이 256KB를 넘거나 글이 아니에요.", 400)
     repo, path = _target(scope, path)
+    if scope == PROMPTS:
+        found = prompts.problems(_prompt_name(path), content)
+        if found:
+            raise issues.StoreError("프롬프트를 저장할 수 없어요:\n" + "\n".join(found), 400)
     with orchestrate._lock:
         if _running(scope):
             raise issues.StoreError("실행 중인 Task가 있어 저장할 수 없어요. 끝난 뒤 다시 저장해 주세요.", 409)

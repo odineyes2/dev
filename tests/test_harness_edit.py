@@ -36,7 +36,8 @@ def make_repo(path: Path, files: dict):
 
 root = Path(tempfile.mkdtemp())
 make_repo(root / 'NS', {'AGENTS.md': '# NS\n', 'docs/project/00_a.md': 'a\n'})
-make_repo(root / 'devrepo', {'harness/COMMON.md': '공통\n', 'docs/DESIGN.md': '디자인\n'})
+make_repo(root / 'devrepo', {'harness/COMMON.md': '공통\n', 'docs/DESIGN.md': '디자인\n',
+                           'harness/prompts/review_claude.md': '{ref} 검토 {web_domains}\n'})
 config.REPO_ROOT = root / 'devrepo'   # 1층은 임시 저장소에 쓴다
 
 
@@ -119,6 +120,25 @@ with TestClient(A.app) as client:
         c.execute("UPDATE runs SET status='ok'")
     r = put(client, 'common', 'harness/COMMON.md', '새 공통\n', cc)
     assert r.status_code == 200 and '+새 공통' in r.json()['diff'], r.text
+
+    # 4층 프롬프트: 정상 저장은 dev 저장소에 커밋, 자리표시 문제는 400+이유, 허용 밖 경로 400
+    dev = root / 'devrepo'
+    pf = 'harness/prompts/review_claude.md'
+    pb = git(dev, 'rev-parse', f'main:{pf}')
+    r = put(client, 'prompts', pf, '{ref}를 검토해요. {web_domains}\n', pb)
+    assert r.status_code == 200 and r.json()['commit'] == git(dev, 'rev-parse', 'HEAD') and '+{ref}를' in r.json()['diff'], r.text
+    pb = r.json()['base_sha']
+    head = git(dev, 'rev-parse', 'HEAD')
+    r = put(client, 'prompts', pf, '{web_domains}만 남김\n', pb)
+    assert r.status_code == 400 and '{ref}' in r.json()['detail'], r.text
+    r = put(client, 'prompts', pf, '{ref} {nope}\n', pb)
+    assert r.status_code == 400 and '{nope}' in r.json()['detail'], r.text
+    assert git(dev, 'rev-parse', 'HEAD') == head
+    assert put(client, 'prompts', pf, '{ref}\n', 'stale').status_code == 409
+    for bad in ('harness/COMMON.md', 'harness/prompts/unknown.md', 'harness/prompts/../COMMON.md', '.env', 'harness/prompts/'):
+        assert put(client, 'prompts', bad, '{ref}', '').status_code == 400, bad
+    assert put(client, 'common', pf, 'x', '').status_code == 400
+    assert client.get('/api/harness/history', params={'scope': 'prompts', 'path': pf}).json()['commits'][0]['subject'] == f'Harness 편집: {pf}'
 
     # 이력에 diff 노출
     h = client.get('/api/harness/history', params={'scope': 'NS', 'path': 'AGENTS.md'})
