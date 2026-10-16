@@ -850,6 +850,10 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .harness-layer{ margin-top:var(--sp-5); min-width:0; }
 .harness-layer h3, .harness-seg h4{ margin:0 0 var(--sp-2); font-size:15px; }
 .harness-seg h4{ font-size:13px; margin-top:var(--sp-3); }
+.harness-layer > summary, .harness-setting > summary{ cursor:pointer; display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }
+.harness-layer > summary h3{ display:inline; margin:0; }
+.harness-setting{ border:1px solid var(--border); border-radius:var(--r-md); padding:var(--sp-2) var(--sp-3); margin-bottom:var(--sp-2); }
+.harness-slots, .harness-error{ overflow-wrap:anywhere; white-space:pre-wrap; }
 .chip-static{ font-family:var(--sans); font-weight:400; font-size:12px; color:var(--dim); border:1px solid var(--border); border-radius:999px; padding:2px 8px; margin-left:var(--sp-2); }
 .harness-text{ margin:var(--sp-2) 0; padding:var(--sp-3); max-height:360px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--border); border-radius:var(--r-md); font:12.5px/1.6 var(--mono); }
 .harness-file{ border:1px solid var(--border); border-radius:var(--r-md); padding:var(--sp-3); margin-bottom:var(--sp-3); min-width:0; }
