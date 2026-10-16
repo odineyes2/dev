@@ -1661,7 +1661,9 @@ function managementHeader(title, tabs, back = ''){
   return container.innerHTML;
 }
 // ---- Harness (DEV-132·136) — 에이전트가 실제로 받는 것을 서브탭 5개로 보여 주고, 규칙·프롬프트 파일은 고칠 수 있다 ----
-async function renderHarness(){
+// 프로젝트 → {data, at}. 탭 이동·편집 취소는 이걸 다시 그리고, 서버는 처음·다시 불러오기·저장 뒤에만 부른다
+const harnessCache = new Map();
+async function renderHarness(force = false){
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   if(!projects.length) await loadProjects();
   const filter = document.getElementById('project-filter')?.value;
@@ -1675,6 +1677,7 @@ async function renderHarness(){
     ${managementHeader('Harness', '')}
     <form class="form harness-pick" onsubmit="return false"><div class="line">
       <label>Project<select id="h-project">${projects.map(p => `<option value="${esc(p.key)}" ${p.key === key ? 'selected' : ''}>${esc(`${p.key} · ${p.name}`)}</option>`).join('')}</select></label>
+      <label class="actions"><button type="button" id="h-reload">다시 불러오기</button><span class="dim" id="h-at" role="status"></span></label>
     </div></form>
     <nav class="harness-tabs" role="tablist" aria-label="Harness">${TABS.map(([t, name]) => `<a role="tab" class="harness-tab${t === tab ? ' active' : ''}" aria-selected="${t === tab}" data-tab="${t}" href="${href(key, t)}">${name}</a>`).join('')}</nav>
     <div id="harness-body" aria-live="polite" aria-busy="true"><div class="usage-loading" role="status">불러와요…</div></div></section>`;
@@ -1683,10 +1686,15 @@ async function renderHarness(){
   const body = view.querySelector('#harness-body');
   if(!key){ body.removeAttribute('aria-busy'); body.innerHTML = '<div class="empty">프로젝트가 아직 없어요.</div>'; return; }
   const current = () => seq === issueRenderSeq;
-  let data;
-  try{ data = await api('GET', `/api/harness?project=${encodeURIComponent(key)}`, undefined, current); }
-  catch(e){ if(current()){ body.removeAttribute('aria-busy'); body.innerHTML = `<div class="empty">${esc(e.message)}</div>`; } return; }
-  if(!current() || !data) return;
+  view.querySelector('#h-reload').addEventListener('click', () => renderHarness(true));
+  let hit = force ? null : harnessCache.get(key), data = hit?.data;
+  if(!data){
+    try{ data = await api('GET', `/api/harness?project=${encodeURIComponent(key)}`, undefined, current); }
+    catch(e){ if(current()){ body.removeAttribute('aria-busy'); body.innerHTML = `<div class="empty">${esc(e.message)}</div>`; } return; }
+    if(!current() || !data) return;
+    harnessCache.set(key, hit = {data, at: new Date().toISOString()});
+  }
+  view.querySelector('#h-at').textContent = `불러온 시각 ${fmtTime(hit.at)}`;
   const L = data.layers;
   const pre = text => `<pre class="harness-text">${esc(text)}</pre>`;
   const fileCard = (f, scope, path, extra = '') => `<article class="harness-file" data-path="${esc(path)}" data-scope="${esc(scope)}">
@@ -1739,6 +1747,7 @@ async function renderHarness(){
           base = r.base_sha;
           result.innerHTML = `<p>저장했어요 · 커밋 <code>${esc(r.commit.slice(0, 8))}</code></p>${pre(r.diff)}`;
           toast('저장했어요');
+          harnessCache.clear();   // 공통 하네스·프롬프트는 모든 프로젝트 화면에 걸려 있어 통째로 비운다
         }catch(e){ result.innerHTML = `<p class="error harness-error" role="alert">${esc(e.message)}</p>`; }
         ev.target.disabled = false;
       });

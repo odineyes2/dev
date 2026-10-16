@@ -854,6 +854,8 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .harness-tab:hover{ color:var(--text); text-decoration:none; }
 .harness-tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
 .harness-panel{ min-width:0; }
+.harness-pick .actions{ display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; }
+#h-at{ font:400 12.5px var(--sans); letter-spacing:0; text-transform:none; }   /* 라벨 글꼴(틀 글자)을 물려받지 않게 */
 .harness-seg h4{ margin:0 0 var(--sp-2); font-size:15px; }
 .harness-seg h4{ font-size:13px; margin-top:var(--sp-3); }
 .harness-setting > summary{ cursor:pointer; display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }

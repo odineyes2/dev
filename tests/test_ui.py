@@ -3776,8 +3776,11 @@ def check_harness(page, shots):
                           data={'key': 'HARN', 'name': 'Harness 확인', 'local_path': str(repo)})
     assert r.ok, r.text()
     page.reload(); page.wait_for_selector('#shell:not([hidden])')
+    calls = []   # 서버 조회 횟수 — 탭 이동은 보관한 내용으로 그린다
+    page.on('request', lambda req: calls.append(req.url) if '/api/harness?project=' in req.url else None)
     page.goto(BASE + '/#/harness?project=HARN')
     page.wait_for_selector('#harness-body:not([aria-busy]) .harness-panel')
+    assert len(calls) == 1 and '불러온 시각' in page.locator('#h-at').inner_text()
     assert page.locator('.harness-pick select').count() == 1 and page.locator('#h-project').count() == 1
     assert page.locator('#h-provider, #h-stage, details.harness-layer').count() == 0
     tabs = page.locator('.harness-tabs [role="tab"]')
@@ -3803,6 +3806,11 @@ def check_harness(page, shots):
     assert rows.nth(0).locator('dl').is_visible()
     # 코드 속 프롬프트: 자리표시 안내와 차단
     open_tab('prompts')
+    assert len(calls) == 1, calls   # 탭을 네 번 옮겨도 서버는 처음 한 번만
+    page.locator('#h-reload').click()
+    page.wait_for_selector('#harness-body:not([aria-busy]) .harness-panel[data-tab="prompts"]')
+    page.wait_for_timeout(300)
+    assert len(calls) == 2, calls   # 다시 불러오기는 서버를 다시 부른다
     card = page.locator('.harness-file[data-path="harness/prompts/review_claude.md"]')
     assert '{ref}' in card.locator('.harness-slots').inner_text()
     card.locator('.harness-edit').click()
@@ -3817,9 +3825,11 @@ def check_harness(page, shots):
     card.locator('.harness-save').click()
     card.locator('.harness-result:has-text("저장했어요")').wait_for()
     page.unroute('**/api/harness/file')
-    # 편집 취소로 다시 그려도 같은 탭에 남는다
+    # 편집 취소로 다시 그려도 같은 탭에 남고, 저장했으니 보관한 내용 대신 서버에서 새로 읽는다
     card.locator('.harness-cancel').click()
     page.wait_for_selector('#harness-body:not([aria-busy]) .harness-panel[data-tab="prompts"]')
+    page.wait_for_timeout(300)
+    assert len(calls) == 3, calls
     for theme in ('light', 'dark'):
         for width in (1300, 390):
             page.set_viewport_size({'width': width, 'height': 850})
