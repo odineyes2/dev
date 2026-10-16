@@ -679,7 +679,7 @@ def out_of_scope(issue: dict, changed: list[str]) -> list[str]:
 
 def untested_routes(cwd) -> bool:
     """Task가 라우트 데코레이터(@app.get 등)를 더했는데 tests/에 더한 줄 중 `/api/` 경로 요청이 없나(NS-60).
-    ponytail: 경로 문자열만 본다 — 기존 검사가 이미 부르는 경로를 재사용하면 오탐이지만 경고뿐이라 둔다."""
+    경로 문자열만 본다 — 기존 검사가 이미 부르는 경로를 재사용하면 오탐이지만 경고뿐이라 둔다."""
     added = _git(cwd, 'diff', f'{BASE_BRANCH}...HEAD', '--', '.', ':!tests')
     if not re.search(r"^\+\s*@\w+\.(?:get|post|put|patch|delete)\(", added, re.M):
         return False

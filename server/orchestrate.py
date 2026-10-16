@@ -135,7 +135,7 @@ def _restart(repo, cfg) -> str | None:
 
 def deploy(repo: str, cfg: dict, sha: str, say=lambda msg: None) -> tuple[str, str]:
     """병합 커밋 sha 뒤 필요하면 재시작하고 health를 본다. (Task가 갈 상태, 메모) — 문제없으면 ("merged", 메모).
-    ponytail: dev가 자기 자신(pm2_app=dev)을 재시작하면 이 스레드도 죽어 health 확인·복구를 못 한다 — 상태를 DB에 적고 뜬 뒤 이어 하기는 필요해지면."""
+    dev가 자기 자신(pm2_app=dev)을 재시작하면 이 스레드도 죽어 health 확인·복구를 못 한다 — 상태를 DB에 적고 뜬 뒤 이어 하기는 필요해지면."""
     cfg = {**DEFAULTS, **cfg}
     files = _git(repo, "diff", "--name-only", f"{sha}^1", sha).stdout.split()
     hits = [f for f in files if any(fnmatch.fnmatch(f, p) for p in cfg["restart_when"])]

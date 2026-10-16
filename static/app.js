@@ -951,7 +951,7 @@ view.addEventListener('click', (e) => {
   whileBusy(b, async () => { await api('DELETE', `/api/jobs/${b.dataset.job}`); toast('대기를 취소했어요'); route(); });
 });
 // ---- Task 실행(DEV-32): 격리된 worktree에서 구현, 결과는 브랜치로 ----
-// ponytail: 선행 대기는 서버 문구로 가린다 — panel이 대기/불가를 따로 주면 그걸로
+// 선행 대기는 서버 문구로 가린다 — panel이 대기/불가를 따로 주면 그걸로
 function waitOnly(blocked){ return !!blocked && blocked.startsWith('선행 Task'); }
 const pendingExecutions = new Map();
 function troubleshootingHtml(it){
@@ -1229,7 +1229,7 @@ async function renderIssue(ref, background = false){
     let root = it;
     while(root.parent_ref) root = await api('GET', `/api/issues/${encodeURIComponent(root.parent_ref)}`).catch(() => null) || {};
     if(!root.ref) return;
-    // ponytail: 최상위의 바로 아래 Task까지만 보여 준다(서버는 더 깊은 자손도 닫는다)
+    // 최상위의 바로 아래 Task까지만 보여 준다(서버는 더 깊은 자손도 닫는다)
     const open = [root, ...root.children].filter(x => !['done', 'closed'].includes(x.status));
     if(!open.length){ toast('이미 모두 끝났어요'); return; }
     const warn = root.children.filter(c => !['done', 'closed'].includes(c.status)
