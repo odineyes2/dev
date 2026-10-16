@@ -847,19 +847,16 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 #rating-review{ width:100%; min-height:72px; font-family:var(--sans); font-size:14px; resize:vertical; margin:var(--sp-2) 0; }
 
 /* Harness 탭 (DEV-132-3) */
-/* 층마다 카드 하나 — 기본은 접힘, 제목 줄을 누르면 펼친다 */
-.harness-layer{ margin-top:var(--sp-4); min-width:0; background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); box-shadow:var(--shadow); padding:0 var(--sp-5); transition:border-color 150ms; }
-.harness-layer:hover{ border-color:var(--border-strong); }
-.harness-layer[open]{ padding-bottom:var(--sp-4); }
-.harness-layer > summary{ list-style:none; padding:var(--sp-4) 0; }
-.harness-layer > summary::-webkit-details-marker{ display:none; }
-.harness-layer > summary::before{ content:""; width:7px; height:7px; border-right:2px solid var(--dim); border-bottom:2px solid var(--dim); transform:rotate(-45deg); transition:transform 200ms; margin-right:var(--sp-1); }
-.harness-layer[open] > summary::before{ transform:rotate(45deg); }
-@media (max-width:640px){ .harness-layer{ padding:0 var(--sp-3); } }
-.harness-layer h3, .harness-seg h4{ margin:0 0 var(--sp-2); font-size:15px; }
+/* Harness 서브탭 — 전역 탭 줄과 같은 모양(활성은 파랑 밑줄), 좁으면 탭 줄 안에서만 가로 스크롤 */
+.harness-tabs{ display:flex; gap:4px; margin:var(--sp-4) 0; border-bottom:1px solid var(--border); overflow-x:auto; scrollbar-width:none; }
+.harness-tabs::-webkit-scrollbar{ display:none; }
+.harness-tab{ padding:10px 10px; margin-bottom:-1px; border-bottom:2px solid transparent; color:var(--dim); font-weight:600; font-size:13.5px; white-space:nowrap; flex-shrink:0; transition:color 150ms; }
+.harness-tab:hover{ color:var(--text); text-decoration:none; }
+.harness-tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
+.harness-panel{ min-width:0; }
+.harness-seg h4{ margin:0 0 var(--sp-2); font-size:15px; }
 .harness-seg h4{ font-size:13px; margin-top:var(--sp-3); }
-.harness-layer > summary, .harness-setting > summary{ cursor:pointer; display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }
-.harness-layer > summary h3{ display:inline; margin:0; }
+.harness-setting > summary{ cursor:pointer; display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); }
 .harness-setting{ border:1px solid var(--border); border-radius:var(--r-md); padding:var(--sp-2) var(--sp-3); margin-bottom:var(--sp-2); }
 .harness-slots, .harness-error{ overflow-wrap:anywhere; white-space:pre-wrap; }
 .chip-static{ font-family:var(--sans); font-weight:400; font-size:12px; color:var(--dim); border:1px solid var(--border); border-radius:999px; padding:2px 8px; margin-left:var(--sp-2); }

@@ -1,4 +1,4 @@
-"""Harness 조회(DEV-132) — 프로젝트 × 에이전트 × 단계별로 에이전트가 실제로 받는 글·규칙 파일·도구를 층별로 모아 보여준다.
+"""Harness 조회(DEV-132) — 프로젝트 × 에이전트 × 단계별로 에이전트가 실제로 받는 글·규칙 파일·도구를 서브탭별로 모아 보여준다.
 
 기존 prompt_for/command_for가 만든 것을 그대로 쓴다(복제 없음). 규칙 파일은 고정 허용 이름만 읽어 .env·.mcp.json·auth.json 등은 목록에 나올 수 없고,
 명령 인자의 MCP 설정 경로·주입 값은 가린다. 조회 전용이다.
@@ -19,7 +19,7 @@ PROVIDERS = ("claude", "codex")
 STAGES = ("review", "execute")
 MAX_FILE = 256 * 1024
 HIDDEN = "(비공개)"
-# 2층 허용 목록 — 디렉터리를 훑지 않는다
+# 프로젝트 하네스 탭 허용 목록 — 디렉터리를 훑지 않는다
 PROJECT_FILES = ("AGENTS.md", "CLAUDE.md")
 PROJECT_DOCS = ("docs/project/00_*.md", "docs/project/01_*.md", "docs/project/02_*.md",
                 "docs/project/03_*.md", "docs/project/04_*.md", "docs/project/05_*.md")
@@ -91,7 +91,7 @@ def _scrub(text: str) -> str:
     return text
 
 
-# 4층에서 코드가 채우는 부분 — 이름만 안내한다(글은 코드·DB에 있다)
+# 코드 속 프롬프트 탭의 "코드가 채우는 부분" — 이름만 안내한다(글은 코드·DB에 있다)
 CODE_FILLED = ("검사 범위(검사 선택·Settings)", "같은 프로젝트의 진행 중인 이슈·남은 Task 파일", "낡은 계획 알림(다른 이슈가 바꾼 Task 커밋 목록)",
                "이어 쓰는 worktree의 base 병합·충돌 해결 지시", "이전 실행의 실패 검사 재시도 안내")
 PROMPT_LABELS = {
@@ -124,7 +124,7 @@ def _command(key: str, provider: str, stage: str) -> list[str]:
 
 
 def enforcement(provider: str, stage: str, args: list[str], cmd: list[str]) -> dict:
-    """4층 — 코드가 강제하는 도구·도메인·예산·병합 규칙."""
+    """코드 속 설정값 탭 — 코드가 강제하는 도구·도메인·예산·병합 규칙."""
     if provider == "claude":
         allowed, blocked = _flag_values(cmd, "--allowedTools"), _flag_values(cmd, "--disallowedTools")
         tools = _flag_values(cmd, "--tools")
@@ -174,7 +174,7 @@ def build(key: str) -> dict:
             settings.append({"stage": stage, "provider": provider, **enforcement(provider, stage, args, cmd), "editable": False})
     return {
         "project": key,
-        "note": "1층 저장은 다음 실행부터, MCP 안내문은 재시작 뒤에 반영돼요.",
+        "note": "공통 하네스·코드 속 프롬프트를 저장하면 다음 검토·실행부터, MCP 안내문은 dev 재시작 뒤에 반영돼요.",
         "layers": {
             "common": _file(1, "공통 하네스", "harness/COMMON.md", harness.PATH, config.REPO_ROOT),
             "project": layer2,

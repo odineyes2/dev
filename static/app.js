@@ -1660,22 +1660,26 @@ function managementHeader(title, tabs, back = ''){
   container.append(header);
   return container.innerHTML;
 }
-// ---- Harness (DEV-132) — 에이전트가 실제로 받는 글을 층별로 보여 주고 1·2층 파일만 고친다 ----
-// 펼친 Harness 층 — 저장·취소로 다시 그려도 사람이 열어 둔 카드는 열린 채로 둔다
-const harnessOpen = new Set();
+// ---- Harness (DEV-132·136) — 에이전트가 실제로 받는 것을 서브탭 5개로 보여 주고, 규칙·프롬프트 파일은 고칠 수 있다 ----
 async function renderHarness(){
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   if(!projects.length) await loadProjects();
   const filter = document.getElementById('project-filter')?.value;
   const key = params.get('project') || filter || projects[0]?.key || '';
+  // 서브탭 — 에이전트가 받는 것을 종류별로(DEV-136). 탭은 주소에 남겨 새로고침·공유해도 같은 탭
+  const TABS = [['common', '공통 하네스'], ['project', '프로젝트 하네스'], ['map', '파일 지도'], ['prompts', '코드 속 프롬프트'], ['settings', '코드 속 설정값']];
+  const tab = TABS.some(([t]) => t === params.get('tab')) ? params.get('tab') : 'common';
+  const href = (k, t) => `#/harness?project=${encodeURIComponent(k)}&tab=${t}`;
   const seq = ++issueRenderSeq;
   view.innerHTML = `<section class="panel management-card harness-page">
     ${managementHeader('Harness', '')}
     <form class="form harness-pick" onsubmit="return false"><div class="line">
       <label>Project<select id="h-project">${projects.map(p => `<option value="${esc(p.key)}" ${p.key === key ? 'selected' : ''}>${esc(`${p.key} · ${p.name}`)}</option>`).join('')}</select></label>
     </div></form>
+    <nav class="harness-tabs" role="tablist" aria-label="Harness">${TABS.map(([t, name]) => `<a role="tab" class="harness-tab${t === tab ? ' active' : ''}" aria-selected="${t === tab}" data-tab="${t}" href="${href(key, t)}">${name}</a>`).join('')}</nav>
     <div id="harness-body" aria-live="polite" aria-busy="true"><div class="usage-loading" role="status">불러와요…</div></div></section>`;
-  view.querySelector('#h-project').addEventListener('change', e => { location.hash = `#/harness?project=${encodeURIComponent(e.target.value)}`; });
+  view.querySelector('#h-project').addEventListener('change', e => { location.hash = href(e.target.value, tab); });
+  view.querySelector('.harness-tab.active')?.scrollIntoView({block: 'nearest', inline: 'nearest'});   // 좁은 화면에서 고른 탭이 가려지지 않게
   const body = view.querySelector('#harness-body');
   if(!key){ body.removeAttribute('aria-busy'); body.innerHTML = '<div class="empty">프로젝트가 아직 없어요.</div>'; return; }
   const current = () => seq === issueRenderSeq;
@@ -1691,7 +1695,7 @@ async function renderHarness(){
     <div class="harness-content">${f.note ? `<p class="dim">${esc(f.note)}</p>` : f.exists ? pre(f.content) : '<p class="dim">아직 없는 파일이에요. 편집해서 저장하면 새로 만들어요.</p>'}</div>
     <div class="harness-result" role="status"></div></article>`;
   const list = a => a && a.length ? `<ul>${a.map(x => `<li><code>${esc(x)}</code></li>`).join('')}</ul>` : '<p class="dim">없음</p>';
-  const layer = (n, title, source, inner, editable) => `<details class="harness-layer" data-layer="${n}"${harnessOpen.has(String(n)) ? ' open' : ''}><summary><h3>${n}층 · ${esc(title)}</h3> <span class="chip-static">${editable ? '편집 가능' : '읽기 전용'}</span></summary><p class="dim">출처 ${esc(source)}</p>${inner}</details>`;
+  const panel = (source, inner, editable) => `<section class="harness-panel" role="tabpanel" data-tab="${tab}"><p class="dim">출처 ${esc(source)} <span class="chip-static">${editable ? '편집 가능' : '읽기 전용'}</span></p>${inner}</section>`;
   const chip = x => `<code class="chip-static">{${esc(x)}}</code>`;
   const slotChips = f => `<p class="harness-slots dim">쓸 수 있는 자리표시: ${f.slots.length ? f.slots.map(chip).join(' ') : '없음'}${f.required.length ? ` · 꼭 있어야 하는 것: ${f.required.map(chip).join(' ')}` : ''}</p>`;
   const P = L.prompts, S = L.settings;
@@ -1704,17 +1708,18 @@ async function renderHarness(){
       ${E.merge_rules ? `<dt>병합 규칙</dt><dd>${list(E.merge_rules)}</dd>` : ''}
       <dt>명령 인자</dt><dd>${list(E.args)}</dd></dl></details>`;
   body.removeAttribute('aria-busy');
-  body.innerHTML = `<p class="dim">${esc(data.note)}</p>
-    ${layer(1, '공통 하네스', L.common.source, fileCard(L.common, 'common', 'harness/COMMON.md'), true)}
-    ${layer(2, '프로젝트 하네스', `${key} 저장소의 규칙 파일`, L.project.map(f => {
+  const panels = {
+    common: () => panel(L.common.source, fileCard(L.common, 'common', 'harness/COMMON.md'), true),
+    project: () => panel(`${key} 저장소의 규칙 파일`, L.project.map(f => {
       const design = f.label.startsWith('docs/DESIGN.md');
       return fileCard(f, design ? 'common' : key, design ? 'docs/DESIGN.md' : f.label, f.readers ? `<p class="dim harness-readers">읽는 에이전트: ${esc(f.readers)}</p>` : '');
-    }).join(''), true)}
-    ${layer(3, '파일 지도', L.file_map.source, L.file_map.content ? pre(L.file_map.content) : '<p class="dim">지도를 만들 수 없어요.</p>', false)}
-    ${layer(4, '코드 속 프롬프트', 'dev 저장소 harness/prompts/*.md', P.files.map(f => fileCard(f, 'prompts', f.path, slotChips(f))).join('') +
-      `<div class="harness-filled"><b>코드가 채우는 부분</b><p class="dim">아래는 파일이 아니라 코드가 상황에 따라 덧붙여요.</p>${list(P.code_filled)}</div>`, true)}
-    ${layer(5, '코드 속 설정값', 'server/review.py · server/execute.py', S.items.map(setting).join('') + '<p class="dim">바꾸려면 이슈로 요청해 주세요.</p>', false)}`;
-  body.querySelectorAll('.harness-layer').forEach(d => d.addEventListener('toggle', () => d.open ? harnessOpen.add(d.dataset.layer) : harnessOpen.delete(d.dataset.layer)));
+    }).join(''), true),
+    map: () => panel(L.file_map.source, L.file_map.content ? pre(L.file_map.content) : '<p class="dim">지도를 만들 수 없어요.</p>', false),
+    prompts: () => panel('dev 저장소 harness/prompts/*.md', P.files.map(f => fileCard(f, 'prompts', f.path, slotChips(f))).join('') +
+      `<div class="harness-filled"><b>코드가 채우는 부분</b><p class="dim">아래는 파일이 아니라 코드가 상황에 따라 덧붙여요.</p>${list(P.code_filled)}</div>`, true),
+    settings: () => panel('server/review.py · server/execute.py', S.items.map(setting).join('') + '<p class="dim">바꾸려면 이슈로 요청해 주세요.</p>', false),
+  };
+  body.innerHTML = `<p class="dim">${esc(data.note)}</p>${panels[tab]()}`;
   body.querySelectorAll('.harness-edit').forEach(btn => btn.addEventListener('click', async () => {
     const card = btn.closest('.harness-file'), { scope, path } = card.dataset;
     const content = card.querySelector('.harness-content'), result = card.querySelector('.harness-result');

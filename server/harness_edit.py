@@ -1,4 +1,4 @@
-"""Harness 편집 저장·이력(DEV-132-2) — 1·2층 규칙 파일을 사람이 고치면 저장소 base 브랜치에 그 파일만 커밋하고 diff를 돌려준다.
+"""Harness 편집 저장·이력(DEV-132-2) — 공통·프로젝트 하네스와 코드 속 프롬프트 파일을 사람이 고치면 저장소 base 브랜치에 그 파일만 커밋하고 diff를 돌려준다.
 
 허용 경로는 고정 목록뿐이고(.env 등은 닿을 수 없다), 심볼릭 링크·실행 중 Task·읽은 뒤 바뀐 파일은 거절한다. push는 하지 않는다.
 """
@@ -14,10 +14,10 @@ import orchestrate
 import prompts
 
 MAX_FILE = 256 * 1024
-COMMON = "common"   # 1층(dev의 harness/COMMON.md)과 공통 디자인(dev의 docs/DESIGN.md)
+COMMON = "common"   # 공통 하네스(dev의 harness/COMMON.md)과 공통 디자인(dev의 docs/DESIGN.md)
 COMMON_PATHS = ("harness/COMMON.md", "docs/DESIGN.md")
 PROJECT_RE = re.compile(r"^(AGENTS\.md|CLAUDE\.md|docs/project/0[0-5]_[A-Za-z0-9._-]+\.md)$")
-PROMPTS = "prompts"   # 4층(dev의 harness/prompts/*.md) — prompts.SLOTS에 있는 파일만
+PROMPTS = "prompts"   # 코드 속 프롬프트(dev의 harness/prompts/*.md) — prompts.SLOTS에 있는 파일만
 PROMPTS_DIR = "harness/prompts/"
 EDITOR = ["-c", "user.name=dev harness editor", "-c", "user.email=harness@dev.local"]
 

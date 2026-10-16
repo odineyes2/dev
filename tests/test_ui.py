@@ -3769,7 +3769,7 @@ def check_issue_summary(page):
 
 
 def check_harness(page, shots):
-    """Harness 탭 — Project 필터만, 5개 층 아코디언, 4층 저장/차단, 5층 접힌 네 줄을 확인한다."""
+    """Harness 탭 — Project 필터만, 서브탭 5개(주소에 남음), 코드 속 프롬프트 저장/차단, 설정값 접힌 네 줄을 확인한다."""
     repo = Path(tempfile.mkdtemp())
     (repo / 'AGENTS.md').write_text('# 확인용 규칙\n', 'utf-8')
     r = page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
@@ -3777,35 +3777,33 @@ def check_harness(page, shots):
     assert r.ok, r.text()
     page.reload(); page.wait_for_selector('#shell:not([hidden])')
     page.goto(BASE + '/#/harness?project=HARN')
-    page.wait_for_selector('#harness-body:not([aria-busy]) .harness-layer')
+    page.wait_for_selector('#harness-body:not([aria-busy]) .harness-panel')
     assert page.locator('.harness-pick select').count() == 1 and page.locator('#h-project').count() == 1
-    assert page.locator('#h-provider, #h-stage').count() == 0
-    layers = page.locator('details.harness-layer')
-    assert layers.count() == 5
-    titles = [t.strip() for t in layers.locator('summary h3').all_inner_texts()]
-    assert [t.split(' · ')[0] for t in titles] == ['1층', '2층', '3층', '4층', '5층'], titles
-    assert titles[3].endswith('코드 속 프롬프트') and titles[4].endswith('코드 속 설정값'), titles
-    # 2층: 읽는 에이전트 표시
-    assert page.locator('[data-layer="2"] .harness-readers').count() >= 1
-    # 층마다 카드 하나, 처음엔 모두 접힘 — 제목 줄로 펼치고 접는다
-    assert layers.locator('xpath=self::*[@open]').count() == 0
-    first = layers.nth(0)
-    assert first.locator('.harness-file').first.is_hidden()
-    first.locator('summary').click()
-    assert first.get_attribute('open') is not None and first.locator('.harness-file').first.is_visible()
-    first.locator('summary').click()
-    assert first.get_attribute('open') is None
-    assert page.evaluate("getComputedStyle(document.querySelector('.harness-layer')).borderTopStyle") == 'solid'
-    page.locator('[data-layer="5"] > summary').click()
-    # 5층: 접힌 네 줄
-    rows = page.locator('[data-layer="5"] details.harness-setting')
+    assert page.locator('#h-provider, #h-stage, details.harness-layer').count() == 0
+    tabs = page.locator('.harness-tabs [role="tab"]')
+    assert [t.strip() for t in tabs.all_inner_texts()] == ['공통 하네스', '프로젝트 하네스', '파일 지도', '코드 속 프롬프트', '코드 속 설정값']
+    assert '층' not in page.locator('.harness-page').inner_text()
+    # 기본은 공통 하네스 탭 하나만 보인다
+    assert page.locator('.harness-tab.active').inner_text().strip() == '공통 하네스'
+    assert page.locator('.harness-panel').count() == 1 and page.locator('.harness-panel[data-tab="common"] .harness-file').count() == 1
+    def open_tab(name):
+        page.locator('.harness-tab[data-tab="%s"]' % name).click()
+        page.wait_for_selector('#harness-body:not([aria-busy]) .harness-panel[data-tab="%s"]' % name)
+        assert ('tab=' + name) in page.url and page.locator('.harness-tab.active').get_attribute('data-tab') == name
+    # 프로젝트 하네스: 읽는 에이전트 표시
+    open_tab('project')
+    assert page.locator('.harness-readers').count() >= 1
+    open_tab('map')
+    # 코드 속 설정값: 접힌 네 줄
+    open_tab('settings')
+    rows = page.locator('details.harness-setting')
     assert rows.count() == 4 and rows.locator('xpath=self::*[@open]').count() == 0
     assert rows.nth(0).locator('dl').is_hidden()
     rows.nth(0).locator('summary').click()
     assert rows.nth(0).locator('dl').is_visible()
-    # 4층: 자리표시 안내와 차단
-    page.locator('[data-layer="4"] > summary').click()
-    card = page.locator('[data-layer="4"] .harness-file[data-path="harness/prompts/review_claude.md"]')
+    # 코드 속 프롬프트: 자리표시 안내와 차단
+    open_tab('prompts')
+    card = page.locator('.harness-file[data-path="harness/prompts/review_claude.md"]')
     assert '{ref}' in card.locator('.harness-slots').inner_text()
     card.locator('.harness-edit').click()
     card.locator('textarea').fill('자리표시가 없는 글')
@@ -3819,10 +3817,9 @@ def check_harness(page, shots):
     card.locator('.harness-save').click()
     card.locator('.harness-result:has-text("저장했어요")').wait_for()
     page.unroute('**/api/harness/file')
-    # 다시 그려도(편집 취소) 사람이 펼친 층은 열린 채로 — 저장 뒤에도 편집 칸은 열려 있어 취소로 닫는다
+    # 편집 취소로 다시 그려도 같은 탭에 남는다
     card.locator('.harness-cancel').click()
-    page.wait_for_selector('#harness-body:not([aria-busy]) [data-layer="4"][open]')
-    assert page.locator('[data-layer="1"][open]').count() == 0
+    page.wait_for_selector('#harness-body:not([aria-busy]) .harness-panel[data-tab="prompts"]')
     for theme in ('light', 'dark'):
         for width in (1300, 390):
             page.set_viewport_size({'width': width, 'height': 850})
@@ -3830,6 +3827,12 @@ def check_harness(page, shots):
             page.wait_for_timeout(150)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), (theme, width)
             page.screenshot(path=str(shots / f'harness-{theme}-{width}.png'), full_page=True)
+    # 좁은 화면에서 오른쪽 끝 탭을 열면 탭 줄이 그 탭까지 밀려 가려지지 않는다
+    page.set_viewport_size({'width': 390, 'height': 850})
+    page.goto(BASE + '/#/harness?project=HARN&tab=settings')
+    page.wait_for_selector('#harness-body:not([aria-busy]) .harness-panel[data-tab="settings"]')
+    assert page.evaluate("""() => { const t = document.querySelector('.harness-tab.active').getBoundingClientRect(),
+        n = document.querySelector('.harness-tabs').getBoundingClientRect(); return t.left >= n.left - 1 && t.right <= n.right + 1; }""")
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.evaluate("document.documentElement.dataset.theme='light'")
     assert page.request.delete(BASE + '/api/projects/HARN', headers={'X-Requested-With': 'dev'}).ok
