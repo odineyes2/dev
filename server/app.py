@@ -633,6 +633,13 @@ def api_model_catalog():
     return model_catalog.catalog()
 
 
+@app.get("/api/harness")
+def api_harness(request: Request, project: str, provider: str = "claude", stage: str = "execute"):
+    human_only(request)
+    import harness_view
+    return harness_view.build(project, provider, stage)
+
+
 @app.get("/api/issue-types")
 def api_issue_types(include_inactive: bool = False):
     return {"types": issues.list_issue_types(include_inactive)}
