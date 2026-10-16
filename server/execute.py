@@ -35,9 +35,9 @@ _DATA = config.DATA_DIR.resolve()
 WORKTREE_DIR = (config.REPO_ROOT.parent.resolve() / ".dev-worktrees" if _DATA.is_relative_to(config.REPO_ROOT.resolve())
                 else _DATA / "worktrees")
 # Claude 실행은 사용자 개인 설정을 받지 않는다(DEV-131 실측): 플러그인·훅(--setting-sources project), 슬래시 명령·스킬,
-# 그리고 그 옵션으로도 남는 사용자 전역 ~/.claude/CLAUDE.md(claudeMdExcludes). 규칙은 공통 하네스 + 프로젝트 AGENTS.md만.
+# 그 옵션으로도 남는 사용자 전역 ~/.claude/CLAUDE.md(claudeMdExcludes), 대화형 세션의 자동 메모리. 규칙은 공통 하네스 + 프로젝트 AGENTS.md만.
 USER_ISOLATION = ["--setting-sources", "project", "--disable-slash-commands",
-                  "--settings", json.dumps({"claudeMdExcludes": [(Path.home() / ".claude" / "CLAUDE.md").as_posix()]})]
+                  "--settings", json.dumps({"claudeMdExcludes": [(Path.home() / ".claude" / "CLAUDE.md").as_posix()], "autoMemoryEnabled": False})]
 ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(python tests/*)", "Bash(python scripts/capture_ui.py --route *)", "Bash(git status:*)", "Bash(git diff:*)",
                  "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(node --check:*)"] + [f"mcp__dev__{t}" for t in (
     "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "add_comment", "set_status", "link_commit", "claim_issue", "release_issue")]

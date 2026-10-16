@@ -167,7 +167,7 @@ def prompt_for(ref: str, *, include_revision=True) -> str:
 
 
 def command_for(ref: str) -> list[str]:
-    return [claude_bin(), "-p", prompt_for(ref), "--restricted", "--tools", "Read,Grep,Glob,WebSearch,WebFetch",   # --restricted는 --tools에 없으면 WebFetch를 뺀다
+    return [claude_bin(), "-p", prompt_for(ref), "--restricted", "--disable-slash-commands", "--tools", "Read,Grep,Glob,WebSearch,WebFetch",   # --restricted는 --tools에 없으면 WebFetch를 뺀다
             "--strict-mcp-config", "--mcp-config", str(MCP_CONFIG),
             "--allowedTools", *ALLOWED_TOOLS, "--disallowedTools", *BLOCKED_TOOLS,
             "--no-session-persistence", "--output-format", "json"]

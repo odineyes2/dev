@@ -22,8 +22,9 @@ assert "AGENTS.md(없으면 CLAUDE.md)" in codex_review and "AGENTS.md(없으면
 
 cmd = execute.command_for("DEV-1-1", "DEV-1", "mcp.json")
 assert cmd[cmd.index("--setting-sources") + 1] == "project" and "--disable-slash-commands" in cmd
-excludes = json.loads(cmd[cmd.index("--settings") + 1])["claudeMdExcludes"]
-assert excludes == [(Path.home() / ".claude" / "CLAUDE.md").as_posix()]
+excludes = json.loads(cmd[cmd.index("--settings") + 1])
+assert excludes["claudeMdExcludes"] == [(Path.home() / ".claude" / "CLAUDE.md").as_posix()]
+assert excludes["autoMemoryEnabled"] is False and "--disable-slash-commands" in review.command_for("DEV-1")
 
 # 검사의 임시 데이터 폴더는 그 안에, 운영 기본값(저장소 안 data/)이면 저장소 옆 .dev-worktrees
 assert execute.WORKTREE_DIR == Path(os.environ["DEV_DATA_DIR"]).resolve() / "worktrees"
