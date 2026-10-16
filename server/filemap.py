@@ -42,30 +42,47 @@ def describe(path: Path) -> str:
     return ""
 
 
-def build(repo) -> str:
-    """저장소 → 파일 지도 글. git 저장소가 아니면 빈 글."""
+def entries(repo) -> tuple[list[dict], list[dict]] | None:
+    """저장소 → (지도에 들어가는 파일 {dir, name, desc} 목록, 크기 상한으로 뺀 폴더 {dir, files}). git 저장소가 아니면 None.
+    프롬프트 글(build)과 Harness 화면 표가 같이 쓴다."""
     r = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"], cwd=repo, capture_output=True, timeout=20)
     if r.returncode:
-        return ""
+        return None
     dirs = defaultdict(list)
     for name in r.stdout.decode("utf-8", "replace").split("\0"):
         p = Path(name)
         if name and (p.suffix in CODE or (p.suffix in ROOT_CONFIG and len(p.parts) == 1)):
             dirs[p.parent.as_posix()].append(p)
-    out, size, dropped = [], 0, []
+    rows, dropped, size = [], [], 0
     for d in sorted(dirs, key=lambda d: (d != ".", d)):
-        block = [f"{'(최상위)' if d == '.' else d + '/'}"]
-        for p in sorted(dirs[d]):
-            what = describe(Path(repo) / p)
-            block.append(f"  {p.name}" + (f" — {what}" if what else ""))
-        text = "\n".join(block)
-        if size + len(text) > MAX_CHARS:
-            dropped.append(f"{d}/({len(dirs[d])})")
+        block = [{"dir": d, "name": p.name, "desc": describe(Path(repo) / p)} for p in sorted(dirs[d])]
+        length = len(_block_text(d, block))
+        if size + length > MAX_CHARS:
+            dropped.append({"dir": d, "files": len(block)})
             continue
-        out.append(text)
-        size += len(text)
+        rows += block
+        size += length
+    return rows, dropped
+
+
+def _block_text(d: str, block: list[dict]) -> str:
+    return "\n".join([f"{'(최상위)' if d == '.' else d + '/'}"] + [f"  {e['name']}" + (f" — {e['desc']}" if e["desc"] else "") for e in block])
+
+
+def build(repo) -> str:
+    """저장소 → 파일 지도 글(프롬프트용). git 저장소가 아니면 빈 글."""
+    got = entries(repo)
+    return text(*got) if got is not None else ""
+
+
+def text(rows: list[dict], dropped: list[dict]) -> str:
+    """entries()의 결과 → 프롬프트에 붙는 지도 글."""
+    by_dir = defaultdict(list)
+    for e in rows:
+        by_dir[e["dir"]].append(e)
+    out = [_block_text(d, block) for d, block in by_dir.items()]
     if dropped:
-        out.append("생략한 폴더(파일 수): " + ", ".join(dropped))
+        out.append("생략한 폴더(파일 수): " + ", ".join(f"{x['dir']}/({x['files']})" for x in dropped))
     return "\n".join(out)
 
 

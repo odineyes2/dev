@@ -3772,6 +3772,9 @@ def check_harness(page, shots):
     """Harness 탭 — Project 필터만, 서브탭 5개(주소에 남음), 코드 속 프롬프트 저장/차단, 설정값 접힌 네 줄을 확인한다."""
     repo = Path(tempfile.mkdtemp())
     (repo / 'AGENTS.md').write_text('# 확인용 규칙\n', 'utf-8')
+    (repo / 'app.py').write_text('"""앱 진입점."""\n', 'utf-8')
+    for args in (['init', '-q'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init']):
+        subprocess.run(['git', *args], cwd=repo, check=True, capture_output=True)
     r = page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
                           data={'key': 'HARN', 'name': 'Harness 확인', 'local_path': str(repo)})
     assert r.ok, r.text()
@@ -3797,6 +3800,18 @@ def check_harness(page, shots):
     open_tab('project')
     assert page.locator('.harness-readers').count() >= 1
     open_tab('map')
+    assert page.locator('table.harness-map thead th').all_inner_texts() == ['경로', '파일명', '내용']
+    row = page.locator('table.harness-map tbody tr:has-text("app.py")')
+    assert row.locator('td').all_inner_texts() == ['(최상위)', 'app.py', '앱 진입점.'], row.locator('td').all_inner_texts()
+    for theme in ('light', 'dark'):   # 지도 표 — 좁은 화면에서도 페이지가 옆으로 넘치지 않는다
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.evaluate('t => document.documentElement.dataset.theme=t', theme)
+            page.wait_for_timeout(150)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), ('map', theme, width)
+            page.screenshot(path=str(shots / f'harness-map-{theme}-{width}.png'), full_page=True)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("document.documentElement.dataset.theme='light'")
     # 코드 속 설정값: 접힌 네 줄
     open_tab('settings')
     rows = page.locator('details.harness-setting')

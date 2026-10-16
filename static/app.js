@@ -1722,7 +1722,11 @@ async function renderHarness(force = false){
       const design = f.label.startsWith('docs/DESIGN.md');
       return fileCard(f, design ? 'common' : key, design ? 'docs/DESIGN.md' : f.label, f.readers ? `<p class="dim harness-readers">읽는 에이전트: ${esc(f.readers)}</p>` : '');
     }).join(''), true),
-    map: () => panel(L.file_map.source, L.file_map.content ? pre(L.file_map.content) : '<p class="dim">지도를 만들 수 없어요.</p>', false),
+    map: () => panel(L.file_map.source, (L.file_map.rows || []).length ? `<p class="dim">에이전트 프롬프트에 붙는 지도예요. 내용은 각 파일 첫머리의 설명 한 줄이에요.</p>
+      <div class="harness-map-wrap"><table class="issues harness-map"><thead><tr><th>경로</th><th>파일명</th><th>내용</th></tr></thead><tbody>${
+        L.file_map.rows.map(r => `<tr><td class="dim">${r.dir === '.' ? '(최상위)' : esc(r.dir) + '/'}</td><td><code>${esc(r.name)}</code></td><td>${r.desc ? esc(r.desc) : '<span class="dim">설명 없음</span>'}</td></tr>`).join('')
+      }</tbody></table></div>${(L.file_map.dropped || []).length ? `<p class="dim">크기 상한으로 파일 수만 넣은 폴더: ${L.file_map.dropped.map(d => `${esc(d.dir)}/ (${d.files}개)`).join(', ')}</p>` : ''}`
+      : '<p class="dim">지도를 만들 수 없어요.</p>', false),
     prompts: () => panel('dev 저장소 harness/prompts/*.md', P.files.map(f => fileCard(f, 'prompts', f.path, slotChips(f))).join('') +
       `<div class="harness-filled"><b>코드가 채우는 부분</b><p class="dim">아래는 파일이 아니라 코드가 상황에 따라 덧붙여요.</p>${list(P.code_filled)}</div>`, true),
     settings: () => panel('server/review.py · server/execute.py', S.items.map(setting).join('') + '<p class="dim">바꾸려면 이슈로 요청해 주세요.</p>', false),

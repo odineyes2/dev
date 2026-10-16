@@ -152,12 +152,13 @@ def build(key: str) -> dict:
         raise issues.StoreError("프로젝트를 찾을 수 없어요.", 404)
     root = Path(project["local_path"]) if project["local_path"] else None
     repo = root if root and root.is_dir() else None
-    map_text = ""
+    map_text, map_rows, map_dropped = "", [], []
     if repo:
         try:
-            map_text = filemap.build(repo)
+            map_rows, map_dropped = filemap.entries(repo) or ([], [])   # 화면 표(경로·파일명·내용)
+            map_text = filemap.text(map_rows, map_dropped) if map_rows or map_dropped else ""
         except Exception:   # 지도는 보조 자료 — 못 만들면 없이 보여준다
-            map_text = ""
+            map_text, map_rows, map_dropped = "", [], []
     layer2 = []
     if repo:
         for name in PROJECT_FILES:
@@ -178,7 +179,8 @@ def build(key: str) -> dict:
         "layers": {
             "common": _file(1, "공통 하네스", "harness/COMMON.md", harness.PATH, config.REPO_ROOT),
             "project": layer2,
-            "file_map": {"layer": 3, "label": "파일 지도(자동 생성)", "source": "server/filemap.py(DEV-134)", "editable": False, "content": map_text},
+            "file_map": {"layer": 3, "label": "파일 지도(자동 생성)", "source": "server/filemap.py(DEV-134)", "editable": False, "content": map_text,
+                         "rows": map_rows, "dropped": map_dropped},
             "prompts": {"layer": 4, "files": _prompt_files(), "code_filled": list(CODE_FILLED)},
             "settings": {"layer": 5, "editable": False, "items": settings},
         },

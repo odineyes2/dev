@@ -854,6 +854,11 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .harness-tab:hover{ color:var(--text); text-decoration:none; }
 .harness-tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
 .harness-panel{ min-width:0; }
+/* 파일 지도 표 — 칸 안에서 줄바꿈하고, 그래도 넓으면 표 안에서만 가로 스크롤 */
+.harness-map-wrap{ overflow-x:auto; margin-top:var(--sp-3); }
+table.harness-map td, table.harness-map th{ height:auto; padding:var(--sp-2) var(--sp-3); vertical-align:top; }
+table.harness-map td{ overflow-wrap:anywhere; font-size:13px; }
+table.harness-map td:nth-child(1){ width:22%; } table.harness-map td:nth-child(2){ width:22%; }
 .harness-pick .actions{ display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; }
 #h-at{ font:400 12.5px var(--sans); letter-spacing:0; text-transform:none; }   /* 라벨 글꼴(틀 글자)을 물려받지 않게 */
 .harness-seg h4{ margin:0 0 var(--sp-2); font-size:15px; }
