@@ -634,10 +634,10 @@ def api_model_catalog():
 
 
 @app.get("/api/harness")
-def api_harness(request: Request, project: str, provider: str = "claude", stage: str = "execute"):
+def api_harness(request: Request, project: str):
     human_only(request)
     import harness_view
-    return harness_view.build(project, provider, stage)
+    return harness_view.build(project)
 
 
 @app.put("/api/harness/file")
