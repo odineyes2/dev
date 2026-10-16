@@ -322,7 +322,7 @@ def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
                     'Bash(npm --prefix apps/web run typecheck)', 'Bash(npm --prefix apps/web run build)']
     return [review.claude_bin(), "-p", prompt_for(ref, parent_ref), "--permission-mode", "acceptEdits", *USER_ISOLATION,
             "--strict-mcp-config", "--mcp-config", mcp_config, "--allowedTools", *allowed, "--disallowedTools", *BLOCKED_TOOLS,
-            "--max-budget-usd", str(BUDGET_USD), "--no-session-persistence", "--output-format", "json"]
+            "--max-budget-usd", str(BUDGET_USD), "--no-session-persistence", "--output-format", "stream-json", "--verbose"]
 
 
 def codex_command_for(ref: str, parent_ref: str | None) -> list[str]:

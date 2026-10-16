@@ -14,6 +14,7 @@
 환경변수: DEV_CLAUDE_BIN(기본: PATH의 claude 또는 ~/.local/bin/claude.exe), DEV_REVIEW_CWD(기본: 저장소들이 있는
 Projects 폴더), DEV_REVIEW_MCP_CONFIG(기본: <Projects>/.mcp.json), DEV_REVIEW_TIMEOUT_SEC(기본 1200).
 """
+import gzip
 import json
 import os
 import re
@@ -170,7 +171,7 @@ def command_for(ref: str) -> list[str]:
     return [claude_bin(), "-p", prompt_for(ref), "--restricted", "--disable-slash-commands", "--tools", "Read,Grep,Glob,WebSearch,WebFetch",   # --restricted는 --tools에 없으면 WebFetch를 뺀다
             "--strict-mcp-config", "--mcp-config", str(MCP_CONFIG),
             "--allowedTools", *ALLOWED_TOOLS, "--disallowedTools", *BLOCKED_TOOLS,
-            "--no-session-persistence", "--output-format", "json"]
+            "--no-session-persistence", "--output-format", "stream-json", "--verbose"]   # 이벤트는 측정용으로 남긴다(save_events)
 
 
 def running_ref() -> str | None:
@@ -301,6 +302,33 @@ def launch(actor, ref: str, run_id: int, provider: str, comment: str, args: tupl
             c.execute("UPDATE runs SET status='failed', ended_at=?, note=? WHERE id=?",
                       (db.now_iso(), f"작업 스레드를 시작하지 못했어요: {e}", run_id))
         raise issues.StoreError(f"작업을 시작하지 못했어요 — {e}", 409) from e
+
+
+def events_path(log_path: Path) -> Path:
+    return log_path.with_name(log_path.stem + ".events.jsonl.gz")
+
+
+def save_events(log_path: Path, out: str) -> None:
+    """CLI의 원본 이벤트(도구 호출·결과·턴별 사용량)를 남긴다 — 무엇이 토큰을 키우는지 재는 용도(DEV-133, scripts/run_usage.py).
+    도구 출력이 통째로 들어 있어 gzip으로, 재시도는 이어 붙인다. 측정이 실행을 막지 않게 쓰기 실패는 무시한다."""
+    if not out:
+        return
+    try:
+        with gzip.open(events_path(log_path), "at", encoding="utf-8") as f:
+            f.write(out if out.endswith("\n") else out + "\n")
+    except OSError:
+        pass
+
+
+def claude_result(out: str) -> str:
+    """stream-json에서 마지막 result 이벤트 한 줄 — 예전 `--output-format json`과 같은 모양이라 뒤 처리는 그대로 쓴다. 없으면 원문."""
+    for line in reversed(out.splitlines()):
+        try:
+            if json.loads(line).get("type") == "result":
+                return line
+        except (ValueError, AttributeError):
+            continue
+    return out
 
 
 def token_count(value):
@@ -438,6 +466,9 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             status, note = "failed", f"{name}를 실행하지 못했어요({e})"
         if code:
             status = "failed"
+        save_events(log_path, out)
+        if provider == "claude":
+            out = claude_result(out)
         text, stats = _parse(out, provider)
         _add_usage(spent, stats)
         if provider == 'codex' and status == 'ok' and (failure := codex_failure(out)):

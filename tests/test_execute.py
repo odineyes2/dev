@@ -76,7 +76,7 @@ assert "relay/T-1" in git(bare, "branch", "--list").stdout   # 대조군: 환경
 # 명령 — 권한·상한
 cmd = execute.command_for("T-1", "T-0", "/x/.mcp.json")
 assert "--dangerously-skip-permissions" not in cmd and cmd[cmd.index("--permission-mode") + 1] == "acceptEdits"
-assert cmd[cmd.index("--max-budget-usd") + 1] == "2.0" and cmd[cmd.index("--output-format") + 1] == "json" and "--restricted" not in cmd
+assert cmd[cmd.index("--max-budget-usd") + 1] == "2.0" and cmd[cmd.index("--output-format") + 1] == "stream-json" and "--verbose" in cmd and "--restricted" not in cmd
 allowed = cmd[cmd.index("--allowedTools") + 1:cmd.index("--disallowedTools")]
 blocked_tools = cmd[cmd.index("--disallowedTools") + 1:cmd.index("--max-budget-usd")]
 assert "Bash" not in allowed and "Bash(git push:*)" not in allowed and "Bash(python tests/*)" in allowed
