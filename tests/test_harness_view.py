@@ -82,4 +82,12 @@ with TestClient(A.app) as client:
 assert harness_view.split_command(['c', '-p', 'P', '--x'], 'claude') == ('P', ['c', '-p', '--x'])
 assert harness_view.split_command(['c', 'exec', '--model', 'm', 'P'], 'codex') == ('P', ['c', 'exec', '--model', 'm'])
 assert harness_view.public_args(['claude', '-p', '--mcp-config', '/x/.mcp.json', '--a']) == ['-p', '--a']
+# 화면(DEV-132-3) — 탭·라우트가 있고 편집 버튼은 파일 카드(1·2층)에만 붙는다
+_root = Path(__file__).resolve().parent.parent
+_js = (_root / 'static' / 'app.js').read_text(encoding='utf-8')
+assert 'href="#/harness"' in (_root / 'static' / 'index.html').read_text(encoding='utf-8') and "name === 'harness'" in _js
+_fn = _js[_js.index('async function renderHarness'):_js.index('async function renderAgents')]
+assert _fn.count('class="harness-edit"') == 1 and "fileCard(L.common" in _fn
+assert "layer(3, 'dev 프롬프트', L.prompt.source, segs || pre(L.prompt.text), false)" in _fn and "'dev 강제 장치'" in _fn
+assert 'server/filemap.py' in (_root / 'server' / 'harness_view.py').read_text(encoding='utf-8')
 print('harness view API OK')

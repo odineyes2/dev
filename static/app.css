@@ -845,3 +845,18 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .stars label:has(input:focus-visible){ outline:2px solid var(--accent); border-radius:4px; }
 .rating-status{ margin:var(--sp-2) 0 0; font-size:13px; min-height:1em; overflow-wrap:anywhere; }
 #rating-review{ width:100%; min-height:72px; font-family:var(--sans); font-size:14px; resize:vertical; margin:var(--sp-2) 0; }
+
+/* Harness 탭 (DEV-132-3) */
+.harness-layer{ margin-top:var(--sp-5); min-width:0; }
+.harness-layer h3, .harness-seg h4{ margin:0 0 var(--sp-2); font-size:15px; }
+.harness-seg h4{ font-size:13px; margin-top:var(--sp-3); }
+.chip-static{ font-family:var(--sans); font-weight:400; font-size:12px; color:var(--dim); border:1px solid var(--border); border-radius:999px; padding:2px 8px; margin-left:var(--sp-2); }
+.harness-text{ margin:var(--sp-2) 0; padding:var(--sp-3); max-height:360px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--border); border-radius:var(--r-md); font:12.5px/1.6 var(--mono); }
+.harness-file{ border:1px solid var(--border); border-radius:var(--r-md); padding:var(--sp-3); margin-bottom:var(--sp-3); min-width:0; }
+.harness-file header{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2) var(--sp-3); }
+.harness-file header button{ margin-left:auto; }
+.harness-file header b, .harness-enf code{ overflow-wrap:anywhere; }
+.harness-actions{ display:flex; gap:var(--sp-2); margin-top:var(--sp-2); }
+.harness-enf{ display:grid; grid-template-columns:max-content minmax(0,1fr); gap:var(--sp-2) var(--sp-4); margin:0; }
+.harness-enf dt{ color:var(--dim); } .harness-enf dd{ margin:0; min-width:0; } .harness-enf ul{ margin:0; padding-left:var(--sp-4); }
+@media (max-width:640px){ .harness-enf{ grid-template-columns:minmax(0,1fr); gap:0; } .harness-enf dd{ margin-bottom:var(--sp-2); } }

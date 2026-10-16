@@ -16,7 +16,7 @@ from ui_fixture import FAKE_NS, child_environment, free_port, wait_port, BOOTSTR
 
 def validate_route(route):
     """URL 대신 알려진 로컬 hash 경로만 받는다."""
-    if not re.fullmatch(r'#/(?:board|new|agents|projects|trends|settings(?:/(?:auto|types|regression|fonts|tokens))?|types|issue/[A-Z][A-Z0-9]*-\d+(?:-\d+)*)?(?:\?[A-Za-z0-9_=&%.-]*)?', route):
+    if not re.fullmatch(r'#/(?:board|new|agents|harness|projects|trends|settings(?:/(?:auto|types|regression|fonts|tokens))?|types|issue/[A-Z][A-Z0-9]*-\d+(?:-\d+)*)?(?:\?[A-Za-z0-9_=&%.-]*)?', route):
         raise ValueError('로컬 hash 경로만 지원한다: #/, #/issue/DEV-1 등')
     return route
 
@@ -68,7 +68,7 @@ def seed_fixture(request, base, fixture):
 def wait_screen(page, route):
     name = route[2:].split('?')[0]
     selector = {'': '#project-filter', 'board': '.kanban', 'new': '#new-form', 'trends': '.trend-page',
-                'agents': '#agent-form', 'projects': '.projects-page',
+                'agents': '#agent-form', 'harness': '.harness-layer', 'projects': '.projects-page',
                 'settings': '.auto-settings', 'settings/auto': '.auto-settings',
                 'settings/fonts': '.font-settings',
                 'types': '.type-management', 'settings/types': '.type-management'}.get(name, '#view')
