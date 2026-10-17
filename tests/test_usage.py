@@ -105,7 +105,8 @@ outputs = ['\n'.join(json.dumps({'type': 'turn.completed', 'usage': u}) for u in
                          [{'input_tokens': 7, 'output_tokens': 1}])]
 class FakeProcess:
     returncode = 0
-    def communicate(self, timeout=None):
+    def communicate(self, input=None, timeout=None):
+        assert input.startswith('prompt')
         return outputs.pop(0), ''
 log, rid = review.begin(human, issues.get_issue(task['ref']), 'execute', 'codex')
 with patch.object(review.subprocess, 'Popen', side_effect=lambda *a, **kw: FakeProcess()), \

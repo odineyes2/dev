@@ -435,10 +435,15 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     for attempt in range(2 if label == "실행" and not recovery else 1):
         code, note, status, out, err = None, "", "ok", "", ""
         try:
-            proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                                    stdin=subprocess.DEVNULL, env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"})
+            # Codex 프롬프트는 마지막 인자에 보존하되 실행 때 stdin으로 보낸다.
+            # 파일 지도·하네스가 길어져도 Windows 명령행 한도(32,767자)를 넘지 않는다.
+            prompt = cmd[-1] if provider == "codex" else None
+            launch_cmd = cmd[:-1] + ["-"] if provider == "codex" else cmd
+            proc = subprocess.Popen(launch_cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                    stdin=subprocess.PIPE if provider == "codex" else subprocess.DEVNULL,
+                                    env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"})
             try:
-                out, err = proc.communicate(timeout=timeout)
+                out, err = proc.communicate(input=prompt, timeout=timeout)
                 code = proc.returncode
             except subprocess.TimeoutExpired:
                 _kill_tree(proc)

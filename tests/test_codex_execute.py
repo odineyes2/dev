@@ -47,7 +47,7 @@ def output_script(result, edit=True):
             + 'print(\'{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":24}}\')\n')
 
 fake.write_text(output_script(result), 'utf-8')
-execute.codex_command_for = lambda ref, parent: [sys.executable, str(fake)]
+execute.codex_command_for = lambda ref, parent: [sys.executable, str(fake), 'test prompt']
 merged = []
 original_handle = orchestrate.handle
 orchestrate.handle = lambda actor, ref: merged.append(ref) or None
@@ -185,12 +185,16 @@ print('OK Codex execute')
 retry_task = issues.create_issue(base.me, 'EX', 'retry report', parent='EX-1')
 initial = {'outcome': 'ready', 'summary': 'Implement token usage', 'tests': ['usage passed', 'common passed']}
 repair = {'outcome': 'ready', 'summary': 'Repair QA fixture', 'tests': ['fixture passed', 'common passed']}
-fake.write_text("from pathlib import Path\nimport json\n"
+long_prompt = '원래 지시 "인용"\n🙂\n' * 8000
+fake.write_text("from pathlib import Path\nimport json,sys\n"
                 "retry = Path('retry.txt').exists()\nPath('retry.txt').write_text('implemented')\n"
+                + "assert sys.argv[-1] == '-'\nprompt = sys.stdin.read()\n"
+                + 'assert prompt.startswith(' + repr(long_prompt) + ')\n'
+                + "assert ('test_fixture.py: failed' in prompt) == retry\n"
                 + 'result = ' + repr(repair) + ' if retry else ' + repr(initial) + '\n'
                 + "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(result)}}))\n"
                 + "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':120,'output_tokens':24}}))\n", 'utf-8')
-with patch.object(execute, 'codex_command_for', return_value=[sys.executable, str(fake), 'original prompt']), \
+with patch.object(execute, 'codex_command_for', return_value=[sys.executable, str(fake), long_prompt]), \
      patch.object(orchestrate, 'run_tests', side_effect=['test_fixture.py: failed', None]), \
      patch.object(orchestrate, 'handle'):
     execute.start(base.me, retry_task['ref'], 'codex')

@@ -930,7 +930,7 @@ def fake_run(ref, provider, payload):
     actor = jobs._actor(job['actor'])
     with patch.object(jobs, 'start_block', return_value=None):   # 펌프는 막아 둔 채(_threads) 직접 착수한다
         log, rid = review.begin(actor, issues.get_issue(ref), 'review', provider)
-    review.run_headless(actor, ref, log, rid, [sys.executable, '-c', 'import sys;sys.stdout.write(sys.argv[1])', payload],
+    review.run_headless(actor, ref, log, rid, [sys.executable, '-c', 'import sys;sys.stdout.write(sys.stdin.read() if sys.argv[1] == "-" else sys.argv[1])', payload],
                         '.', None, 30, '검토', provider, 0)
     return rid
 

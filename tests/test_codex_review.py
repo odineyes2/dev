@@ -52,8 +52,12 @@ issue = issues.get_issue(sys.argv[1])
 if issue['title_missing']:
     issues.update_issue(actor, sys.argv[1], {'title': 'Reviewed title'})
 '''
+# Windows 명령행 한도를 넘는 한글·따옴표·보조 평면 문자도 stdin으로 온전히 받는다.
+long_prompt = ('한글 "인용" \\ 경로\n🙂\n' * 8000) + '끝'
+success_script = ('import sys\nassert sys.argv[-1] == "-"\n'
+                  + 'assert sys.stdin.read() == ' + repr(long_prompt) + '\n' + success_script)
 fake.write_text(success_script + 'print(' + repr(events) + ')\n', 'utf-8')
-review.codex_command_for = lambda ref: [sys.executable, str(fake), ref, str(Path(review.__file__).parent)]
+review.codex_command_for = lambda ref: [sys.executable, str(fake), ref, str(Path(review.__file__).parent), long_prompt]
 review.command_for = lambda ref: [sys.executable, str(fake)]
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
     lambda req: httpx.Response(200, json={'user': {'id': 1, 'username': 'admin', 'role': 'admin'}})))

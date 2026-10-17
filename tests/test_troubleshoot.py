@@ -88,10 +88,10 @@ with db.connect() as c:
     assert t['status'] == 'running' and recovery_run != source
 
 # 서버 검사 실패에서도 복구 CLI는 추가 재시도/이관을 하지 않는다.
-cmd = [sys.executable, '-c', 'import json; print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"ready"}}))']
+cmd = [sys.executable, '-c', 'import json; print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"ready"}}))', 'test prompt']
 with patch.object(orchestrate, 'run_tests', return_value='FAILED: related test'), patch.object(review.subprocess, 'Popen', wraps=review.subprocess.Popen) as calls:
     status = review.run_headless(me, task['ref'], args[3], recovery_run, cmd, wt, None, 10, '실행', 'codex')
-    assert status == 'failed' and sum(call.args[0] == cmd for call in calls.call_args_list) == 1
+    assert status == 'failed' and sum(call.args[0] == cmd[:-1] + ['-'] for call in calls.call_args_list) == 1
 troubleshoot.sync()
 with db.connect() as c:
     assert c.execute('SELECT status FROM troubleshoot_requests WHERE id=?', (queued['id'],)).fetchone()[0] == 'failed'
@@ -109,7 +109,7 @@ with patch.object(review, 'launch') as started, patch.object(automation, 'provid
 ready = json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps({'outcome':'ready','summary':'범위 내 코드 수정','tests':['관련 검사 통과']})}})
 code = 'from pathlib import Path; Path("fixed.txt").write_text("fixed"); print(' + repr(ready) + ')'
 with patch.object(orchestrate, 'run_tests', return_value=None) as checks:
-    assert review.run_headless(me, success['ref'], success_args[3], success_args[4], [sys.executable,'-c',code], success_wt, None, 10, '실행','codex') == 'ok'
+    assert review.run_headless(me, success['ref'], success_args[3], success_args[4], [sys.executable,'-c',code,'test prompt'], success_wt, None, 10, '실행','codex') == 'ok'
     checks.assert_called_once()
 troubleshoot.sync()
 with db.connect() as c:

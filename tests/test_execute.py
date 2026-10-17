@@ -272,7 +272,7 @@ for provider in ('claude', 'codex'):
              patch.object(execute, 'register_completion', side_effect=completed), \
              patch.object(execute, 'finalize_codex', side_effect=completed):
             # timeout 후 returncode는 실제 종료 코드에 따라 failed가 될 수 있다.
-            status = review.run_headless(me, item['ref'], log_path, run_id, ['fake'], capture_wt, {}, 1, '실행', provider)
+            status = review.run_headless(me, item['ref'], log_path, run_id, ['fake', 'test prompt'], capture_wt, {}, 1, '실행', provider)
             assert status == result_status if result_status != 'timeout' else status in ('timeout', 'failed')
         assert len(attachments.list_for_issue(item['id'])) == 1
         assert review.list_runs(item['ref'])[0]['status'] == status
