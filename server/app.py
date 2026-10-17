@@ -602,6 +602,14 @@ def api_project_document(key: str, path: str):
     return project_docs.read_document(key, path)
 
 
+@app.delete("/api/projects/{key}/documents/content")
+async def api_delete_project_document(key: str, request: Request):
+    import project_docs
+    human_only(request)
+    body = await json_body(request)
+    return await run_in_threadpool(project_docs.delete_document, key, body.get('path'), body.get('blob'))
+
+
 @app.post("/api/projects/{key}/documents/request")
 async def api_request_project_documents(key: str, request: Request):
     import project_docs

@@ -1997,7 +1997,7 @@ def check_project_navigation(page):
     assert page.url.endswith('#/projects')
 
 
-def check_project_documents(page, shots):
+def check_project_documents(page, shots, answers, asked):
     """설명 저장과 문서 요청·재시도·원문 안전성·반응형 화면을 검사한다."""
     open_project_creation(page)
     page.fill('#p-key', 'DOC'); page.fill('#p-name', '문서 프로젝트')
@@ -2009,12 +2009,13 @@ def check_project_documents(page, shots):
     page.click('#project-form button[type=submit]')
     page.wait_for_selector('#p-description')
     page.wait_for_function("document.querySelector('#p-description').value === '수정한 설명'")
-    docs = [{'path':'AGENTS.md','purpose':'작업 규칙','status':'available'},
-            {'path':'docs/project/01_PRD.md','purpose':'요구사항','status':'missing'}]
+    docs = [{'path':'AGENTS.md','purpose':'작업 규칙','status':'available','deletable':False},
+            {'path':'docs/project/01_PRD.md','purpose':'요구사항','status':'missing','deletable':False},
+            {'path':'docs/project/00_PRODUCT_BRIEF.md','purpose':'제품 개요','status':'available','deletable':True,'blob':'a'*40}]
     def listing(route):
         route.fulfill(json={'documents':docs, 'requests':[{'ref':'DOC-1','state':'merge_pending'}]})
     def content(route):
-        route.fulfill(json={'status':'missing'} if '01_PRD' in route.request.url else
+        route.fulfill(json={'status':'missing'} if '01_PRD' in route.request.url or '00_PRODUCT_BRIEF' in route.request.url and any(d['path'] == 'docs/project/00_PRODUCT_BRIEF.md' and d['status'] == 'missing' for d in docs) else
                       {'status':'available','content':'# 규칙\n<script>window.docAttack=1</script>\n<img src=x onerror="window.docAttack=2">'})
     calls, pending = [], []
     def request(route):
@@ -2090,6 +2091,37 @@ def check_project_documents(page, shots):
     page.wait_for_function("!document.querySelector('[data-doc-provider=claude]').disabled")
     check_document_buttons()
     assert calls == ['codex','codex','claude','claude']
+    assert page.locator('#doc-delete').is_hidden()
+    page.select_option('#doc-select', 'docs/project/00_PRODUCT_BRIEF.md')
+    page.wait_for_selector('#doc-delete:visible')
+    page.wait_for_selector('#doc-content .document-source')
+    page.wait_for_selector('#toast', state='hidden')
+    for scheme in ('light', 'dark'):
+        page.evaluate("s => {localStorage.setItem('dev.theme',s); document.documentElement.dataset.theme=s}", scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            page.set_viewport_size({'width':width, 'height':850})
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'project_doc_delete_{scheme}_{tag}.png'), full_page=True)
+    deletes = []
+    def remove(route):
+        deletes.append(route.request.post_data_json)
+        if len(deletes) == 1:
+            route.fulfill(status=409, json={'detail':'문서가 변경되었어요.'})
+        else:
+            docs[:] = [d for d in docs if d['path'] != 'docs/project/00_PRODUCT_BRIEF.md'] + [
+                {'path':'docs/project/00_PRODUCT_BRIEF.md','purpose':'제품 개요','status':'missing','deletable':False}]
+            route.fulfill(json={'deleted':True})
+    page.route('**/api/projects/DOC/documents/content', remove)
+    answers.append(None); page.click('#doc-delete')
+    assert '문서 프로젝트' in asked[-1] and '00_PRODUCT_BRIEF.md' in asked[-1]
+    assert not deletes and page.locator('.document-source').is_visible()
+    page.click('#doc-delete'); page.wait_for_selector('#docs-message:text("문서가 변경되었어요")')
+    assert len(deletes) == 1 and page.locator('.document-source').is_visible()
+    page.click('#doc-delete'); page.wait_for_selector('#docs-message:text("문서를 삭제했어요")')
+    page.wait_for_selector('#doc-content .empty')
+    assert len(deletes) == 2 and page.locator('#doc-delete').is_hidden()
+    page.unroute('**/api/projects/DOC/documents/content', remove)
     docs.clear(); page.click('#docs-refresh')
     page.wait_for_selector('#docs-body .empty')
     assert '아직 문서가 없어요' in page.inner_text('#docs-body')
@@ -3970,12 +4002,17 @@ try:
             check_project_row(page, shots)
             check_project_navigation(page)
             check_project_flows(page, shots, answers, asked)
-            check_project_documents(page, shots)
+            check_project_documents(page, shots, answers, asked)
             check_project_usage(page, shots)
             check_project_audits(page, shots)
             check_project_initialization(page, shots)
             assert not errs, errs
             print('OK: project registration'); sys.exit(0)
+        if '--project-documents-only' in sys.argv:
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+            check_project_documents(page, shots, answers, asked)
+            assert not errs, errs
+            print('OK: project documents'); sys.exit(0)
         if '--harness-only' in sys.argv:
             check_harness(page, shots)
             assert not errs, errs
@@ -3995,7 +4032,7 @@ try:
         if '--management-projects-only' in sys.argv:
             page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
             check_project_row(page, shots)
-            check_project_documents(page, shots)
+            check_project_documents(page, shots, answers, asked)
             check_project_usage(page, shots)
             check_project_audits(page, shots)
             assert not errs, errs
@@ -4008,7 +4045,7 @@ try:
             check_settings_navigation(page, shots)
             check_auto_settings(page, shots)
             page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
-            check_project_documents(page, shots)
+            check_project_documents(page, shots, answers, asked)
             check_project_usage(page, shots)
             check_project_audits(page, shots)
             assert not errs, errs
@@ -4122,7 +4159,7 @@ try:
             check_font_settings(page, shots)
         check_project_row(page, shots)
         check_project_flows(page, shots, answers, asked)
-        check_project_documents(page, shots)
+        check_project_documents(page, shots, answers, asked)
         check_project_usage(page, shots)
         check_free_port(page, shots)
         check_service_diagnostic(page, shots)

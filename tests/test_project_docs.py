@@ -178,7 +178,7 @@ fixture_env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_CONF
 fixture_env['GIT_CONFIG_NOSYSTEM'] = '1'
 fixture_env['GIT_CONFIG_GLOBAL'] = os.devnull
 def git(*args):
-    r = subprocess.run(['git', *args], cwd=repo, env=fixture_env, capture_output=True, text=True)
+    r = subprocess.run(['git', *args], cwd=repo, env=fixture_env, capture_output=True, text=True, encoding='utf-8')
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
 git('init', '-b', 'main')
@@ -256,3 +256,73 @@ text = project_docs.reference_instructions(True, read_ref)
 assert path in text and '현재 Task worktree의 상대 경로에서만' in text
 assert all(p not in text for p, _ in project_docs.DOCUMENTS if p != path and not (repo / p).is_file())
 print('Document read and context OK')
+
+# 삭제는 임시 저장소의 선택 파일만 기준 브랜치에서 제거한다.
+delete_repo = Path(tempfile.mkdtemp())
+repo = delete_repo
+git('init', '-b', 'main')
+git('config', 'user.name', 'test')
+git('config', 'user.email', 'test@example.test')
+selected, other = project_docs.DOCUMENTS[0][0], project_docs.DOCUMENTS[1][0]
+for name in (selected, other, 'AGENTS.md'):
+    file = repo / name
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(name, encoding='utf-8')
+git('add', '.')
+git('commit', '-m', 'documents fixture')
+issues.create_project(me, 'DEL', '삭제', '', str(repo))
+listing = project_docs.list_documents('DEL')['documents']
+assert next(d for d in listing if d['path'] == selected)['deletable']
+assert not next(d for d in listing if d['path'] == 'AGENTS.md')['deletable']
+blob = project_docs.read_document('DEL', selected)['blob']
+denied(lambda: project_docs.delete_document('DEL', 'AGENTS.md', blob), 400)
+for invalid in ('../AGENTS.md', '/tmp/other', 'docs/project/../../AGENTS.md'):
+    denied(lambda: project_docs.delete_document('DEL', invalid, blob), 400)
+denied(lambda: project_docs.delete_document('DEL', selected, '0' * 40), 409)
+denied(lambda: project_docs.delete_document('DEL', project_docs.DOCUMENTS[2][0], blob), 409)
+(repo / selected).write_text('작업 변경', encoding='utf-8')
+denied(lambda: project_docs.delete_document('DEL', selected, blob), 409)
+(repo / selected).write_text(selected, encoding='utf-8')
+link_oid = subprocess.run(['git', 'hash-object', '-w', '--stdin'], cwd=repo, env=fixture_env,
+                          input=b'../../outside', capture_output=True, check=True).stdout.decode().strip()
+git('update-index', '--add', '--cacheinfo', '120000,' + link_oid + ',' + selected)
+git('commit', '-m', 'link fixture')
+denied(lambda: project_docs.delete_document('DEL', selected, link_oid), 400)
+git('update-index', '--add', '--cacheinfo', '100644,' + blob + ',' + selected)
+git('commit', '-m', 'restore regular document')
+assert project_docs.read_document('DEL', selected)['blob'] == blob
+(repo / other).write_text('다른 문서의 보존할 변경', encoding='utf-8')
+git('add', other)
+original_git = project_docs._git
+def failed_index(target_repo, *args):
+    if args[:2] == ('update-index', '--force-remove'):
+        return subprocess.CompletedProcess(args, 1, b'', b'index failed')
+    return original_git(target_repo, *args)
+with patch.object(project_docs, '_git', side_effect=failed_index):
+    denied(lambda: project_docs.delete_document('DEL', selected, blob), 409)
+assert (repo / selected).read_text(encoding='utf-8') == selected
+assert project_docs.read_document('DEL', selected)['blob'] == blob
+assert git('diff', '--cached', '--', other)
+auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
+    lambda req: httpx.Response(200, json={'user': {'id': 1, 'username': 'viewer', 'role': 'viewer'}})
+    if 'ns_session=viewer' in req.headers.get('cookie', '') else
+    httpx.Response(200, json={'user': {'id': 1, 'username': 'admin', 'role': 'admin'}})))
+_, agent_key = auth.create_agent('deletion test')
+with TestClient(app.app) as client:
+    endpoint = '/api/projects/DEL/documents/content'
+    data = {'path': selected, 'blob': blob}
+    assert client.request('DELETE', endpoint, json=data).status_code == 403
+    assert client.request('DELETE', endpoint, json=data, headers={'Authorization': 'Bearer ' + agent_key}).status_code == 403
+    client.cookies.set('ns_session', 'viewer')
+    assert client.request('DELETE', endpoint, json=data, headers={'X-Requested-With': 'dev'}).status_code == 403
+    client.cookies.set('ns_session', 'adm')
+    assert client.request('DELETE', endpoint, json=data).status_code == 403
+    assert client.request('DELETE', endpoint, json={'path': 'AGENTS.md', 'blob': blob}, headers={'X-Requested-With': 'dev'}).status_code == 400
+    assert client.request('DELETE', endpoint, json={'path': [selected], 'blob': blob}, headers={'X-Requested-With': 'dev'}).status_code == 400
+    assert client.request('DELETE', endpoint, json=data, headers={'X-Requested-With': 'dev'}).status_code == 200
+    assert not (repo / selected).exists() and (repo / other).exists() and (repo / 'AGENTS.md').exists()
+    assert git('status', '--porcelain') == 'M  ' + other
+    assert git('diff', '--cached', '--', other)
+    assert git('show', 'HEAD:' + other) == other
+    assert client.request('DELETE', endpoint, json=data, headers={'X-Requested-With': 'dev'}).status_code == 409
+print('Document deletion OK')
