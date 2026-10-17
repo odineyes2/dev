@@ -499,6 +499,40 @@ def plan_revision_note(c, issue_id, version):
     return row['body'] if row else None
 
 
+COMPACT_NOTES = 10
+COMPACT_NOTE_CHARS = 800
+
+
+def _meaningful(e: dict) -> bool:
+    """간추린 이슈에 남길 메모 — 서버가 남긴 대기열·착수 알림(job_id·run_id), 결정 기록(approval에 이미 있다),
+    검토·실행을 맡겼다는 알림(🔎·🛠)은 뺀다. 사람·에이전트가 쓴 댓글과 상태 사유는 남긴다."""
+    data = e.get("data") or {}
+    if e.get("kind") not in ("comment", "status") or not (e.get("body") or "").strip():
+        return False
+    if "job_id" in data or "run_id" in data or "decision" in data:
+        return False
+    return not e["body"].startswith(("🔎 ", "🛠 "))
+
+
+def compact_issue(d: dict) -> dict:
+    """에이전트용 간추린 이슈(DEV-137) — 작업에 필요한 것만: 본문·상태·계획서·사람의 결정·사람이 할 일·첨부·
+    하위 Task(번호·제목·상태)·의미 있는 메모(내용 있는 댓글·상태 사유, 최근 10개). 잡기·놓기·편집·커밋 기록과
+    시각·토큰 사용량은 뺀다 — 전체 응답의 타임라인·하위 목록이 실행 문맥을 키웠다(1회 약 8천 자)."""
+    plan = d.get("plan") or {}
+    notes = [{"kind": e["kind"], "actor": e["actor"], "at": (e.get("created_at") or "")[:16], "body": e["body"][:COMPACT_NOTE_CHARS]}
+             for e in d.get("events") or [] if _meaningful(e)]
+    out = {k: d.get(k) for k in ("ref", "title", "status", "labels", "parent_ref", "body", "title_missing", "type_ids", "type_revision", "blocked_by")}
+    out["plan"] = {k: plan.get(k) for k in ("version", "body", "revision_note")} if plan else None
+    out["approval"] = d.get("approval")
+    out["human_checks"] = d.get("human_checks") or []
+    out["attachments"] = [{k: a.get(k) for k in ("id", "kind", "name", "url")} for a in d.get("attachments") or []]
+    out["children"] = [{"ref": ch["ref"], "title": ch["title"], "status": ch["status"]} for ch in d.get("children") or []]
+    out["notes"] = notes[-COMPACT_NOTES:]
+    if len(notes) > COMPACT_NOTES:
+        out["notes_omitted"] = len(notes) - COMPACT_NOTES
+    return out
+
+
 def get_issue(ref) -> dict:
     with db.connect() as c:
         c.execute("BEGIN")

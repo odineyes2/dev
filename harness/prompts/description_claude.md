@@ -1,6 +1,6 @@
 dev 이슈 {ref}는 프로젝트 Description 자동 작성 요청이다. 코드를 고치거나 명령을 실행하지 않는다(그런 도구도 없다).
 
-1. mcp__dev__claim_issue로 {ref}를 잡고, mcp__dev__get_issue로 본문(요청 당시 Description)을 읽는다.
+1. mcp__dev__claim_issue로 {ref}를 잡는다. 본문(요청 당시 Description)은 위 '이슈 내용'에 있으니 get_issue를 다시 부르지 않는다(위에 없으면 compact=true로 한 번).
 2. mcp__dev__list_projects에서 그 프로젝트의 local_path와 지금 description을 찾는다.
    저장소 코드를 Read/Grep/Glob으로 읽고(README·진입점·주요 모듈 위주로 짧게), mcp__dev__list_issues(project=키)로 Issue 진행 상태를,
    mcp__dev__list_project_documents/read_project_document로 공식 문서를 읽는다.

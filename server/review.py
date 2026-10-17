@@ -101,7 +101,7 @@ def in_flight_section(ref: str) -> str:
     if not lines:
         return ""
     return ("\n\n진행 중인 다른 이슈(같은 프로젝트, 남은 Task가 아직 돌거나 사람을 기다린다):\n" + "\n".join(lines) +
-            "\n이 계획의 바꿀 파일이 위와 겹치면 그 작업이 먼저 main에 들어간다고 보고 계획한다 — 그 이슈 계획서를 get_issue로 읽어 "
+            "\n이 계획의 바꿀 파일이 위와 겹치면 그 작업이 먼저 main에 들어간다고 보고 계획한다 — 그 이슈 계획서를 get_issue(compact=true)로 읽어 "
             "같은 함수·스키마·테스트 기대값을 어떻게 바꾸는지 확인하고, 겹침과 그에 맞춘 방향을 계획서에 적는다. 그 이슈는 건드리지 않는다.")
 
 
@@ -114,9 +114,20 @@ def revision_prompt(issue):
             "\n위 메모를 요구사항으로 반영해 새 계획서를 작성한다. 기존 계획서를 승인하거나 구현하지 않는다.\n")
 
 
+def issue_section(ref: str) -> str:
+    """시작할 때 읽어 둔 이슈와 (Task면) 부모 — 간추린 형태(DEV-137). 에이전트가 get_issue를 다시 부르지 않게 한다. 못 읽으면 빈 글."""
+    try:
+        issue = issues.get_issue(ref)
+        items = [issues.compact_issue(issue)] + ([issues.compact_issue(issues.get_issue(issue["parent_ref"]))] if issue.get("parent_ref") else [])
+    except Exception:
+        return ""
+    return ("## 이슈 내용 — dev가 시작할 때 읽어 둔 것(간추림, 부모가 있으면 함께)\n```json\n"
+            + json.dumps(items, ensure_ascii=False, separators=(",", ":")) + "\n```\n\n---\n\n")
+
+
 def preamble(ref: str, execution: bool = False) -> str:
-    """모든 검토·실행 프롬프트 앞머리 — 공통 하네스(DEV-131)와 파일 지도(DEV-134). 공급자별 문구 치환 밖에 둔다."""
-    return harness.prompt_section() + filemap.section(ref, execution)
+    """모든 검토·실행 프롬프트 앞머리 — 공통 하네스(DEV-131), 파일 지도(DEV-134), 간추린 이슈(DEV-137). 공급자별 문구 치환 밖에 둔다."""
+    return harness.prompt_section() + filemap.section(ref, execution) + issue_section(ref)
 
 
 def prompt_for(ref: str, *, include_revision=True, head=True, provider="claude") -> str:

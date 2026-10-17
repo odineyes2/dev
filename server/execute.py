@@ -287,8 +287,8 @@ def capture_instructions(viewer, ref=None):
 
 def prompt_for(ref: str, parent_ref: str | None) -> str:
     import review
-    return review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("Read", ref) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), api_test=api_test_instructions(ref),
-        test_scope=test_scope(ref), parent_line=f'부모 {parent_ref}도 get_issue로 읽어 계획서를 확인한다(계획서보다 사람의 조건부 승인 메모가 우선).' if parent_ref else '')
+    return review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("Read", ref) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref, api_test=api_test_instructions(ref),
+        test_scope=test_scope(ref))
 
 
 def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
