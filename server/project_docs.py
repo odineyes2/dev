@@ -3,10 +3,16 @@ import db
 import issues
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 DOCUMENT_TYPE_ID = 2  # 표시 이름 변경·비활성화와 독립된 최초 카탈로그 ID다.
+DELETABLE_DOCUMENTS = frozenset({
+    'docs/project/00_PRODUCT_BRIEF.md', 'docs/project/01_PRD.md',
+    'docs/project/02_TECH_SPEC.md', 'docs/project/04_ROADMAP.md',
+    'docs/project/05_DECISIONS.md',
+})
 
 
 def _project(key):
@@ -59,7 +65,8 @@ def read_document(key, path):
         blob = _git(repo, 'cat-file', 'blob', oid.decode('ascii'))
         if blob.returncode:
             raise issues.StoreError('문서를 읽을 수 없어요.', 409)
-        return {'path': path, 'status': 'available', 'content': blob.stdout.decode('utf-8', errors='replace')}
+        return {'path': path, 'status': 'available', 'content': blob.stdout.decode('utf-8', errors='replace'),
+                'blob': oid.decode('ascii')}
     except (OSError, subprocess.TimeoutExpired, ValueError) as e:
         raise issues.StoreError('저장소 문서 조회에 실패했어요.', 409) from e
 
@@ -90,10 +97,100 @@ def list_documents(key):
     for path, purpose in DOCUMENTS:
         try:
             result = read_document(key, path)
-            documents.append({'path': path, 'purpose': purpose, 'status': result['status']})
+            documents.append({'path': path, 'purpose': purpose, 'status': result['status'],
+                              'deletable': path in DELETABLE_DOCUMENTS and result['status'] == 'available',
+                              'blob': result.get('blob')})
         except issues.StoreError as e:
             documents.append({'path': path, 'purpose': purpose, 'status': 'unavailable', 'error': str(e)})
     return {'project': project['key'], 'documents': documents, 'requests': requests}
+
+
+def delete_document(key, path, expected_blob):
+    """기준 브랜치의 허용된 일반 파일 하나만 변경 충돌 검사 후 삭제한다."""
+    import orchestrate
+    if not orchestrate._lock.acquire(blocking=False):
+        raise issues.StoreError('프로젝트 병합이 끝난 뒤 다시 시도해 주세요.', 409)
+    try:
+        return _delete_document(key, path, expected_blob)
+    finally:
+        orchestrate._lock.release()
+
+
+def _delete_document(key, path, expected_blob):
+    if not isinstance(path, str) or path not in DELETABLE_DOCUMENTS:
+        raise issues.StoreError('삭제할 수 없는 문서 경로예요.', 400)
+    if not isinstance(expected_blob, str) or len(expected_blob) not in (40, 64) or any(c not in '0123456789abcdef' for c in expected_blob):
+        raise issues.StoreError('문서 버전이 올바르지 않아요. 목록을 새로고침해 주세요.', 400)
+    project = _project(key)
+    repo = Path(project['local_path'] or '')
+    if not project['local_path'] or not repo.is_dir():
+        raise issues.StoreError('프로젝트 저장소를 찾을 수 없어요.', 409)
+    base = 'refs/heads/' + (os.environ.get('DEV_EXEC_BASE') or 'main')
+    target = repo / path
+    try:
+        tip = _git(repo, 'rev-parse', '--verify', base + '^{commit}')
+        head = _git(repo, 'symbolic-ref', '-q', 'HEAD')
+        if tip.returncode or head.returncode or head.stdout.decode('ascii').strip() != base:
+            raise issues.StoreError('기준 브랜치가 현재 작업 브랜치가 아니에요.', 409)
+        if any(_git(repo, 'rev-parse', '-q', '--verify', marker).returncode == 0
+               for marker in ('MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD')):
+            raise issues.StoreError('기준 브랜치의 Git 작업이 끝난 뒤 다시 시도해 주세요.', 409)
+        current = read_document(key, path)
+        if current['status'] != 'available' or current['blob'] != expected_blob:
+            raise issues.StoreError('문서가 변경되었어요. 목록을 새로고침해 주세요.', 409)
+        # Git 트리뿐 아니라 실제 작업 경로도 링크가 없어야 한다.
+        for parent in target.parents:
+            if parent == repo:
+                break
+            if parent.is_symlink() or not parent.is_dir():
+                raise issues.StoreError('문서 상위 경로가 일반 디렉터리가 아니에요.', 409)
+        if target.is_symlink() or not target.is_file() or not target.resolve().is_relative_to(repo.resolve()):
+            raise issues.StoreError('문서 파일이 일반 파일이 아니에요.', 409)
+        status = _git(repo, 'status', '--porcelain', '--untracked-files=all', '--', path)
+        if status.returncode or status.stdout:
+            raise issues.StoreError('문서에 미커밋 변경이 있어요. 변경을 정리한 뒤 다시 시도해 주세요.', 409)
+        with db.connect() as c:
+            busy = c.execute("""SELECT 1 FROM runs r JOIN issues i ON i.id=r.issue_id
+                WHERE i.project_id=? AND r.status='running' LIMIT 1""", (project['id'],)).fetchone()
+            merging = c.execute("""SELECT 1 FROM execution_completion e JOIN issues i ON i.id=e.issue_id
+                WHERE i.project_id=? AND e.phase IN ('ready','checking','building','applying','deployed',
+                    'restart_requested','rollback_requested','rollback_applied') LIMIT 1""", (project['id'],)).fetchone()
+        if busy or merging:
+            raise issues.StoreError('프로젝트 실행·병합 작업 중이에요. 끝난 뒤 다시 시도해 주세요.', 409)
+        original = target.read_bytes()
+        original_mode = target.stat().st_mode
+        with tempfile.TemporaryDirectory() as tmp:
+            index = str(Path(tmp) / 'index')
+            env = dict(os.environ, GIT_INDEX_FILE=index)
+            def isolated(*args):
+                return subprocess.run(['git', *args], cwd=repo, env=env, capture_output=True, timeout=10)
+            old_tip = tip.stdout.decode('ascii').strip()
+            if isolated('read-tree', old_tip).returncode or isolated('update-index', '--force-remove', '--', path).returncode:
+                raise issues.StoreError('삭제 커밋을 준비하지 못했어요.', 409)
+            tree = isolated('write-tree')
+            if tree.returncode:
+                raise issues.StoreError('삭제 커밋을 준비하지 못했어요.', 409)
+            commit = isolated('commit-tree', tree.stdout.decode('ascii').strip(), '-p', old_tip,
+                              '-m', f'Delete project document {path}')
+            if commit.returncode:
+                raise issues.StoreError('문서 삭제 커밋에 실패했어요.', 409)
+            target.unlink()
+            updated = isolated('update-ref', base, commit.stdout.decode('ascii').strip(), old_tip)
+            if updated.returncode:
+                target.write_bytes(original)
+                os.chmod(target, original_mode)
+                raise issues.StoreError('기준 브랜치가 변경되었어요. 목록을 새로고침해 주세요.', 409)
+        indexed = _git(repo, 'update-index', '--force-remove', '--', path)
+        if indexed.returncode:
+            restored = _git(repo, 'update-ref', base, old_tip, commit.stdout.decode('ascii').strip())
+            if restored.returncode:
+                raise issues.StoreError('Git 인덱스 갱신에 실패했고 기준 브랜치가 바뀌었어요. 저장소 상태를 확인해 주세요.', 409)
+            target.write_bytes(original)
+            os.chmod(target, original_mode)
+            raise issues.StoreError('Git 인덱스 갱신에 실패해 삭제를 취소했어요. 다시 시도해 주세요.', 409)
+        return {'path': path, 'deleted': True}
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        raise issues.StoreError('문서 삭제에 실패했어요. 저장소 상태를 확인한 뒤 다시 시도해 주세요.', 409) from e
 
 
 def reference_instructions(execution=False, ref=None):

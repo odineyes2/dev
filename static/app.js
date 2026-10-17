@@ -2540,21 +2540,25 @@ function bindProjectDocuments(project){
   const url = `/api/projects/${encodeURIComponent(project.key)}/documents`;
   const current = () => panel.isConnected;
   const states = {failed:'실패 — Issue를 확인하고 다시 시도해 주세요', merged:'병합 완료', merge_pending:'병합 대기', in_progress:'진행 중'};
-  let selection = 0, requesting = false, loading = 0;
-  async function load(){
+  let selection = 0, requesting = false, deleting = false, loading = 0;
+  async function load(preferredPath){
     const generation = ++loading; ++selection;
     body.innerHTML = '<div class="skeleton" role="status">문서 목록을 불러오는 중이에요…</div>';
     try {
       const data = await api('GET', url, undefined, current);
       if(!current() || generation !== loading) return;
       requests.innerHTML = data.requests.map(r => `<p><a href="#/issue/${encodeURIComponent(r.ref)}">${esc(r.ref)}</a> · ${esc(states[r.state] || r.state)}</p>`).join('');
-      body.innerHTML = data.documents.length ? `<label>문서 선택<select id="doc-select">${data.documents.map(d => `<option value="${esc(d.path)}">${esc(d.path)} · ${d.status === 'available' ? '조회 가능' : d.status === 'missing' ? '아직 없어요' : '조회 불가'}</option>`).join('')}</select></label><p class="dim" id="doc-purpose"></p><div id="doc-content"></div>` : '<div class="empty">아직 문서가 없어요. 설명을 저장하고 생성 Issue를 등록해 주세요.</div>';
+      body.innerHTML = data.documents.length ? `<div class="doc-selection"><label>문서 선택<select id="doc-select">${data.documents.map(d => `<option value="${esc(d.path)}">${esc(d.path)} · ${d.status === 'available' ? '조회 가능' : d.status === 'missing' ? '아직 없어요' : '조회 불가'}</option>`).join('')}</select></label><button type="button" id="doc-delete" class="danger" hidden>문서 삭제</button></div><p class="dim" id="doc-purpose"></p><div id="doc-content"></div>` : '<div class="empty">아직 문서가 없어요. 설명을 저장하고 생성 Issue를 등록해 주세요.</div>';
       const select = body.querySelector('#doc-select');
       if(!select) return;
+      if(preferredPath && data.documents.some(d => d.path === preferredPath)) select.value = preferredPath;
+      const remove = body.querySelector('#doc-delete');
       async function read(){
         const token = ++selection, path = select.value;
         const content = body.querySelector('#doc-content');
-        body.querySelector('#doc-purpose').textContent = data.documents.find(d => d.path === path)?.purpose || '';
+        const entry = data.documents.find(d => d.path === path);
+        body.querySelector('#doc-purpose').textContent = entry?.purpose || '';
+        remove.hidden = !entry?.deletable;
         content.innerHTML = '<div class="skeleton" role="status">문서를 불러오는 중이에요…</div>';
         try {
           const doc = await api('GET', `${url}/content?path=${encodeURIComponent(path)}`, undefined, current);
@@ -2562,10 +2566,29 @@ function bindProjectDocuments(project){
           content.innerHTML = doc.status === 'available' ? `<pre class="document-source" tabindex="0" aria-label="문서 원문">${esc(doc.content)}</pre>` : '<div class="empty">기준 브랜치에 아직 문서가 없어요. 생성 Issue의 진행 상태와 병합 여부를 확인해 주세요.</div>';
         } catch(e){ if(current() && token === selection) content.innerHTML = `<div class="empty">${esc(e.message)} 새로고침으로 다시 시도해 주세요.</div>`; }
       }
+      remove.onclick = async () => {
+        if(deleting) return;
+        const entry = data.documents.find(d => d.path === select.value);
+        if(!entry?.deletable || !entry.blob) return;
+        if(!confirm(`${project.name} 프로젝트의 ${entry.path} 문서를 삭제할까요?`)) return;
+        deleting = true; remove.disabled = true;
+        ++selection;
+        try {
+          await api('DELETE', `${url}/content`, {path:entry.path, blob:entry.blob}, current, {notifyErrors:false});
+          if(!current()) return;
+          message.textContent = `${entry.path} 문서를 삭제했어요.`;
+          await load(body.querySelector('#doc-select')?.value || entry.path);
+        } catch(e) {
+          if(current()) message.textContent = `${e.message} 문서를 새로고침하고 다시 시도해 주세요.`;
+        } finally {
+          deleting = false;
+          if(remove.isConnected) remove.disabled = false;
+        }
+      };
       select.onchange = read; await read();
     } catch(e){ if(current() && generation === loading) body.innerHTML = `<div class="empty">${esc(e.message)} 새로고침으로 다시 시도해 주세요.</div>`; }
   }
-  panel.querySelector('#docs-refresh').onclick = load;
+  panel.querySelector('#docs-refresh').onclick = () => load(body.querySelector('#doc-select')?.value);
   const buttons = [...panel.querySelectorAll('[data-doc-provider]')];
   buttons.forEach(button => button.onclick = async () => {
     if(requesting) return;
