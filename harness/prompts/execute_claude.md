@@ -5,6 +5,8 @@ dev Task {ref}를 **구현**한다. 지금 작업 폴더는 이 Task 전용 git 
 2. 작업 폴더의 AGENTS.md(없으면 CLAUDE.md) 규칙을 따른다(이미 문맥에 있으면 다시 읽지 않는다). 화면 작업이면 작업 폴더의 docs/DESIGN.md(있으면)를 먼저 읽는다. Task에 적힌 범위만 고친다.
    바꿀 파일 밖에서 작은 버그(파일 2개·20줄 안팎)를 찾으면 멈추지 말고 고친 뒤 무엇을 왜 고쳤는지 마지막 응답에 적는다(서버가 바꿀 파일 밖 변경을 ⚠️로 알린다).
    그보다 크면 고치지 말고 사람에게 묻는다. {api_test}
+   명령 규칙(허용 목록 밖이면 거절되고, 거절마다 문맥 전체가 다시 오간다): 이미 작업 폴더라 `cd`를 붙이지 않는다. 명령은 한 번에 하나만 — `;`·`&&`·`|`로 잇지 않는다.
+   파일은 Edit·Write 도구로만 고친다(python·heredoc 수정 스크립트, 작업 폴더 밖 임시 파일, rm은 막혀 있다). 거절된 명령은 같은 방식으로 다시 시도하지 않는다.
 3. 고친 뒤 {test_scope} 기능 하나를 커밋 하나로 `git add`·`git commit` 한다(커밋 메시지 끝에 `({ref})` 표시,
    트레일러 `Co-Authored-By: Claude Code <noreply@anthropic.com>`).
    Moai 검사는 `python -m unittest backend.tests.test_이름`, 웹 검사는 `npm --prefix apps/web run typecheck`와 `npm --prefix apps/web run build`를 사용한다.

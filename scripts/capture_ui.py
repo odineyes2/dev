@@ -14,8 +14,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 from ui_fixture import FAKE_NS, child_environment, free_port, wait_port, BOOTSTRAP
 
+def normalize_route(route):
+    """`harness`·`issue/DEV-1`처럼 `#/` 없이 받은 경로에 `#/`를 붙인다. Git Bash(MSYS)가 `#/x`·`/`를
+    `#C:/Program Files/Git/x`·`C:/Program Files/Git/`로 바꿔 넘긴 값도 원래대로 되돌린다(DEV-139)."""
+    route = route.strip()
+    m = re.fullmatch(r'#?[A-Za-z]:/(?:[^/]+/)*?Git/(.*)', route)
+    if m:
+        return '#/' + m.group(1)
+    return route if route.startswith('#') else '#/' + route.lstrip('/')
+
+
 def validate_route(route):
     """URL 대신 알려진 로컬 hash 경로만 받는다."""
+    route = normalize_route(route)
     if not re.fullmatch(r'#/(?:board|new|agents|harness|projects|trends|settings(?:/(?:auto|types|regression|fonts|tokens))?|types|issue/[A-Z][A-Z0-9]*-\d+(?:-\d+)*)?(?:\?[A-Za-z0-9_=&%.-]*)?', route):
         raise ValueError('로컬 hash 경로만 지원한다: #/, #/issue/DEV-1 등')
     return route
@@ -68,7 +79,7 @@ def seed_fixture(request, base, fixture):
 def wait_screen(page, route):
     name = route[2:].split('?')[0]
     selector = {'': '#project-filter', 'board': '.kanban', 'new': '#new-form', 'trends': '.trend-page',
-                'agents': '#agent-form', 'harness': '.harness-layer', 'projects': '.projects-page',
+                'agents': '#agent-form', 'harness': '.harness-tabs', 'projects': '.projects-page',
                 'settings': '.auto-settings', 'settings/auto': '.auto-settings',
                 'settings/fonts': '.font-settings',
                 'types': '.type-management', 'settings/types': '.type-management'}.get(name, '#view')
@@ -85,7 +96,7 @@ def wait_screen(page, route):
 
 
 def capture(route='#/', fixture='empty'):
-    validate_route(route)
+    route = validate_route(route)
     output = ROOT / '.ui-captures'
     output.mkdir(exist_ok=True)
     if output.is_symlink() or output.resolve().parent != ROOT.resolve():
@@ -201,7 +212,7 @@ def capture(route='#/', fixture='empty'):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--route', default='#/')
+    parser.add_argument('--route', default='#/', help='harness, issue/DEV-1처럼 #/ 없이 쓴다(Git Bash가 #/를 경로로 바꾼다)')
     parser.add_argument('--fixture', choices=('empty', 'detail', 'projects-empty', 'projects-input', 'project-service'), default='empty', help='detail fixture의 Issue는 DEV-1이다')
     args = parser.parse_args()
     try:

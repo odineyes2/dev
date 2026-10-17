@@ -37,7 +37,11 @@ class CaptureTests(unittest.TestCase):
             with capture_ui.isolated_environment(env):
                 self.assertNotIn('RUNPOD_API_KEY', os.environ)
             self.assertEqual(os.environ['RUNPOD_API_KEY'], 'secret')
-        for route in ('https://example.com', '#//example.com', '#/unknown', '#/../data', '#/issue/DEV-1/extra'):
+        for raw, route in (('harness', '#/harness'), ('issue/DEV-1', '#/issue/DEV-1'), ('', '#/'),
+                           ('#C:/Program Files/Git/projects', '#/projects'), ('C:/Program Files/Git/', '#/'),
+                           ('projects?project=DEV&tab=manage', '#/projects?project=DEV&tab=manage')):
+            self.assertEqual(capture_ui.validate_route(raw), route)   # Git Bash 경로 변환(DEV-139)
+        for route in ('https://example.com', '#//example.com', '#/unknown', '#/../data', '#/issue/DEV-1/extra', 'unknown'):
             with self.assertRaises(ValueError):
                 capture_ui.validate_route(route)
         self.assertTrue(capture_ui.local_request('http://127.0.0.1:12/static/a.js', 'http://127.0.0.1:12'))

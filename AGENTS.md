@@ -39,7 +39,7 @@
 
 ### 화면·검사·운영
 - `static/` 화면(빌드 없음, 정적 파일. Cloudflare가 CSS/JS를 4시간 캐시해 index.html이 `?v=내용해시`로 부른다).
-- `tests/` 검사(`python tests/test_x.py`, 임시 데이터 폴더). 화면 검사는 `python tests/test_ui.py --<이름>-only`. 관리 화면 검사는 경로별 활성 탭·프로젝트 식별·로딩 완료를 확인한 뒤 포커스를 검증하고, 실패 시 경로·포커스 요소·활성 탭·busy 수만 기록한다(입력값·비밀 제외). boot는 프로젝트·Agent 초기 데이터 준비 뒤에 화면을 공개하고 숨겨진 로그인/초기화 화면에서는 hash 라우팅을 하지 않는다. `--management-delay-probe`(응답 보류·탭 전환·초기화 지연), `--management-layout-only`.
+- `tests/` 검사(`python tests/test_x.py`, 임시 데이터 폴더). 화면 검사는 `python tests/test_ui.py --<이름>-only`. `tests/test_ui.py`는 4천 줄이 넘으니 통째로 읽지 않는다 — 새 화면 검사는 위쪽에 `def check_<이름>(page, shots)`를 두고, 로그인 직후의 `if '--<이름>-only' in sys.argv:` 분기 줄(`grep -n "\-only' in sys.argv"`)에 같은 꼴로 한 줄 더한 뒤 전체 흐름 끝에서도 부른다. 기존 예는 `check_attachments`. 관리 화면 검사는 경로별 활성 탭·프로젝트 식별·로딩 완료를 확인한 뒤 포커스를 검증하고, 실패 시 경로·포커스 요소·활성 탭·busy 수만 기록한다(입력값·비밀 제외). boot는 프로젝트·Agent 초기 데이터 준비 뒤에 화면을 공개하고 숨겨진 로그인/초기화 화면에서는 hash 라우팅을 하지 않는다. `--management-delay-probe`(응답 보류·탭 전환·초기화 지연), `--management-layout-only`.
 - `ecosystem.config.js` pm2 앱 `dev`(127.0.0.1:8300, Cloudflare 터널이 dev.lomebrote.com으로 연결).
 
 ## 규칙
