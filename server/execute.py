@@ -377,6 +377,12 @@ def already_submitted(c, issue_id: int, sha: str) -> bool:
     return bool(c.execute("SELECT 1 FROM execution_completion WHERE issue_id=? AND task_sha=?", (issue_id, sha)).fetchone())
 
 
+def commit_linked(issue, sha: str) -> bool:
+    """전체 해시 sha가 이슈에 연결됐는지 — 에이전트가 짧은 해시(7자 이상)로 연결해도 같은 커밋으로 본다."""
+    return bool(sha) and any(e['kind'] == 'commit' and len(e['data'].get('sha') or '') >= 7 and sha.startswith(e['data']['sha'])
+                             for e in issue.get('events', []))
+
+
 def repair_available(issue):
     if not issue.get('parent_ref') or issue['status'] not in ('in_review', 'on_hold', 'changes_requested'):
         return False
@@ -386,7 +392,8 @@ def repair_available(issue):
             AND r.id=(SELECT MAX(id) FROM runs WHERE issue_id=?)
             AND NOT EXISTS(SELECT 1 FROM execution_completion e WHERE e.run_id=r.id)''', (issue['id'], issue['id'])).fetchone()
     return bool(row and row['mode'] == 'execute' and row['status'] != 'running' and row['state'] == 'processing'
-                and any(e['kind'] == 'commit' and e['data'].get('sha') and e['data']['sha'] != row['task_start_sha'] for e in issue.get('events', [])))
+                and any(e['kind'] == 'commit' and e['data'].get('sha') and not (row['task_start_sha'] or '').startswith(e['data']['sha'])
+                        for e in issue.get('events', [])))
 
 
 def register_repair(actor, ref):
@@ -415,7 +422,7 @@ def register_repair(actor, ref):
     sha = _git(cwd, 'rev-parse', 'HEAD')
     if (_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD') != branch_name(ref) or
         _git(cwd, 'status', '--porcelain') or not _git(cwd, 'log', '--oneline', f'{BASE_BRANCH}..HEAD') or
-        not any(e['kind'] == 'commit' and e['data'].get('sha') == sha for e in issue['events'])):
+        not commit_linked(issue, sha)):
         raise issues.StoreError('깨끗한 Task worktree와 연결된 수정 커밋이 필요해요.', 409)
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
@@ -488,7 +495,7 @@ def register_completion(actor, ref, cwd, run_id, note):
             or _git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD') != branch_name(ref)
             or _git(cwd, 'status', '--porcelain', '--untracked-files=no')   # 미추적 찌꺼기는 커밋에 안 들어가 병합과 무관 — 에이전트는 rm도 못 한다(NS-32-2)
             or not _git(cwd, 'log', '--oneline', f'{BASE_BRANCH}..HEAD')
-            or not any(e['kind'] == 'commit' and e['data'].get('sha') == sha for e in issue['events'])):
+            or not commit_linked(issue, sha)):
         raise issues.StoreError('현재 Task의 깨끗한 worktree와 연결된 새 커밋이 필요해요.', 409)
     why = merge_unfinished(cwd)
     if why:
