@@ -246,6 +246,8 @@ for command in (review.command_for('DOC-1'), review.codex_command_for('DOC-1'),
                 execute.command_for('DOC-1-1', 'DOC-1', 'mock'), execute.codex_command_for('DOC-1-1', 'DOC-1')):
     # 간추린 이슈 내용(DEV-137)은 이슈 자신의 글이라 경로가 들어 있을 수 있다 — 문서 안내 검사는 그 밖에서만
     text = re.sub(r'## 이슈 내용 — .*?\n```\n', '', ' '.join(command), flags=re.S)
+    # 진행 중인 다른 이슈(DEV-145: 실행 전 계획 포함)의 Task 파일 목록도 문서 안내가 아니다
+    text = re.sub(r'진행 중인 다른 이슈\(.*?그 이슈는 건드리지 않는다\.', '', text, flags=re.S)
     assert 'description' in text and '제품 문서가 없으니 찾지 않는다' in text   # /target에는 문서가 없다 — 없는 경로를 알리지 않는다
     # docs/DESIGN.md는 공통 규칙의 고정 위치라 '(있으면)'과 함께 늘 안내한다 — 그 밖의 문서는 없으면 알리지 않는다
     assert not any(p in text for p, _ in project_docs.DOCUMENTS if p.startswith('docs/') and p != 'docs/DESIGN.md')
