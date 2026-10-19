@@ -437,9 +437,9 @@ function issueTokensHtml(i, detail = false){
 }
 function issueRowHtml(i){
   return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
-    <td class="title-cell">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}<div class="issue-badges">${i.rating ? `<span class="row-rating" title="평점 ${i.rating}/5" aria-label="평점 ${i.rating}점">★${i.rating}</span>` : ''}${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile">${processingAgentsHtml(i)} ${completionTimeHtml(i)} ${issueTokensHtml(i)}</div></td>
+    <td class="title-cell">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}<div class="issue-badges">${i.rating ? `<span class="row-rating" title="평점 ${i.rating}/5" aria-label="평점 ${i.rating}점">★${i.rating}</span>` : ''}${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile"><span class="issue-meta-agent">${processingAgentsHtml(i)}</span><span class="issue-meta-time">${completionTimeHtml(i)}</span><span class="issue-meta-tokens">${issueTokensHtml(i)}</span></div></td>
     <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td>
-    <td class="hide-m">${processingAgentsHtml(i)}</td><td class="hide-m">${completionTimeHtml(i)}</td><td class="hide-m token-cell">${issueTokensHtml(i)}</td><td class="hide-m dim">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
+    <td class="hide-m issue-col-agent">${processingAgentsHtml(i)}</td><td class="hide-m issue-col-time">${completionTimeHtml(i)}</td><td class="hide-m token-cell issue-col-tokens">${issueTokensHtml(i)}</td><td class="hide-m dim issue-col-updated">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
 // Task는 부모 바로 아래에 들여써서 붙이고(부모가 아직 안 왔으면 오는 순간 끌어온다) 접고 펼 수 있다. 접힘은 부모 ref별로 기억한다.
 function collapsedSet(){ return new Set(JSON.parse(localStorage.getItem('dev.collapsed') || '[]')); }
@@ -759,7 +759,7 @@ async function loadMoreIssues(){
   L.done = !data.has_more;   // 예전 서버(has_more 없음)면 한 번으로 끝
   if(!body.querySelector('table, .empty')){
     body.innerHTML = items.length ? `<table class="issues"><thead><tr><th aria-sort="${L.qs.sort === 'id_asc' ? 'ascending' : L.qs.sort === 'id_desc' ? 'descending' : 'none'}"><button type="button" id="list-id-sort" class="list-sort" title="${L.qs.sort === 'id_asc' ? 'ID 내림차순으로 정렬해요' : L.qs.sort === 'id_desc' ? '최근 고친 순으로 정렬해요' : 'ID 오름차순으로 정렬해요'}">ID${L.qs.sort ? `<svg class="ico${L.qs.sort === 'id_desc' ? ' sort-desc' : ''}" aria-hidden="true"><use href="#i-arrow-up"/></svg>` : ''}</button></th><th>Title</th><th>Status</th>
-      <th class="hide-m history-heading">AGENT</th><th class="hide-m history-heading">TIME</th><th class="hide-m">TOKENS</th><th class="hide-m">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
+      <th class="hide-m history-heading issue-col-agent">AGENT</th><th class="hide-m history-heading issue-col-time">TIME</th><th class="hide-m issue-col-tokens">TOKENS</th><th class="hide-m issue-col-updated">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
   }
   const tbody = body.querySelector('tbody');
   if(tbody){ items.forEach(i => placeRow(tbody, i)); bindActions(tbody, L.actions, loadList); }
