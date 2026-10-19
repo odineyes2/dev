@@ -419,6 +419,17 @@ def codex_failure(out: str) -> str | None:
     return pending
 
 
+def stdin_prompt(cmd: list[str], provider: str) -> tuple[list[str], str | None]:
+    """명령에서 프롬프트 인자를 빼 (실행할 명령, stdin으로 보낼 프롬프트)로 나눈다. 프롬프트가 없으면 None."""
+    if provider == "codex":
+        return cmd[:-1] + ["-"], cmd[-1]
+    if "-p" in cmd:
+        i = cmd.index("-p") + 1
+        if i < len(cmd) and not cmd[i].startswith("-"):
+            return cmd[:i] + cmd[i + 1:], cmd[i]
+    return cmd, None
+
+
 def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[str], cwd, env, timeout: float, label: str, provider: str = "claude", baseline_plan_id: int = 0) -> str:
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     name = "Codex" if provider == "codex" else "Claude Code"
@@ -435,12 +446,11 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     for attempt in range(2 if label == "실행" and not recovery else 1):
         code, note, status, out, err = None, "", "ok", "", ""
         try:
-            # Codex 프롬프트는 마지막 인자에 보존하되 실행 때 stdin으로 보낸다.
-            # 파일 지도·하네스가 길어져도 Windows 명령행 한도(32,767자)를 넘지 않는다.
-            prompt = cmd[-1] if provider == "codex" else None
-            launch_cmd = cmd[:-1] + ["-"] if provider == "codex" else cmd
+            # 프롬프트는 명령(cmd)에 보존하되 실행 때 stdin으로 보낸다 — Codex는 마지막 인자, Claude는 "-p" 다음 인자.
+            # 파일 지도·하네스·부모 계획서가 길어져도 Windows 명령행 한도(32,767자, WinError 206)를 넘지 않는다.
+            launch_cmd, prompt = stdin_prompt(cmd, provider)
             proc = subprocess.Popen(launch_cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                                    stdin=subprocess.PIPE if provider == "codex" else subprocess.DEVNULL,
+                                    stdin=subprocess.DEVNULL if prompt is None else subprocess.PIPE,
                                     env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"})
             try:
                 out, err = proc.communicate(input=prompt, timeout=timeout)
