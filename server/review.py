@@ -85,8 +85,34 @@ def codex_command_for(ref: str) -> list[str]:
     return codex_command(preamble(ref) + prompt, tools, web="cached")   # 검토만 웹 검색 — 캐시 색인이라 실시간 페이지의 숨은 지시에 덜 노출된다
 
 
+def _planned(c, project_id: int, skip: set[int]) -> list[tuple[str, str, str, set[str]]]:
+    """같은 프로젝트에서 계획서만 올라오고 Task가 아직 실행되지 않은 이슈 — [(ref, 제목, 결정, 계획 Task 파일)](DEV-145).
+    최신 판이 거절됐거나 done·closed면 뺀다. 하위 Task가 이미 만들어졌으면 그 본문, 아니면 계획서 `## Tasks`의 파일을 쓴다.
+    실행 대기열의 파일 예약(jobs._reservations)과는 따로 둔다 — 실행 전 계획까지 예약하면 실행이 괜히 막힌다."""
+    import execute
+    out = []
+    for r in c.execute(f"""SELECT i.id, {issues.ref_sql('i', 'p')} AS ref, i.title, pl.version, pl.body FROM issues i
+            JOIN projects p ON p.id=i.project_id
+            JOIN plans pl ON pl.issue_id=i.id AND pl.version=(SELECT MAX(version) FROM plans WHERE issue_id=i.id)
+            WHERE i.project_id=? AND i.parent_id IS NULL AND i.status NOT IN ('done','closed') ORDER BY i.id""", (project_id,)):
+        if r["id"] in skip:
+            continue
+        verdict = c.execute("SELECT verdict FROM decisions WHERE issue_id=? AND gate='plan' AND plan_version=? ORDER BY id DESC LIMIT 1",
+                            (r["id"], r["version"])).fetchone()
+        if verdict and verdict["verdict"] == "reject":
+            continue
+        kids = c.execute(f"SELECT i.body FROM issues i WHERE i.parent_id=? AND i.status NOT IN ('done','closed') AND {issues._SUPERSEDED} IS NULL",
+                         (r["id"],)).fetchall()
+        bodies = [k["body"] for k in kids] or ["파일: " + t["files"] for t in issues.parse_tasks(r["body"]) if t["files"]]
+        files = set().union(*(execute.task_files({"body": b}) for b in bodies)) if bodies else set()
+        if files:
+            out.append((r["ref"], r["title"], "승인됨" if verdict else "승인 대기", files))
+    return out
+
+
 def in_flight_section(ref: str) -> str:
-    """같은 프로젝트에서 Task가 진행 중인 다른 이슈와 그 남은 Task의 파일 — 계획이 그 작업을 모르고 같은 파일·테스트를 바꾸지 않게(DEV-64-1)."""
+    """같은 프로젝트에서 Task가 진행 중인 다른 이슈와 그 남은 Task의 파일, 그리고 계획서만 있고 아직 실행 전인 이슈의 계획 Task 파일
+    — 계획이 그 작업을 모르고 같은 파일·테스트를 바꾸지 않게(DEV-64-1, DEV-145)."""
     import jobs
     try:
         issue = issues.get_issue(ref)
@@ -94,13 +120,18 @@ def in_flight_section(ref: str) -> str:
             held = jobs._reservations(c, keep_stalled=True)
             rows = {r["id"]: r for r in c.execute(
                 f"SELECT id, title, project_id FROM issues WHERE id IN ({','.join('?' * len(held))})", list(held))} if held else {}
+            planned = _planned(c, issue["project_id"], set(held) | {issue["id"], issue.get("parent_id")})
     except Exception:   # 이슈를 못 읽으면 목록 없이 일반 검토 프롬프트를 쓴다
         return ""
-    lines = [f"- {other} {rows[pid]['title']} — 남은 Task 파일: {', '.join(sorted(files)[:15])}{' 외' if len(files) > 15 else ''}"
+
+    def listed(files):
+        return ", ".join(sorted(files)[:15]) + (" 외" if len(files) > 15 else "")
+    lines = [f"- {other} {rows[pid]['title']} — 남은 Task 파일: {listed(files)}"
              for pid, (other, files) in held.items() if pid != issue["id"] and rows[pid]["project_id"] == issue["project_id"]]
+    lines += [f"- {other} {title} — 실행 전 계획({state}), 계획 Task 파일: {listed(files)}" for other, title, state, files in planned]
     if not lines:
         return ""
-    return ("\n\n진행 중인 다른 이슈(같은 프로젝트, 남은 Task가 아직 돌거나 사람을 기다린다):\n" + "\n".join(lines) +
+    return ("\n\n진행 중인 다른 이슈(같은 프로젝트, 남은 Task가 아직 돌거나 사람을 기다리거나, 계획서만 있고 아직 실행 전이다):\n" + "\n".join(lines) +
             "\n이 계획의 바꿀 파일이 위와 겹치면 그 작업이 먼저 main에 들어간다고 보고 계획한다 — 그 이슈 계획서를 get_issue(compact=true)로 읽어 "
             "같은 함수·스키마·테스트 기대값을 어떻게 바꾸는지 확인하고, 겹침과 그에 맞춘 방향을 계획서에 적는다. 그 이슈는 건드리지 않는다.")
 

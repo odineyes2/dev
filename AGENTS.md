@@ -17,7 +17,7 @@
 - `auth.py` — 사람은 nightshift 세션(`ns_session` → `/api/auth/me`, admin만), 에이전트는 `Bearer dev_…` 키(DB엔 해시만).
 
 ### 검토·실행·병합
-- `review.py` "Claude에게 검토 맡기기"(헤드리스 `claude -p --restricted`, 읽기·웹 일부만) — 프롬프트 끝에 같은 프로젝트의 진행 중인 이슈와 남은 Task 파일을 붙여 계획이 겹침을 알고 쓰게 한다(`in_flight_section`). 실행마다 `runs` 한 줄(상태·토큰·비용·로그), 원본 이벤트(도구 호출·턴별 사용량)는 `data/reviews/<로그>.events.jsonl.gz`(요약 `python scripts/run_usage.py --last 3`). 서버가 뜰 때 남은 running은 orphaned로.
+- `review.py` "Claude에게 검토 맡기기"(헤드리스 `claude -p --restricted`, 읽기·웹 일부만) — 프롬프트 끝에 같은 프로젝트의 진행 중인 이슈와 남은 Task 파일, 계획서만 있고 아직 실행 전인 이슈의 계획 Task 파일(거절 제외)을 붙여 계획이 겹침을 알고 쓰게 한다(`in_flight_section`·`_planned` — 실행 대기열 예약과는 따로). 실행마다 `runs` 한 줄(상태·토큰·비용·로그), 원본 이벤트(도구 호출·턴별 사용량)는 `data/reviews/<로그>.events.jsonl.gz`(요약 `python scripts/run_usage.py --last 3`). 서버가 뜰 때 남은 running은 orphaned로.
 - `execute.py` "Claude/Codex에게 실행 맡기기"(Task 전용) — `~/Projects/.dev-worktrees/<ref>`(저장소 밖이라 dev 규칙 파일이 다른 프로젝트 Task에 섞이지 않는다, 검사는 임시 데이터 폴더 안) worktree + `relay/<ref>` 브랜치에서 헤드리스로 구현. Claude 허용 목록은 Bash의 `python tests/*`·읽기성 git·add·commit과 Moai의 `backend.tests` 검사·지정 npm 타입 검사/빌드이고, Claude는 사용자 개인 설정(플러그인·훅·스킬·~/.claude/CLAUDE.md·자동 메모리)을 받지 않는다(`USER_ISOLATION`). Codex는 danger-full-access로 OS sandbox 없이 실행하고 커밋·결과 등록은 서버가 한다. push 불가(pushurl 덮기·토큰 제거), 비용·시간 상한. Claude 실행기는 `rm`·`git rm`을 못 해 삭제 Task는 대화에서 직접 한다.
   - 시작 조건: 부모 계획서 승인·선행 Task done·저장소가 base 브랜치에서 깨끗. 이어 쓰는 worktree가 base보다 뒤처졌으면 서버가 먼저 base를 병합하고(커밋 안 된 변경은 보존 커밋), 충돌이면 프롬프트에 해결 지시를 붙인다 — 병합 중·충돌 표시가 남으면 완료를 거부한다(`refresh_worktree`·`merge_unfinished`).
   - 계획서 판은 올라올 때의 base 커밋을 `plans.base_sha`에 남기고, 그 뒤 다른 이슈가 Task 파일을 바꿨으면 그 커밋 목록과 "가정 확인, 깨졌으면 사람에게 묻기"를 프롬프트 앞에 붙인다(`stale_commits`).

@@ -83,3 +83,22 @@ assert "진행 중인 다른 이슈" not in review.prompt_for(a)          # 자�
 assert "진행 중인 다른 이슈" not in review.prompt_for(issues.create_issue(me, "OX", "다른 프로젝트")["ref"])
 assert "진행 중인 다른 이슈" in review.codex_command_for(r)[-1]
 print("ok review")
+
+# DEV-145 — 계획서만 있고 실행 전인 이슈도 계획 Task 파일과 함께 알린다. 거절된 계획은 빼고, 실행 대기열 예약에는 넣지 않는다.
+status(a2, "done")
+p, q, s = (issues.create_issue(me, "OQ", t)["ref"] for t in ("P", "Q", "S"))
+issues.post_plan(me, p, "## 목표\nP\n\n## Tasks\n1. P1 | 파일: server/review.py, tests/test_p.py | 확인: python tests/test_p.py | 선행: 없음\n")
+prompt = review.prompt_for(r)
+assert f"{p} P — 실행 전 계획(승인 대기), 계획 Task 파일: server/review.py, tests/test_p.py" in prompt, prompt[-800:]
+assert f"{p} P" not in review.prompt_for(p)          # 자기 자신은 빼고
+with db.connect() as c:
+    assert iid(p) not in jobs._reservations(c, keep_stalled=True) and iid(p) not in jobs._reservations(c)
+issues.decide(me, p, "approve", plan_version=1)          # 승인하면 하위 Task가 생기고 그 본문의 파일을 쓴다
+assert f"{p} P — 실행 전 계획(승인됨), 계획 Task 파일: server/review.py, tests/test_p.py" in review.prompt_for(r)
+issues.post_plan(me, q, "## Tasks\n1. Q1 | 파일: static/q.js | 확인: 없음 | 선행: 없음\n")
+issues.decide(me, q, "reject", note="안 함", plan_version=1)
+issues.post_plan(me, s, "## 목표\n파일 없는 계획\n")
+prompt = review.prompt_for(r)
+assert f"{q} Q" not in prompt and f"{s} S" not in prompt, prompt[-800:]
+assert f"{p} P" not in review.prompt_for(issues.create_issue(me, "OX", "다른 프로젝트 2")["ref"])
+print("ok review planned")
