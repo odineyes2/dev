@@ -9,6 +9,72 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_issue_table(page, shots):
+    """목록 표의 열 전환·카드 경계·제목과 Action 동작을 폭별로 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers,
+                             data={'key': 'ITBL', 'name': '표 배치 검사'}).ok
+    action_issue = page.request.post(BASE + '/api/issues', headers=headers,
+                                     data={'project': 'ITBL', 'title': 'Action 검사'}).json()
+    issue = page.request.post(BASE + '/api/issues', headers=headers,
+                              data={'project': 'ITBL', 'title': '긴 제목 ' * 32}).json()
+    ref = issue['ref']
+    def long_history(route):
+        response = route.fetch()
+        data = response.json()
+        for row in data.get('issues', []):
+            if row['ref'] == ref:
+                row.update(status='done', processing_agents=['claude', 'codex'], completion_seconds=9876543210,
+                           token_usage={'total_tokens': 1234567890123, 'input_tokens': 1234567890000,
+                                        'output_tokens': 123, 'run_count': 1, 'unmeasured_run_count': 0,
+                                        'running_run_count': 0})
+        route.fulfill(response=response, json=data)
+    page.route('**/api/issues?*', long_history)
+    page.goto(BASE + '/#/?project=ITBL')
+    page.wait_for_selector(f'#list-body tr[data-ref="{ref}"]')
+    page.check('#show-closed')
+    page.wait_for_selector(f'#list-body tr[data-ref="{ref}"]')
+    for width, columns in ((1600, ('AGENT', 'TIME', 'TOKENS', 'Updated')),
+                           (1450, ('AGENT', 'TIME', 'TOKENS')),
+                           (1300, ('AGENT', 'TIME', 'TOKENS')),
+                           (1201, ('AGENT', 'TIME', 'TOKENS')),
+                           (1200, ('AGENT',)), (1001, ('AGENT',)),
+                           (1000, ()), (801, ()), (800, ()), (390, ())):
+        page.set_viewport_size({'width': width, 'height': 850})
+        visible = page.locator('#list-body th:visible').all_inner_texts()
+        assert visible == ['ID', 'Title', 'Status', *columns, 'Action'], (width, visible)
+        assert page.evaluate("""() => {
+            const viewport = innerWidth, body = document.querySelector('#list-body').getBoundingClientRect();
+            const summary = document.querySelector('#issue-summary').getBoundingClientRect();
+            const jobs = document.querySelector('#jobs-box').getBoundingClientRect();
+            const inside = r => r.left >= -1 && r.right <= viewport + 1;
+            return document.documentElement.scrollWidth <= viewport + 1 &&
+                [body, summary, jobs].every(inside) &&
+                (viewport > 1450 ||
+                    Math.abs(body.left - jobs.left) <= 1 && Math.abs(body.right - jobs.right) <= 1 &&
+                    Math.abs(summary.left - jobs.left) <= 1 && Math.abs(summary.right - jobs.right) <= 1);
+        }"""), width
+        assert page.locator(f'#list-body tr[data-ref="{ref}"] .title-cell').evaluate(
+            'e => getComputedStyle(e).overflowWrap === "anywhere"')
+        assert page.locator(f'#list-body tr[data-ref="{action_issue["ref"]}"] .action-cell button').count() >= 1
+        if width <= 1200:
+            assert page.locator(f'#list-body tr[data-ref="{ref}"] .issue-meta-time').is_visible()
+            assert page.locator(f'#list-body tr[data-ref="{ref}"] .issue-meta-tokens').is_visible()
+        if width <= 1000:
+            assert page.locator(f'#list-body tr[data-ref="{ref}"] .issue-meta-agent').is_visible()
+        if width in (1300, 390):
+            for theme in ('light', 'dark'):
+                page.emulate_media(color_scheme=theme)
+                page.evaluate('t => {localStorage.setItem("dev.theme", t); paintTheme()}', theme)
+                page.screenshot(path=str(shots / f'issue_table_{theme}_{width}.png'), full_page=True)
+    page.set_viewport_size({'width': 390, 'height': 850})
+    page.locator(f'#list-body tr[data-ref="{action_issue["ref"]}"] .action-cell button').first.click()
+    assert '#/issue/' not in page.url
+    page.locator(f'#list-body tr[data-ref="{ref}"] .title-cell').click()
+    page.wait_for_url('**/#/issue/' + ref)
+    page.unroute('**/api/issues?*', long_history)
+
+
 def check_trends(page):
     """Trend 필터·일별 값·상위 작업·부분 집계와 실패 상태를 임시 응답으로 확인한다."""
     from datetime import date
@@ -3929,6 +3995,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--issue-table-only' in sys.argv:
+            check_issue_table(page, shots)
+            assert not errs, errs
+            print('OK: Issue table'); sys.exit(0)
         if '--trends-only' in sys.argv:
             check_trends(page)
             assert not errs, errs
@@ -4790,6 +4860,7 @@ try:
         check_management_layout(page, shots)
         check_troubleshooter(page, shots)
         check_global_agent_orders(page, shots)
+        check_issue_table(page, shots)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert page.locator('#open-jupyter').get_attribute('hidden') is not None
         assert not errs, errs
