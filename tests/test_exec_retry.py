@@ -22,8 +22,14 @@ def run(results):
     calls, prompts = list(results), []
     real = review.subprocess.Popen
     def popen(c, **kw):
-        prompts.append(c[2])
-        return real(cmd, **kw)
+        assert c == [cmd[0], "-p"], c
+        proc = real(cmd, **kw)
+        communicate = proc.communicate
+        def capture_prompt(*args, **kwargs):
+            prompts.append(kwargs.get("input"))
+            return communicate(*args, **kwargs)
+        proc.communicate = capture_prompt
+        return proc
     with patch.object(orchestrate, "run_tests", side_effect=lambda cwd, **kwargs: calls.pop(0)), \
          patch.object(review.subprocess, "Popen", side_effect=popen), patch.object(execute, "register_completion") as reg:
         status = review.run_headless(human, task, log_path, run_id, [cmd[0], "-p", "원래 지시"], None, None, 30, "실행")
