@@ -941,7 +941,7 @@ def index_page():
     덮어씌워서(no-cache를 보내도) 고친 파일이 안 보이던 문제 — 파일이 바뀌면 주소가 바뀌어 새로 받는다.
     HTML은 Cloudflare가 no-cache를 그대로 둔다."""
     html = (STATIC_DIR / "index.html").read_text("utf-8")
-    for name in ("app.css", "app.js"):
+    for name in ("family.css", "app.css", "app.js"):
         v = hashlib.sha1((STATIC_DIR / name).read_bytes()).hexdigest()[:10]
         html = html.replace(f'"/{name}"', f'"/{name}?v={v}"')
     return HTMLResponse(html)

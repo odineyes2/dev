@@ -91,6 +91,27 @@ nightshift `01-base.css`의 값이 원본이다. 두 프로젝트가 같은 토�
 3. **범위 줄**(필요할 때) — 한 대상 안에 들어갔을 때(워커 하나, 프로젝트 하나) 그 대상 이름과 **서브탭**.
 4. **본문** — 최대 폭 1180~1320px, 도구줄(검색·필터 칩) → 목록/카드.
 
+**기준 마크업** (헤더 + 전역 탭 줄 — 브랜드 이름·탭 목록·칩 메뉴의 "다른 프로젝트로 가기"만 프로젝트마다 바뀐다. 스타일은 `family.css`)
+
+```html
+<header class="top">
+  <a class="brand" href="#/"><svg class="ico brand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 1 0 10.5 10.5Z"/></svg><span class="brand-word">Dev</span></a>
+  <div class="header-right">
+    <button class="user-chip" aria-expanded="false"><svg class="ico"><use href="#i-user"/></svg><span class="user-chip-name">admin</span><span class="role-badge">admin</span></button>
+    <button class="theme-toggle-btn" title="밤/낮" aria-label="밤/낮"><svg class="ico"><use href="#i-moon"/></svg></button>
+    <div class="user-menu" hidden><!-- 계정 항목들 … 맨 아래: 다른 프로젝트로 가기 --></div>
+  </div>
+</header>
+<nav class="tab-bar"><div class="tab-bar-inner">
+  <a class="tab-btn active" href="#/"><svg class="ico"><use href="#i-list"/></svg><span class="tab-label">Issues</span></a>
+  <span class="tab-bar-sep"></span>
+  <a class="tab-btn" href="#/agents"><svg class="ico"><use href="#i-bot"/></svg><span class="tab-label">Agents</span></a>
+  <div class="tab-bar-actions"><!-- 그 화면의 전역 필터·주요 동작 --></div>
+</div></nav>
+```
+
+- **공용 부품은 dev `static/family.css`에서만 고친다.** 다른 프로젝트의 복사본은 `python scripts/sync_family.py <대상 static 폴더>`로 갱신하고
+  (첫 줄에 원본 커밋·본문 해시가 붙는다), `--check`로 복사본이 원본과 같은지 확인한다. 복사본을 그 자리에서 고치지 않는다.
 - **모달보다 서브탭**: 한 대상의 설정·상세처럼 오래 머무는 화면은 모달이 아니라 그 대상의 서브탭으로 둔다. 모달은 짧은 확인·
   한 가지 입력(만들기, 이유 묻기)에만.
 - 좁은 화면(≤800px): 탭은 아이콘만·가로 스크롤, 사이드 패널은 아래로, 버튼 글자는 아이콘만(`hide-m`). 가로 스크롤이 생기면 버그.
@@ -156,7 +177,7 @@ nightshift `01-base.css`의 값이 원본이다. 두 프로젝트가 같은 토�
 6. **끈적한 도구줄** — 긴 목록에서 검색·필터가 위에 붙어 있게.
 7. **키보드 단축키** — `c` 새로 만들기, `/` 검색, `g i` 이슈로 등(도움말은 `?`).
 
-새 요소를 들일 때는 한 프로젝트에서 먼저 만들고, 잘 되면 이 문서의 8절에 규칙으로 올린 뒤 다른 프로젝트에 옮긴다.
+새 요소를 들일 때는 한 프로젝트에서 먼저 만들고, 잘 되면 이 문서의 8절에 규칙으로 올리고 dev `static/family.css`에 넣은 뒤 `scripts/sync_family.py`로 다른 프로젝트에 퍼뜨린다.
 
 ## 10. 말투
 
@@ -192,4 +213,5 @@ nightshift `01-base.css`의 값이 원본이다. 두 프로젝트가 같은 토�
 ## 결정 기록
 
 - 2026-09-30 처음 씀(DEV-10). 원본 값은 nightshift `static/css/01-base.css`, dev `static/app.css`(DEV-2·DEV-4).
+- 2026-10-19 토큰·헤더·탭 줄·공통 부품 CSS를 `static/family.css`로 분리하고 복사 도구 `scripts/sync_family.py`를 둠(DEV-142-1). dev 화면 값은 그대로.
 - 2026-10-08 8절에 "빠른 입력창"을 공용 부품으로 적음 — dev DEV-93·96 구현에서 뽑았고 nightshift 빠른 실행창이 따른다.
