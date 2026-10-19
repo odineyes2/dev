@@ -177,7 +177,7 @@ def prompt_for(ref: str, *, include_revision=True, head=True, provider="claude")
         return (preamble(ref) if head else "") + project_docs.reference_instructions(ref=ref) + goal + revision + prompts.render(f"description_{provider}.md", ref=ref)
     goal += revision
     import regression
-    return (preamble(ref) if head else "") + project_docs.reference_instructions(ref=ref) + goal + regression.planning_instructions() + prompts.render(f"review_{provider}.md", ref=ref, web_domains=", ".join(WEB_DOMAINS)) + in_flight_section(ref)
+    return (preamble(ref) if head else "") + project_docs.reference_instructions(ref=ref) + goal + regression.planning_instructions(ref) + prompts.render(f"review_{provider}.md", ref=ref, web_domains=", ".join(WEB_DOMAINS)) + in_flight_section(ref)
 
 
 def command_for(ref: str) -> list[str]:

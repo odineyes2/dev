@@ -540,6 +540,9 @@ def register_completion(actor, ref, cwd, run_id, note):
     if stray:   # 막지는 않는다(새 검사 파일 등 정당한 추가가 있다) — 검토하는 사람이 보게 남긴다
         note += '\n\n⚠️ Task의 바꿀 파일 밖 변경: ' + ', '.join(f'`{f}`' for f in stray[:20]) + (' 외' if len(stray) > 20 else '')
     import regression
+    off = regression.resolve(ref, cwd)['changed_tests_off']
+    if off:   # DEV-147 — 바뀐 검사는 항상 돌지만 사람이 Settings에서 끈 것만 예외다
+        note += '\n\n⚠️ Task가 추가·수정한 검사를 사람이 Settings에서 꺼서 돌리지 않았어요: ' + ', '.join(f'`{n}`' for n in off)
     if regression.enabled('server_api_warning', ref, cwd) and untested_routes(cwd):
         note += '\n\n⚠️ 새 HTTP 라우트가 생겼는데 tests/에 실제 요청(`/api/…` 경로) 검사가 없어요 — 함수 직접 호출로는 라우트 등록·인증을 못 봐요(NS-60).'
     with db.connect() as c:

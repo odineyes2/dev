@@ -88,14 +88,40 @@ def parse_plan(body):
         raise issues.StoreError('검사 선택은 Task 번호별 level(light/normal/high), reason, checks(검사 키: true/false) 형식이에요.')
 
 
-def planning_instructions():
+def _is_dev(repo=None, issue=None):
+    """dev 저장소(또는 그 Task worktree)인지 — catalog의 개별 파일 키는 dev 자신의 tests/다(DEV-147)."""
+    if issue:
+        return issue.get('project_key') == 'DEV'
+    return not repo or Path(repo, 'server', 'regression.py').exists()
+
+
+def _project_repo(ref):
+    with db.connect() as c:   # 프롬프트 생성은 DB 초기화 전에도 기본 안내로 동작한다
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE name='issues'").fetchone():
+            return None, None
+    try:
+        issue = issues.get_issue(ref)
+    except issues.StoreError:
+        return None, None
+    return issue, next((p['local_path'] for p in issues.list_projects() if p['key'] == issue['project_key']), '')
+
+
+def planning_instructions(ref=None):
+    """계획 에이전트용 검사 선택 안내. 개별 파일 키는 그 이슈 프로젝트의 검사 파일만 보여 준다(DEV-147 — Moai 계획에 dev 검사 목록이 섞였다)."""
+    issue, repo = _project_repo(ref) if ref else (None, None)
+    rows = [r for r in settings()['checks'] if not r['key'].startswith('file:')]
+    if issue and not _is_dev(repo, issue):
+        files = ', '.join(f"file:{p.name}={Path(p).relative_to(repo).as_posix()}" for p in test_files(repo)) if repo and Path(repo).is_dir() else ''
+        keys = ', '.join(r['key'] + '=' + r['mode'] for r in rows) + ('. 이 프로젝트의 검사 파일(키=경로): ' + files if files else '. 이 프로젝트에는 찾은 검사 파일이 없다')
+    else:
+        keys = ', '.join(row['key'] + '=' + row['mode'] for row in settings()['checks'])
     return ('\n계획서에 `## 검사 선택` 절과 json 코드 블록을 추가한다. Task 번호별로 검사 수준과 선택 이유, '
             'Auto 항목의 필요 여부를 적는다. 형식: '
             '{"1":{"level":"light","reason":"문구만 변경","checks":{"agent_capture":true,"agent_api":false}}}. '
             '수준은 light(문구/화면/문서), normal(개별 기능), high(인증/DB/공통 실행)이다. '
             '각 Task의 Auto 항목을 모두 판단하고 개별 파일도 file:test_x.py 키로 선택한다. '
-            'On/Off는 사람 설정이며 바꾸지 않는다. 검사 키와 현재 모드: '
-            + ', '.join(row['key'] + '=' + row['mode'] for row in settings()['checks']) + '\n')
+            'Task가 추가·수정하는 검사 파일은 서버가 항상 돌리므로 false로 두어도 꺼지지 않는다. '
+            'On/Off는 사람 설정이며 바꾸지 않는다. 검사 키와 현재 모드: ' + keys + '\n')
 
 
 def resolve(ref=None, repo=None, changed=None):
@@ -147,9 +173,14 @@ def resolve(ref=None, repo=None, changed=None):
     ui = any(p.startswith(('static/', 'src/components/', 'src/pages/')) or p.endswith(('.css', '.html', '.tsx', '.jsx', '.vue')) for p in changed)
     code = any(p.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.vue')) for p in changed)
     level = 'high' if high else choice.get('level') or ('normal' if not changed or code else 'light')
+    # Task가 추가·수정한 검사 파일(tests/·backend/tests/ 등) — 계획 선택으로 끌 수 없다(DEV-147)
+    changed_tests = {Path(p).name for p in changed if re.search(r'(^|/)tests/test_[A-Za-z0-9_]+\.py$', p)}
+    dev = _is_dev(repo, issue)
     checks = {}
     for row in catalog():
         key = row['key']
+        if key.startswith('file:') and not dev:
+            continue   # dev 자신의 검사 이름 — 다른 프로젝트 파일과 이름이 겹쳐도 섞지 않는다(아래 test_files가 그 프로젝트 것을 넣는다)
         if key.startswith('file:'):
             name = key[5:]
             path = Path(repo or Path(__file__).resolve().parents[1]) / 'tests' / name
@@ -181,18 +212,36 @@ def resolve(ref=None, repo=None, changed=None):
         for path in test_files(repo):
             key = 'file:' + path.name
             if key not in checks:
-                auto = choice.get('checks', {}).get(key, True)
-                checks[key] = {'mode': 'auto', 'enabled': high or auto, 'reason': '서버 보강: 고위험 변경' if high else '계획 에이전트: ' + choice['reason'] if key in choice.get('checks', {}) else '프로젝트 자체 테스트', 'name': path.name}
+                auto = high or choice.get('checks', {}).get(key, True)
+                mode = saved.get(key, 'auto')   # 사람의 파일 이름별 On/Off는 다른 프로젝트의 같은 이름 검사에도 적용된다
+                reason = '서버 보강: 고위험 변경' if high else '계획 에이전트: ' + choice['reason'] if key in choice.get('checks', {}) else '프로젝트 자체 테스트'
+                checks[key] = {'mode': mode, 'enabled': mode == 'on' or mode == 'auto' and auto,
+                               'reason': reason if mode == 'auto' else '사람 설정: ' + mode.upper(), 'name': path.name}
     if not ref and not changed:
         for key, item in checks.items():
             if item['mode'] == 'auto':
                 item.update(enabled=True, reason='Task 문맥 없는 직접 검사')
+    human_off = []
+    for name in sorted(changed_tests):
+        item = checks.get('file:' + name)
+        if item is None:
+            continue
+        if item['mode'] == 'off':
+            human_off.append(name)
+        else:
+            item.update(enabled=True, reason='Task가 추가·수정한 검사 — 계획 선택과 관계없이 실행')
+    changed_on = any(checks['file:' + n]['enabled'] for n in changed_tests if 'file:' + n in checks)
+    if changed_on and checks['agent_related']['mode'] == 'auto':
+        checks['agent_related'].update(enabled=True, reason='Task가 추가·수정한 검사를 직접 실행')
     selected_files = any(item['enabled'] for key, item in checks.items() if key.startswith('file:'))
     forced_file = any(item['mode'] == 'on' for key, item in checks.items() if key.startswith('file:'))
     for key in ('server_completion', 'server_merge', 'server_rollback'):
         if checks[key]['mode'] == 'auto' and (key not in choice.get('checks', {}) or forced_file):
             checks[key].update(enabled=selected_files, reason='선택된 테스트 파일이 있어 실행' if selected_files else '선택된 테스트 파일 없음')
-    return {'level': level, 'changed_files': changed, 'planned': bool(choice), 'checks': checks}
+        if checks[key]['mode'] == 'auto' and changed_on and key != 'server_rollback':
+            checks[key].update(enabled=True, reason='Task가 추가·수정한 검사가 있어 실행')
+    return {'level': level, 'changed_files': changed, 'planned': bool(choice), 'checks': checks,
+            'changed_tests': sorted(changed_tests), 'changed_tests_off': human_off}
 
 
 def test_files(repo):
