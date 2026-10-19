@@ -13,7 +13,7 @@
 
 ### 저장소·권한
 - `db.py` — 마이그레이션은 MIGRATIONS 뒤에 덧붙이기만(PRAGMA user_version). 쓰는 프로세스는 app 하나(WAL·짧은 연결). 상태 변경·댓글·계획서·커밋 연결은 모두 events 한 줄(타임라인 = 감사 기록).
-- `issues.py` — REST와 MCP가 같이 쓰는 저장소·권한 판단. 잡기(claim)는 lease가 지나면 풀린다. 계획서 결정은 `decisions` 테이블(gate='plan')에 판별로 붙고 새 판이 올라오면 stale. 승인 때 `## Tasks` 줄로 하위 Task를 만들고, 조건부 승인 메모는 각 Task 본문에 붙인다. 에이전트의 done/closed·지우기 금지와 goal 이슈 보호(`_guard_goal`)는 여기서 코드로 막는다. goal 이슈는 사용자의 최종 상태 하나이고, 부수 이슈는 하위든 독립이든 얼마든 발행해도 된다.
+- `issues.py` — REST와 MCP가 같이 쓰는 저장소·권한 판단. 잡기(claim)는 lease가 지나면 풀린다. 계획서 결정은 `decisions` 테이블(gate='plan')에 판별로 붙고 새 판이 올라오면 stale. 승인 때 `## Tasks` 줄로 하위 Task를 만들고, 조건부 승인 메모는 각 Task 본문에 붙인다. 새 판에서 같은 제목으로 그대로 쓰는 이전 판 Task는 선행을 새 판 기준으로 다시 잇고, 실행 전이면 본문도 새 판으로 바꾼다(`_realign_tasks`, 이미 승인된 데이터는 `reconcile_plan_tasks`가 같은 규칙으로). 에이전트의 done/closed·지우기 금지와 goal 이슈 보호(`_guard_goal`)는 여기서 코드로 막는다. goal 이슈는 사용자의 최종 상태 하나이고, 부수 이슈는 하위든 독립이든 얼마든 발행해도 된다.
 - `auth.py` — 사람은 nightshift 세션(`ns_session` → `/api/auth/me`, admin만), 에이전트는 `Bearer dev_…` 키(DB엔 해시만).
 
 ### 검토·실행·병합

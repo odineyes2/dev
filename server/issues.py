@@ -1028,13 +1028,7 @@ def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
         if t["title"] in existing:
             ids[t["n"]] = existing[t["title"]]
             continue
-        body = f"{ref} 계획서 v{version}의 Task {t['n']}."
-        if t["files"]:
-            body += f"\n\n**바꿀 파일**: {t['files']}"
-        if t["check"]:
-            body += f"\n\n**확인**: {t['check']}"
-        if note.strip():
-            body += f"\n\n**{ref}의 조건부 승인 메모(계획서보다 우선)**:\n{note.strip()}"
+        body = _task_body(ref, version, t, note)
         number, sub_of, sub = _next_number(c, proj, parent)
         ids[t["n"]] = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
                                 "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1042,11 +1036,52 @@ def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
         made.add(t["n"])
     for t in tasks:
         if t["n"] not in made:
-            continue   # 기존 Task의 선후관계는 건드리지 않는다
+            continue   # 그대로 쓰는 Task는 아래 _realign_tasks가 새 판에 맞춘다
         for a in t["after"]:
             if a in ids and a != t["n"]:
                 c.execute("INSERT OR IGNORE INTO issue_deps(issue_id, blocked_by_id) VALUES(?,?)", (ids[t["n"]], ids[a]))
+    _realign_tasks(c, parent, tasks, ids, version, actor, note)
     return len(made)
+
+
+def _task_body(ref, version, t, note) -> str:
+    body = f"{ref} 계획서 v{version}의 Task {t['n']}."
+    if t["files"]:
+        body += f"\n\n**바꿀 파일**: {t['files']}"
+    if t["check"]:
+        body += f"\n\n**확인**: {t['check']}"
+    if note.strip():
+        body += f"\n\n**{ref}의 조건부 승인 메모(계획서보다 우선)**:\n{note.strip()}"
+    return body
+
+
+def _realign_tasks(c, parent, tasks, ids, version, actor, note) -> int:
+    """이전 판에서 만들어져 새 판에서 같은 제목으로 그대로 쓰이는 Task를 새 판에 맞춘다(DEV-146 — MO-52-2가 보관된 52-1을 기다렸다).
+    새 판에 없는 형제 Task를 기다리는 선행은 지우고 새 판의 `선행:`을 잇는다. 아직 실행 기록이 없으면 본문도 새 판 Task로 바꾼다.
+    같은 판에서 만든 Task(같은 판 재승인)와 사람이 만든 Task(자동 본문 머리가 없음)는 건드리지 않는다. 바꾼 Task 수를 돌려준다."""
+    ref, keep, changed = _issue_dict(parent)["ref"], set(ids.values()), 0
+    for t in tasks:
+        tid = ids.get(t["n"])
+        row = c.execute("SELECT id, body FROM issues WHERE id=?", (tid,)).fetchone() if tid else None
+        match = row and re.match(re.escape(ref) + r' 계획서 v(\d+)의 Task \d+\.', row["body"])
+        if not match or int(match[1]) >= version or c.execute(
+                "SELECT 1 FROM events WHERE issue_id=? AND json_extract(data_json,'$.realigned_to_plan')=?", (tid, version)).fetchone():
+            continue
+        stale =[d[0] for d in c.execute("SELECT d.blocked_by_id FROM issue_deps d JOIN issues b ON b.id=d.blocked_by_id "
+                                         "WHERE d.issue_id=? AND b.parent_id=?", (tid, parent["id"])) if d[0] not in keep]
+        for blocker in stale:
+            c.execute("DELETE FROM issue_deps WHERE issue_id=? AND blocked_by_id=?", (tid, blocker))
+        for a in t["after"]:
+            if a in ids and a != t["n"]:
+                c.execute("INSERT OR IGNORE INTO issue_deps(issue_id, blocked_by_id) VALUES(?,?)", (tid, ids[a]))
+        started = c.execute("SELECT 1 FROM runs WHERE issue_id=? LIMIT 1", (tid,)).fetchone()
+        if not started:
+            c.execute("UPDATE issues SET body=?, updated_at=? WHERE id=?", (_task_body(ref, version, t, note), db.now_iso(), tid))
+        _event(c, tid, actor, "comment",
+               f"계획서 v{version} 승인에 맞춰 이 Task를 새 판 Task {t['n']}로 이어 써요 — 선행을 새 판 기준으로 다시 이었어요"
+               + ("." if started else "(본문도 새 판으로 바꿨어요)."), {"realigned_to_plan": version, "source": "approved_plan_supersession"})
+        changed += 1
+    return changed
 
 
 def _supersede_tasks(c, parent, plan_body, version, actor):
@@ -1085,12 +1120,18 @@ def reconcile_plan_tasks(c):
         approval = _issue_dict(row)['approval']
         if not approval or approval['stale'] or approval['verdict'] not in ('approve','approve_notes'):
             continue
-        decision = c.execute("SELECT actor FROM decisions WHERE issue_id=? AND gate='plan' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
+        decision = c.execute("SELECT actor, note FROM decisions WHERE issue_id=? AND gate='plan' ORDER BY id DESC LIMIT 1", (row['id'],)).fetchone()
         if not decision or not decision['actor'].startswith('human:'):
             continue
         plan = c.execute('SELECT body,version FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1', (row['id'],)).fetchone()
+        actor = {'kind': 'human', 'name': decision['actor'][6:]}
+        tasks = parse_tasks(plan['body'])
+        if tasks:   # 이미 승인된 판에서 그대로 쓰인 Task의 선행·본문도 같은 근거로 맞춘다(DEV-146)
+            kids = {r['title']: r['id'] for r in c.execute(f"SELECT i.id, i.title FROM issues i WHERE i.parent_id=? AND {_SUPERSEDED} IS NULL", (row['id'],))}
+            ids = {t['n']: kids[t['title']] for t in tasks if t['title'] in kids}
+            _realign_tasks(c, row, tasks, ids, plan['version'], actor, decision['note'] or '')
         try:
-            _supersede_tasks(c, row, plan['body'], plan['version'], {'kind': 'human', 'name': decision['actor'][6:]})
+            _supersede_tasks(c, row, plan['body'], plan['version'], actor)
         except StoreError:
             continue  # 진행 중인 이전 Task는 끝난 뒤 다음 펌프에서 정리한다.
 
