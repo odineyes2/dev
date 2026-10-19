@@ -364,7 +364,9 @@ def schedule(c, queued: list[dict]) -> tuple[list[dict], dict[int, str]]:
     import execute
     held = _reservations(c)
     info = {r["id"]: r for r in c.execute(
-        f"SELECT id, parent_id, body FROM issues WHERE id IN ({','.join('?' * len(queued))})", [j["issue_id"] for j in queued])} if queued else {}
+        f"SELECT id, project_id, parent_id, body FROM issues WHERE id IN ({','.join('?' * len(queued))})", [j["issue_id"] for j in queued])} if queued else {}
+    held_projects = {r["id"]: r["project_id"] for r in c.execute(
+        f"SELECT id, project_id FROM issues WHERE id IN ({','.join('?' * len(held))})", list(held))} if held else {}
 
     def group(j):
         if j["mode"] != "execute":
@@ -376,7 +378,9 @@ def schedule(c, queued: list[dict]) -> tuple[list[dict], dict[int, str]]:
         if group(j) != 1:
             continue
         mine = execute.task_files({"body": info[j["issue_id"]]["body"]})
-        for ref, files in held.values():
+        for parent_id, (ref, files) in held.items():
+            if held_projects[parent_id] != info[j["issue_id"]]["project_id"]:
+                continue
             hit = _overlap(mine, files)
             if hit:
                 notes[j["id"]] = f"{ref} 작업이 끝날 때까지 기다려요 — 겹치는 파일: " + ", ".join(hit[:5]) + (" 외" if len(hit) > 5 else "")
