@@ -55,6 +55,16 @@ assert plan() == ([2, 3, 4, 1], {})
 status(a2, "waiting")
 assert list(plan()[1]) == [2]
 
+# 다른 프로젝트의 같은 상대 경로는 예약된 파일과 겹치지 않는다.
+issues.create_project(me, "OX", "other", "", "/nowhere2")
+x = issues.create_issue(me, "OX", "X")["ref"]
+x1 = issues.create_issue(me, "OX", "X1", parent=x, body="바꿀 파일: static/app.js")["ref"]
+cross_project = {"id": 5, "issue_id": iid(x1), "mode": "execute"}
+with db.connect() as c:
+    ordered, notes = jobs.schedule(c, queue + [cross_project])
+assert [j["id"] for j in ordered] == [4, 2, 3, 5, 1]
+assert list(notes) == [2] and a in notes[2] and 5 not in notes, notes
+
 # A가 다 끝나면 예약 없음
 status(a2, "done")
 assert plan() == ([2, 3, 4, 1], {})
@@ -70,7 +80,6 @@ status(a2, "changes_requested")
 prompt = review.prompt_for(r)
 assert f"{a} A — 남은 Task 파일: server/db.py, static/" in prompt, prompt[-600:]
 assert "진행 중인 다른 이슈" not in review.prompt_for(a)          # 자기 자신은 빼고
-issues.create_project(me, "OX", "other", "", "/nowhere2")
 assert "진행 중인 다른 이슈" not in review.prompt_for(issues.create_issue(me, "OX", "다른 프로젝트")["ref"])
 assert "진행 중인 다른 이슈" in review.codex_command_for(r)[-1]
 print("ok review")

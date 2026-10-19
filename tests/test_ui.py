@@ -34,7 +34,7 @@ def check_issue_table(page, shots):
     page.wait_for_selector(f'#list-body tr[data-ref="{ref}"]')
     page.check('#show-closed')
     page.wait_for_selector(f'#list-body tr[data-ref="{ref}"]')
-    for width, columns in ((1600, ('AGENT', 'TIME', 'TOKENS', 'Updated')),
+    for width, columns in ((1600, ('AGENT', 'TIME', 'TOKENS', 'UPDATED')),
                            (1450, ('AGENT', 'TIME', 'TOKENS')),
                            (1300, ('AGENT', 'TIME', 'TOKENS')),
                            (1201, ('AGENT', 'TIME', 'TOKENS')),
@@ -42,7 +42,7 @@ def check_issue_table(page, shots):
                            (1000, ()), (801, ()), (800, ()), (390, ())):
         page.set_viewport_size({'width': width, 'height': 850})
         visible = page.locator('#list-body th:visible').all_inner_texts()
-        assert visible == ['ID', 'Title', 'Status', *columns, 'Action'], (width, visible)
+        assert visible == ['ID', 'TITLE', 'STATUS', *columns, 'ACTION'], (width, visible)
         assert page.evaluate("""() => {
             const viewport = innerWidth, body = document.querySelector('#list-body').getBoundingClientRect();
             const summary = document.querySelector('#issue-summary').getBoundingClientRect();
