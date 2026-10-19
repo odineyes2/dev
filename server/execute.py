@@ -383,6 +383,24 @@ def commit_linked(issue, sha: str) -> bool:
                              for e in issue.get('events', []))
 
 
+def base_merge_over_linked(cwd, issue, sha: str) -> str | None:
+    """sha가 연결된 작업 커밋 위에 서버가 최신 base를 깨끗이 합친 병합 커밋(들)이면 그 작업 커밋을 돌려준다.
+    refresh_worktree가 만든 병합은 에이전트가 고칠 게 없으면 아무도 연결하지 않아 완료가 막혔다(MO-35-2).
+    병합 결과가 자동 병합 트리와 똑같을 때만 인정한다 — 충돌 해결 등 손댄 병합은 에이전트가 직접 연결해야 한다."""
+    current = sha
+    for _ in range(20):
+        if current != sha and commit_linked(issue, current):
+            return current
+        parents = _git(cwd, 'rev-list', '--parents', '-n', '1', current).split()
+        if len(parents) != 3 or _run_git(cwd, 'merge-base', '--is-ancestor', parents[2], BASE_BRANCH).returncode:
+            return None
+        auto = _run_git(cwd, 'merge-tree', '--write-tree', parents[1], parents[2])
+        if auto.returncode or auto.stdout.split()[0] != _git(cwd, 'rev-parse', current + '^{tree}'):
+            return None
+        current = parents[1]
+    return None
+
+
 def repair_available(issue):
     if not issue.get('parent_ref') or issue['status'] not in ('in_review', 'on_hold', 'changes_requested'):
         return False
@@ -420,6 +438,10 @@ def register_repair(actor, ref):
     if not cwd.is_dir():
         raise issues.StoreError('Task 작업 경로가 폴더가 아니에요. 작업 폴더를 확인해 주세요.', 409)
     sha = _git(cwd, 'rev-parse', 'HEAD')
+    work = None if commit_linked(issue, sha) else base_merge_over_linked(cwd, issue, sha)
+    if work:
+        issues.link_commit(actor, ref, sha, message=f'서버가 최신 {BASE_BRANCH}를 합친 병합 커밋 — 작업 커밋 {work[:7]}을 이어받음')
+        issue = issues.get_issue(ref)
     if (_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD') != branch_name(ref) or
         _git(cwd, 'status', '--porcelain') or not _git(cwd, 'log', '--oneline', f'{BASE_BRANCH}..HEAD') or
         not commit_linked(issue, sha)):
@@ -491,6 +513,10 @@ def register_completion(actor, ref, cwd, run_id, note):
     if why:
         raise issues.StoreError(why, 409)
     sha = _git(cwd, 'rev-parse', 'HEAD')
+    work = None if commit_linked(issue, sha) else base_merge_over_linked(cwd, issue, sha)
+    if work and Path(cwd).resolve() == worktree_path(ref).resolve():
+        issues.link_commit(actor, ref, sha, message=f'서버가 최신 {BASE_BRANCH}를 합친 병합 커밋 — 작업 커밋 {work[:7]}을 이어받음')
+        issue = issues.get_issue(ref)
     if (Path(cwd).resolve() != worktree_path(ref).resolve()
             or _git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD') != branch_name(ref)
             or _git(cwd, 'status', '--porcelain', '--untracked-files=no')   # 미추적 찌꺼기는 커밋에 안 들어가 병합과 무관 — 에이전트는 rm도 못 한다(NS-32-2)
