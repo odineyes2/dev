@@ -523,6 +523,56 @@ def retry_merge(actor, ref, *, reproduction_id=None):
             _lock.release()
 
 
+def manual_merge_confirmable(issue, record=None) -> bool:
+    """자동 병합이 보류·실패로 남았는데 Task 커밋이 이미 기본 브랜치에 있으면 수동 반영 확인을 쓸 수 있다(DEV-148).
+    git 확인은 confirm_manual_merge가 다시 한다 — 화면 판단은 기록만 본다(패널마다 git을 돌리지 않는다)."""
+    record = record if record is not None else completion(issue['ref'])
+    return bool(issue.get('parent_ref') and issue['status'] in ('in_review', 'on_hold', 'changes_requested')
+                and record and record['auto_merge'] and record['phase'] in ('held', 'failed') and not record['merge_sha'])
+
+
+def confirm_manual_merge(actor, ref):
+    """사람·Claude가 직접 해결해 기본 브랜치에 넣은 Task를 병합 완료로 표시한다(DEV-148).
+    기록된 Task 커밋이 기본 브랜치에 들어가 있을 때만 바꾼다. 검사·재시작은 하지 않는다."""
+    issue = issues.get_issue(ref)
+    ref = issue['ref']
+    record = completion(ref)
+    if not manual_merge_confirmable(issue, record):
+        raise issues.StoreError('자동 병합이 보류·실패로 남은 Task만 수동 반영을 확인할 수 있어요.', 409)
+    repo = next((p['local_path'] for p in issues.list_projects() if p['key'] == issue['project_key']), '')
+    if not repo or not Path(repo).is_dir():
+        raise issues.StoreError('프로젝트 저장소를 찾을 수 없어요.', 409)
+    if _git(repo, 'merge-base', '--is-ancestor', record['task_sha'], BASE_BRANCH).returncode:
+        raise issues.StoreError(f"Task 커밋 {record['task_sha'][:7]}이 {BASE_BRANCH}에 없어요. 먼저 반영해 주세요.", 409)
+    # 반영 커밋: Task 브랜치 끝이 기본 브랜치에 들어갔으면 그것(충돌 해결 병합 포함), 아니면 지금 기본 브랜치 끝.
+    tip = _git(repo, 'rev-parse', branch_name(ref)).stdout.strip()
+    if not (tip and not _git(repo, 'merge-base', '--is-ancestor', tip, BASE_BRANCH).returncode
+            and not _git(repo, 'merge-base', '--is-ancestor', record['task_sha'], tip).returncode):
+        tip = _git(repo, 'rev-parse', BASE_BRANCH).stdout.strip()
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        row = issues._find(c, ref)
+        current = c.execute('SELECT phase, merge_sha FROM execution_completion WHERE run_id=?', (record['run_id'],)).fetchone()
+        latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (row['id'],)).fetchone()[0]
+        if row['status'] != issue['status'] or latest != record['run_id'] or not current or current['phase'] != record['phase'] or current['merge_sha']:
+            raise issues.StoreError('Task 상태나 실행 기록이 바뀌었어요. 새로고침해 주세요.', 409)
+        if c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND status='queued' UNION ALL SELECT 1 FROM runs WHERE issue_id=? AND status='running'", (row['id'], row['id'])).fetchone():
+            raise issues.StoreError('대기 중이거나 실행 중인 작업이 있어요.', 409)
+        note = (f"🔀 수동 반영 확인 — Task 커밋 `{record['task_sha'][:7]}`이 {BASE_BRANCH}에 들어가 있어 병합 완료로 표시했어요"
+                f"(반영 커밋 `{tip[:7]}`). 서버 검사·재시작은 하지 않았어요.")
+        if row['status'] == 'in_review':
+            issues._event(c, row['id'], actor, 'comment', note)
+            c.execute('UPDATE issues SET updated_at=? WHERE id=?', (db.now_iso(), row['id']))
+        else:
+            issues._set_status(c, actor, row, 'in_review', note)
+        # notified=1 — 운영 반영 알림(_publish)은 자동 병합 경로의 일이다. 여기서는 보내지 않는다.
+        c.execute("UPDATE execution_completion SET phase='complete',merge_sha=?,notified=1,updated_at=? WHERE run_id=?",
+                  (tip, db.now_iso(), record['run_id']))
+        c.execute("UPDATE task_execution_results SET state='merged' WHERE run_id=?", (record['run_id'],))
+    promote_parent(actor, ref)
+    return {'ref': ref, 'task_sha': record['task_sha'], 'merge_sha': tip, 'status': 'complete'}
+
+
 def pending():
     with db.connect() as c:
         return [dict(r) for r in c.execute("SELECT * FROM execution_completion WHERE phase IN (%s) ORDER BY run_id" % ','.join('?' for _ in ACTIVE_PHASES), ACTIVE_PHASES)]

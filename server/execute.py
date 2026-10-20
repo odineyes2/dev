@@ -850,6 +850,7 @@ def panel(issue: dict) -> dict | None:
     return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC,
             "manual_merge_available": manual_merge_available,
             "retry_merge_available": orchestrate.retry_available(issue),
+            "manual_merge_confirmable": orchestrate.manual_merge_confirmable(issue, completed),
             "repair_available": repair_available(issue) and not _eligibility_reason(issue, parent),
             "reproduction": reproduce.panel(issue),
             "result_approval_blocked": bool(completed and completed['auto_merge'] and

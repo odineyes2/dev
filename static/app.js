@@ -1043,6 +1043,7 @@ function stageHtml(it, liveMode, liveProvider){
   else if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
   else if(it.job) msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — ${esc(it.job.note || '앞의 일이 끝나면 차례로 시작해요.')}`;
   else if(x?.retry_merge_available) msg = mergeFailureLine(x);
+  else if(x?.manual_merge_confirmable) msg = '자동 병합이 끝나지 않았어요 — 직접 main에 반영했으면 “수동 반영 확인”을 눌러 주세요.';
   else if(x?.manual_merge_available) msg = '수동 커밋 병합 대기 — 병합 진행을 누르면 서버 검사와 운영 반영을 시작해요.';
   else if(it.merge_state === '병합됨') msg = '병합됨 — 결과를 확인해 주세요.';
   else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
@@ -1055,6 +1056,7 @@ function stageHtml(it, liveMode, liveProvider){
   // 상황별 버튼은 이 줄 하나에만 둔다(DEV-113) — 도는 중·대기 중이면 숨긴다
   const idle = x && !it.review_running && !it.job && !LIVE_MERGE.has(it.merge_state);
   const actions = (idle && x.manual_merge_available ? '<button id="manual-merge" title="연결된 수동 커밋을 서버에서 검사하고 기존 병합 경로로 반영해요.">병합 진행</button>' : '')
+    + (idle && x.manual_merge_confirmable ? '<button id="confirm-manual-merge" title="Task 커밋이 main에 들어갔는지 서버가 확인하고 병합 완료로 표시해요. 검사·재시작은 하지 않아요.">수동 반영 확인</button>' : '')
     + (idle && x.retry_merge_available ? '<button id="retry-merge" title="기존 구현 커밋으로 서버 검사·병합만 다시 진행해요. 회귀검사 설정과 자동 병합·재시작 정책이 적용돼요.">병합 재시도</button>' : '')
     + (idle && x.repair_available ? '<button class="register-repair" title="에이전트 재호출 없이 연결된 수정 커밋을 검사하고 기존 병합 정책으로 처리해요.">수정 커밋 검사·결과 등록</button>' : '');
   return `<div class="stage" id="stage"><span>${msg}</span>${actions ? `<span class="stage-actions">${actions}</span>` : ''}</div>`;
@@ -1326,6 +1328,14 @@ ${QUEUE_LINE}`)) return;
     const text = `${it.ref} 트러블슈팅 진단\n원 실행 #${f.source_run_id} · Plan v${f.plan_version}\nTask 커밋: ${f.task_sha}\n분류: ${f.classification}\n${f.blocked || f.hint || ''}\n${f.diagnostic}`;
     try { await navigator.clipboard.writeText(text); toast('진단을 복사했어요.'); }
     catch(e){ prompt('진단을 복사해 주세요.', text); }
+  };
+  if($('confirm-manual-merge')) $('confirm-manual-merge').onclick = async e => {
+    e.currentTarget.disabled = true;
+    try{
+      await api('POST', `/api/issues/${R}/confirm-manual-merge`, {});
+      toast('main 반영을 확인해 병합 완료로 표시했어요.');
+    }catch(e){ /* api()가 오류를 알린다. */ }
+    finally{ if(location.hash === `#/issue/${it.ref}`) await reload(); }
   };
   if($('retry-merge')) $('retry-merge').onclick = async e => {
     e.currentTarget.disabled = true;

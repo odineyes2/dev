@@ -30,6 +30,7 @@
 
 ### 실패 뒤 처리
 - `rollback.py` — 계획서 거절·Closed가 된 이슈의 병합을 검사 후 revert하고 재시작까지 확인한 뒤 닫는다(아직 적용된 병합은 first-parent 이력으로 계산).
+- 수동 반영 확인(DEV-148) — 자동 병합이 보류·실패로 남은 Task를 사람·Claude가 직접 main에 넣었으면 `orchestrate.confirm_manual_merge`(화면 "수동 반영 확인"·MCP `confirm_manual_merge`)로 병합 완료를 기록한다. 서버가 Task 커밋이 main에 있는지 git으로 확인해야만 바뀌고, 검사·재시작·알림은 하지 않는다. 이걸 안 하면 결과 승인이 계속 막힌다.
 - `troubleshoot.py` — 실패한 승인 Task를 같은 대기열에서 한 번 복구 실행한다(원 실행 기록 보존, 추가 호출 1회·짧은 시간 상한).
 - `reproduce.py` 실패 검사 재현 — 관리자 POST `/api/issues/{ref}/reproduce-checks`가 고정된 Task 커밋의 detached 사본에서 그 검사만 돌린다(UI 검사는 traceback의 check 함수와 단일 검사 CLI 옵션을 대조, 고를 수 없으면 전체 UI 검사로 대체하지 않는다). 결과는 `app_settings`의 `regression-reproduce:<ref>`, 로그는 `data/check-reproductions/<id>/log.txt`. 시작 시 Task In Progress, 실패 시 Changes Requested, 통과하면 In Progress로 기존 병합 처리기에 넘겨 병합·운영 반영 확인 뒤에만 In Review. 상태·커밋이 바뀌면 결과가 새 작업을 덮지 않고, 재시작 중단·자동 병합 OFF·승인 변경·정보 부족은 On Hold. 미반영 Task의 완료 승인은 UI·서버에서 막고, 재현 중에는 새 Agent 착수와 Dev 자동 재시작을 기다리게 한다. 확인: `python tests/test_reproduce.py`·`test_reproduce_followup.py`·`python tests/test_ui.py --reproduce-only`.
 - `qa.py`·`qa_runner.py` — 최상위 In Review Issue의 QA. 판정 대상 스냅샷과 요구 항목(본문 줄·Plan 확인 항목)을 고정하고 서버가 명령을 검증·실행한다. Auto QA가 켜졌을 때만 결과를 상태에 반영한다(기본 OFF).

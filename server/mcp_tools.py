@@ -221,4 +221,12 @@ def link_commit(ref: str, sha: str, repo: str = "", message: str = "") -> dict:
     return _call(issues.link_commit, _actor(), ref, sha, repo, message)
 
 
+@mcp.tool
+def confirm_manual_merge(ref: str) -> dict:
+    """자동 병합이 보류·실패로 남은 Task를 직접 해결해 기본 브랜치(main)에 넣었을 때 병합 완료로 표시한다.
+    서버가 git으로 Task 커밋이 main에 들어갔는지 확인해야만 바뀐다. 검사·재시작은 하지 않는다(필요하면 따로 끝낸 뒤 부른다)."""
+    import orchestrate
+    return _call(orchestrate.confirm_manual_merge, _actor(), ref)
+
+
 mcp_app = mcp.http_app(path="/", stateless_http=True, json_response=True)

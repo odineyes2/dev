@@ -850,6 +850,12 @@ async def api_retry_merge(ref: str, request: Request):
     return await run_in_threadpool(orchestrate.retry_merge, human_only(request), ref)
 
 
+@app.post('/api/issues/{ref}/confirm-manual-merge')
+async def api_confirm_manual_merge(ref: str, request: Request):
+    # 사람·에이전트 모두 — 서버가 git으로 Task 커밋 반영을 확인해야만 바뀐다(DEV-148).
+    return await run_in_threadpool(orchestrate.confirm_manual_merge, actor(request), ref)
+
+
 @app.post('/api/issues/{ref}/manual-merge', status_code=202)
 async def api_manual_merge(ref: str, request: Request):
     return await run_in_threadpool(orchestrate.manual_merge, human_only(request), ref)
