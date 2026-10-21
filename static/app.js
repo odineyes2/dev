@@ -1116,6 +1116,7 @@ async function renderIssue(ref, background = false){
         <div class="ref">${esc(it.ref)}${it.parent_ref ? ` · Task of <a href="#/issue/${esc(it.parent_ref)}">${esc(it.parent_ref)}</a>` : ''}</div>
         <h1 id="title">${titleHtml(it)}</h1>
         <div class="byline">${actorHtml(it.reporter)}<span>·</span><span>${fmtTime(it.created_at)}</span>${labelsHtml(it.labels)}${typesHtml(it)}</div>
+        ${blockedHtml(it.blocked_by)}
         ${stageHtml(it, liveMode, liveRun.provider)}
         <div class="panel"><h2>Description<span class="right"><button id="edit-body">고치기</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
@@ -1503,6 +1504,13 @@ async function renderNew(params){
       <label>Status<select id="n-status"><option>backlog</option><option>triage</option></select></label></div>
     <label>Title<input id="n-title" maxlength="300" placeholder="비워 두면 이슈를 맡은 에이전트가 본문을 보고 지어요"></label>
     <label>Description (마크다운)<textarea id="n-body" style="min-height:260px"></textarea></label>
+    <fieldset class="dep-picker"><legend>연관 이슈 (선행)</legend>
+      <p class="dim">선택한 이슈가 Done이 된 뒤 이 이슈의 작업을 시작해요. 최대 10개까지 선택할 수 있어요.</p>
+      <label for="n-dep-search">이슈 검색<input id="n-dep-search" type="search" placeholder="번호 또는 제목으로 검색" autocomplete="off"></label>
+      <div id="n-dep-selected" class="dep-selected" aria-label="선택한 연관 이슈"></div>
+      <div id="n-dep-list" class="dep-list" aria-label="연관 이슈 후보"></div>
+      <p id="n-dep-status" class="dim" role="status"></p>
+    </fieldset>
     <fieldset class="attachment-input"><legend>Attachments</legend>
       <p class="dim" id="attachment-help">이미지·영상·오디오·Markdown·JSON 파일과 http(s) URL을 함께 첨부해요. 기본 제한은 파일당 25MiB, 총 10개·100MiB예요.</p>
       <label>파일 선택<input id="n-files" type="file" multiple accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mp3,.wav,.ogg,.m4a,.md,.json" aria-describedby="attachment-help"></label>
@@ -1514,6 +1522,40 @@ async function renderNew(params){
   </form>`;
   const form = view.querySelector('#new-form'), entries = [];
   let departed = false, published = false, saving = false;
+  const selectedDeps = new Set(), depSearch = form.querySelector('#n-dep-search');
+  const depList = form.querySelector('#n-dep-list'), depSelected = form.querySelector('#n-dep-selected');
+  const depStatus = form.querySelector('#n-dep-status');
+  let depCandidates = [], depRequest = 0;
+  const drawDeps = () => {
+    const query = depSearch.value.trim().toLocaleLowerCase();
+    depSelected.innerHTML = [...selectedDeps].map(ref => `<button type="button" class="dep-tag" data-dep-remove="${esc(ref)}" aria-label="${esc(ref)} 연관 이슈 제거">${esc(ref)} ×</button>`).join('');
+    const matches = depCandidates.filter(it => `${it.ref} ${it.title}`.toLocaleLowerCase().includes(query));
+    depList.innerHTML = matches.map(it => `<button type="button" class="dep-option" data-dep="${esc(it.ref)}" aria-pressed="${selectedDeps.has(it.ref)}"><span class="ref">${esc(it.ref)}</span><span>${esc(it.title || '(제목 없음)')}</span><span class="dim">${esc(it.status)}</span></button>`).join('') || '<p class="dim">선택할 이슈가 없어요.</p>';
+    depSelected.querySelectorAll('[data-dep-remove]').forEach(b => b.onclick = () => { selectedDeps.delete(b.dataset.depRemove); drawDeps(); });
+    depList.querySelectorAll('[data-dep]').forEach(b => b.onclick = () => {
+      if(selectedDeps.has(b.dataset.dep)) selectedDeps.delete(b.dataset.dep);
+      else if(selectedDeps.size < 10) selectedDeps.add(b.dataset.dep);
+      else { depStatus.textContent = '연관 이슈는 최대 10개까지 선택할 수 있어요.'; return; }
+      depStatus.textContent = ''; drawDeps();
+    });
+  };
+  const loadDeps = async () => {
+    const request = ++depRequest, project = form.querySelector('#n-project').value;
+    selectedDeps.clear(); depCandidates = []; depSearch.value = '';
+    depList.innerHTML = ''; depStatus.textContent = '연관 이슈를 불러오는 중…';
+    try{
+      const result = await api('GET', `/api/projects/${encodeURIComponent(project)}/dep-candidates`, undefined, () => !departed && request === depRequest);
+      if(departed || request !== depRequest) return;
+      depCandidates = result.issues; depStatus.textContent = ''; drawDeps();
+    }catch(err){
+      if(departed || request !== depRequest) return;
+      depStatus.innerHTML = `${esc(err.message)} <button type="button" id="n-dep-retry">다시 불러오기</button>`;
+      depStatus.querySelector('button').onclick = loadDeps;
+    }
+  };
+  form.querySelector('#n-project').onchange = loadDeps;
+  depSearch.oninput = drawDeps;
+  void loadDeps();
   const status = form.querySelector('#attachment-status'), list = form.querySelector('#n-attachments');
   const remove = a => api('DELETE', `/api/attachments/${encodeURIComponent(a.id)}`, undefined, () => !departed).catch(() => {});
   const leave = () => {
@@ -1566,6 +1608,7 @@ async function renderNew(params){
       project: view.querySelector('#n-project').value, title: view.querySelector('#n-title').value, body: view.querySelector('#n-body').value,
       priority: view.querySelector('#n-priority').value, status: view.querySelector('#n-status').value,
       attachment_ids: entries.map(e => e.data.id),
+      blocked_by: [...selectedDeps],
       type_ids: selectedTypes(form),
       labels: view.querySelector('#n-labels').value.split(',').map(s => s.trim()).filter(Boolean), parent: parent || undefined,
     });

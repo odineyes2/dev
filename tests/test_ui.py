@@ -1369,7 +1369,7 @@ def check_issue_types(page, shots):
     page.route('**/api/issues/' + ref, lambda route: route.fulfill(json=automatic))
     page.reload(); page.wait_for_selector('text=자동 분류 결과예요.')
     page.unroute('**/api/issues/' + ref)
-    page.goto(BASE + '/#/new'); page.wait_for_selector('#new-form')
+    page.goto(BASE + '/#/new'); page.reload(); page.wait_for_selector('#new-form')
     page.fill('#n-title', '빈 종류 검사'); page.click('#new-form [type=submit]'); page.wait_for_selector('#save-types')
     empty_ref = page.locator('.detail > div > .ref').inner_text().strip()
     empty = page.request.get(BASE + '/api/issues/' + empty_ref).json()
@@ -3450,6 +3450,52 @@ def check_new_issue_fields(page):
     assert '<h2>요구</h2>' in page.inner_html('#body')
 
 
+def check_new_issue_dependencies(page, shots):
+    """연관 이슈의 검색·복수 선택·프로젝트 전환·발행 저장을 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    def post(path, body):
+        result = page.request.post(BASE + path, headers=headers, data=body)
+        assert result.ok, result.text()
+        return result.json()
+    for key in ('DEPA', 'DEPB'):
+        post('/api/projects', {'key': key, 'name': key})
+    first = post('/api/issues', {'project': 'DEPA', 'title': '먼저 할 작업'})
+    second = post('/api/issues', {'project': 'DEPA', 'title': '나중 작업'})
+    other = post('/api/issues', {'project': 'DEPB', 'title': '다른 프로젝트 작업'})
+    page.goto(BASE + '/#/new'); page.reload(); page.wait_for_selector('#new-form')
+    page.select_option('#n-project', 'DEPA')
+    page.wait_for_selector(f'[data-dep="{first["ref"]}"]')
+    assert page.locator(f'[data-dep="{other["ref"]}"]').count() == 0
+    page.fill('#n-dep-search', '먼저')
+    assert page.locator('.dep-option').count() == 1
+    page.locator(f'[data-dep="{first["ref"]}"]').click()
+    assert page.locator(f'[data-dep-remove="{first["ref"]}"]').count() == 1
+    page.fill('#n-dep-search', '')
+    page.locator(f'[data-dep="{second["ref"]}"]').click()
+    page.select_option('#n-project', 'DEPB')
+    page.wait_for_selector(f'[data-dep="{other["ref"]}"]')
+    assert page.locator('.dep-tag').count() == 0
+    assert page.locator(f'[data-dep="{first["ref"]}"]').count() == 0
+    page.select_option('#n-project', 'DEPA')
+    page.wait_for_selector(f'[data-dep="{first["ref"]}"]')
+    page.locator(f'[data-dep="{first["ref"]}"]').click()
+    page.locator(f'[data-dep="{second["ref"]}"]').click()
+    for theme in ('light', 'dark'):
+        page.emulate_media(color_scheme=theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.evaluate('t => document.documentElement.dataset.theme=t', theme)
+            page.wait_for_timeout(100)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), (theme, width)
+            page.screenshot(path=str(shots / f'new-dependencies-{theme}-{width}.png'), full_page=True)
+    page.fill('#n-title', '선행 작업 뒤 발행')
+    page.click('#new-form button[type=submit]')
+    page.wait_for_selector('h1#title')
+    created = page.request.get(BASE + '/api/issues/' + page.url.rsplit('/', 1)[-1]).json()
+    assert {item['ref'] for item in created['blocked_by']} == {first['ref'], second['ref']}
+    assert page.locator('.detail .sub').get_by_text('선행:').count() == 1
+
+
 def check_chat_connections(page, shots):
     """Chat 키 발급·옮기기·재발급과 선택 목록 분리를 실제 UI로 검사한다."""
     H = {'X-Requested-With': 'dev'}
@@ -4124,6 +4170,10 @@ try:
             check_new_issue_fields(page)
             assert not errs, errs
             print('OK: new issue fields'); sys.exit(0)
+        if '--new-issue-dependencies-only' in sys.argv:
+            check_new_issue_dependencies(page, shots)
+            assert not errs, errs
+            print('OK: new issue dependencies'); sys.exit(0)
         if '--chat-connections-only' in sys.argv:
             check_chat_connections(page, shots)
             assert not errs, errs
@@ -4861,6 +4911,7 @@ try:
         check_troubleshooter(page, shots)
         check_global_agent_orders(page, shots)
         check_issue_table(page, shots)
+        check_new_issue_dependencies(page, shots)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert page.locator('#open-jupyter').get_attribute('hidden') is not None
         assert not errs, errs
