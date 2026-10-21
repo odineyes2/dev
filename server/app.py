@@ -409,6 +409,11 @@ def api_projects():
     return {"projects": issues.list_projects()}
 
 
+@app.get("/api/projects/{key}/dep-candidates")
+def api_dep_candidates(key: str):
+    return {"issues": issues.dep_candidates(key)}
+
+
 @app.post("/api/projects")
 async def api_create_project(request: Request):
     b = await json_body(request)
@@ -699,7 +704,7 @@ async def api_create_issue(request: Request):
     a = actor(request)
     it = issues.create_issue(a, b.get("project"), b.get("title"), b.get("body", ""), b.get("priority", "none"),
                              b.get("labels"), b.get("parent"), b.get("status", "backlog"), b.get("type_ids"), b.get("attachment_ids"),
-                             b.get("assignee_agent_id"))
+                             b.get("assignee_agent_id"), b.get("blocked_by"))
     return it
 
 
