@@ -58,6 +58,28 @@ assert runs["JQ-1"][0]["ended_at"] <= runs["JQ-2"][0]["started_at"] <= runs["JQ-
 with db.connect() as c:
     assert c.execute("SELECT run_id FROM jobs WHERE id=?", (r2["job_id"],)).fetchone()[0] == runs["JQ-2"][0]["id"]
 
+# 최상위 검토는 선행이 done이 될 때까지 대기하고, 그 뒤의 가능한 검토는 먼저 시작한다.
+issues.create_project(me, "DP", "dependencies", "", "/nowhere/dp")
+blocker = issues.create_issue(me, "DP", "blocker", type_ids=[1])
+dependent = issues.create_issue(me, "DP", "dependent", type_ids=[1], blocked_by=[blocker["ref"]])
+free = issues.create_issue(me, "DP", "free", type_ids=[1])
+blocked_job = jobs.enqueue(me, dependent["ref"], "review")
+assert blocked_job["queued"] and blocker["ref"] in blocked_job["note"], blocked_job
+assert issues.get_issue(dependent["ref"])["status"] == "waiting" and not review.list_runs(dependent["ref"])
+assert jobs.enqueue(me, free["ref"], "review")["started"]
+for _ in range(100):
+    if review.list_runs(free["ref"]) and review.list_runs(free["ref"])[0]["status"] == "ok":
+        break
+    time.sleep(0.2)
+else:
+    raise AssertionError("뒤의 검토가 시작되지 않았어요")
+jobs.pump()
+assert jobs.list_jobs()[0]["id"] == blocked_job["job_id"] and not review.list_runs(dependent["ref"])
+issues.set_status(me, blocker["ref"], "done")
+jobs.pump()
+wait_idle()
+assert review.list_runs(dependent["ref"])[0]["status"] == "ok"
+
 # 재시작 — 줄은 DB에 남고, 서버가 다시 뜨면(db.init 뒤 펌프) 이어서 돈다
 with db.connect() as c:
     c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at) VALUES(?, 'review', 'human:admin', 'queued', ?)",
