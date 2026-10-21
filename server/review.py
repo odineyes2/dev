@@ -482,7 +482,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             launch_cmd, prompt = stdin_prompt(cmd, provider)
             proc = subprocess.Popen(launch_cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                     stdin=subprocess.DEVNULL if prompt is None else subprocess.PIPE,
-                                    env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"})
+                                    env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"}, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 out, err = proc.communicate(input=prompt, timeout=timeout)
                 code = proc.returncode

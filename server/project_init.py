@@ -244,7 +244,7 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
                '--output-format', 'json', '--json-schema', SCHEMA.read_text(encoding='utf-8'), '--max-budget-usd', os.environ.get('DEV_EXEC_BUDGET_USD') or '2']
     env = {k: v for k, v in os.environ.items() if k.upper() in {'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'PATHEXT'}}
     env['PYTHONIOENCODING'] = 'utf-8'
-    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     with _lock:
         _processes[row['request_id']] = proc
     try:
@@ -335,7 +335,7 @@ def validate(result, root):
 
 def _git(path, *args):
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith('GIT_')}
-    r = subprocess.run(['git', '-c', 'core.hooksPath=' + os.devnull, '-c', 'commit.gpgsign=false', *args], cwd=path, capture_output=True, timeout=30, text=True, encoding='utf-8', errors='replace', env=env)
+    r = subprocess.run(['git', '-c', 'core.hooksPath=' + os.devnull, '-c', 'commit.gpgsign=false', *args], cwd=path, capture_output=True, timeout=30, text=True, encoding='utf-8', errors='replace', env=env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if r.returncode:
         raise issues.StoreError('Git 초기화에 실패했어요. Git 설치와 폴더 권한을 확인해 주세요.', 409)
     return r.stdout.strip()
@@ -372,7 +372,7 @@ if(!(f.existsSync(s)&&same(s,e)) && (Array.isArray(a.args)?a.args.join(' '):a.ar
 if(String((a.env||{}).PORT)!==process.env.PORT) throw Error('PM2 port mismatch');'''
         checked = subprocess.run([node, '-e', check, str((path / 'ecosystem.config.js').resolve())], cwd=path,
                                  env={**env, 'PORT': str(row['service_port']), 'DEV_INITIALIZATION_APP': row['service_app'], 'DEV_INITIALIZATION_ENTRY': runtime['entry']},
-                                 stdout=log, stderr=subprocess.STDOUT, timeout=10)
+                                 stdout=log, stderr=subprocess.STDOUT, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         if checked.returncode:
             raise issues.StoreError('PM2 설정의 앱 이름·실행 파일·포트가 초기 앱과 일치하지 않아요. 실행 로그를 확인해 주세요.', 409)
         proc = subprocess.Popen([binary, runtime['entry']], cwd=path, env=env, stdin=subprocess.DEVNULL,

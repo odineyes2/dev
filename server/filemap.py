@@ -4,6 +4,7 @@
 실행 시점의 저장소에서 매번 만들어 따로 갱신할 일이 없다. 설명은 파일 첫머리 주석·문서 문자열·마크다운 첫 제목에서 온다.
 """
 import re
+import os
 import subprocess
 from collections import defaultdict
 from pathlib import Path
@@ -45,7 +46,7 @@ def describe(path: Path) -> str:
 def entries(repo) -> tuple[list[dict], list[dict]] | None:
     """저장소 → (지도에 들어가는 파일 {dir, name, desc} 목록, 크기 상한으로 뺀 폴더 {dir, files}). git 저장소가 아니면 None.
     프롬프트 글(build)과 Harness 화면 표가 같이 쓴다."""
-    r = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"], cwd=repo, capture_output=True, timeout=20)
+    r = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"], cwd=repo, capture_output=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if r.returncode:
         return None
     dirs = defaultdict(list)

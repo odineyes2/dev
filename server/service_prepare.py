@@ -118,7 +118,7 @@ files는 신규 프로젝트 상대 경로이며 최대 12개이다. 확장자�
     env = {**runner._environment(), 'PYTHONIOENCODING': 'utf-8'}
     try:
         proc = subprocess.Popen(cmd, cwd=directory, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+                                stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except OSError as e:
         raise issues.StoreError('실행 파일 생성 에이전트를 시작하지 못했어요. CLI 경로와 로그인을 확인해 주세요.', 409) from e
     try:

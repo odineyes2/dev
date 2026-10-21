@@ -232,7 +232,7 @@ new_work는 partial/missing인 요구에만 연결한다. related_issues는 수�
             with _lock:
                 _checkpoint(aid)
                 proc = subprocess.Popen(command(row, cwd), cwd=cwd, env=_environment(),
-                    stdin=subprocess.PIPE, stdout=stdout, stderr=stderr, text=True, encoding='utf-8', errors='replace')
+                    stdin=subprocess.PIPE, stdout=stdout, stderr=stderr, text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
                 _processes[aid] = proc
             deadline = time.monotonic() + limits['timeout_sec']
             first = True

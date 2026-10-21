@@ -748,7 +748,7 @@ def prepare_checks(worktree, issue, *, build=False):
     for command in commands:
         try:
             result = subprocess.run(command, cwd=worktree, env=project_build.environment(),
-                                    capture_output=True, timeout=300)
+                                    capture_output=True, timeout=300, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise issues.StoreError('모델 호출 전 검사 환경 준비 실패: ' + type(error).__name__, 409) from error
         if result.returncode:

@@ -127,7 +127,7 @@ def _restart(repo, cfg) -> str | None:
     """재시작 명령을 돌린다. 실패하면 출력 끝부분."""
     try:
         r = subprocess.run(cfg["restart_cmd"].format(app=cfg.get("pm2_app", "")), shell=True, cwd=repo, capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=300)
+                           text=True, encoding="utf-8", errors="replace", timeout=300, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired) as error:
         return '재시작 명령 실행 실패: ' + type(error).__name__
     return ((r.stdout + r.stderr).strip()[-800:] or f"종료 코드 {r.returncode}") if r.returncode else None
@@ -174,7 +174,8 @@ def run_test(repo, t, args=(), env=None):
         command = ([sys.executable, '-m', 'unittest', relative[:-3].replace('/', '.')]
                    if relative.startswith('backend/tests/') else [sys.executable, str(t)])
         return subprocess.run(command + list(args), cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              env={**({k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env), "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"}, timeout=600)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
+                              env={**({k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env), "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"}, timeout=600,
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
     except subprocess.TimeoutExpired as error:
         def decoded(value):
             return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''

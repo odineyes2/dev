@@ -102,7 +102,7 @@ runpy.run_path(str(root / sys.argv[3]), run_name='__main__')
 
 def git(repo, *args):
     return subprocess.run(['git', *args], cwd=repo, capture_output=True, text=True,
-                          encoding='utf-8', check=True, timeout=60).stdout.strip()
+                          encoding='utf-8', check=True, timeout=60, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0).stdout.strip()
 
 
 def environment(folder, *, login=False):
@@ -123,7 +123,7 @@ def environment(folder, *, login=False):
 
 def execute_command(command, cwd, env, deadline):
     """출력 상한·공통 기한을 지키고 시간 초과 때 자식 프로세스도 종료한다."""
-    creation = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session':True}
+    creation = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {'start_new_session':True}
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                 stdout=out, stderr=err, **creation)
@@ -212,7 +212,7 @@ def analyze(row, payload, folder, deadline):
     prompt_file.write_text(prompt, encoding='utf-8')
     # stdin은 고정 파일로 넘긴다. 명령 인자에 본문·비밀값을 넣지 않는다.
     with prompt_file.open(encoding='utf-8') as input_file, tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        options = {'creationflags':subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session':True}
+        options = {'creationflags':subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {'start_new_session':True}
         require_enabled()
         proc = subprocess.Popen(command(row,folder),cwd=folder,env=environment(folder,login=True),
                                 stdin=input_file,stdout=out,stderr=err,**options)

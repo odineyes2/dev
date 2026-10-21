@@ -19,7 +19,7 @@ def snapshot(c, issue_id):
         raise ValueError('최상위 In Review Issue만 QA할 수 있어요.')
     import os
     base = subprocess.run(['git', 'rev-parse', os.environ.get('DEV_EXEC_BASE') or 'main'],
-                          cwd=row['local_path'], capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+                          cwd=row['local_path'], capture_output=True, text=True, check=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0).stdout.strip()
     family = [dict(r) for r in c.execute(f"""WITH RECURSIVE family(id) AS (
         SELECT ? UNION SELECT i.id FROM issues i JOIN family f ON i.parent_id=f.id)
         SELECT i.id,i.parent_id,i.title,i.body,i.status,i.labels_json,{issues._SUPERSEDED} AS superseded_by_plan,

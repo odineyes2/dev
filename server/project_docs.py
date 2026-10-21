@@ -24,7 +24,7 @@ def _project(key):
 
 
 def _git(repo, *args):
-    return subprocess.run(['git', *args], cwd=repo, capture_output=True, timeout=10)
+    return subprocess.run(['git', *args], cwd=repo, capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
 
 
 def read_document(key, path):
@@ -163,7 +163,7 @@ def _delete_document(key, path, expected_blob):
             index = str(Path(tmp) / 'index')
             env = dict(os.environ, GIT_INDEX_FILE=index)
             def isolated(*args):
-                return subprocess.run(['git', *args], cwd=repo, env=env, capture_output=True, timeout=10)
+                return subprocess.run(['git', *args], cwd=repo, env=env, capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             old_tip = tip.stdout.decode('ascii').strip()
             if isolated('read-tree', old_tip).returncode or isolated('update-index', '--force-remove', '--', path).returncode:
                 raise issues.StoreError('삭제 커밋을 준비하지 못했어요.', 409)

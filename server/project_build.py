@@ -44,7 +44,7 @@ def _path(root, value, allow_root=False):
 
 
 def _git(repo, *args):
-    result = subprocess.run(['git', '-c', 'core.longpaths=true', *args], cwd=repo, env=dict(os.environ), capture_output=True, text=True, encoding='utf-8')
+    result = subprocess.run(['git', '-c', 'core.longpaths=true', *args], cwd=repo, env=dict(os.environ), capture_output=True, text=True, encoding='utf-8', creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if result.returncode:
         raise BuildError('config', result.stderr.strip())
     return result.stdout.strip()
@@ -66,7 +66,7 @@ def declarations(repo, value, *, _isolated=False):
         relative = out.relative_to(root).as_posix()
         if any(p.lower() in ('data', '.git') or p.lower().endswith(('.db', '.sqlite', '.sqlite3')) for p in out.relative_to(root).parts) or (not _isolated and out.resolve().is_relative_to(config.DATA_DIR.resolve())):
             raise BuildError('config', '데이터 경로를 산출물로 사용할 수 없다.')
-        if _git(root, 'ls-files', '--', relative) or subprocess.run(['git', 'check-ignore', '-q', '--', relative + '/'], cwd=root, env=dict(os.environ)).returncode:
+        if _git(root, 'ls-files', '--', relative) or subprocess.run(['git', 'check-ignore', '-q', '--', relative + '/'], cwd=root, env=dict(os.environ), creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0).returncode:
             raise BuildError('config', '산출물은 tracked 파일이 없는 git 제외 경로여야 한다.')
         for previous in result:
             other = root / previous['out']
@@ -133,7 +133,7 @@ def build(repo, revision, specs, project_key, data_dir=None):
                     command = list(entry[phase])
                     if os.name == 'nt':
                         command[0] = shutil.which(command[0]) or command[0]
-                    r = subprocess.run(command, cwd=cwd, env=environment(), capture_output=True, timeout=entry['timeout'], shell=False)
+                    r = subprocess.run(command, cwd=cwd, env=environment(), capture_output=True, timeout=entry['timeout'], shell=False, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
                     output = (r.stdout + r.stderr).decode('utf-8', 'replace')
                     for secret in secrets:
                         output = output.replace(secret, '[REDACTED]')

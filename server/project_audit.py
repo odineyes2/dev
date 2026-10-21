@@ -70,7 +70,7 @@ def _git(repo, *args):
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith('GIT_')}
         env.update(GIT_NO_LAZY_FETCH='1', GIT_TERMINAL_PROMPT='0', GIT_OPTIONAL_LOCKS='0')
         result = subprocess.run(['git', '--no-replace-objects', *args], cwd=repo,
-                                capture_output=True, timeout=15, env=env)
+                                capture_output=True, timeout=15, env=env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise issues.StoreError('기준 저장소 조회에 실패했어요.', 409) from e
     if result.returncode:
