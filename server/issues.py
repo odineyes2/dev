@@ -490,6 +490,18 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
     return out
 
 
+def dep_candidates(project) -> list[dict]:
+    """발행 시 선행으로 고를 수 있는 같은 프로젝트의 이슈만 간단히 반환한다."""
+    with db.connect() as c:
+        proj = c.execute("SELECT id FROM projects WHERE key=?", (str(project or "").upper(),)).fetchone()
+        if proj is None:
+            raise _not_found("프로젝트")
+        return [{"ref": r["ref"], "title": r["title"], "status": r["status"]} for r in c.execute(
+            f"SELECT {ref_sql('i', 'p')} AS ref, i.title, i.status FROM issues i "
+            "JOIN projects p ON p.id=i.project_id WHERE i.project_id=? "
+            "AND i.status NOT IN ('done','closed','in_review') ORDER BY i.id DESC", (proj["id"],))]
+
+
 def plan_revision_note(c, issue_id, version):
     """해당 판에 붙인 사람의 재검토 지시를 반환한다. 새 판에는 이어 붙이지 않는다."""
     row = c.execute("""SELECT body FROM events WHERE issue_id=? AND actor LIKE 'human:%'
@@ -651,15 +663,15 @@ def _check_assignee(c, aid):
 
 
 def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None,
-                 assignee_agent_id=None) -> dict:
+                 assignee_agent_id=None, blocked_by=None) -> dict:
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         return _create_issue(c, actor, project, title, body, priority, labels, parent, status,
-                             type_ids, attachment_ids, assignee_agent_id)
+                             type_ids, attachment_ids, assignee_agent_id, blocked_by)
 
 
 def _create_issue(c, actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None,
-                 assignee_agent_id=None) -> dict:
+                  assignee_agent_id=None, blocked_by=None) -> dict:
     """호출자가 연 트랜잭션에서 Issue를 저장한다."""
     # 제목은 비워도 된다 — 본문만 쓰면 이슈를 처리하는 에이전트가 제목을 지어 채운다(DEV-8). 둘 다 비면 안 된다.
     title = _text(title, "제목", 300).strip()
@@ -689,15 +701,37 @@ def _create_issue(c, actor, project, title, body="", priority="none", labels=Non
             raise StoreError("에이전트 id는 숫자여야 해요.")
         _check_assignee(c, assignee_agent_id)
     number, sub_of, sub = _next_number(c, proj, par)
+    own_ref = f"{proj['key']}-{sub_of}-{sub}" if sub is not None else f"{proj['key']}-{number}"
+    if blocked_by is None:
+        blocked_by = []
+    if not isinstance(blocked_by, list) or len(blocked_by) > 10:
+        raise StoreError("선행 이슈는 최대 10개까지 목록으로 지정해 주세요.")
+    blockers = []
+    for ref in blocked_by:
+        if not isinstance(ref, str) or not REF_RE.fullmatch(ref.strip().upper()):
+            raise StoreError("선행 이슈 ref 형식이 달라요.")
+        if ref.strip().upper() == own_ref:
+            raise StoreError("자기 자신을 선행 이슈로 지정할 수 없어요.")
+        blocker = _find(c, ref)
+        if blocker["project_id"] != proj["id"] or blocker["status"] in ("done", "closed", "in_review"):
+            raise StoreError("선행 이슈는 같은 프로젝트의 진행 가능한 이슈여야 해요.")
+        if blocker["id"] not in [b["id"] for b in blockers]:
+            blockers.append(blocker)
     iid = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
                     "assignee_agent_id, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (proj["id"], number, sub_of, sub, parent_id, title, body, status, _priority(priority), _labels(labels),
                      actor_label(actor), assignee_agent_id, now, now)).lastrowid
     _replace_types(c, iid, ids, actor)
+    for blocker in blockers:
+        c.execute("INSERT INTO issue_deps(issue_id, blocked_by_id) VALUES(?,?)", (iid, blocker["id"]))
+    if blockers:
+        refs = [b["ref"] for b in blockers]
+        _event(c, iid, actor, "edit", "연관 이슈 지정: " + ", ".join(refs), {"blocked_by": refs})
     if attachment_ids is not None:
         import attachments
         attachments.link(c, actor, iid, attachment_ids)
-    return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (iid,)).fetchone())
+    return {**_issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (iid,)).fetchone()),
+            "blocked_by": [{"ref": b["ref"], "status": b["status"]} for b in blockers]}
 
 
 def set_rating(actor, ref, fields: dict) -> dict:

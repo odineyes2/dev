@@ -742,3 +742,38 @@ with TestClient(A.app) as c:
     ev = [e['body'] for e in c.get('/api/issues/' + rt['ref'], headers=H).json()['events'] if e['data'].get('fields') == ['rating', 'review']]
     assert ev == ['평점 4/5', '평점 4/5 · 리뷰 있음', '평점·리뷰 지움'], ev
 print('OK Issue rating REST')
+
+# 발행 시 선행 관계는 실제 라우트에서 검증하고, 실패한 요청은 이슈를 남기지 않는다.
+with TestClient(A.app) as c:
+    c.cookies.set('ns_session', 'adm')
+    ok(c.post('/api/projects', headers=H, json={'key': 'DEP', 'name': '선행 검사'}))
+    ready = ok(c.post('/api/issues', headers=H, json={'project': 'DEP', 'title': '선행'}))
+    done = ok(c.post('/api/issues', headers=H, json={'project': 'DEP', 'title': '완료'}))
+    closed = ok(c.post('/api/issues', headers=H, json={'project': 'DEP', 'title': '종료'}))
+    reviewing = ok(c.post('/api/issues', headers=H, json={'project': 'DEP', 'title': '검토'}))
+    with db.connect() as cx:
+        for item, status in ((done, 'done'), (closed, 'closed'), (reviewing, 'in_review')):
+            cx.execute('UPDATE issues SET status=? WHERE id=?', (status, item['id']))
+    candidates = ok(c.get('/api/projects/dep/dep-candidates', headers=H))['issues']
+    assert candidates == [{'ref': ready['ref'], 'title': '선행', 'status': 'backlog'}]
+    assert c.get('/api/projects/UNKNOWN/dep-candidates', headers=H).status_code == 404
+    created = ok(c.post('/api/issues', headers=H, json={
+        'project': 'DEP', 'title': '후행', 'blocked_by': [ready['ref'], ready['ref']]}))
+    assert created['blocked_by'] == [{'ref': ready['ref'], 'status': 'backlog'}]
+    detail = ok(c.get('/api/issues/' + created['ref'], headers=H))
+    assert detail['blocked_by'] == created['blocked_by']
+    assert any(e['body'] == '연관 이슈 지정: ' + ready['ref'] for e in detail['events'])
+    with db.connect() as cx:
+        assert cx.execute('SELECT COUNT(*) FROM issue_deps WHERE issue_id=?', (created['id'],)).fetchone()[0] == 1
+        next_ref = 'DEP-' + str(cx.execute('SELECT next_number FROM projects WHERE key=?', ('DEP',)).fetchone()[0])
+    invalid = ([done['ref']], [closed['ref']], [reviewing['ref']], [i1['ref']],
+               [ready['ref'], done['ref']],
+               ['DEP-99999'], [next_ref], [ready['ref']] * 11, 'DEP-1', [ready['id']])
+    for blockers in invalid:
+        with db.connect() as cx:
+            before = cx.execute('SELECT COUNT(*) FROM issues').fetchone()[0]
+        response = c.post('/api/issues', headers=H, json={'project': 'DEP', 'title': '거절', 'blocked_by': blockers})
+        assert response.status_code in (400, 404), (blockers, response.status_code, response.text)
+        with db.connect() as cx:
+            assert cx.execute('SELECT COUNT(*) FROM issues').fetchone()[0] == before
+print('OK Issue dependency creation and candidates REST')

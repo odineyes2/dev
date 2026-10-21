@@ -171,9 +171,11 @@ def update_issue_type(type_id: int, name: str | None = None, active: bool | None
 
 @mcp.tool
 def create_issue(project: str, title: str, body: str = "", priority: str = "none",
-                 labels: list[str] | None = None, parent: str | None = None, type_ids: list[int] | None = None) -> dict:
-    """새 이슈(또는 parent를 주면 하위 Task). priority: urgent/high/medium/low/none."""
-    return _call(issues.create_issue, _actor(), project, title, body, priority, labels, parent, type_ids=type_ids)
+                 labels: list[str] | None = None, parent: str | None = None, type_ids: list[int] | None = None,
+                 blocked_by: list[str] | None = None) -> dict:
+    """새 이슈(또는 parent를 주면 하위 Task). blocked_by는 같은 프로젝트의 진행 가능한 선행 이슈 ref 목록(최대 10개). priority: urgent/high/medium/low/none."""
+    return _call(issues.create_issue, _actor(), project, title, body, priority, labels, parent,
+                 type_ids=type_ids, blocked_by=blocked_by)
 
 
 @mcp.tool
