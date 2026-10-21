@@ -445,8 +445,16 @@ def pump() -> None:
                     row = c.execute("SELECT * FROM issues WHERE id=?", (j["issue_id"],)).fetchone()
                     owner = _latest(c, j["issue_id"]).get("job_id")
                     owned = c.execute("SELECT 1 FROM jobs WHERE id=? AND issue_id=? AND status='queued'", (owner, j["issue_id"])).fetchone()
+                    waiting_refs = ([b["ref"] for b in c.execute(
+                        f"SELECT {issues.ref_sql('b', 'p')} AS ref FROM issue_deps d "
+                        "JOIN issues b ON b.id=d.blocked_by_id JOIN projects p ON p.id=b.project_id "
+                        "WHERE d.issue_id=? AND b.status!='done' ORDER BY b.id", (j["issue_id"],))]
+                        if row and j["mode"] == "review" and row["parent_id"] is None else [])
                 if not row or row["status"] != "waiting" or not owned:
                     _set(j["id"], "skipped", "상태가 바뀌었거나 보호된 이슈여서 대기를 종료했어요")
+                    continue
+                if waiting_refs:
+                    _set(j["id"], "queued", f"선행 Issue({', '.join(waiting_refs)})가 done이 되어야 해요.")
                     continue
                 if j["mode"] == "review":
                     review.start(actor, j["ref"], j["provider"], j["model"])
