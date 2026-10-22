@@ -320,6 +320,8 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
   .panel{ padding:var(--sp-4); }
   .side{ padding:var(--sp-1) var(--sp-4); }
   .detail h1{ font-size:21px; }
+  .agent-btns{ flex-direction:column; }
+  .agent-btns button{ width:100%; min-height:40px; justify-content:center; }
 }
 
 .checks{display:inline-flex;gap:14px;white-space:nowrap}
