@@ -95,8 +95,36 @@ body:has(#list-body) .tab-bar-inner{ max-width:none; padding-left:var(--list-gut
 .trend-daily table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
 .trend-daily th, .trend-daily td{ padding:var(--sp-2); border-bottom:1px solid var(--border); text-align:right; white-space:nowrap; }
 .trend-daily th:first-child{ text-align:left; }
+.trend-subtabs{ display:flex; gap:var(--sp-4); border-bottom:1px solid var(--border); margin-bottom:var(--sp-4); }
+.trend-subtabs a{ display:inline-flex; align-items:center; min-height:40px; padding:0 var(--sp-2); color:var(--dim); border-bottom:2px solid transparent; font-weight:500; }
+.trend-subtabs a[aria-current="page"]{ color:var(--accent); border-bottom-color:var(--accent); }
+.trend-human-toggle{ display:inline-flex; align-items:center; min-height:40px; gap:var(--sp-2); font-size:13px; }
+.trend-stage-grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-4); margin:var(--sp-3) 0; }
+.trend-stage-card, .trend-stage-section{ min-width:0; padding:var(--sp-4); background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); }
+.trend-stage-card h2, .trend-stage-section h2{ margin:0 0 var(--sp-3); font:600 12px/1.4 var(--mono); letter-spacing:var(--track-label); }
+.trend-donut{ display:block; width:min(100%,220px); margin:auto; color:var(--text); }
+.trend-donut text{ fill:currentColor; font:600 11px var(--mono); }
+.trend-donut .trend-donut-caption{ fill:var(--dim); font-size:11px; }
+.trend-stage-labels{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-2) var(--sp-4); padding:0; margin:0 0 var(--sp-4); list-style:none; }
+.trend-stage-labels li{ display:flex; min-width:0; gap:var(--sp-2); padding:var(--sp-3); background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); }
+.trend-stage-labels li div{ display:flex; flex-direction:column; min-width:0; gap:var(--sp-1); font-size:13px; }
+.trend-stage-labels li strong{ font-weight:600; }
+.trend-stage-labels li span:not(.trend-stage-dot){ color:var(--dim); }
+.trend-stage-dot{ flex:none; width:12px; height:12px; margin-top:4px; border-radius:999px; background:var(--accent); }
+.trend-stage-delta{ white-space:nowrap; }
+.trend-stage-scroll{ max-width:100%; overflow-x:auto; }
+.trend-stage-table{ width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
+.trend-stage-table th, .trend-stage-table td{ padding:var(--sp-2); border-bottom:1px solid var(--border); text-align:right; white-space:nowrap; }
+.trend-stage-table thead th{ background:var(--panel-2); font:600 11px/1.4 var(--mono); letter-spacing:var(--track-label); }
+.trend-stage-table th:first-child{ text-align:left; min-width:200px; }
+.trend-stage-table th button{ min-height:40px; border:0; background:none; color:inherit; font:inherit; cursor:pointer; }
+.trend-stage-table .trend-row-title{ display:inline-block; max-width:220px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle; white-space:nowrap; }
+.trend-stage-table .trend-expand{ min-width:40px; color:var(--accent); }
+.trend-task-row th{ padding-left:var(--sp-5); }
+.trend-task-row[hidden]{ display:none; }
 @media(max-width:800px){
   .trend-grid{ grid-template-columns:minmax(0,1fr); }
+  .trend-stage-grid, .trend-stage-labels{ grid-template-columns:minmax(0,1fr); }
   .trend-filter label:first-child, .trend-filter select, .trend-periods{ width:100%; }
   .trend-periods button{ flex:1; }
   .trend-filter label:has(input){ flex:1 1 120px; }

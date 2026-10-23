@@ -88,7 +88,7 @@ def check_trends(page):
     def respond(route):
         calls.append(route.request.url)
         query = route.request.url.split('?', 1)[-1]
-        if 'project=TRND' in query and 'from=2026-09-01' in query:
+        if 'from=2026-09-01' in query:
             route.fulfill(status=503, json={'detail': '임시 오류'}); return
         data = dict(from_date='2026-10-12', to_date='2026-10-13', as_of='2026-10-13T02:00:00+00:00',
                     note='현재 보존된 기록 기준이에요.',
@@ -97,7 +97,7 @@ def check_trends(page):
                     summary=dict(created_issue_count=3, completed_issue_count=1, agent_seconds=180, total_tokens=37,
                                  partial=True, unmeasured_run_count=1, unmeasured_duration_run_count=1, running_run_count=1),
                     top_issues=[dict(ref='TRND-1', title='큰 작업', total_tokens=37)])
-        if 'project=TRND' in query and 'from=2026-01-01' in query:
+        if 'from=2026-01-01' in query:
             data['days'] = [dict(date='2026-01-01', created_issue_count=0, completed_issue_count=0, agent_seconds=0, total_tokens=0)]
             data['summary'] = dict.fromkeys(data['summary'], 0); data['top_issues'] = []
         route.fulfill(json=data)
@@ -177,6 +177,81 @@ def check_trends(page):
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert page.evaluate("document.querySelector('.trend-card').scrollWidth <= document.querySelector('.trend-card').clientWidth")
     page.set_viewport_size({'width': 1300, 'height': 900}); page.unroute('**/api/trends?*')
+
+
+def check_trend_stages(page, shots):
+    """단계별 소요의 서브탭·공유 필터·정렬·Task 펼치기·사람 대기를 확인한다."""
+    from urllib.parse import parse_qs, urlsplit
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers,
+                             data={'key': 'STGE', 'name': '단계 검사'}).ok
+    page.reload(); page.wait_for_selector('#shell:not([hidden])')
+    calls = []
+    def respond(route):
+        calls.append(parse_qs(urlsplit(route.request.url).query))
+        def stats(value): return {'mean': value, 'median': value, 'p90': value, 'n': 2}
+        names = [('queue', '대기열 대기', 'machine'), ('review', '검토·계획', 'machine'),
+                 ('execute', '구현', 'machine'), ('qa', 'QA', 'machine'),
+                 ('completion', '완료 처리', 'machine'), ('plan_wait', '계획 결정 대기', 'human'),
+                 ('done_wait', '완료 확인 대기', 'human')]
+        stages = [dict(key=key, name=name, kind=kind, seconds=stats(60 * (i + 1)),
+                       tokens=stats(1000 * (i + 1)) if key in ('review', 'execute', 'qa') else None,
+                       previous=dict(seconds=stats(30 * (i + 1)),
+                                     tokens=stats(500 * (i + 1)) if key in ('review', 'execute', 'qa') else None))
+                  for i, (key, name, kind) in enumerate(names)]
+        def values(scale): return {key: {'seconds': scale * 60 * (i + 1), 'tokens': scale * 1000 * (i + 1)}
+                                   for i, (key, _, _) in enumerate(names)}
+        task = dict(ref='STGE-1-1', title='구현 Task', execute_runs=2, failed_runs=1,
+                    stages=values(1), total_machine_seconds=900, total_tokens=15000, partial=False)
+        first = dict(ref='STGE-1', title='느린 Issue', project='STGE', done_at='2026-10-23T01:00:00+00:00',
+                     task_count=1, execute_runs=2, failed_runs=1, stages=values(2), tasks=[task],
+                     total_machine_seconds=1800, total_tokens=30000, partial=False)
+        second = dict(ref='STGE-2', title='빠른 Issue', project='STGE', done_at='2026-10-22T01:00:00+00:00',
+                      task_count=0, execute_runs=1, failed_runs=0, stages=values(1), tasks=[],
+                      total_machine_seconds=900, total_tokens=15000, partial=True,
+                      partial_reason='토큰 미측정')
+        route.fulfill(json=dict(from_date='2026-10-17', to_date='2026-10-23',
+                                previous={'from_date':'2026-10-10','to_date':'2026-10-16'},
+                                project=calls[-1].get('project', [None])[0], stages=stages,
+                                queue_idle_seconds=stats(90), issues=[first, second],
+                                partial_count=1, note='임시 기록 기준이에요.'))
+    page.route('**/api/trends/stages?*', respond)
+    page.goto(BASE + '/#/trends/stages'); page.wait_for_selector('.trend-stage-table')
+    assert page.locator('.trend-subtabs [aria-current="page"]').inner_text() == '단계별 소요'
+    assert page.locator('.trend-donut').count() == 2
+    assert page.locator('.trend-donut circle[aria-label]').count() == 8
+    assert page.locator('.trend-stage-labels li').count() == 5
+    assert '빈 대기열 대기' in page.inner_text('.trend-stage-labels')
+    assert page.locator('.trend-issue-row .ref').all_inner_texts() == ['STGE-1', 'STGE-2']
+    assert not page.locator('.trend-task-row').is_visible()
+    page.click('[data-stage-expand="STGE-1"]')
+    assert page.locator('.trend-task-row').is_visible()
+    assert '2회' in page.inner_text('.trend-task-row')
+    page.click('[data-stage-sort="total_machine_seconds"]')
+    assert page.locator('.trend-issue-row .ref').all_inner_texts() == ['STGE-2', 'STGE-1']
+    page.check('#trend-human')
+    assert page.locator('.trend-stage-labels li').count() == 7
+    assert '계획 결정 대기' in page.inner_text('.trend-stage-table thead')
+    page.select_option('#trend-project', 'STGE')
+    page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+    assert calls[-1]['project'] == ['STGE'] and calls[-1]['human'] == ['1']
+    page.click('[data-trend-days="30"]')
+    page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+    assert calls[-1]['project'] == ['STGE']
+    page.click('.trend-subtabs a[href="#/trends"]')
+    page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+    assert page.locator('#trend-project').input_value() == 'STGE'
+    assert page.locator('[data-trend-days="30"]').get_attribute('aria-pressed') == 'true'
+    page.click('.trend-subtabs a[href="#/trends/stages"]')
+    page.wait_for_selector('.trend-stage-table')
+    assert page.locator('#trend-project').input_value() == 'STGE'
+    for theme in ('light', 'dark'):
+        page.evaluate('t => {localStorage.setItem("dev.theme", t); paintTheme()}', theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width':width, 'height':850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path=str(shots / f'trend_stages_{theme}_{width}.png'), full_page=True)
+    page.unroute('**/api/trends/stages?*', respond)
 
 
 def check_free_port(page, shots):
@@ -4049,6 +4124,10 @@ try:
             check_trends(page)
             assert not errs, errs
             print('OK: Trend'); sys.exit(0)
+        if '--trend-stages-only' in sys.argv:
+            check_trend_stages(page, shots)
+            assert not errs, errs
+            print('OK: Trend stages'); sys.exit(0)
         if '--issue-summary-only' in sys.argv:
             check_issue_summary(page)
             assert not errs, errs
