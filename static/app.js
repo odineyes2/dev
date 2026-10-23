@@ -649,6 +649,8 @@ function trendValue(key, value){
 function trendText(key, value){ return key === 'total_tokens' ? formatTokens(value) : String(trendValue(key, value)); }
 // 표시 옵션(line·marks·values)과 날짜 정렬은 Trend 화면을 쓰는 동안 유지한다. 차트 시간축은 항상 과거→현재.
 let trendMarks = 'values', trendSortAsc = true, trendData = null;
+const TREND_AGENTS = {all:'All Agents', claude:'Claude', codex:'Codex'};
+let trendAgent = 'all';
 let trendStageData = null, trendStageSort = 'total_machine_seconds', trendStageAsc = false;
 const STAGE_COLUMNS = [['queue','대기열'], ['review','검토'], ['execute','구현'], ['qa','QA'], ['completion','완료 처리']];
 function stageDuration(value){
@@ -736,13 +738,31 @@ function stageDailyChart(data, series = 'seconds'){
     ${points.map(([px, py, day]) => `<circle class="trend-stage-point" cx="${px}" cy="${py}" r="4" aria-label="${esc(day.date)} 중앙값 ${esc(format(day[series]))}, ${day.n}건"><title>${esc(day.date)} · 중앙 ${esc(format(day[series]))} · ${day.n}건</title></circle><text class="trend-stage-value" x="${px}" y="${Math.max(10, py - 9)}" text-anchor="middle">${esc(format(day[series]))}</text>`).join('')}
     ${xlabels}</svg>${measured.length ? '' : `<p class="dim">이 기간에 전체 ${what}을 측정한 Task가 없어요.</p>`}`;
 }
+// 분포 히스토그램 — 구간(bins)마다 세로 막대, 위에 건수, 아래에 구간 시작값. series: seconds | tokens
+function stageDistChart(dist, series){
+  const bins = dist?.bins || [], format = series === 'tokens' ? formatTokens : stageDuration;
+  const what = series === 'tokens' ? '토큰' : '시간';
+  if(!bins.length) return '<div class="empty">이 기간에 측정된 Issue가 없어요.</div>';
+  const width = 480, left = 12, right = 12, top = 22, bottom = 34, height = 200, slot = (width - left - right) / bins.length;
+  const maximum = Math.max(1, ...bins.map(b => b.count)), base = height - bottom;
+  const bars = bins.map((b, i) => {
+    const h = (b.count / maximum) * (base - top), x = left + i * slot, label = `${format(b.from)} ~ ${format(b.to)}`;
+    return `<rect class="trend-dist-bar" x="${(x + 3).toFixed(1)}" y="${(base - h).toFixed(1)}" width="${(slot - 6).toFixed(1)}" height="${h.toFixed(1)}" role="img" aria-label="${esc(label)} ${b.count}건"><title>${esc(label)} · ${b.count}건</title></rect>
+      <text class="trend-dist-count" x="${(x + slot / 2).toFixed(1)}" y="${Math.max(10, base - h - 5).toFixed(1)}" text-anchor="middle">${b.count}</text>
+      <text x="${x.toFixed(1)}" y="${base + 14}" text-anchor="start">${esc(format(b.from))}</text>`;
+  }).join('');
+  return `<svg class="trend-dist-chart" data-series="${series}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Issue 소요 ${what} 분포">
+    <line class="trend-stage-hline" x1="${left}" x2="${width - right}" y1="${base}" y2="${base}"/>${bars}</svg>`;
+}
 function stageResults(data){
   const visible = data.stages.filter(s => trendHuman || s.kind === 'machine');
   const label = s => `<li class="trend-stage-${s.key}"><span class="trend-stage-dot" aria-hidden="true"></span><div><strong>${esc(s.name)}</strong><span>시간 중앙 ${stageDuration(s.seconds.median)}${stageDelta(s.seconds.median, s.previous.seconds.median)}</span>${s.tokens ? `<span>토큰 중앙 ${formatTokens(s.tokens.median)}${stageDelta(s.tokens.median, s.previous.tokens.median)}</span>` : ''}${s.key === 'queue' ? `<span>그중 빈 대기열 대기 평균 ${stageDuration(data.queue_idle_seconds.mean)}</span>` : ''}</div></li>`;
-  return `<p class="trend-context">${data.project ? esc(data.project) : '전체 프로젝트'} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · 이전 기간 ${esc(data.previous.from_date)} ~ ${esc(data.previous.to_date)}</p>
+  return `<p class="trend-context">${data.project ? esc(data.project) : '전체 프로젝트'} · ${esc(TREND_AGENTS[data.agent] || TREND_AGENTS.all)} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · 이전 기간 ${esc(data.previous.from_date)} ~ ${esc(data.previous.to_date)}</p>
     <label class="trend-human-toggle"><input id="trend-human" type="checkbox" ${trendHuman ? 'checked' : ''}> 사람 대기 포함</label>
     ${data.partial_count ? `<p class="trend-partial" role="status">부분 측정 ${data.partial_count}건 · 평균과 중앙값에서 제외해요.</p>` : ''}
     <div class="trend-stage-grid"><section class="trend-stage-card"><h2>평균 시간 구성</h2>${stageDonut(visible, 'seconds', '평균 시간 구성', data.issues.length - data.partial_count)}</section><section class="trend-stage-card"><h2>평균 토큰 구성</h2>${stageDonut(visible.filter(s => s.tokens), 'tokens', '평균 토큰 구성', data.issues.length - data.partial_count)}</section></div>
+    <div class="trend-stage-grid trend-dist-grid"><section class="trend-stage-card"><h2>소요 시간 분포</h2><p class="dim">대상 ${data.distribution?.seconds?.n || 0}건</p>${stageDistChart(data.distribution?.seconds, 'seconds')}</section><section class="trend-stage-card"><h2>소요 토큰 분포</h2><p class="dim">대상 ${data.distribution?.tokens?.n || 0}건</p>${stageDistChart(data.distribution?.tokens, 'tokens')}</section></div>
+    ${data.agent && data.agent !== 'all' ? '<p class="dim">한 Issue를 두 에이전트가 나눠 했으면 각자 맡은 몫만 집계돼요.</p>' : ''}
     <details class="trend-stage-details"><summary>단계별 중앙값과 이전 기간 비교</summary><ul class="trend-stage-labels">${visible.map(label).join('')}</ul></details>
     <section class="trend-stage-section trend-stage-history"><h2>Task 전체 중앙값</h2><p class="dim">구현 대기열 등록부터 병합 완료까지 · 병합일 기준 · 진한 점선은 dev 변경이에요.${data.daily_task_unmeasured ? ` 시작 기록이 없는 Task ${data.daily_task_unmeasured}건은 제외했어요.` : ''}</p>
       <div class="trend-stage-daily-grid"><div><h3>시간 중앙값</h3>${stageDailyChart(data, 'seconds')}</div><div><h3>토큰 중앙값</h3>${stageDailyChart(data, 'tokens')}</div></div>
@@ -789,7 +809,7 @@ async function renderTrends(tab = ''){
   view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">${tab === 'stages' ? '완료된 Issue의 단계별 시간과 토큰을 살펴봐요.' : '보존된 기록의 일별 사용 현황을 서울 날짜로 살펴봐요.'}</p></div></header>
     <nav class="trend-subtabs" aria-label="Trend 하위 메뉴"><a href="#/trends" ${tab ? '' : 'aria-current="page"'}>일별 사용</a><a href="#/trends/stages" ${tab === 'stages' ? 'aria-current="page"' : ''}>단계별 소요</a></nav>
     <form id="trend-filter" class="trend-filter"><label>프로젝트<select id="trend-project">${projectOptionsHtml()}</select></label>
-      ${tab === 'stages' ? '' : '<label>차트 표시<select id="trend-marks"><option value="line">추세선</option><option value="marks">마크</option><option value="values">마크 및 수치</option></select></label>'}
+      ${tab === 'stages' ? `<label>에이전트<select id="trend-agent">${Object.entries(TREND_AGENTS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>` : '<label>차트 표시<select id="trend-marks"><option value="line">추세선</option><option value="marks">마크</option><option value="values">마크 및 수치</option></select></label>'}
       <div class="trend-periods" role="group" aria-label="빠른 기간">${[7,30,90].map(n => `<button type="button" data-trend-days="${n}" aria-pressed="${trendRange === n}">최근 ${n}일</button>`).join('')}</div>
       <label>시작일<input id="trend-from" type="date" required value="${esc(trendDates[0])}"></label>
       <label>종료일<input id="trend-to" type="date" required value="${esc(trendDates[1])}"></label>
@@ -797,6 +817,8 @@ async function renderTrends(tab = ''){
     <p id="trend-validation" class="error" role="alert" hidden></p><div id="trend-results" aria-live="polite"></div></div>`;
   const root = view.querySelector('.trend-page'), form = root.querySelector('form');
   root.querySelector('#trend-project').value = currentProject();
+  if(tab === 'stages'){ root.querySelector('#trend-agent').value = trendAgent;
+    root.querySelector('#trend-agent').addEventListener('change', e => { trendAgent = e.target.value; loadTrend(); }); }
   if(!tab){ root.querySelector('#trend-marks').value = trendMarks;
     root.querySelector('#trend-marks').addEventListener('change', e => { trendMarks = e.target.value; paintTrendCharts(root); }); }
   root.querySelector('#trend-project').addEventListener('change', e => {
@@ -839,7 +861,7 @@ async function loadTrend(){
   results.innerHTML = '<div class="usage-loading" role="status">Trend를 불러오는 중이에요…<div class="usage-skeleton" aria-hidden="true"></div></div>';
   try{
     const stages = location.hash.split('?')[0] === '#/trends/stages';
-    const data = await api('GET', (stages ? '/api/trends/stages?' : '/api/trends?') + new URLSearchParams({from, to, ...(project ? {project} : {}), ...(stages ? {human:trendHuman ? '1' : '0'} : {})}), undefined, current, {notifyErrors:false});
+    const data = await api('GET', (stages ? '/api/trends/stages?' : '/api/trends?') + new URLSearchParams({from, to, ...(project ? {project} : {}), ...(stages ? {human:trendHuman ? '1' : '0', agent:trendAgent} : {})}), undefined, current, {notifyErrors:false});
     if(!current()) return;
     if(stages){ trendStageData = data; results.innerHTML = stageResults(data); paintStageTable(root); return; }
     trendData = data;
