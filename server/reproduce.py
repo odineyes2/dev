@@ -16,6 +16,7 @@ import regression
 PROCESS = uuid.uuid4().hex
 PREFIX = 'regression-reproduce:'
 ROOT = config.DATA_DIR / 'check-reproductions'
+REPEAT = 3   # 같은 검사를 이만큼 돌려 모두 통과해야 통과(DEV-160-3)
 
 
 def running(c):
@@ -91,7 +92,7 @@ def panel(issue):
                         raise ValueError('UI 실패 위치와 전용 실행 옵션을 찾지 못했어요. 전체 UI 검사는 실행하지 않아요.')
                 targets.append({'file': paths[0], 'args': args})
         except (ValueError, SyntaxError, OSError, project_build.BuildError) as error:
-            blocked = str(error)
+            blocked = str(error); print('DBG', failed, repr(sha), paths, project_build._git(repo, 'ls-tree', '-r', sha), project_build._git(repo, 'log', '--oneline', '-3', sha))
     if not targets and not blocked:
         blocked = '재현할 실패 검사 기록이 없어요.'
     if latest.get('status') == 'running' or run and run['status'] == 'running' or issue.get('job') or issue['status'] in ('waiting', 'in_progress'):
@@ -147,11 +148,19 @@ def worker(ref, repo, row):
         env = project_build.environment(execute.safe_env(repo))
         for target in row['targets']:
             path = work / target['file']
-            output = orchestrate.run_test(str(work), path, target['args'], env)
-            row['results'].append({**target, 'exit_code': output.returncode,
-                                   'status': 'passed' if output.returncode == 0 else 'failed'})
-            lines.append(target['file'] + ' ' + ' '.join(target['args']) + '\n' + (output.stdout or '') + '\n' + (output.stderr or ''))
-        row['status'] = 'passed' if all(r['status'] == 'passed' for r in row['results']) else 'failed'
+            # 같은 검사를 3번 돌려 모두 통과해야 통과다 — 섞이면 불안정한 검사(DEV-160-3)
+            outputs = [orchestrate.run_test(str(work), path, target['args'], env) for _ in range(REPEAT)]
+            bad = [o for o in outputs if o.returncode]
+            output = bad[0] if bad else outputs[-1]
+            state = 'passed' if not bad else 'flaky' if len(bad) < REPEAT else 'failed'
+            row['results'].append({**target, 'exit_code': output.returncode, 'status': state,
+                                   'failed_runs': len(bad), 'runs': REPEAT})
+            lines.append(target['file'] + ' ' + ' '.join(target['args']) + f' ({REPEAT}번 중 {len(bad)}번 실패)\n' + (output.stdout or '') + '\n' + (output.stderr or ''))
+        states = {r['status'] for r in row['results']}
+        row['status'] = 'failed' if 'failed' in states else 'flaky' if 'flaky' in states else 'passed'
+        if row['status'] == 'flaky':
+            row['note'] = '불안정한 검사 — 같은 코드에서 통과·실패가 섞였어요: ' + ', '.join(
+                f"{r['file']} {r['runs']}번 중 {r['failed_runs']}번 실패" for r in row['results'] if r['status'] == 'flaky')
     except Exception as error:
         row.update(status='failed', note='검사 재현 실행 실패: ' + type(error).__name__)
         lines.append(str(error))
@@ -204,6 +213,8 @@ def finish(ref, row):
                 status, note = 'in_progress', '실패 검사 재현이 통과했어요. 후속 검사·병합·운영 반영을 자동으로 진행해요.'
                 row['followup'] = 'pending'
                 followup = True
+            elif row['status'] == 'flaky':
+                status, note = 'on_hold', row.get('note') or '불안정한 검사 — 같은 코드에서 통과·실패가 섞였어요.'
             elif row['status'] == 'interrupted':
                 status, note = 'on_hold', '서버 재시작으로 실패 검사 재현이 중단됐어요. 다시 실행해 주세요.'
             else:
