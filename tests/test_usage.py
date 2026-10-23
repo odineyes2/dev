@@ -312,12 +312,15 @@ assert not stage_row['partial']
 assert next(r for r in stage_result['issues'] if r['ref'] == partial_parent['ref'])['partial']
 assert stage_result['partial_count'] == 1
 assert stage_result['daily_task_median'] == [{'date': '2026-02-01', 'seconds': 420, 'n': 1}]
+assert stage_result['daily_task_tokens_median'] == [{'date': '2026-02-01', 'tokens': 57, 'n': 1}]
 assert stage_result['daily_task_unmeasured'] == 1
 assert stage_result['dev_changes'] == [{'ref': dev_task['ref'], 'title': 'dev task',
     'merged_at': '2026-01-31T15:06:00+00:00', 'date': '2026-02-01',
     'merged_at_local': '2026-02-01 00:06'}]
 assert usage.stage_summary('2026-02-01', '2026-02-01', as_of=fixed_now)['daily_task_median'][0] == {
     'date': '2026-02-01', 'seconds': 480, 'n': 2}
+assert usage.stage_summary('2026-02-01', '2026-02-01', as_of=fixed_now)['daily_task_tokens_median'][0] == {
+    'date': '2026-02-01', 'tokens': 30, 'n': 2}
 execute_stats = next(s for s in stage_result['stages'] if s['key'] == 'execute')
 assert execute_stats['seconds'] == {'mean': 180, 'median': 180, 'p90': 180, 'n': 1}
 assert execute_stats['previous']['seconds']['mean'] == 60
@@ -330,12 +333,45 @@ assert usage._idle_seconds(usage._time('2026-01-31T14:58:00+00:00'),
                                (usage._time('2026-01-31T14:59:00+00:00'), usage._time('2026-01-31T14:59:30+00:00'))]) == 60
 assert usage.stage_summary(project='STG', as_of=fixed_now)['from_date'] == '2026-01-26'
 
+issues.create_project(human, 'TOK', 'daily tokens')
+token_parent = issues.create_issue(human, 'TOK', 'token parent')
+token_tasks = [issues.create_issue(human, 'TOK', f'token task {i}', parent=token_parent['ref'])
+               for i in range(5)]
+with db.connect() as c:
+    for task_row, queued, merged, inp, out in [
+        (token_tasks[0], '2026-01-31T14:55:00+00:00', '2026-01-31T15:05:00+00:00', 7, 3),
+        (token_tasks[1], '2026-01-31T14:55:00+00:00', '2026-01-31T15:06:00+00:00', 20, 10),
+        (token_tasks[2], '2026-02-01T14:55:00+00:00', '2026-02-01T15:05:00+00:00', 4, 2),
+        (token_tasks[3], None, '2026-01-31T15:07:00+00:00', 500, 500)]:
+        run_id = stage_run(c, task_row['id'], 'execute',
+                           '2026-01-31T15:00:00+00:00' if task_row != token_tasks[2]
+                           else '2026-02-01T15:00:00+00:00', merged, inp, out)
+        stage_completion(c, task_row['id'], task_row['ref'], run_id, merged)
+        if queued:
+            c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,started_at,run_id) VALUES(?,'execute','human:admin','started',?,?,?)",
+                      (task_row['id'], queued, queued, run_id))
+    stage_run(c, token_tasks[0]['id'], 'execute', '2026-01-31T15:01:00+00:00',
+              '2026-01-31T15:02:00+00:00', 3, 1, 'failed')
+    stage_run(c, token_tasks[0]['id'], 'execute', '2026-01-31T15:08:00+00:00',
+              '2026-01-31T15:09:00+00:00', 500, 500)
+    stage_run(c, token_tasks[4]['id'], 'execute', '2026-01-31T15:00:00+00:00',
+              '2026-01-31T15:01:00+00:00', 500, 500)
+tokens_result = usage.stage_summary('2026-02-01', '2026-02-03', 'TOK',
+                                    as_of='2026-02-03T15:30:00+00:00')
+assert tokens_result['daily_task_tokens_median'] == [
+    {'date': '2026-02-01', 'tokens': 22, 'n': 2},
+    {'date': '2026-02-02', 'tokens': 6, 'n': 1},
+    {'date': '2026-02-03', 'tokens': None, 'n': 0}]
+assert tokens_result['daily_task_unmeasured'] == 1
+assert [day['n'] for day in tokens_result['daily_task_median']] == [2, 1, 0]
+
 with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
     assert client.get('/api/trends/stages').status_code == 401
     client.cookies.set('ns_session', 'temporary')
     response = client.get('/api/trends/stages?from=2026-02-01&to=2026-02-01&project=stg&human=1')
     assert response.status_code == 200, response.text
     assert response.json()['include_human'] and response.json()['issues'][0]['ref'] == stage_parent['ref']
+    assert response.json()['daily_task_tokens_median'] == [{'date': '2026-02-01', 'tokens': 57, 'n': 1}]
     for query in ('from=bad', 'to=2026-02-30', 'from=2026-02-02&to=2026-02-01',
                   'from=2025-01-01&to=2026-02-01', 'human=2'):
         assert client.get('/api/trends/stages?' + query).status_code == 400, query
