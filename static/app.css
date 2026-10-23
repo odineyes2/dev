@@ -651,6 +651,12 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .check-modes{ display:flex; flex:none; gap:4px; }
 .check-modes button{ min-height:40px; padding:4px 8px; font-size:12px; }
 .check-modes button[aria-pressed="true"]{ color:var(--accent); border-color:var(--accent); background:rgba(var(--accent-rgb),.08); }
+.check-no{ font:600 11px/1.4 var(--mono); color:var(--accent); letter-spacing:var(--track-label); white-space:nowrap; }
+.check-lock{ flex:none; font-size:12px; white-space:nowrap; }
+.check-files{ margin-top:var(--sp-3); font-size:12px; }
+.check-files summary{ cursor:pointer; min-height:40px; display:flex; align-items:center; }
+.check-file{ padding-left:var(--sp-3); }
+.regression-project{ max-width:360px; margin-bottom:var(--sp-3); }
 .task-checks{ margin-top:var(--sp-3); font-size:12px; overflow-wrap:anywhere; }
 .task-checks summary{ cursor:pointer; }
 .task-checks > div{ margin-top:var(--sp-3); }

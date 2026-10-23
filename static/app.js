@@ -1318,7 +1318,7 @@ function executeHtml(it, liveMode, liveProvider){
   const hint = x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
     : it.review_busy && !running ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : '';
   const b = x.branch;
-  const checks = x.regression ? `<details class="task-checks"><summary title="실제 변경에 따라 Auto 선택이 보강될 수 있어요.">검사 선택 · ${{light:'가벼움',normal:'보통',high:'높음'}[x.regression.level]} · ${x.regression.planned ? '승인 계획 반영' : '서버 판단'}</summary>${Object.values(x.regression.checks).sort((a,b) => Number(b.enabled) - Number(a.enabled)).map(c => `<div><b>${esc(c.name)}</b> · ${c.mode.toUpperCase()} · ${c.enabled ? '실행' : '생략'}<p class="dim">${esc(c.reason)}</p></div>`).join('')}${Object.entries(x.regression_results || {}).filter(([,r]) => r.results).map(([stage,r]) => `<h4>${stage === 'server_completion' ? '최근 완료 전 검사' : '최근 병합 검사'}</h4>${Object.entries(r.results).map(([name,result]) => `<div>${esc(name)} · ${{passed:'통과',failed:'실패',reused:'기존 통과 결과 재사용',skipped:'생략'}[result]}</div>`).join('')}`).join('')}</details>` : '';
+  const checks = x.regression ? `<details class="task-checks"><summary title="실제 변경에 따라 Auto 선택이 보강될 수 있어요.">검사 선택 · ${{light:'가벼움',normal:'보통',high:'높음'}[x.regression.level]} · ${x.regression.planned ? '승인 계획 반영' : '서버 판단'}</summary>${Object.values(x.regression.checks).sort((a,b) => Number(b.enabled) - Number(a.enabled)).map(c => `<div>${c.number ? `<span class="check-no">${esc(c.number)}</span> ` : ''}<b>${esc(c.name)}</b> · ${c.mode.toUpperCase()} · ${c.enabled ? '실행' : '생략'}<p class="dim">${esc(c.reason)}</p></div>`).join('')}${Object.entries(x.regression_results || {}).filter(([,r]) => r.results).map(([stage,r]) => `<h4>${stage === 'server_completion' ? '최근 완료 전 검사' : '최근 병합 검사'}</h4>${Object.entries(r.results).map(([name,result]) => `<div>${esc(name)} · ${{passed:'통과',failed:'실패',reused:'기존 통과 결과 재사용',skipped:'생략'}[result]}</div>`).join('')}`).join('')}</details>` : '';
   const buttons = `<div class="agent-btns" id="exec-btns"><button id="ask-execute" title="격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>Claude에게 실행 맡기기</button>
     <button id="ask-codex-execute" title="Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>Codex에게 실행 맡기기</button></div>`;
   const merge = (b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
@@ -3186,21 +3186,40 @@ async function renderRegressionSettings(){
   const session = {};
   settingsSession = session;
   const current = () => settingsSession === session && location.hash.split('?')[0] === '#/settings/regression';
-  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('regression')}<h3>회귀검사</h3><p class="dim">모든 프로젝트와 Claude·Codex에 공통 적용해요. 기본은 Auto예요. On은 항상 실행, Off는 생략, Auto는 계획 에이전트의 선택을 서버가 변경 범위로 확인해요. 검사 판단이 없는 기존 Task는 서버가 선택해요. 서버는 다음 검사부터, 에이전트 지시는 다음 실행부터 적용돼요.</p><div id="regression-body"></div><p id="regression-status" role="status" aria-live="polite"></p><h3>항상 유지하는 기본 검증</h3><p class="dim">인증·권한·입력 검증, 승인된 작업 범위, Git 충돌·변경 중 반영 방지, 결과 형식과 커밋 연결, 운영 재시작 health 확인·실패 복구는 회귀 테스트와 별개로 유지해요. Off는 서버의 Auto 보강보다 우선해요. 꺼진 검사는 통과를 보장하지 않아요. 에이전트 설정은 실행 지시를 바꾸며 자체 확인까지 강제로 차단하지는 않아요.</p></section>`;
-  const body = view.querySelector('#regression-body'), status = view.querySelector('#regression-status');
-  let settings, busy = false;
+  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('regression')}<h3>회귀검사</h3><p class="dim">모든 프로젝트와 Claude·Codex에 공통 적용해요. 기본은 Auto예요. On은 항상 실행, Off는 생략, Auto는 계획 에이전트의 선택을 서버가 변경 범위로 확인해요. 검사 판단이 없는 기존 Task는 서버가 선택해요. 서버는 다음 검사부터, 에이전트 지시는 다음 실행부터 적용돼요.</p><div id="regression-body"></div><p id="regression-status" role="status" aria-live="polite"></p><label class="field regression-project"><span>프로젝트 (검사 파일 목록)</span><select id="regression-project"></select></label></section>`;
+  const body = view.querySelector('#regression-body'), status = view.querySelector('#regression-status'), picker = view.querySelector('#regression-project');
+  // 번호 표는 body 위에 오도록 select를 body 앞으로 옮긴다
+  view.querySelector('.regression-project').after(body, status);
+  let settings, busy = false, pk = '';
+  const modeButtons = (c, label) => `<div class="check-modes" role="group" aria-label="${esc(label)}">${['on','off','auto'].map(mode => `<button type="button" data-check="${esc(c.key)}" data-mode="${mode}" aria-pressed="${c.mode === mode}" ${busy ? 'disabled' : ''}>${mode === 'auto' ? 'Auto' : mode === 'on' ? 'On' : 'Off'}</button>`).join('')}</div>`;
   function paint(){
-    body.innerHTML = [...new Set(settings.checks.map(c => c.group))].map(group => `<h3>${esc(group)}</h3>${settings.checks.filter(c => c.group === group).map(c => `<div class="setting-row"><div><b>${esc(c.name)}</b><p class="dim">${esc(c.description)}</p></div><div class="check-modes" role="group" aria-label="${esc(c.name)}">${['on','off','auto'].map(mode => `<button type="button" data-check="${esc(c.key)}" data-mode="${mode}" aria-pressed="${c.mode === mode}" ${busy ? 'disabled' : ''}>${mode === 'auto' ? 'Auto' : mode === 'on' ? 'On' : 'Off'}</button>`).join('')}</div></div>`).join('')}`).join('');
+    const byKey = Object.fromEntries(settings.checks.map(c => [c.key, c]));
+    const files = settings.checks.filter(c => c.key.startsWith('file:'));
+    const fileList = `<details class="check-files"><summary>${esc(settings.project)} 검사 파일 ${files.length}개</summary>${files.length ? files.map(c => `<div class="setting-row check-file" data-file="${esc(c.path)}"><div><span class="check-no">${esc(c.number)}</span> <b>${esc(c.path)}</b> <span class="chip">${c.kind === 'js' ? 'JS' : 'py'}</span><p class="dim">${esc(c.description)}</p></div>${modeButtons(c, c.path)}</div>`).join('') : '<p class="dim">이 프로젝트에서 찾은 검사 파일이 없어요.</p>'}</details>`;
+    const lock = {always: '항상 · 끌 수 없어요', managed: '다른 설정을 따라요'};
+    body.innerHTML = [...settings.registry].sort((a, b) => a.number.localeCompare(b.number)).map(r => {
+      const c = r.kind === 'settable' ? byKey[r.key] : null;
+      return `<div class="setting-row check-proc" data-number="${esc(r.number)}"><div><span class="check-no">${esc(r.number)}</span> <b>${esc(r.name)}</b> <span class="dim">${esc(r.stage)}</span><p class="dim">${esc(r.description)}</p>${r.number === 'R08' ? fileList : ''}</div>${c ? modeButtons(c, `${r.number} ${r.name}`) : `<span class="check-lock dim">🔒 ${esc(lock[r.kind] || '')}</span>`}</div>`;
+    }).join('');
   }
-  try{ settings = await api('GET', '/api/settings/regression', undefined, current); if(current()) paint(); }
-  catch(e){ if(current()) status.textContent = e.message; return; }
+  const url = () => '/api/settings/regression' + (pk ? '?project=' + encodeURIComponent(pk) : '');
+  async function load(){
+    try{ settings = await api('GET', url(), undefined, current); if(current()) paint(); }
+    catch(e){ if(current()) status.textContent = e.message; }
+  }
+  try{ if(!projects?.length) await loadProjects(); }catch(e){ /* 목록 없이도 dev 기준으로 보여준다 */ }
+  if(!current()) return;
+  picker.innerHTML = (projects || []).map(p => `<option value="${esc(p.key)}">${esc(p.key)} · ${esc(p.name)}</option>`).join('');
+  pk = picker.value || '';
+  picker.onchange = () => { pk = picker.value; status.textContent = ''; load(); };
+  await load();
   body.onclick = async e => {
     const button = e.target.closest('[data-check]');
-    if(!button || busy) return;
+    if(!button || busy || !settings) return;
     const key = button.dataset.check, mode = button.dataset.mode;
     if(settings.checks.find(c => c.key === key).mode === mode) return;
     busy = true; paint(); status.textContent = '저장 중…';
-    try{ settings = await api('PUT', '/api/settings/regression', {checks: {[key]: mode}}, current); if(current()) status.textContent = '저장했어요.'; }
+    try{ settings = await api('PUT', url(), {checks: {[key]: mode}}, current); if(current()) status.textContent = '저장했어요.'; }
     catch(err){ if(current()) status.textContent = `${err.message} 이전 설정을 유지했어요.`; }
     finally{ busy = false; if(current()) paint(); }
   };

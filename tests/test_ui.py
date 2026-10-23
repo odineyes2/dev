@@ -1426,6 +1426,25 @@ def check_management_layout(page, shots):
     page.go_forward(); page.wait_for_selector('#agent-form')
 
 
+def check_regression_numbers(page, shots):
+    """Settings 회귀검사: 번호 순 표·고정 항목 잠금·프로젝트별 파일 목록·모드 저장을 확인한다."""
+    page.goto(BASE + '/#/settings/regression'); page.wait_for_selector('.check-proc')
+    nums = page.eval_on_selector_all('.check-proc', 'els => els.map(e => e.dataset.number)')
+    assert nums[0] == 'R01' and nums == sorted(nums) and len(set(nums)) == len(nums) >= 23, nums
+    row = page.locator('.check-proc[data-number="R19"]')
+    assert row.locator('.check-lock').count() == 1 and row.locator('[data-check]').count() == 0
+    assert page.locator('.check-proc[data-number="R07"] [data-check]').count() == 3
+    page.locator('.check-files summary').click()
+    first = page.locator('.check-file').first
+    assert first.locator('.check-no').inner_text().startswith('T-DEV-'), first.inner_text()
+    with page.expect_response(lambda r: r.request.method == 'PUT' and '/api/settings/regression' in r.url):
+        page.locator('.check-proc[data-number="R12"] [data-mode="off"]').click()
+    page.wait_for_selector('.check-proc[data-number="R12"] [data-mode="off"][aria-pressed="true"]')
+    with page.expect_response(lambda r: r.request.method == 'PUT'):
+        page.locator('.check-proc[data-number="R12"] [data-mode="auto"]').click()
+    assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+
+
 def check_attachments(page, shots):
     """혼합 첨부·실패 재시도·취소·미리보기와 네 화면을 확인한다."""
     import base64, io, wave
@@ -4625,6 +4644,10 @@ try:
             assert page.url.endswith('#/issue/NS-1')
             assert not errs, errs
             print('OK: project audits'); sys.exit(0)
+        if '--regression-numbers-only' in sys.argv:
+            check_regression_numbers(page, shots)
+            assert not errs, errs
+            print('OK: regression numbers'); sys.exit(0)
         if '--attachments-only' in sys.argv:
             check_attachments(page, shots)
             assert not errs, errs
@@ -4692,6 +4715,7 @@ try:
         check_project_audits(page, shots)
         check_auto_master(page)
         check_auto_settings(page, shots)
+        check_regression_numbers(page, shots)
         check_attachments(page, shots)
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)
