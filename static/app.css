@@ -475,6 +475,7 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
 .projects-page{ min-width:0; }
 .projects-table{ table-layout:fixed; width:100%; }
 .projects-table td{ overflow-wrap:anywhere; }
+.projects-table .col-narrow{ width:72px; text-align:center; padding-left:var(--sp-2); padding-right:var(--sp-2); }
 #project-dialog .form.panel{ margin:0; border:0; box-shadow:none; padding:var(--sp-4); }
 #project-dialog .line{ display:grid; grid-template-columns:1fr 1fr; align-items:end; }
 #project-dialog label{ min-width:0; }
@@ -486,9 +487,11 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
 @media(max-width:800px){
   #project-dialog .line{ grid-template-columns:1fr; }
   .projects-table th, .projects-table td{ padding:var(--sp-2); }
-  .projects-table th:nth-child(1){ width:20%; }
-  .projects-table th:nth-child(2){ width:40%; }
-  .projects-table th:nth-child(5), .projects-table th:nth-child(6){ width:20%; }
+  .projects-table th:nth-child(1){ width:12%; }
+  .projects-table th:nth-child(2){ width:24%; }
+  .projects-table th:nth-child(3){ width:28%; }
+  .projects-table th{ letter-spacing:0; }
+  .projects-table .col-narrow{ width:56px; padding-left:var(--sp-1, 4px); padding-right:var(--sp-1, 4px); }
 }
 
 table.issues .project-create-row td{ text-align:center; }

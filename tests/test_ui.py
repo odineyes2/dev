@@ -2310,7 +2310,18 @@ def check_project_navigation(page):
     link = page.locator('[data-project-link="NAV"]')
     link.wait_for()
     assert link.get_attribute('href') == '#/projects?project=NAV&tab=manage'
-    for cell in (1, 3, 4):
+    # 서비스 도메인 열: 값이 없으면 대시, 있으면 새 창 링크, 그 밖의 스킴은 글자만. Archived·삭제 열은 Repository 열보다 좁다.
+    assert page.locator('[data-project-domain="NAV"]').inner_text().strip() == '—'
+    assert page.locator('[data-project-domain="NAV"] a').count() == 0
+    cell_html = page.evaluate("""() => [projectDomainCell('app.lomebrote.com'), projectDomainCell('http://x.test/a'),
+        projectDomainCell('javascript:alert(1)'), projectDomainCell('')]""")
+    assert 'href="https://app.lomebrote.com"' in cell_html[0] and 'target="_blank"' in cell_html[0] and 'rel="noopener noreferrer"' in cell_html[0]
+    assert 'href="http://x.test/a"' in cell_html[1]
+    assert '<a' not in cell_html[2] and '<a' not in cell_html[3]
+    widths = page.evaluate("""() => { const th = [...document.querySelectorAll('.projects-table thead th')].map(e => e.getBoundingClientRect().width);
+        return {archived: th[5], del: th[6], repo: th[3]} }""")
+    assert widths['archived'] < widths['repo'] and widths['del'] < widths['repo'], widths
+    for cell in (1, 4, 5):
         page.locator(f'[data-project-row="NAV"] td:nth-child({cell})').click()
         page.wait_for_selector('#p-key:disabled')
         assert page.url.endswith('project=NAV&tab=manage')
