@@ -234,3 +234,101 @@ assert settled['running_run_count'] == 0 and settled['partial']
 assert settled['unmeasured_run_count'] == 1 and settled['task_count'] == 3
 assert issues.get_issue(aggregate_parent['ref'])['token_usage']['total_tokens'] == 0
 print('OK task token usage')
+
+# 완료된 부모 단위 단계 집계와 이전 기간, 빈 대기열, 부분 측정을 고정 시각으로 확인한다.
+issues.create_project(human, 'STG', 'stages')
+stage_parent = issues.create_issue(human, 'STG', 'stage parent')
+stage_task = issues.create_issue(human, 'STG', 'stage task', parent=stage_parent['ref'])
+older_parent = issues.create_issue(human, 'STG', 'older stage parent')
+older_task = issues.create_issue(human, 'STG', 'older stage task', parent=older_parent['ref'])
+unfinished_parent = issues.create_issue(human, 'STG', 'unfinished stage parent')
+unfinished_task = issues.create_issue(human, 'STG', 'unfinished stage task', parent=unfinished_parent['ref'])
+partial_parent = issues.create_issue(human, 'STG', 'partial stage parent')
+partial_task = issues.create_issue(human, 'STG', 'partial stage task', parent=partial_parent['ref'])
+
+def stage_run(c, iid, mode, begin, stop, inp, out, status='ok'):
+    return c.execute('''INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,
+        input_tokens,output_tokens,provider,model) VALUES(?,?,?,?,?,?,?,?,?,?)''',
+        (iid, mode, status, 'human:admin', begin, stop, inp, out, 'codex', 'test-model')).lastrowid
+
+def stage_completion(c, iid, ref, run_id, moment):
+    c.execute('''INSERT INTO execution_completion(run_id,issue_id,ref,actor,task_sha,
+        auto_merge,phase,merge_sha,owner_event,cfg_json,updated_at)
+        VALUES(?,?,?,'human:admin','test-sha',1,'complete','merged-sha',1,'{}',?)''',
+        (run_id, iid, ref, moment))
+
+with db.connect() as c:
+    # 첫 작업은 기간 밖에 시작했고 마지막 병합만 기간 안이다.
+    review_id = stage_run(c, stage_parent['id'], 'review',
+                          '2026-01-30T23:00:00+00:00', '2026-01-30T23:01:00+00:00', 10, 2)
+    first = stage_run(c, stage_task['id'], 'execute',
+                      '2026-01-31T14:55:00+00:00', '2026-01-31T14:56:00+00:00', 20, 3, 'failed')
+    last = stage_run(c, stage_task['id'], 'execute',
+                     '2026-01-31T15:00:00+00:00', '2026-01-31T15:02:00+00:00', 30, 4)
+    stage_completion(c, stage_task['id'], stage_task['ref'], last, '2026-01-31T15:05:00+00:00')
+    c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,started_at,run_id) VALUES(?,'execute','human:admin','started',?,?,?)",
+              (stage_task['id'], '2026-01-31T14:58:00+00:00', '2026-01-31T15:00:00+00:00', last))
+    # 겹친 두 실행은 대기열 점유 시간을 한 번만 뺀다.
+    stage_run(c, other['id'], 'review', '2026-01-31T14:58:30+00:00',
+              '2026-01-31T14:59:15+00:00', 1, 1)
+    stage_run(c, other['id'], 'review', '2026-01-31T14:59:00+00:00',
+              '2026-01-31T14:59:30+00:00', 1, 1)
+    c.execute("INSERT INTO events(issue_id,actor,kind,data_json,created_at) VALUES(?,'human:admin','status',?,?)",
+              (stage_parent['id'], '{"from":"in_progress","to":"triage"}', '2026-01-30T23:01:00+00:00'))
+    c.execute("INSERT INTO decisions(issue_id,gate,plan_version,verdict,actor,created_at) VALUES(?,'plan',1,'approve','human:admin',?)",
+              (stage_parent['id'], '2026-01-30T23:03:00+00:00'))
+    c.execute("INSERT INTO events(issue_id,actor,kind,data_json,created_at) VALUES(?,'human:admin','status',?,?)",
+              (stage_parent['id'], '{"from":"in_review","to":"done"}', '2026-01-31T15:10:00+00:00'))
+    previous_run = stage_run(c, older_task['id'], 'execute',
+                             '2026-01-30T16:00:00+00:00', '2026-01-30T16:01:00+00:00', 5, 1)
+    stage_completion(c, older_task['id'], older_task['ref'], previous_run, '2026-01-30T16:02:00+00:00')
+    stage_run(c, unfinished_task['id'], 'execute',
+              '2026-01-31T15:00:00+00:00', '2026-01-31T15:01:00+00:00', 5, 1)
+    partial_run = stage_run(c, partial_task['id'], 'execute',
+                            '2026-01-31T15:06:00+00:00', '2026-01-31T15:07:00+00:00', None, 2)
+    stage_completion(c, partial_task['id'], partial_task['ref'], partial_run, '2026-01-31T15:08:00+00:00')
+
+stage_result = usage.stage_summary('2026-02-01', '2026-02-01', 'STG', as_of=fixed_now)
+assert stage_result['previous'] == {'from_date': '2026-01-31', 'to_date': '2026-01-31'}
+assert {r['ref'] for r in stage_result['issues']} == {stage_parent['ref'], partial_parent['ref']}
+stage_row = next(r for r in stage_result['issues'] if r['ref'] == stage_parent['ref'])
+assert stage_row['stages']['review'] == {'seconds': 60, 'tokens': 12}
+assert stage_row['stages']['execute'] == {'seconds': 180, 'tokens': 57}
+assert stage_row['stages']['queue']['seconds'] == 120
+assert stage_row['queue_idle_seconds'] == 0  # 앞에서 만든 다른 프로젝트의 긴 실행이 대기 전부와 겹친다.
+assert stage_row['stages']['completion']['seconds'] == 180
+assert stage_row['stages']['plan_wait']['seconds'] == 120
+assert stage_row['stages']['done_wait']['seconds'] == 300
+assert (stage_row['execute_runs'], stage_row['failed_runs'], stage_row['total_tokens']) == (2, 1, 69)
+assert not stage_row['partial']
+assert next(r for r in stage_result['issues'] if r['ref'] == partial_parent['ref'])['partial']
+assert stage_result['partial_count'] == 1
+execute_stats = next(s for s in stage_result['stages'] if s['key'] == 'execute')
+assert execute_stats['seconds'] == {'mean': 180, 'median': 180, 'p90': 180, 'n': 1}
+assert execute_stats['previous']['seconds']['mean'] == 60
+assert execute_stats['tokens']['mean'] == 57
+assert stage_row['tasks'][0]['stages']['execute'] == {'seconds': 180, 'tokens': 57}
+assert stage_row['tasks'][0]['stages']['completion']['seconds'] == 180
+assert usage._idle_seconds(usage._time('2026-01-31T14:58:00+00:00'),
+                           usage._time('2026-01-31T15:00:00+00:00'), [
+                               (usage._time('2026-01-31T14:58:30+00:00'), usage._time('2026-01-31T14:59:15+00:00')),
+                               (usage._time('2026-01-31T14:59:00+00:00'), usage._time('2026-01-31T14:59:30+00:00'))]) == 60
+assert usage.stage_summary(project='STG', as_of=fixed_now)['from_date'] == '2026-01-26'
+
+with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
+    assert client.get('/api/trends/stages').status_code == 401
+    client.cookies.set('ns_session', 'temporary')
+    response = client.get('/api/trends/stages?from=2026-02-01&to=2026-02-01&project=stg&human=1')
+    assert response.status_code == 200, response.text
+    assert response.json()['include_human'] and response.json()['issues'][0]['ref'] == stage_parent['ref']
+    for query in ('from=bad', 'to=2026-02-30', 'from=2026-02-02&to=2026-02-01',
+                  'from=2025-01-01&to=2026-02-01', 'human=2'):
+        assert client.get('/api/trends/stages?' + query).status_code == 400, query
+    assert client.get('/api/trends/stages?project=MISSING').status_code == 404
+    client.cookies.clear()
+    key = auth.create_agent('stage-test')[1]
+    assert client.get('/api/trends/stages', headers={'Authorization': 'Bearer ' + key}).status_code == 200
+    assert client.get('/api/trends/stages', headers={'Authorization': 'Bearer invalid'}).status_code == 401
+    with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
+        assert client.get('/api/trends/stages', cookies={'ns_session': 'temporary'}).status_code == 403
+print('OK stage usage')

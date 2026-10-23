@@ -299,6 +299,272 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
                 top_issues=top[:10], note='현재 보존된 기록 기준이에요. 토큰과 실행 수는 시작일, 시간은 서울 날짜별로 나눠요. 프로젝트 점검은 일별 합계에만 포함하고 작업 순위에서 제외해요. 병렬 실행 시간은 각각 합산해요.')
 
 
+_STAGES = (
+    ('queue', '대기열 대기', 'machine'), ('review', '검토·계획', 'machine'),
+    ('execute', '구현', 'machine'), ('qa', 'QA', 'machine'),
+    ('completion', '완료 처리', 'machine'), ('plan_wait', '계획 결정 대기', 'human'),
+    ('done_wait', '완료 확인 대기', 'human'),
+)
+
+
+def _stage_stats(values, *, percentile=False):
+    values = sorted(values)
+    if not values:
+        return {'mean': None, 'median': None, **({'p90': None} if percentile else {}), 'n': 0}
+    size = len(values)
+    median = (values[(size - 1) // 2] + values[size // 2]) / 2
+    return {'mean': sum(values) / size, 'median': median,
+            **({'p90': values[math.ceil(size * .9) - 1]} if percentile else {}), 'n': size}
+
+
+def _idle_seconds(start, end, intervals):
+    """대기 구간에서 다른 실행과 겹친 시간의 합집합을 뺀다."""
+    spans = sorted((max(start, a), min(end, b)) for a, b in intervals if a < end and b > start)
+    occupied = 0
+    cursor = start
+    for a, b in spans:
+        occupied += max(0, (b - max(a, cursor)).total_seconds())
+        cursor = max(cursor, b)
+    return max(0, (end - start).total_seconds() - occupied)
+
+
+def stage_summary(from_date=None, to_date=None, project=None, include_human=False, *, as_of=None):
+    """완료된 부모 Issue의 단계별 시간·토큰과 같은 길이의 직전 기간을 집계한다."""
+    now = _time(as_of) if as_of is not None else _now()
+    if now is None:
+        raise ValueError('as_of must be an ISO timestamp with a timezone')
+    seoul = ZoneInfo('Asia/Seoul')
+
+    def parse(value, default):
+        if value is None:
+            return default
+        if not isinstance(value, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+            raise issues.StoreError('날짜는 YYYY-MM-DD 형식이어야 해요.')
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            raise issues.StoreError('유효한 날짜를 입력해 주세요.')
+
+    end_day = parse(to_date, now.astimezone(seoul).date())
+    start_day = parse(from_date, end_day - timedelta(days=min(6, end_day.toordinal() - 1)))
+    days = (end_day - start_day).days + 1
+    if not 1 <= days <= 366 or end_day == date.max or start_day.toordinal() <= days:
+        raise issues.StoreError('조회 기간은 시작일부터 종료일까지 1~366일이어야 해요.')
+    previous_start = start_day - timedelta(days=days)
+    previous_end = start_day - timedelta(days=1)
+    begin = datetime.combine(start_day, time.min, seoul).astimezone(timezone.utc)
+    finish = datetime.combine(end_day + timedelta(days=1), time.min, seoul).astimezone(timezone.utc)
+    previous_begin = datetime.combine(previous_start, time.min, seoul).astimezone(timezone.utc)
+    records = []
+    dev_changes = []
+
+    with db.connect() as c:
+        c.execute('BEGIN')
+        project_id = None
+        if project:
+            found = c.execute('SELECT id FROM projects WHERE key=?', (project.upper(),)).fetchone()
+            if found is None:
+                raise issues.StoreError('없는 프로젝트예요.', 404)
+            project_id = found['id']
+        scope = ' AND i.project_id=?' if project_id is not None else ''
+        args = (project_id,) if project_id is not None else ()
+        bounds = (previous_begin.isoformat(), finish.isoformat(), now.isoformat())
+        # 완료 시점으로 후보를 고른다. 이슈의 오래된 실행도 후보에 속하면 모두 센다.
+        candidates = c.execute(f'''SELECT i.id,i.title,p.key AS project,{issues.ref_sql('i', 'p')} AS ref,
+            i.status,i.last_done_at,
+            (SELECT MAX(e.updated_at) FROM issues t JOIN execution_completion e ON e.issue_id=t.id
+             WHERE t.parent_id=i.id AND e.phase='complete' AND e.merge_sha<>''
+             AND julianday(e.updated_at)<=julianday(?)) AS merged_at,
+            (SELECT MAX(ev.created_at) FROM events ev WHERE ev.issue_id=i.id AND ev.kind='status'
+             AND json_extract(ev.data_json,'$.to')='done' AND julianday(ev.created_at)<=julianday(?)) AS event_done
+            FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.parent_id IS NULL{scope}
+            AND (EXISTS(SELECT 1 FROM issues t JOIN execution_completion e ON e.issue_id=t.id
+                        WHERE t.parent_id=i.id AND e.phase='complete' AND e.merge_sha<>''
+                        AND julianday(e.updated_at)>=julianday(?) AND julianday(e.updated_at)<julianday(?))
+                 OR EXISTS(SELECT 1 FROM events ev WHERE ev.issue_id=i.id AND ev.kind='status'
+                           AND json_extract(ev.data_json,'$.to')='done'
+                           AND julianday(ev.created_at)>=julianday(?) AND julianday(ev.created_at)<julianday(?))
+                 OR (i.status='done' AND julianday(i.last_done_at)>=julianday(?)
+                     AND julianday(i.last_done_at)<julianday(?)))''',
+            (now.isoformat(), now.isoformat(), *args, previous_begin.isoformat(), finish.isoformat(),
+             previous_begin.isoformat(), finish.isoformat(), previous_begin.isoformat(), finish.isoformat())).fetchall()
+        ids = [r['id'] for r in candidates]
+        related = {}
+        for offset in range(0, len(ids), 900):
+            batch = ids[offset:offset + 900]
+            marks = ','.join('?' * len(batch))
+            for row in c.execute(f'''SELECT t.id,t.parent_id,t.title,{issues.ref_sql('t', 'p')} AS ref
+                FROM issues t JOIN projects p ON p.id=t.project_id
+                WHERE t.parent_id IN ({marks}) AND NOT EXISTS
+                (SELECT 1 FROM events ev WHERE ev.issue_id=t.id
+                 AND json_extract(ev.data_json,'$.superseded_by_plan') IS NOT NULL)''', batch):
+                related.setdefault(row['parent_id'], []).append(dict(row))
+        child_ids = [t['id'] for tasks in related.values() for t in tasks]
+        all_ids = ids + child_ids
+        runs = {iid: [] for iid in all_ids}
+        jobs = {iid: [] for iid in all_ids}
+        completions = {iid: [] for iid in child_ids}
+        events = {iid: [] for iid in ids}
+        decisions = {iid: [] for iid in ids}
+        for offset in range(0, len(all_ids), 900):
+            batch = all_ids[offset:offset + 900]
+            marks = ','.join('?' * len(batch))
+            for row in c.execute(f'SELECT id,issue_id,mode,status,started_at,ended_at,input_tokens,output_tokens,provider,model FROM runs WHERE issue_id IN ({marks}) AND julianday(started_at)<=julianday(?)', (*batch, now.isoformat())):
+                runs[row['issue_id']].append(row)
+            for row in c.execute(f'SELECT issue_id,created_at,started_at FROM jobs WHERE issue_id IN ({marks}) AND started_at IS NOT NULL AND julianday(started_at)<=julianday(?)', (*batch, now.isoformat())):
+                jobs[row['issue_id']].append(row)
+        for offset in range(0, len(child_ids), 900):
+            batch = child_ids[offset:offset + 900]
+            marks = ','.join('?' * len(batch))
+            for row in c.execute(f'''SELECT e.issue_id,e.run_id,e.updated_at,r.ended_at,e.phase,e.merge_sha
+                FROM execution_completion e JOIN runs r ON r.id=e.run_id
+                WHERE e.issue_id IN ({marks}) AND julianday(e.updated_at)<=julianday(?)''', (*batch, now.isoformat())):
+                completions[row['issue_id']].append(row)
+        for offset in range(0, len(ids), 900):
+            batch = ids[offset:offset + 900]
+            marks = ','.join('?' * len(batch))
+            for row in c.execute(f"SELECT issue_id,created_at,data_json FROM events WHERE issue_id IN ({marks}) AND kind='status' AND julianday(created_at)<=julianday(?)", (*batch, now.isoformat())):
+                events[row['issue_id']].append(row)
+            for row in c.execute(f"SELECT issue_id,plan_version,verdict,created_at FROM decisions WHERE issue_id IN ({marks}) AND gate='plan' AND julianday(created_at)<=julianday(?)", (*batch, now.isoformat())):
+                decisions[row['issue_id']].append(row)
+        # 빈 대기열은 모든 프로젝트의 실행과 비교해야 한다.
+        oldest_job = min((_time(j['created_at']) for rows in jobs.values() for j in rows), default=previous_begin)
+        busy = []
+        for row in c.execute('''SELECT started_at,ended_at,status FROM runs
+            WHERE julianday(started_at)<julianday(?) AND
+            (julianday(ended_at)>julianday(?) OR status='running')''',
+            (now.isoformat(), oldest_job.isoformat())):
+            a = _time(row['started_at'])
+            b = now if row['status'] == 'running' else _time(row['ended_at'])
+            if a and b and b >= a:
+                busy.append((a, b))
+
+        for row in candidates:
+            children = related.get(row['id'], [])
+            completed = [e for task in children for e in completions[task['id']]
+                         if e['phase'] == 'complete' and e['merge_sha']]
+            merged = max((_time(e['updated_at']) for e in completed), default=None)
+            done = _time(row['event_done']) or (_time(row['last_done_at']) if row['status'] == 'done' else None)
+            done_at = max((t for t in (merged, done) if t), default=None)
+            if not done_at or not previous_begin <= done_at < finish or done_at > now:
+                continue
+            if not done and children and any(not any(e['phase'] == 'complete' and e['merge_sha']
+                    for e in completions[task['id']]) for task in children):
+                continue
+            all_issue_ids = [row['id']] + [t['id'] for t in children]
+            stage = {key: {'seconds': 0, 'tokens': 0} for key, _, _ in _STAGES}
+            partial = False
+            reasons = []
+            execute_runs = failed_runs = 0
+            providers = set()
+            idle = 0
+            for iid in all_issue_ids:
+                for run in runs[iid]:
+                    mode = run['mode']
+                    if mode not in ('review', 'execute', 'qa'):
+                        continue
+                    if mode == 'execute':
+                        execute_runs += 1
+                        failed_runs += run['status'] != 'ok'
+                    providers.add(f"{run['provider']}/{run['model'] or 'unknown'}")
+                    ended = _time(run['ended_at'])
+                    seconds = _seconds(run['started_at'], run['ended_at']) if ended and ended <= now else None
+                    inp, out = token_count(run['input_tokens']), token_count(run['output_tokens'])
+                    if seconds is None or inp is None or out is None or run['status'] == 'running':
+                        partial = True
+                        reasons.append('실행 시간 또는 토큰 미측정')
+                    if seconds is not None:
+                        stage[mode]['seconds'] += seconds
+                    stage[mode]['tokens'] += (inp or 0) + (out or 0)
+                for job in jobs[iid]:
+                    seconds = _seconds(job['created_at'], job['started_at'])
+                    if seconds is not None:
+                        stage['queue']['seconds'] += seconds
+                        idle += _idle_seconds(_time(job['created_at']), _time(job['started_at']), busy)
+                if iid in completions:
+                    for completion in completions[iid]:
+                        if completion['phase'] == 'complete' and completion['merge_sha']:
+                            seconds = _seconds(completion['ended_at'], completion['updated_at'])
+                            if seconds is None:
+                                partial = True
+                                reasons.append('완료 처리 시간 미측정')
+                            else:
+                                stage['completion']['seconds'] += seconds
+            status_events = [(ev, json.loads(ev['data_json'])) for ev in events[row['id']]]
+            plans = [_time(ev['created_at']) for ev, data in status_events if data.get('to') == 'triage']
+            approvals = [_time(d['created_at']) for d in decisions[row['id']]
+                         if d['verdict'] in ('approve', 'approve_notes')]
+            if plans and approvals:
+                seconds = _seconds(max(plans).isoformat(), next((a.isoformat() for a in approvals if a >= max(plans)), None))
+                stage['plan_wait']['seconds'] = seconds or 0
+            if merged and done and done >= merged:
+                stage['done_wait']['seconds'] = (done - merged).total_seconds()
+            tasks = []
+            for task in children:
+                task_id = task['id']
+                task_runs = runs[task_id]
+                task_stages = {key: {'seconds': 0, 'tokens': 0} for key, _, _ in _STAGES}
+                task_partial = False
+                for run in task_runs:
+                    mode = run['mode']
+                    if mode not in ('review', 'execute', 'qa'):
+                        continue
+                    ended = _time(run['ended_at'])
+                    seconds = _seconds(run['started_at'], run['ended_at']) if ended and ended <= now else None
+                    inp, out = token_count(run['input_tokens']), token_count(run['output_tokens'])
+                    task_partial |= seconds is None or inp is None or out is None or run['status'] == 'running'
+                    task_stages[mode]['seconds'] += seconds or 0
+                    task_stages[mode]['tokens'] += (inp or 0) + (out or 0)
+                for job in jobs[task_id]:
+                    task_stages['queue']['seconds'] += _seconds(job['created_at'], job['started_at']) or 0
+                for completion in completions[task_id]:
+                    if completion['phase'] == 'complete' and completion['merge_sha']:
+                        task_stages['completion']['seconds'] += _seconds(completion['ended_at'], completion['updated_at']) or 0
+                tasks.append({'ref': task['ref'], 'title': task['title'],
+                              'execute_runs': sum(r['mode'] == 'execute' for r in task_runs),
+                              'failed_runs': sum(r['mode'] == 'execute' and r['status'] != 'ok' for r in task_runs),
+                              'stages': task_stages,
+                              'total_machine_seconds': sum(task_stages[key]['seconds'] for key, _, kind in _STAGES if kind == 'machine'),
+                              'total_tokens': sum(v['tokens'] for v in task_stages.values()),
+                              'partial': task_partial})
+            machine = sum(stage[key]['seconds'] for key, _, kind in _STAGES if kind == 'machine')
+            human = stage['plan_wait']['seconds'] + stage['done_wait']['seconds']
+            records.append({'ref': row['ref'], 'title': row['title'], 'project': row['project'],
+                            'done_at': done_at.isoformat(), 'task_count': len(children),
+                            'execute_runs': execute_runs, 'failed_runs': failed_runs,
+                            'provider_models': sorted(providers), 'stages': stage, 'tasks': tasks,
+                            'queue_idle_seconds': idle, 'total_machine_seconds': machine,
+                            'total_seconds': machine + human, 'total_tokens': sum(v['tokens'] for v in stage.values()),
+                            'partial': partial, 'partial_reason': ', '.join(sorted(set(reasons)))})
+        for row in c.execute(f'''SELECT {issues.ref_sql('i', 'p')} AS ref,i.title,e.updated_at AS merged_at
+            FROM execution_completion e JOIN issues i ON i.id=e.issue_id JOIN projects p ON p.id=i.project_id
+            WHERE p.key='DEV' AND e.phase='complete' AND e.merge_sha<>''
+            AND julianday(e.updated_at)>=julianday(?) AND julianday(e.updated_at)<julianday(?)
+            AND julianday(e.updated_at)<=julianday(?)''',
+            (begin.isoformat(), finish.isoformat(), now.isoformat())):
+            dev_changes.append(dict(row))
+
+    current = [r for r in records if _time(r['done_at']) >= begin]
+    previous = [r for r in records if _time(r['done_at']) < begin]
+    current.sort(key=lambda r: (-r['total_machine_seconds'], r['ref']))
+    stages = []
+    for key, name, kind in _STAGES:
+        def stats(rows, field):
+            return _stage_stats([r['stages'][key][field] for r in rows if not r['partial']], percentile=field == 'seconds')
+        stages.append({'key': key, 'name': name, 'kind': kind,
+                       'seconds': stats(current, 'seconds'),
+                       'tokens': stats(current, 'tokens') if key in ('review', 'execute', 'qa') else None,
+                       'previous': {'seconds': stats(previous, 'seconds'),
+                                    'tokens': stats(previous, 'tokens') if key in ('review', 'execute', 'qa') else None}})
+    complete = [r for r in current if not r['partial']]
+    return {'from_date': start_day.isoformat(), 'to_date': end_day.isoformat(),
+            'previous': {'from_date': previous_start.isoformat(), 'to_date': previous_end.isoformat()},
+            'project': project.upper() if project else None, 'include_human': bool(include_human),
+            'stages': stages, 'queue_idle_seconds': _stage_stats([r['queue_idle_seconds'] for r in complete]),
+            'issues': current, 'dev_changes': dev_changes, 'partial_count': sum(r['partial'] for r in current),
+            'note': '현재 보존된 완료 기록 기준이에요. 부분 측정 이슈는 평균에서 제외해요. 병렬 실행 시간은 각각 합산해요.'}
+
+
 def project_usage(key, limit=50, offset=0, *, as_of=None):
     """같은 조회 시각·DB 스냅샷으로 요약과 페이지를 반환한다."""
     if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
