@@ -102,15 +102,29 @@ body:has(#list-body) .tab-bar-inner{ max-width:none; padding-left:var(--list-gut
 .trend-stage-grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-4); margin:var(--sp-3) 0; }
 .trend-stage-card, .trend-stage-section{ min-width:0; padding:var(--sp-4); background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); }
 .trend-stage-card h2, .trend-stage-section h2{ margin:0 0 var(--sp-3); font:600 12px/1.4 var(--mono); letter-spacing:var(--track-label); }
-.trend-donut{ display:block; width:min(100%,220px); margin:auto; color:var(--text); }
+.trend-donut-layout{ display:grid; grid-template-columns:minmax(130px,180px) minmax(0,1fr); align-items:center; gap:var(--sp-3); }
+.trend-donut{ display:block; width:100%; max-width:180px; margin:auto; color:var(--text); }
 .trend-donut text{ fill:currentColor; font:600 11px var(--mono); }
-.trend-donut .trend-donut-caption{ fill:var(--dim); font-size:11px; }
+.trend-donut-legend{ display:grid; gap:var(--sp-2); min-width:0; padding:0; margin:0; list-style:none; font-size:12px; font-variant-numeric:tabular-nums; }
+.trend-donut-legend li{ display:grid; grid-template-columns:12px minmax(0,1fr) auto; align-items:center; gap:var(--sp-2); min-width:0; }
+.trend-donut-legend .trend-stage-dot{ margin:0; }
+.trend-donut-name{ min-width:0; overflow-wrap:anywhere; }
+.trend-donut-value{ white-space:nowrap; color:var(--dim); }
+.trend-stage-queue{ --stage-color:var(--s-backlog); }
+.trend-stage-review{ --stage-color:var(--s-in_review); }
+.trend-stage-execute{ --stage-color:var(--s-in_progress); }
+.trend-stage-qa{ --stage-color:var(--s-triage); }
+.trend-stage-completion{ --stage-color:var(--s-done); }
+.trend-stage-plan_wait{ --stage-color:var(--s-changes_requested); }
+.trend-stage-done_wait{ --stage-color:var(--text); }
+.trend-stage-details{ margin:0 0 var(--sp-4); }
+.trend-stage-details summary{ min-height:40px; cursor:pointer; color:var(--accent); font-size:13px; }
 .trend-stage-labels{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-2) var(--sp-4); padding:0; margin:0 0 var(--sp-4); list-style:none; }
 .trend-stage-labels li{ display:flex; min-width:0; gap:var(--sp-2); padding:var(--sp-3); background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); }
 .trend-stage-labels li div{ display:flex; flex-direction:column; min-width:0; gap:var(--sp-1); font-size:13px; }
 .trend-stage-labels li strong{ font-weight:600; }
 .trend-stage-labels li span:not(.trend-stage-dot){ color:var(--dim); }
-.trend-stage-dot{ flex:none; width:12px; height:12px; margin-top:4px; border-radius:999px; background:var(--accent); }
+.trend-stage-dot{ flex:none; width:12px; height:12px; margin-top:4px; border-radius:999px; background:var(--stage-color); }
 .trend-stage-delta{ white-space:nowrap; }
 .trend-stage-scroll{ max-width:100%; overflow-x:auto; }
 .trend-stage-table{ width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
@@ -145,6 +159,9 @@ body:has(#list-body) .tab-bar-inner{ max-width:none; padding-left:var(--list-gut
   .trend-filter input{ width:100%; }
   .trend-filter>button[type="submit"]{ flex:1 1 100%; }
   .trend-card strong{ font-size:20px; }
+}
+@media(max-width:600px){
+  .trend-donut-layout{ grid-template-columns:minmax(0,1fr); }
 }
 @media(max-width:800px){
   .issue-summary{ padding:var(--sp-2) var(--sp-3); }

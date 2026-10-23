@@ -516,16 +516,22 @@ function stageDelta(now, before){
   const percent = Math.round((now - before) / before * 100);
   return ` <span class="trend-stage-delta" title="이전 기간 대비">${percent > 0 ? '▲' : percent < 0 ? '▼' : '='} ${Math.abs(percent)}%</span>`;
 }
-function stageDonut(stages, field, label, count, allStages = stages){
+function stageDonut(stages, field, label, count){
   const values = stages.map(s => Math.max(0, Number(s[field]?.mean || 0)));
   const total = values.reduce((a, b) => a + b, 0), circumference = 2 * Math.PI * 42;
   let offset = 0;
   const arcs = stages.map((s, i) => {
     const length = total ? values[i] / total * circumference : 0;
-    const arc = length ? `<circle cx="60" cy="60" r="42" fill="none" stroke="var(--accent)" stroke-opacity="${(1 - allStages.indexOf(s) * .11).toFixed(2)}" stroke-width="16" stroke-dasharray="${length.toFixed(3)} ${(circumference - length).toFixed(3)}" stroke-dashoffset="${(-offset).toFixed(3)}" transform="rotate(-90 60 60)" role="img" aria-label="${esc(s.name)} ${esc(field === 'seconds' ? stageDuration(values[i]) : formatTokens(values[i]))}"><title>${esc(s.name)} · ${esc(field === 'seconds' ? stageDuration(values[i]) : formatTokens(values[i]))}</title></circle>` : '';
+    const value = field === 'seconds' ? stageDuration(values[i]) : formatTokens(values[i]);
+    const arc = length ? `<circle class="trend-stage-${s.key}" cx="60" cy="60" r="42" fill="none" stroke="var(--stage-color)" stroke-width="16" stroke-dasharray="${length.toFixed(3)} ${(circumference - length).toFixed(3)}" stroke-dashoffset="${(-offset).toFixed(3)}" transform="rotate(-90 60 60)" role="img" aria-label="${esc(s.name)} ${esc(value)}"><title>${esc(s.name)} · ${esc(value)}</title></circle>` : '';
     offset += length; return arc;
   }).join('');
-  return `<svg class="trend-donut" viewBox="0 0 120 120" role="img" aria-label="${esc(label)}: ${esc(count ? field === 'seconds' ? stageDuration(total) : formatTokens(total) : '측정 없음')}"><circle cx="60" cy="60" r="42" fill="none" stroke="var(--border)" stroke-width="16"/>${arcs}<text x="60" y="56" text-anchor="middle">${esc(count ? field === 'seconds' ? stageDuration(total) : formatTokens(total) : '—')}</text><text x="60" y="72" text-anchor="middle" class="trend-donut-caption">${count ? '평균 Issue 1건' : '측정 없음'}</text></svg>`;
+  const legend = stages.map((s, i) => {
+    const value = field === 'seconds' ? stageDuration(values[i]) : formatTokens(values[i]);
+    const percent = total ? Math.round(values[i] / total * 100) : 0;
+    return `<li class="trend-stage-${s.key}"><span class="trend-stage-dot" aria-hidden="true"></span><span class="trend-donut-name">${esc(s.name)}</span><span class="trend-donut-value">${esc(value)} · ${percent}%</span></li>`;
+  }).join('');
+  return `<div class="trend-donut-layout"><svg class="trend-donut" viewBox="0 0 120 120" role="img" aria-label="${esc(label)}: ${esc(count ? field === 'seconds' ? stageDuration(total) : formatTokens(total) : '측정 없음')}"><circle cx="60" cy="60" r="42" fill="none" stroke="var(--border)" stroke-width="16"/>${arcs}<text x="60" y="60" dominant-baseline="middle" text-anchor="middle">${esc(count ? field === 'seconds' ? stageDuration(total) : formatTokens(total) : '측정 없음')}</text></svg><ul class="trend-donut-legend" aria-label="${esc(label)} 단계별 평균">${legend}</ul></div>`;
 }
 function stageCell(row, key){
   const seconds = row.stages?.[key]?.seconds;
@@ -580,12 +586,12 @@ function stageDailyChart(data){
 }
 function stageResults(data){
   const visible = data.stages.filter(s => trendHuman || s.kind === 'machine');
-  const label = s => `<li><span class="trend-stage-dot" style="opacity:${(1 - visible.indexOf(s) * .11).toFixed(2)}" aria-hidden="true"></span><div><strong>${esc(s.name)}</strong><span>평균 ${stageDuration(s.seconds.mean)} · 중앙 ${stageDuration(s.seconds.median)}${stageDelta(s.seconds.median, s.previous.seconds.median)}</span>${s.tokens ? `<span>토큰 평균 ${formatTokens(s.tokens.mean)} · 중앙 ${formatTokens(s.tokens.median)}${stageDelta(s.tokens.median, s.previous.tokens.median)}</span>` : ''}${s.key === 'queue' ? `<span>그중 빈 대기열 대기 평균 ${stageDuration(data.queue_idle_seconds.mean)}</span>` : ''}</div></li>`;
+  const label = s => `<li class="trend-stage-${s.key}"><span class="trend-stage-dot" aria-hidden="true"></span><div><strong>${esc(s.name)}</strong><span>시간 중앙 ${stageDuration(s.seconds.median)}${stageDelta(s.seconds.median, s.previous.seconds.median)}</span>${s.tokens ? `<span>토큰 중앙 ${formatTokens(s.tokens.median)}${stageDelta(s.tokens.median, s.previous.tokens.median)}</span>` : ''}${s.key === 'queue' ? `<span>그중 빈 대기열 대기 평균 ${stageDuration(data.queue_idle_seconds.mean)}</span>` : ''}</div></li>`;
   return `<p class="trend-context">${data.project ? esc(data.project) : '전체 프로젝트'} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · 이전 기간 ${esc(data.previous.from_date)} ~ ${esc(data.previous.to_date)}</p>
     <label class="trend-human-toggle"><input id="trend-human" type="checkbox" ${trendHuman ? 'checked' : ''}> 사람 대기 포함</label>
     ${data.partial_count ? `<p class="trend-partial" role="status">부분 측정 ${data.partial_count}건 · 평균과 중앙값에서 제외해요.</p>` : ''}
-    <div class="trend-stage-grid"><section class="trend-stage-card"><h2>평균 시간 구성</h2>${stageDonut(visible, 'seconds', '평균 시간 구성', data.issues.length - data.partial_count)}</section><section class="trend-stage-card"><h2>평균 토큰 구성</h2>${stageDonut(visible.filter(s => s.tokens), 'tokens', '평균 토큰 구성', data.issues.length - data.partial_count, visible)}</section></div>
-    <ul class="trend-stage-labels">${visible.map(label).join('')}</ul>
+    <div class="trend-stage-grid"><section class="trend-stage-card"><h2>평균 시간 구성</h2>${stageDonut(visible, 'seconds', '평균 시간 구성', data.issues.length - data.partial_count)}</section><section class="trend-stage-card"><h2>평균 토큰 구성</h2>${stageDonut(visible.filter(s => s.tokens), 'tokens', '평균 토큰 구성', data.issues.length - data.partial_count)}</section></div>
+    <details class="trend-stage-details"><summary>단계별 중앙값과 이전 기간 비교</summary><ul class="trend-stage-labels">${visible.map(label).join('')}</ul></details>
     <section class="trend-stage-section trend-stage-history"><h2>Task 전체 시간 중앙값</h2><p class="dim">구현 대기열 등록부터 병합 완료까지 · 병합일 기준 · 세로 눈금은 dev 변경이에요.${data.daily_task_unmeasured ? ` 시작 기록이 없는 Task ${data.daily_task_unmeasured}건은 제외했어요.` : ''}</p>${stageDailyChart(data)}
       <details class="trend-dev-changes"><summary>이 기간에 병합된 dev 변경 ${data.dev_changes?.length || 0}건</summary>${data.dev_changes?.length ? `<ul>${data.dev_changes.map(change => `<li><a href="#/issue/${encodeURIComponent(change.ref)}">${esc(change.ref)} · ${esc(change.title)}</a><time datetime="${esc(change.merged_at)}">${esc(change.merged_at_local || '')}</time></li>`).join('')}</ul>` : '<p class="dim">병합된 dev 변경이 없어요.</p>'}</details></section>
     <section class="trend-stage-section"><h2>Issue별 소요</h2>${data.issues.length ? `<div class="trend-stage-scroll"><table class="trend-stage-table"><thead><tr><th><button data-stage-sort="ref" type="button">Issue</button></th><th><button data-stage-sort="project" type="button">프로젝트</button></th><th><button data-stage-sort="done_at" type="button">완료 시각</button></th><th><button data-stage-sort="task_count" type="button">Task</button></th>${STAGE_COLUMNS.map(([key,name]) => `<th><button data-stage-sort="${key}" type="button">${name}</button></th>`).join('')}<th aria-sort="${trendStageAsc ? 'ascending' : 'descending'}"><button data-stage-sort="total_machine_seconds" type="button">기계 합계</button></th>${trendHuman ? '<th><button data-stage-sort="plan_wait" type="button">계획 결정 대기</button></th><th><button data-stage-sort="done_wait" type="button">완료 확인 대기</button></th>' : ''}<th><button data-stage-sort="total_tokens" type="button">토큰 합계</button></th></tr></thead><tbody>${stageRows()}</tbody></table></div>` : '<div class="empty">이 기간에 완료된 Issue가 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>'}</section><p class="trend-note">${esc(data.note)}</p>`;
