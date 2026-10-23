@@ -92,7 +92,7 @@ def panel(issue):
                         raise ValueError('UI 실패 위치와 전용 실행 옵션을 찾지 못했어요. 전체 UI 검사는 실행하지 않아요.')
                 targets.append({'file': paths[0], 'args': args})
         except (ValueError, SyntaxError, OSError, project_build.BuildError) as error:
-            blocked = str(error); print('DBG', failed, repr(sha), paths, project_build._git(repo, 'ls-tree', '-r', sha), project_build._git(repo, 'log', '--oneline', '-3', sha))
+            blocked = str(error)
     if not targets and not blocked:
         blocked = '재현할 실패 검사 기록이 없어요.'
     if latest.get('status') == 'running' or run and run['status'] == 'running' or issue.get('job') or issue['status'] in ('waiting', 'in_progress'):

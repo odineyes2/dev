@@ -153,19 +153,21 @@ assert git('rev-parse', 'HEAD') == before and (repo / 'collision.txt').read_text
 (repo / 'collision.txt').unlink()
 
 # 첫 실패 뒤 나머지 검사도 실행하고, 시간 제한도 실패 로그로 남긴다.
-with patch.object(orchestrate.subprocess, 'run', side_effect=[
-        subprocess.TimeoutExpired(['python'], 600, output=b'partial'),
-        subprocess.CompletedProcess(['python'], 2, 'second failure', '')]) as run:
+timeout = subprocess.TimeoutExpired(['python'], 600, output=b'partial')
+second = subprocess.CompletedProcess(['python'], 2, 'second failure', '')
+with patch.object(orchestrate.subprocess, 'run', side_effect=[timeout] * 3 + [second] * 3) as run:
     with patch.object(orchestrate.Path, 'glob', return_value=[Path('tests/test_one.py'), Path('tests/test_two.py')]):
         note = orchestrate.run_tests(str(repo))
-assert run.call_count == 2 and '600초' in note and 'partial' in note and 'second failure' in note
+assert run.call_count == 6 and '600초' in note and 'partial' in note and 'second failure' in note   # 실패 검사는 2번 더 돌려 늘 실패하는지 본다
 
-# 실패한 검사는 같은 코드를 재실행하지 않고 실패 로그를 남긴다.
+# 병합 검사에서 실패했다가 다시 통과하면 불안정한 검사로 실패 로그를 남긴다(DEV-160-3).
 with patch.object(orchestrate.subprocess, 'run', side_effect=[
-        subprocess.CompletedProcess(['python'], 1, '', 'ECONNRESET'), subprocess.CompletedProcess(['python'], 0, 'ok', '')]) as run:
+        subprocess.CompletedProcess(['python'], 1, '', 'ECONNRESET'), subprocess.CompletedProcess(['python'], 0, 'ok', ''),
+        subprocess.CompletedProcess(['python'], 0, 'ok', '')]) as run:
     with patch.object(orchestrate.Path, 'glob', return_value=[Path('tests/test_flaky.py')]):
-        assert 'ECONNRESET' in orchestrate.run_tests(str(repo))
-assert run.call_count == 1 and 'ECONNRESET' in next((orchestrate.config.DATA_DIR / 'merge-tests').glob('test_flaky-*.log')).read_text('utf-8')
+        flaky_note = orchestrate.run_tests(str(repo))
+assert 'ECONNRESET' in flaky_note and orchestrate.FLAKY_MARK in flaky_note and '3번 중 1번' in flaky_note
+assert run.call_count == 3 and 'ECONNRESET' in next((orchestrate.config.DATA_DIR / 'merge-tests').glob('test_flaky-*.log')).read_text('utf-8')
 
 # 같은 Task의 새 커밋이 없으면 다른 main 커밋을 배포·revert 대상으로 오인하지 않는다.
 assert orchestrate.merge(str(repo), 'C-2')[0] == 'on_hold'
