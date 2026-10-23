@@ -282,7 +282,7 @@ def direct_checks(request, files, worktree, folder, evidence_dir, deadline, issu
     if request.get('capture'):
         require_enabled()
         if not regression.enabled('agent_capture',issue_ref,str(worktree)):
-            evidence['capture'] = {'returncode':None,'output':'미실시: Settings에서 UI 캡처 확인을 껐어요.'}
+            evidence['capture'] = {'returncode':None,'output':'미실시: '+regression.capture_skip_reason(issue_ref,str(worktree))}
         else:
             name = 'scripts/capture_ui.py'
             if name not in files:

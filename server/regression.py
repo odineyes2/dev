@@ -124,11 +124,66 @@ def planning_instructions(ref=None):
             'On/Off는 사람 설정이며 바꾸지 않는다. 검사 키와 현재 모드: ' + keys + '\n')
 
 
+def _plan_task(issue, body):
+    tasks = issues.parse_tasks(body)
+    task = next((t for t in tasks if t['title'] == issue['title']), None)
+    if task:
+        return task
+    ref_number = re.fullmatch(r'[^-]+-\d+-(\d+)', issue.get('ref', '')) if issue.get('parent_ref') else None
+    numbers = [issue.get('sub_number') or (int(ref_number[1]) if ref_number else None)]
+    match = re.search(r'\bTask\s+(\d+)\b', issue.get('body', ''), re.I)
+    if match:
+        numbers.append(int(match[1]))
+    return next((t for n in numbers if n is not None for t in tasks if t['n'] == int(n)), None)
+
+
+def _planned_paths(issue, task, body):
+    import execute
+    paths = set(execute.task_files(issue))
+    if task and task['files']:
+        paths.update(execute.task_files({'body': '파일: ' + task['files']}))
+    if paths:
+        return paths, False
+    # 옛 계획에는 Tasks 절이 없어도 본문에 구체적인 경로가 남아 있다.
+    paths = set(re.findall(r'`((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]+)`', body))
+    return paths, bool(paths)
+
+
+def capture_skip_reason(ref, repo=None):
+    """사람 설정·계획 선택·Auto 판단의 캡처 미실시 사유를 공통 문구로 만든다."""
+    check = resolve(ref, repo)['checks']['agent_capture']
+    if check['enabled']:
+        return ''
+    if check['mode'] == 'off':
+        return '사람 설정(Settings → 회귀검사 → UI 캡처 확인: Off)으로 캡처하지 않는다.'
+    if check['reason'].startswith('계획 에이전트:'):
+        return '계획서 검사 선택: ' + check['reason'].removeprefix('계획 에이전트: ')
+    return ('Auto: 화면 변경이 없다고 판단해 캡처하지 않는다(이유: ' + check['reason'] + '). '
+            '화면을 바꿨다면 Settings에서 On으로 바꾸거나 계획서 검사 선택에 agent_capture:true를 적는다.')
+
+
+def capture_planned_off(ref, repo):
+    """실행 전 계획 경로만으로 판단했을 때 캡처 Auto가 꺼졌는지 확인한다."""
+    issue = issues.get_issue(ref)
+    paths = set()
+    if issue.get('parent_ref'):
+        parent = issues.get_issue(issue['parent_ref'])
+        approval = parent.get('approval') or {}
+        if approval.get('verdict') in ('approve', 'approve_notes') and not approval.get('stale'):
+            body = (parent.get('plan') or {}).get('body', '')
+            paths, _ = _planned_paths(issue, _plan_task(issue, body), body)
+    if not paths:
+        import execute
+        paths = execute.task_files(issue)
+    check = resolve(ref, repo, changed=list(paths))['checks']['agent_capture']
+    return check['mode'] == 'auto' and not check['enabled']
+
+
 def resolve(ref=None, repo=None, changed=None):
     """사람 설정 > 실제 고위험 변경 > 승인 계획 > 변경 범위 기본값 순으로 결정한다."""
     import execute
     saved = values()
-    issue, choice = None, {}
+    issue, choice, planned_paths, inferred_plan = None, {}, set(), False
     if ref:
         with db.connect() as c:
             ready = c.execute("SELECT 1 FROM sqlite_master WHERE name='issues'").fetchone()
@@ -147,9 +202,10 @@ def resolve(ref=None, repo=None, changed=None):
             parent = issues.get_issue(issue['parent_ref'])
             a = parent.get('approval') or {}
             if a and not a.get('stale') and a.get('verdict') in ('approve', 'approve_notes'):
-                tasks = issues.parse_tasks((parent.get('plan') or {}).get('body', ''))
-                task = next((t for t in tasks if t['title'] == issue['title']), None)
-                choices = parse_plan((parent.get('plan') or {}).get('body', ''))
+                body = (parent.get('plan') or {}).get('body', '')
+                task = _plan_task(issue, body)
+                planned_paths, inferred_plan = _planned_paths(issue, task, body)
+                choices = parse_plan(body)
                 choice = choices.get(str(task['n']), {}) if task else {}
     if changed is None:
         changed = []
@@ -164,7 +220,11 @@ def resolve(ref=None, repo=None, changed=None):
             if added.returncode == 0:
                 changed += [p for p in added.stdout.splitlines() if p.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.vue', '.css', '.html')) and not p.startswith(('.ui-captures/', 'tests/shots/'))]
         if not changed and issue:
-            changed = list(execute.task_files(issue))
+            changed = list(planned_paths or execute.task_files(issue))
+        else:
+            inferred_plan = False
+    else:
+        inferred_plan = False
     changed = sorted(set(p.replace('\\', '/') for p in changed))
     named_tests = set(re.findall(r'tests/(test_[A-Za-z0-9_]+\.py)', (issue or {}).get('body', '')))
     critical = {'auth', 'db', 'execute', 'review', 'jobs', 'orchestrate', 'rollback', 'regression'}
@@ -198,7 +258,8 @@ def resolve(ref=None, repo=None, changed=None):
         else:
             auto = {'agent_related': level != 'light' or any(p.startswith('tests/') for p in changed), 'agent_api': 'app' in modules or high,
                     'agent_capture': ui, 'server_api_warning': 'app' in modules or high}.get(key, level != 'light')
-        reason = '실제 변경 범위로 선택' if auto else '변경 범위와 관련 없음'
+        reason = ('계획서 경로로 추정' if inferred_plan and changed else
+                  '실제 변경 범위로 선택' if auto else '변경 범위와 관련 없음')
         if key in choice.get('checks', {}):
             auto = choice['checks'][key]
             reason = '계획 에이전트: ' + choice['reason']
