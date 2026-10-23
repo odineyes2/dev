@@ -79,6 +79,27 @@ assert not any("끝나지 못했어요" in (e["body"] or "") for e in current["e
 assert review.list_runs(task)[0]["status"] == "ok"
 print("ok held")
 
+# Claude가 커밋 없이 막혔다고 끝내면(턴 요약 blocked) backlog로 되돌리지 않고 on_hold로 둔다(NS-103-5).
+import json
+blocked_task = issues.create_issue(human, "NS", "막히는 Task", parent="NS-1")["ref"]
+summary = json.dumps({"type": "system", "subtype": "post_turn_summary", "status_category": "blocked",
+                      "status_detail": "검사를 못 돌렸어요", "needs_action": "검사 명령 허용"})
+result = json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "검사를 못 돌렸어요"})
+assert review.claude_blocked(summary + "\n" + result) == "검사를 못 돌렸어요 — 필요한 것: 검사 명령 허용"
+assert review.claude_blocked(summary.replace('"blocked"', '"done"')) is None and review.claude_blocked(result) is None
+log_path, run_id = review.begin(human, issues.get_issue(blocked_task), "execute")
+seen = len(issues.get_issue(blocked_task)["events"])
+emit = [sys.executable, "-c", f"print({summary!r}); print({result!r})"]
+with patch.object(orchestrate, "run_tests", side_effect=AssertionError("막히면 검사하지 않는다")), \
+     patch.object(review.subprocess, "Popen", side_effect=lambda c, **kw: real(emit, **kw)), \
+     patch.object(execute, "register_completion", side_effect=issues.StoreError("현재 Task의 깨끗한 worktree와 연결된 새 커밋이 필요해요.", 409)):
+    status = review.run_headless(human, blocked_task, log_path, run_id, [cmd[0], "-p", "지시"], None, None, 30, "실행")
+current = issues.get_issue(blocked_task)
+assert status == "held" and current["status"] == "on_hold", (status, current["status"])
+assert not any("끝나지 못했어요" in (e["body"] or "") for e in current["events"][seen:])
+assert "Bash(python -m unittest tests.*)" in execute.ALLOWED_TOOLS
+print("ok claude blocked")
+
 # 바꿀 파일이 없는(조사 전용) Task는 실행을 맡기지 않는다 — 커밋이 없어 매번 실패한다(NS-31-1).
 assert "바꿀 파일이 없어" in execute.scope_reason({"body": "**바꿀 파일**: 없음(읽기 전용 조사, 결과는 NS-31 댓글)", "project_key": "NS"}, [])
 assert execute.scope_reason({"body": "**바꿀 파일**: server/a.py", "project_key": "NS"}, []) is None

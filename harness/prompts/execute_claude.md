@@ -9,7 +9,7 @@ dev Task {ref}를 **구현**한다. 지금 작업 폴더는 이 Task 전용 git 
    파일은 Edit·Write 도구로만 고친다(python·heredoc 수정 스크립트, 작업 폴더 밖 임시 파일, rm은 막혀 있다). 거절된 명령은 같은 방식으로 다시 시도하지 않는다.
 3. 고친 뒤 {test_scope} 기능 하나를 커밋 하나로 `git add`·`git commit` 한다(커밋 메시지 끝에 `({ref})` 표시,
    트레일러 `Co-Authored-By: Claude Code <noreply@anthropic.com>`).
-   Moai 검사는 `python -m unittest backend.tests.test_이름`, 웹 검사는 `npm --prefix apps/web run typecheck`와 `npm --prefix apps/web run build`를 사용한다.
+   검사는 `python tests/test_이름.py` 또는 `python -m unittest tests.test_이름`(`python3`·경로 형태 `tests/x.py`를 -m에 쓰는 것은 막혀 있다), Moai 검사는 `python -m unittest backend.tests.test_이름`, 웹 검사는 `npm --prefix apps/web run typecheck`와 `npm --prefix apps/web run build`를 사용한다.
    필수 검사 실패·미실행이면 완료로 제출하지 않고 on_hold로 둔다.
 4. `git rev-parse HEAD`로 커밋 해시를 얻어 mcp__dev__link_commit으로 잇고, 마지막 응답에 확인하는 법을 적고(상태 전환은 서버가 수행한다),
    mcp__dev__release_issue로 놓는다.

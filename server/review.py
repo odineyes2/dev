@@ -344,6 +344,21 @@ def claude_result(out: str) -> str:
     return out
 
 
+def claude_blocked(out: str) -> str | None:
+    """마지막 턴 요약(post_turn_summary)이 blocked면 막힌 사유와 필요한 조치를 돌려준다. 없으면 None."""
+    for line in reversed(out.splitlines()):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "system" and event.get("subtype") == "post_turn_summary":
+            if event.get("status_category") != "blocked":
+                return None
+            parts = [str(event.get(k) or "").strip() for k in ("status_detail", "needs_action")]
+            return " — 필요한 것: ".join(p for p in parts if p) or "사유를 남기지 않았어요"
+    return None
+
+
 def token_count(value):
     """누락·손상된 토큰은 미계측으로 남기고 실제 정수 0은 보존한다."""
     return value if type(value) is int and 0 <= value <= 2**63 - 1 else None
@@ -469,7 +484,7 @@ def stdin_prompt(cmd: list[str], provider: str) -> tuple[list[str], str | None]:
 def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[str], cwd, env, timeout: float, label: str, provider: str = "claude", baseline_plan_id: int = 0) -> str:
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     name = "Codex" if provider == "codex" else "Claude Code"
-    spent, earlier, earlier_out, held = {}, "", "", False
+    spent, earlier, earlier_out, held, blocked = {}, "", "", False, None
     with db.connect() as c:
         recovery = c.execute('SELECT 1 FROM troubleshoot_requests WHERE run_id=?', (run_id,)).fetchone()
     capture_before, capture_warning = None, ''
@@ -507,6 +522,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             status = "failed"
         save_events(log_path, out)
         if provider == "claude":
+            blocked = claude_blocked(out) if label == "실행" else None
             out = claude_result(out)
         text, stats = _parse(out, provider)
         _add_usage(spent, stats)
@@ -519,7 +535,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         if now["status"] == "on_hold" and str(last.get("actor", "")).startswith("agent:"):   # 에이전트가 스스로 멈췄다(질문·외부 조건) — 실패가 아니라 사람 차례다
             held = True
             break
-        if provider == "codex" and re.search(r'"outcome"\s*:\s*"blocked"', text):   # 막혔다고 답했으면 검사할 것이 없다
+        if provider == "codex" and re.search(r'"outcome"\s*:\s*"blocked"', text) or blocked:   # 막혔다고 답했으면 검사할 것이 없다
             break
         # 병합 때 처음 실패를 알면 사람이 다시 실행해야 한다 — 완료 등록 전에 Task worktree에서 전체 검사를 돌려 한 번 스스로 고치게 한다.
         import orchestrate
@@ -574,7 +590,11 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         try:
             execute.register_completion(actor, ref, cwd, run_id, earlier + text)
         except (issues.StoreError, ValueError, OSError) as e:
-            status, note = 'failed', f'Claude 실행을 완료하지 못했어요 — {e}'
+            if blocked:   # 커밋 없이 막혔다고 끝냈으면 실패가 아니라 사람 차례다 — backlog로 되돌리면 같은 이유로 다시 돈다(NS-103-5)
+                issues.set_status(actor, ref, "on_hold", "🚧 Claude가 진행할 수 없어요 — " + blocked[:3000])
+                held = True
+            else:
+                status, note = 'failed', f'Claude 실행을 완료하지 못했어요 — {e}'
     log_path.write_text(earlier + text + ('\n\n' + capture_warning if capture_warning else '') + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
@@ -587,8 +607,8 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         if exhausted and status != "ok" and not recovery:   # 복구는 추가 유료 호출·이관 없이 끝낸다
             c.execute("INSERT OR IGNORE INTO provider_run_failures(run_id,failure_reason) VALUES(?,'token_exhausted')", (run_id,))
     if held:   # Claude는 on_hold 전환 때 이미 알림이 갔다
-        if provider == "codex":
-            notify.send(ref, "🚧 Codex가 진행할 수 없어 멈췄어요 — 확인해 주세요")
+        if provider == "codex" or blocked:
+            notify.send(ref, f"🚧 {name}가 진행할 수 없어 멈췄어요 — 확인해 주세요")
     elif note or code:
         why = note or f"종료 코드 {code}"
         issues.add_comment(actor, ref, f"⚠️ {name} {label} 작업이 끝나지 못했어요 — {why}. 로그: `{log_path.name}`")
