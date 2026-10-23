@@ -443,3 +443,24 @@ for terminal in ('done', 'closed'):
         assert not c.execute('SELECT 1 FROM jobs WHERE issue_id=?', (child['id'],)).fetchone()
     assert issues.get_issue(child['ref'])['status'] == 'backlog'
 print('OK terminal parent enqueue guards')
+
+# 부모의 미완료 선행은 등록을 허용하고, 펌프에서 이유를 남기며 기다린다.
+issues.create_project(me, 'PB', 'parent blockers', '', '/unused')
+earlier = issues.create_issue(me, 'PB', 'earlier')
+earlier_task = issues.create_issue(me, 'PB', 'earlier task', parent=earlier['ref'])
+later = issues.create_issue(me, 'PB', 'later', blocked_by=[earlier['ref']])
+issues.post_plan(me, later['ref'], 'approved plan')
+issues.decide(me, later['ref'], 'approve', plan_version=1)
+later_task = issues.create_issue(me, 'PB', 'later task', parent=later['ref'])
+with patch.object(jobs, 'start_block', return_value='바쁨'):
+    queued_later = jobs.enqueue(me, later_task['ref'], 'execute')
+assert queued_later['queued'] and earlier['ref'] in queued_later['note']
+jobs.pump()
+assert jobs.list_jobs()[0]['id'] == queued_later['job_id']
+assert earlier['ref'] in jobs.list_jobs()[0]['note'] and not review.list_runs(later_task['ref'])
+issues.set_status(me, earlier_task['ref'], 'done')
+issues.set_status(me, earlier['ref'], 'in_review')
+with patch.object(execute, 'predecessor_merge_reason', return_value=None), patch.object(execute, 'start', side_effect=fake_start):
+    jobs.pump()
+assert issues.get_issue(later_task['ref'])['status'] == 'in_progress' and not jobs.list_jobs()
+print('OK parent dependency queue')

@@ -626,6 +626,17 @@ def _eligibility_reason(issue: dict, parent: dict | None, wait: bool = True) -> 
     waiting = [b["ref"] for b in issue["blocked_by"] if b["status"] != "done"]
     if waiting and wait:
         return f"선행 Task({', '.join(waiting)})가 done이 되어야 해요."
+    if wait:
+        for blocker in parent.get("blocked_by", []):
+            if blocker["status"] in ("done", "closed"):
+                continue
+            previous = issues.get_issue(blocker["ref"])
+            children = previous["children"]  # 대체된 이전 판 Task는 get_issue가 제외한다.
+            if not children or any(child["status"] != "done" for child in children):
+                return f"선행 이슈({blocker['ref']})가 끝나야 해요."
+            merge = predecessor_merge_reason({"project_key": issue["project_key"], "blocked_by": children})
+            if merge:
+                return f"선행 이슈({blocker['ref']})의 Task 병합을 기다려요 — {merge}"
     return None
 
 
@@ -815,6 +826,9 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     if why:
         raise issues.StoreError(why, 409)
     log_path, run_id = review.begin(actor, issue, "execute", provider, model)
+    for blocker in parent.get("blocked_by", []):
+        if blocker["status"] == "closed":
+            issues.add_comment(actor, ref, f"⚠️ 선행 {blocker['ref']}이 닫혔어요 — 그대로 진행해요.")
     with db.connect() as c:
         c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (start_sha, run_id))
         c.execute('INSERT INTO task_execution_results(run_id,plan_version) SELECT id,? FROM runs WHERE id=? AND issue_id=?',

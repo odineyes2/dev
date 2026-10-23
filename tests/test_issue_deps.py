@@ -2,6 +2,7 @@
 import os
 import sys
 import tempfile
+import subprocess
 from pathlib import Path
 
 os.environ["DEV_DATA_DIR"] = tempfile.mkdtemp()
@@ -14,6 +15,7 @@ import auth  # noqa: E402
 import db  # noqa: E402
 import issues  # noqa: E402
 import mcp_tools  # noqa: E402
+import execute  # noqa: E402
 
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
     lambda req: httpx.Response(200, json={"user": {"id": 1, "username": "admin", "role": "admin"}})))
@@ -79,3 +81,42 @@ with TestClient(A.app) as client:
         mcp_tools._actor = original_actor
 
 print("issue dependency edit: ok")
+
+# 부모의 선행 Issue는 Task 완료와 실제 base 병합까지 기다린다.
+repo = Path(tempfile.mkdtemp())
+def git(*args):
+    result = subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.com", *args],
+                            cwd=repo, capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+
+git("init", "-q", "-b", "main")
+(repo / "file.txt").write_text("base", encoding="utf-8")
+git("add", "file.txt")
+git("commit", "-qm", "base")
+issues.create_project(human_actor, "PD", "parent dependency", "", str(repo))
+before = issues.create_issue(human_actor, "PD", "before")
+prior_task = issues.create_issue(human_actor, "PD", "prior task", parent=before["ref"])
+after = issues.create_issue(human_actor, "PD", "after", blocked_by=[before["ref"]])
+issues.post_plan(human_actor, after["ref"], "approved plan")
+issues.decide(human_actor, after["ref"], "approve", plan_version=1)
+task = issues.create_issue(human_actor, "PD", "later task", parent=after["ref"])
+def reason(wait=True):
+    return execute.blocked_reason(issues.get_issue(task["ref"]), issues.get_issue(after["ref"]), wait=wait)
+
+assert before["ref"] in reason() and reason(wait=False) is None
+git("checkout", "-qb", execute.branch_name(prior_task["ref"]))
+(repo / "file.txt").write_text("changed", encoding="utf-8")
+git("commit", "-qam", "prior task")
+git("checkout", "-q", "main")
+issues.set_status(human_actor, prior_task["ref"], "done")
+issues.set_status(human_actor, before["ref"], "in_review")
+assert "병합을 기다려요" in reason()
+git("merge", "--ff-only", execute.branch_name(prior_task["ref"]))
+assert reason() is None
+issues.set_status(human_actor, prior_task["ref"], "backlog")
+assert before["ref"] in reason()
+issues.set_status(human_actor, before["ref"], "done")
+assert reason() is None
+issues.set_status(human_actor, before["ref"], "closed")
+assert reason() is None
+print("parent dependency eligibility: ok")
