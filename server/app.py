@@ -562,11 +562,13 @@ def api_trends(from_date: str | None = Query(None, alias='from'),
 @app.get("/api/trends/stages")
 def api_trend_stages(from_date: str | None = Query(None, alias='from'),
                      to_date: str | None = Query(None, alias='to'),
-                     project: str | None = None, human: int = 0):
+                     project: str | None = None, human: int = 0, agent: str = 'all'):
     if human not in (0, 1):
         raise issues.StoreError('human은 0 또는 1이어야 해요.')
+    if agent not in ('all', 'claude', 'codex'):
+        raise issues.StoreError('agent는 all, claude, codex 중 하나여야 해요.')
     import usage
-    return usage.stage_summary(from_date, to_date, project, bool(human))
+    return usage.stage_summary(from_date, to_date, project, bool(human), agent=None if agent == 'all' else agent)
 
 
 @app.get("/api/settings/auto")

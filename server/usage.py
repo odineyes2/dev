@@ -328,8 +328,28 @@ def _idle_seconds(start, end, intervals):
     return max(0, (end - start).total_seconds() - occupied)
 
 
-def stage_summary(from_date=None, to_date=None, project=None, include_human=False, *, as_of=None):
-    """완료된 부모 Issue의 단계별 시간·토큰과 같은 길이의 직전 기간을 집계한다."""
+def _distribution(values, *, kind, bins=8):
+    """값 범위에 맞춘 고정 구간 히스토그램. 시간은 1·2·5 배수 경계, 토큰은 같은 방식의 정수 경계."""
+    values = sorted(values)
+    if not values:
+        return {'unit': kind, 'bins': [], 'n': 0}
+    top = values[-1]
+    raw = max(top, 1) / bins
+    magnitude = 10 ** math.floor(math.log10(raw))
+    step = next((m * magnitude for m in (1, 2, 5, 10) if m * magnitude >= raw), 10 * magnitude)
+    step = max(1, math.ceil(step))
+    rows = [{'from': i * step, 'to': (i + 1) * step, 'count': 0} for i in range(bins)]
+    for value in values:
+        rows[min(int(value // step), bins - 1)]['count'] += 1
+    return {'unit': kind, 'bins': rows, 'n': len(values)}
+
+
+def stage_summary(from_date=None, to_date=None, project=None, include_human=False, *, as_of=None, agent=None):
+    """완료된 부모 Issue의 단계별 시간·토큰과 같은 길이의 직전 기간을 집계한다.
+
+    agent(claude|codex)를 주면 그 provider의 실행·대기열·완료 처리만 세고, 그 실행이 없는 Issue는 뺀다."""
+    if agent is not None and agent not in ('claude', 'codex'):
+        raise issues.StoreError('agent는 all, claude, codex 중 하나여야 해요.')
     now = _time(as_of) if as_of is not None else _now()
     if now is None:
         raise ValueError('as_of must be an ISO timestamp with a timezone')
@@ -413,16 +433,18 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
             batch = all_ids[offset:offset + 900]
             marks = ','.join('?' * len(batch))
             for row in c.execute(f'SELECT id,issue_id,mode,status,started_at,ended_at,input_tokens,output_tokens,provider,model FROM runs WHERE issue_id IN ({marks}) AND julianday(started_at)<=julianday(?)', (*batch, now.isoformat())):
-                runs[row['issue_id']].append(row)
-            for row in c.execute(f'SELECT issue_id,created_at,started_at FROM jobs WHERE issue_id IN ({marks}) AND started_at IS NOT NULL AND julianday(started_at)<=julianday(?)', (*batch, now.isoformat())):
-                jobs[row['issue_id']].append(row)
+                if agent is None or row['provider'] == agent:
+                    runs[row['issue_id']].append(row)
+            for row in c.execute(f'SELECT issue_id,created_at,started_at,provider FROM jobs WHERE issue_id IN ({marks}) AND started_at IS NOT NULL AND julianday(started_at)<=julianday(?)', (*batch, now.isoformat())):
+                if agent is None or row['provider'] == agent:
+                    jobs[row['issue_id']].append(row)
         for offset in range(0, len(child_ids), 900):
             batch = child_ids[offset:offset + 900]
             marks = ','.join('?' * len(batch))
-            for row in c.execute(f'''SELECT e.issue_id,e.run_id,e.updated_at,r.ended_at,e.phase,e.merge_sha
+            for row in c.execute(f'''SELECT e.issue_id,e.run_id,e.updated_at,r.ended_at,e.phase,e.merge_sha,r.provider
                 FROM execution_completion e JOIN runs r ON r.id=e.run_id
                 WHERE e.issue_id IN ({marks}) AND julianday(e.updated_at)<=julianday(?)''', (*batch, now.isoformat())):
-                completions[row['issue_id']].append(row)
+                completions[row['issue_id']].append(row)   # 병합 여부 판단에는 모두 쓰고, 시간 합산만 agent로 거른다.
         for offset in range(0, len(ids), 900):
             batch = ids[offset:offset + 900]
             marks = ','.join('?' * len(batch))
@@ -455,6 +477,8 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
                     for e in completions[task['id']]) for task in children):
                 continue
             all_issue_ids = [row['id']] + [t['id'] for t in children]
+            if agent and not any(r['mode'] in ('review', 'execute', 'qa') for iid in all_issue_ids for r in runs[iid]):
+                continue
             stage = {key: {'seconds': 0, 'tokens': 0} for key, _, _ in _STAGES}
             partial = False
             reasons = []
@@ -486,7 +510,7 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
                         idle += _idle_seconds(_time(job['created_at']), _time(job['started_at']), busy)
                 if iid in completions:
                     for completion in completions[iid]:
-                        if completion['phase'] == 'complete' and completion['merge_sha']:
+                        if completion['phase'] == 'complete' and completion['merge_sha'] and (agent is None or completion['provider'] == agent):
                             seconds = _seconds(completion['ended_at'], completion['updated_at'])
                             if seconds is None:
                                 partial = True
@@ -521,7 +545,7 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
                 for job in jobs[task_id]:
                     task_stages['queue']['seconds'] += _seconds(job['created_at'], job['started_at']) or 0
                 for completion in completions[task_id]:
-                    if completion['phase'] == 'complete' and completion['merge_sha']:
+                    if completion['phase'] == 'complete' and completion['merge_sha'] and (agent is None or completion['provider'] == agent):
                         task_stages['completion']['seconds'] += _seconds(completion['ended_at'], completion['updated_at']) or 0
                 tasks.append({'ref': task['ref'], 'title': task['title'],
                               'execute_runs': sum(r['mode'] == 'execute' for r in task_runs),
@@ -562,8 +586,9 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
                               WHERE e2.issue_id=i.id AND e2.phase='complete' AND e2.merge_sha<>'')
             AND julianday(e.updated_at)>=julianday(?) AND julianday(e.updated_at)<julianday(?)
             AND julianday(e.updated_at)<=julianday(?)
-            AND (? IS NULL OR i.project_id=?)''',
-            (begin.isoformat(), finish.isoformat(), now.isoformat(), project_id, project_id)):
+            AND (? IS NULL OR i.project_id=?)
+            AND (? IS NULL OR EXISTS(SELECT 1 FROM runs rr WHERE rr.issue_id=i.id AND rr.provider=?))''',
+            (begin.isoformat(), finish.isoformat(), now.isoformat(), project_id, project_id, agent, agent)):
             merged_at = _time(row['merged_at'])
             day = merged_at.astimezone(seoul).date().isoformat()
             seconds = _seconds(row['queued_at'], row['merged_at']) if row['queued_at'] else None
@@ -577,8 +602,9 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
             batch = task_ids[offset:offset + 900]
             marks = ','.join('?' * len(batch))
             for run in c.execute(f'''SELECT issue_id,started_at,input_tokens,output_tokens FROM runs
-                WHERE issue_id IN ({marks}) AND julianday(started_at)<=julianday(?)''',
-                (*batch, now.isoformat())):
+                WHERE issue_id IN ({marks}) AND julianday(started_at)<=julianday(?)
+                AND (? IS NULL OR provider=?)''',
+                (*batch, now.isoformat(), agent, agent)):
                 task = measured_tasks[run['issue_id']]
                 started = _time(run['started_at'])
                 if started and started <= task['merged_at']:
@@ -600,6 +626,8 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
                        'previous': {'seconds': stats(previous, 'seconds'),
                                     'tokens': stats(previous, 'tokens') if key in ('review', 'execute', 'qa') else None}})
     complete = [r for r in current if not r['partial']]
+    distribution = {'seconds': _distribution([r['total_machine_seconds'] for r in complete], kind='seconds'),
+                    'tokens': _distribution([r['total_tokens'] for r in complete], kind='tokens')}
     daily_task_median = []
     daily_task_tokens_median = []
     for offset in range(days):
@@ -614,6 +642,7 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
     return {'from_date': start_day.isoformat(), 'to_date': end_day.isoformat(),
             'previous': {'from_date': previous_start.isoformat(), 'to_date': previous_end.isoformat()},
             'project': project.upper() if project else None, 'include_human': bool(include_human),
+            'agent': agent or 'all', 'distribution': distribution,
             'stages': stages, 'queue_idle_seconds': _stage_stats([r['queue_idle_seconds'] for r in complete]),
             'issues': current, 'dev_changes': dev_changes, 'daily_task_median': daily_task_median,
             'daily_task_tokens_median': daily_task_tokens_median,
