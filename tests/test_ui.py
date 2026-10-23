@@ -2890,6 +2890,36 @@ def check_execute_buttons(page, shots, answers):
     page.set_viewport_size({'width': 1300, 'height': 850})
 
 
+def check_jobs_list_scroll(page, shots):
+    """대기열 항목이 많아도 .jobs-list에 안쪽 스크롤·sticky가 없고 페이지만 늘어나는지 검사한다(DEV-162)."""
+    page.goto(BASE + '/#/')
+    page.wait_for_selector('#list-body[aria-busy="false"]')
+    page.wait_for_selector('#jobs-box .jobs', state='attached')
+    # 대기열이 비어 있으면 .jobs-list가 그려지지 않으니 실제 마크업과 같은 꼴로 만든다.
+    page.evaluate("""() => {
+        if (document.querySelector('.jobs-list')) return;
+        const empty = document.querySelector('.jobs-empty'); if (empty) empty.remove();
+        const div = document.createElement('div'); div.className = 'jobs-list';
+        document.querySelector('#jobs-box .jobs').appendChild(div);
+    }""")
+    for width in (1300, 390):
+        page.set_viewport_size({'width': width, 'height': 850})
+        info = page.evaluate("""() => {
+            const list = document.querySelector('.jobs-list');
+            const ul = document.createElement('ul');
+            ul.id = 'jobs-scroll-probe';
+            ul.innerHTML = Array.from({length: 60}, (_, i) => `<li><span class="job-title">대기열 항목 ${i}</span></li>`).join('');
+            list.appendChild(ul);
+            const cs = getComputedStyle(list);
+            const side = document.querySelector('.ops-side');
+            return {overflowY: cs.overflowY, maxHeight: cs.maxHeight, scrollH: list.scrollHeight, clientH: list.clientHeight,
+                    sticky: getComputedStyle(side).position === 'sticky', pageTaller: document.documentElement.scrollHeight > window.innerHeight};
+        }""")
+        assert info['overflowY'] != 'auto' and info['maxHeight'] == 'none', (width, info)
+        assert info['scrollH'] == info['clientH'] and not info['sticky'] and info['pageTaller'], (width, info)
+        page.evaluate("document.getElementById('jobs-scroll-probe').remove()")
+
+
 def check_list_sort(page, shots):
     """정렬 요청·저장·페이지 합류와 Task 재배치를 검사한다."""
     page.wait_for_selector('#list-body[aria-busy="false"]')
@@ -4470,6 +4500,10 @@ try:
             check_chat_connections(page, shots)
             assert not errs, errs
             print('OK: chat connections'); sys.exit(0)
+        if '--jobs-scroll-only' in sys.argv:
+            check_jobs_list_scroll(page, shots)
+            assert not errs, errs
+            print('OK: jobs list scroll'); sys.exit(0)
         if '--list-sort-only' in sys.argv:
             check_list_sort(page, shots)
             assert not errs, errs
@@ -4555,6 +4589,7 @@ try:
             print('OK: account menu')
             sys.exit(0)
         if '--project-flows-only' not in sys.argv:
+            check_jobs_list_scroll(page, shots)
             check_list_sort(page, shots)
             page.evaluate('loadList()')
             check_list_loading(page, shots)

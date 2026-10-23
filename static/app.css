@@ -444,7 +444,7 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
 .jobs{ margin:0 0 var(--sp-3); padding:var(--sp-2) var(--sp-3); border:1px solid var(--border); border-radius:8px; background:var(--panel); }
 .jobs-head{ font-size:13px; font-weight:600; }
 .jobs-empty{ font-size:13px; margin-top:var(--sp-1); }
-.jobs-list{ max-height:240px; overflow-y:auto; margin-top:var(--sp-2); }   /* 항목이 많아도 목록을 밀어내지 않게(DEV-91) */
+.jobs-list{ margin-top:var(--sp-2); }   /* 안쪽 스크롤 없이 페이지 흐름에서 늘어난다(DEV-162) */
 .jobs ul{ list-style:none; margin:0; padding:0; }
 .jobs .job-title{ min-width:0; overflow-wrap:anywhere; }
 .jobs li{ display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; padding:6px 0; font-size:13px; border-top:1px solid var(--border); }
@@ -462,8 +462,7 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
   .ops-split:has(#list-body) .issue-summary{ grid-area:summary; }
   .ops-split:has(#list-body) .ops-main{ grid-area:main; }
   .ops-split:has(#list-body) .ops-side{ grid-area:side; }
-  .ops-side{ order:0; position:sticky; top:calc(var(--tabbar-h) + 16px); }
-  .ops-side .jobs-list{ max-height:calc(100dvh - var(--tabbar-h) - 120px); }
+  .ops-side{ order:0; }
 }
 @media (max-width: 800px){ .move-job, .queued .cancel-job, .jobs .cancel-job{ min-width:40px; min-height:40px; justify-content:center; } }
 @media (max-width: 800px){ body:has(#list-body) .top{ padding-left:16px; padding-right:16px; } }
