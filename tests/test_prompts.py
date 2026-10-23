@@ -12,9 +12,9 @@ for name in prompts.SLOTS:
     assert prompts.problems(name, text) == [], (name, prompts.problems(name, text))
 
 assert prompts.render("review_claude.md", ref="X-1", web_domains="a.com").count("X-1") >= 2
-assert "{ref}" not in prompts.render("execute_codex.md", ref="X-1-1", branch="b", parent_ref="X-1", api_test="t", test_scope="s")
+assert "{ref}" not in prompts.render("execute_codex.md", ref="X-1-1", branch="b", parent_ref="X-1", checks="c")
 assert prompts.problems("review_claude.md", "{ref} {oops}") and "oops" in prompts.problems("review_claude.md", "{ref} {oops}")[0]
-assert prompts.problems("execute_claude.md", "{ref} 검사 범위 없음") == ["필수 자리표시 {test_scope}가 빠졌어요"]
+assert prompts.problems("execute_claude.md", "{ref} 검사 범위 없음") == ["필수 자리표시 {checks}가 빠졌어요"]
 assert prompts.problems("nope.md", "") and prompts.problems("capture.md", "자리표시 없음") == []
 
 # Codex 검토는 공급자별 파일을 쓴다 — 예전 "Claude→Codex" 문자열 치환 없이도 Claude 문구가 남지 않는다
