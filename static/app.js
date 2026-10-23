@@ -890,11 +890,10 @@ async function renderList(){
       <span class="checks"><label class="dim"><input type="checkbox" id="show-closed" ${st.closed ? 'checked' : ''}> 끝난 것도</label>
       <label class="dim"><input type="checkbox" id="only-approved" ${st.approved ? 'checked' : ''}> 승인된 것만</label></span>
     </div>
-    <section id="issue-summary" class="issue-summary" aria-label="Issue 처리 현황">
+    <div class="ops-split"><section id="issue-summary" class="issue-summary" aria-label="Issue 처리 현황">
       <div class="issue-summary-head"><span class="issue-summary-title">처리 현황</span><div class="issue-summary-periods" role="group" aria-label="집계 기간">
         ${Object.entries(ISSUE_SUMMARY_PERIODS).map(([key, label]) => `<button type="button" data-summary-period="${key}" aria-pressed="${key === issueSummaryPeriod}">${label}</button>`).join('')}
-      </div></div><div class="issue-summary-content" role="status" aria-live="polite"></div></section>
-    <div class="ops-split"><div class="ops-main"><div id="list-body"></div><div id="list-more" class="list-more"></div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
+      </div></div><div class="issue-summary-content" role="status" aria-live="polite"></div></section><div class="ops-main"><div id="list-body"></div><div id="list-more" class="list-more"></div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
   view.querySelector('#issue-summary').addEventListener('click', e => {
     const period = e.target.closest('[data-summary-period]');
     if(period){ issueSummaryPeriod = period.dataset.summaryPeriod; loadIssueSummary(); }

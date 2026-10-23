@@ -205,6 +205,23 @@ def check_issue_table(page, shots):
                     Math.abs(body.left - jobs.left) <= 1 && Math.abs(body.right - jobs.right) <= 1 &&
                     Math.abs(summary.left - jobs.left) <= 1 && Math.abs(summary.right - jobs.right) <= 1);
         }"""), width
+        layout = page.evaluate("""() => {
+            const r = s => document.querySelector(s).getBoundingClientRect();
+            const main = getComputedStyle(document.querySelector('main'));
+            return {sumRight: r('#issue-summary').right, bodyRight: r('#list-body').right,
+                sumTop: r('#issue-summary').top, jobsTop: r('#jobs-box').top, jobsBottom: r('#jobs-box').bottom,
+                sumBottom: r('#issue-summary').bottom, bodyTop: r('#list-body').top,
+                tabLeft: r('.tab-bar-inner .tab, .tab-bar-inner a, .tab-bar-inner button').left, bodyLeft: r('#list-body').left,
+                padLeft: parseFloat(main.paddingLeft)};
+        }""")
+        if width > 1450:
+            assert abs(layout['sumRight'] - layout['bodyRight']) <= 1, (width, layout)
+            assert abs(layout['sumTop'] - layout['jobsTop']) <= 1, (width, layout)
+            assert abs(layout['tabLeft'] - layout['bodyLeft']) <= 1, (width, layout)
+        else:
+            assert layout['sumBottom'] <= layout['jobsTop'] + 1 and layout['jobsBottom'] <= layout['bodyTop'] + 1, (width, layout)
+        if width == 1600:
+            assert abs(layout['padLeft'] - 148) <= 1, (width, layout)
         assert page.locator(f'#list-body tr[data-ref="{ref}"] .title-cell').evaluate(
             'e => getComputedStyle(e).overflowWrap === "anywhere"')
         assert page.locator(f'#list-body tr[data-ref="{action_issue["ref"]}"] .action-cell button').count() >= 1
@@ -4173,7 +4190,7 @@ def check_issue_summary(page):
                 const summary = document.querySelector('#issue-summary').getBoundingClientRect();
                 const jobs = document.querySelector('#jobs-box').getBoundingClientRect();
                 return summary.left >= 0 && summary.right <= innerWidth + 1 &&
-                    summary.bottom <= jobs.top && (innerWidth > 1100 || document.documentElement.scrollWidth <= innerWidth + 1);
+                    (innerWidth > 1450 ? Math.abs(summary.top - jobs.top) <= 1 : summary.bottom <= jobs.top) && (innerWidth > 1100 || document.documentElement.scrollWidth <= innerWidth + 1);
             }"""), (theme, width)
     page.unroute('**/api/issue-summary?*')
     page.evaluate("localStorage.removeItem('dev.project')")

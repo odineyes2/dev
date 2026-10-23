@@ -57,7 +57,8 @@ button.save[aria-busy="true"]{ justify-content:center; }
 .login-box p.dim{ text-align:center; margin:0 0 var(--sp-2); font-size:13px; }
 .login-box .primary{ justify-content:center; padding:10px; border-radius:999px; margin-top:var(--sp-1); }
 
-body:has(#list-body){ --list-gutter:clamp(48px, calc((100vw - 900px) / 4), 148px); }
+body:has(#list-body){ --list-max:1440px; --list-gutter:max(clamp(48px, calc((100vw - 900px) / 4), 148px), calc((100vw - var(--list-max)) / 2)); }
+body:has(#list-body) .top{ padding-left:var(--list-gutter); padding-right:var(--list-gutter); }
 main:has(#list-body){ max-width:none; padding-left:var(--list-gutter); padding-right:var(--list-gutter); }
 body:has(#list-body) .tab-bar-inner{ max-width:none; padding-left:var(--list-gutter); padding-right:var(--list-gutter); }
 .ops-split:has(#list-body), .issue-summary, #list-body{ min-width:0; max-width:100%; }
@@ -454,13 +455,18 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
 .ops-split{ display:flex; flex-direction:column; }
 .ops-main{ min-width:0; }
 .ops-side{ order:-1; }
+.ops-split>.issue-summary{ order:-2; }
 @media (min-width: 1101px){
   .ops-split{ display:grid; grid-template-columns:minmax(0, 1fr) 300px; gap:var(--sp-5); align-items:start; }
-  .ops-split:has(#list-body){ grid-template-columns:minmax(0, 1fr) 300px; }
+  .ops-split:has(#list-body){ grid-template-columns:minmax(0, 1fr) 300px; grid-template-areas:"summary side" "main side"; grid-template-rows:auto 1fr; }
+  .ops-split:has(#list-body) .issue-summary{ grid-area:summary; }
+  .ops-split:has(#list-body) .ops-main{ grid-area:main; }
+  .ops-split:has(#list-body) .ops-side{ grid-area:side; }
   .ops-side{ order:0; position:sticky; top:calc(var(--tabbar-h) + 16px); }
   .ops-side .jobs-list{ max-height:calc(100dvh - var(--tabbar-h) - 120px); }
 }
 @media (max-width: 800px){ .move-job, .queued .cancel-job, .jobs .cancel-job{ min-width:40px; min-height:40px; justify-content:center; } }
+@media (max-width: 800px){ body:has(#list-body) .top{ padding-left:16px; padding-right:16px; } }
 
 .stage{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel);display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
 .stage>span:first-child{flex:1 1 240px;min-width:0}
@@ -796,6 +802,7 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 @media(min-width:1101px) and (max-width:1450px){
   .ops-split:has(#list-body){ display:flex; flex-direction:column; align-items:stretch; }
   .ops-split:has(#list-body) .ops-side{ position:static; order:-1; }
+  .ops-split:has(#list-body) .issue-summary, .ops-split:has(#list-body) .ops-main, .ops-split:has(#list-body) .ops-side{ grid-area:auto; }
 }
 @media(min-width:1101px){
   #list-body table.issues{ table-layout:auto; }
