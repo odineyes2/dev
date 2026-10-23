@@ -390,6 +390,9 @@ def check_trend_stages(page, shots):
                                  dev_changes=[{'ref':'DEV-153-1', 'title':'목록 정렬',
                                                'merged_at':'2026-10-22T03:00:00+00:00', 'date':'2026-10-22',
                                                'merged_at_local':'2026-10-22 12:00'}],
+                                agent=calls[-1].get('agent', ['all'])[0],
+                                distribution={'seconds': {'unit':'seconds', 'n':1, 'bins': [{'from':i * 600, 'to':(i + 1) * 600, 'count': int(i == 2)} for i in range(8)]},
+                                              'tokens': {'unit':'tokens', 'n':0, 'bins': []}},
                                 partial_count=1, note='임시 기록 기준이에요.'))
     page.route('**/api/trends/stages?*', respond)
     page.goto(BASE + '/#/trends/stages'); page.wait_for_selector('.trend-stage-table')
@@ -447,6 +450,17 @@ def check_trend_stages(page, shots):
     page.click('[data-trend-days="30"]')
     page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
     assert calls[-1]['project'] == ['STGE']
+    # 에이전트 필터와 분포 차트
+    assert page.locator('#trend-agent option').all_inner_texts() == ['All Agents', 'Claude', 'Codex']
+    assert calls[-1]['agent'] == ['all'] and 'All Agents' in page.inner_text('.trend-context')
+    assert page.locator('.trend-dist-chart[data-series="seconds"] .trend-dist-bar').count() == 8
+    assert '소요 시간 분포' in page.inner_text('.trend-dist-grid') and '소요 토큰 분포' in page.inner_text('.trend-dist-grid')
+    assert '이 기간에 측정된 Issue가 없어요.' in page.inner_text('.trend-dist-grid')
+    page.select_option('#trend-agent', 'codex')
+    page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+    assert calls[-1]['agent'] == ['codex'] and 'Codex' in page.inner_text('.trend-context')
+    page.select_option('#trend-agent', 'all')
+    page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
     page.click('.trend-subtabs a[href="#/trends"]')
     page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
     assert page.locator('#trend-project').input_value() == 'STGE'
