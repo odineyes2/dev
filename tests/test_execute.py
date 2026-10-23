@@ -284,3 +284,17 @@ regression.update(me, {'agent_capture': 'off'})
 with patch.object(attachments, 'collect_captures', side_effect=AssertionError('OFF must not collect')):
     assert execute.collect_execution_captures(me, item['ref'], run_id, capture_wt, set()) == ''
 regression.update(me, {'agent_capture': 'on'})
+
+# 닫힌 부모 선행은 실행을 막지 않고 실제 착수 기록에 경고를 남긴다.
+closed = issues.create_issue(me, 'EX', 'cancelled predecessor')
+successor = issues.create_issue(me, 'EX', 'successor')
+issues.post_plan(me, successor['ref'], 'approved plan')
+issues.decide(me, successor['ref'], 'approve', plan_version=1)
+issues.set_blocked_by(me, successor['ref'], [closed['ref']])
+issues.set_status(me, closed['ref'], 'closed')
+successor_task = issues.create_issue(me, 'EX', 'successor task', parent=successor['ref'])
+with patch.object(review, 'launch'):
+    assert execute.start(me, successor_task['ref'])['started']
+assert any(closed['ref'] in event['body'] and '닫혔어요' in event['body']
+           for event in issues.get_issue(successor_task['ref'])['events'])
+print('OK closed parent predecessor warning')
