@@ -9,6 +9,128 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_self_restart_banner(page, shots):
+    """가짜 재시작 응답으로 단계·키보드·초안 보존·새 코드 반영과 폭별 캡처를 확인한다."""
+    assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
+                             data={'key': 'SRB', 'name': '재시작 안내 검사'}).ok
+    state = {'phase': 'merging', 'ref': 'DEV-155-1', 'since': '2026-10-23T00:00:00Z',
+             'busy': [{'ref': 'NS-98-2', 'minutes': 12}],
+             'waiting': ['NS-93', 'NS-94', 'NS-95', 'NS-96', 'NS-97'],
+             'process_id': 'before', 'revision': 'old'}
+    fixture = {'state': state, 'failed': False, 'identity': {'process_id': 'before', 'revision': 'old'}}
+    calls = {'jobs': 0, 'health': 0}
+    def jobs_response(route):
+        calls['jobs'] += 1
+        if fixture['failed']:
+            route.abort('failed')
+        else:
+            route.fulfill(json={'jobs': [], 'in_progress': [], 'self_restart': fixture['state']})
+    def health_response(route):
+        calls['health'] += 1
+        route.fulfill(json={'ok': True, **fixture['identity']})
+    page.route('**/api/jobs', jobs_response)
+    page.route('**/api/health?execution_identity=1', health_response)
+    page.goto(BASE + '/#/')
+    page.reload()
+    page.wait_for_selector('#restart-banner:not([hidden])')
+    page.clock.install()
+    banner = page.locator('#restart-banner')
+    assert banner.get_attribute('role') == 'status' and banner.get_attribute('aria-live') == 'polite'
+    assert '외 3건' in banner.inner_text()
+    page.locator('.restart-expand').focus()
+    page.keyboard.press('Enter')
+    assert page.locator('.restart-next a').count() == 5
+    assert page.locator('.restart-next a').last.get_attribute('href') == '#/issue/NS-97'
+    page.keyboard.press('Enter')
+    assert page.locator('.restart-next a').count() == 2
+    for phase, phrase in (('merging', '병합을 검사'), ('waiting', 'NS-98-2(12분째)'), ('restarting', '다시 연결되면')):
+        state['phase'] = phase
+        page.evaluate('restartJobsSnapshot()')
+        assert phrase in banner.inner_text()
+        for width in (1920, 1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            for theme in ('light', 'dark'):
+                page.evaluate('t => document.documentElement.dataset.theme=t', theme)
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), (phase, width)
+                assert banner.evaluate('(e) => e.getBoundingClientRect().right <= innerWidth + 1')
+                page.screenshot(path=str(shots / f'self-restart-{phase}-{theme}-{width}.png'), full_page=True)
+    for route, selector in (('trends', '.trend-page'), ('settings', '.auto-settings')):
+        page.goto(BASE + '/#/' + route)
+        page.wait_for_selector(selector)
+        assert banner.is_visible()
+    page.emulate_media(reduced_motion='reduce')
+    assert banner.evaluate('e => getComputedStyle(e).animationName') == 'none'
+    assert page.locator('.restart-dot').evaluate('e => getComputedStyle(e).animationName') == 'none'
+    page.emulate_media(reduced_motion='no-preference')
+
+    # 5초 주기 → 연결 실패 뒤에는 2초마다 공개 health만 보고, 같은 프로세스에서는 완료하지 않는다.
+    state['phase'] = 'waiting'
+    page.evaluate('restartJobsSnapshot()')
+    fixture['failed'] = True
+    page.clock.run_for(5000)
+    page.wait_for_function('restartRecovering')
+    assert '재시작하고 있어요' in banner.inner_text()
+    prior = calls['jobs']
+    page.clock.run_for(2000)
+    page.wait_for_function('!restartRequest')
+    assert calls['jobs'] == prior and banner.get_attribute('data-phase') == 'restarting'
+    fixture['identity'] = {'process_id': 'after', 'revision': 'old'}
+    page.clock.run_for(2000)
+    page.wait_for_function("restartState?.phase === 'complete'")
+    assert '재시작을 마쳤어요' in banner.inner_text()
+    assert not page.locator('.restart-reload').count()
+    page.clock.run_for(6000)
+    assert banner.is_hidden()
+
+    # 새 코드는 입력 중인 글을 보존하고, 버튼으로만 새로 고친다.
+    fixture['failed'] = False
+    fixture['identity'] = {'process_id': 'before', 'revision': 'old'}
+    state.update(process_id='before', revision='old', phase='waiting')
+    fixture['state'] = state
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.goto(BASE + '/#/new')
+    page.wait_for_selector('#new-form')
+    field = page.locator('#new-form textarea').first
+    field.fill('재시작 중에도 보존할 초안')
+    page.evaluate('startRestartPolling()')
+    page.wait_for_function("restartState?.phase === 'waiting'")
+    fixture['state'] = None
+    fixture['identity'] = {'process_id': 'new-process', 'revision': 'new-code'}
+    page.evaluate('restartJobsSnapshot()')
+    assert field.input_value() == '재시작 중에도 보존할 초안'
+    assert page.locator('.restart-reload').is_visible()
+    page.clock.run_for(6000)
+    assert page.locator('.restart-reload').is_visible()
+    with page.expect_navigation():
+        page.locator('.restart-reload').click()
+    page.wait_for_selector('#new-form')
+    assert page.locator('#new-form textarea').first.input_value() == ''
+
+    # 초안이 없으면 revision 변경 때 실제 문서를 자동으로 새로 읽는다.
+    fixture['state'] = state
+    page.evaluate('startRestartPolling()')
+    page.wait_for_function("restartState?.phase === 'waiting'")
+    fixture['state'] = None
+    fixture['identity'] = {'process_id': 'another-process', 'revision': 'another-code'}
+    with page.expect_navigation():
+        page.evaluate('restartJobsSnapshot()')
+    page.wait_for_selector('#shell:not([hidden])')
+    # 로그인 밖에서는 타이머와 안내가 사라지고, 이후 응답도 되살리지 않는다.
+    page.evaluate('showLogin()')
+    assert banner.is_hidden()
+    count = calls['jobs']
+    page.clock.run_for(20000)
+    assert calls['jobs'] == count
+    page.clock.resume()
+    page.unroute('**/api/jobs', jobs_response)
+    page.unroute('**/api/health?execution_identity=1', health_response)
+    assert page.request.delete(BASE + '/api/projects/SRB', headers={'X-Requested-With': 'dev'}).ok
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("document.documentElement.dataset.theme='light'")
+    page.reload()
+    page.wait_for_selector('#shell:not([hidden])')
+
+
 def check_issue_table(page, shots):
     """목록 표의 열 전환·카드 경계·제목과 Action 동작을 폭별로 확인한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -4157,6 +4279,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--self-restart-banner-only' in sys.argv:
+            check_self_restart_banner(page, shots)
+            assert not errs, errs
+            print('OK: self restart banner'); sys.exit(0)
         if '--issue-table-only' in sys.argv:
             check_issue_table(page, shots)
             assert not errs, errs
@@ -5030,6 +5156,7 @@ try:
         check_management_layout(page, shots)
         check_troubleshooter(page, shots)
         check_global_agent_orders(page, shots)
+        check_self_restart_banner(page, shots)
         check_issue_table(page, shots)
         check_new_issue_dependencies(page, shots)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
