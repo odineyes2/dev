@@ -358,6 +358,7 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
     records = []
     dev_changes = []
     daily_task_durations = {}
+    daily_task_tokens = {}
     daily_unmeasured = 0
 
     with db.connect() as c:
@@ -550,7 +551,8 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
             dev_changes.append({**dict(row), 'date': local_merge.date().isoformat(),
                                 'merged_at_local': local_merge.strftime('%Y-%m-%d %H:%M')})
         # 병합일별 Task 전체 시간은 첫 구현 대기열 등록부터 병합 완료까지 잰다.
-        for row in c.execute('''SELECT p.key AS project,e.updated_at AS merged_at,
+        measured_tasks = {}
+        for row in c.execute('''SELECT i.id,e.updated_at AS merged_at,
             (SELECT MIN(j.created_at) FROM jobs j WHERE j.issue_id=i.id AND j.mode='execute'
              AND julianday(j.created_at)<=julianday(e.updated_at)) AS queued_at
             FROM execution_completion e JOIN issues i ON i.id=e.issue_id
@@ -569,6 +571,21 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
                 daily_unmeasured += 1
             else:
                 daily_task_durations.setdefault(day, []).append(seconds)
+                measured_tasks[row['id']] = {'day': day, 'merged_at': merged_at, 'tokens': 0}
+        task_ids = list(measured_tasks)
+        for offset in range(0, len(task_ids), 900):
+            batch = task_ids[offset:offset + 900]
+            marks = ','.join('?' * len(batch))
+            for run in c.execute(f'''SELECT issue_id,started_at,input_tokens,output_tokens FROM runs
+                WHERE issue_id IN ({marks}) AND julianday(started_at)<=julianday(?)''',
+                (*batch, now.isoformat())):
+                task = measured_tasks[run['issue_id']]
+                started = _time(run['started_at'])
+                if started and started <= task['merged_at']:
+                    task['tokens'] += sum(token_count(run[key]) or 0
+                                          for key in ('input_tokens', 'output_tokens'))
+        for task in measured_tasks.values():
+            daily_task_tokens.setdefault(task['day'], []).append(task['tokens'])
 
     current = [r for r in records if _time(r['done_at']) >= begin]
     previous = [r for r in records if _time(r['done_at']) < begin]
@@ -584,17 +601,22 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
                                     'tokens': stats(previous, 'tokens') if key in ('review', 'execute', 'qa') else None}})
     complete = [r for r in current if not r['partial']]
     daily_task_median = []
+    daily_task_tokens_median = []
     for offset in range(days):
         day = (start_day + timedelta(days=offset)).isoformat()
         values = daily_task_durations.get(day, [])
         daily_task_median.append({'date': day, 'seconds': _stage_stats(values)['median'] if values else None,
                                   'n': len(values)})
+        tokens = daily_task_tokens.get(day, [])
+        daily_task_tokens_median.append({'date': day, 'tokens': _stage_stats(tokens)['median'] if tokens else None,
+                                         'n': len(tokens)})
     dev_changes.sort(key=lambda row: (row['merged_at'], row['ref']))
     return {'from_date': start_day.isoformat(), 'to_date': end_day.isoformat(),
             'previous': {'from_date': previous_start.isoformat(), 'to_date': previous_end.isoformat()},
             'project': project.upper() if project else None, 'include_human': bool(include_human),
             'stages': stages, 'queue_idle_seconds': _stage_stats([r['queue_idle_seconds'] for r in complete]),
             'issues': current, 'dev_changes': dev_changes, 'daily_task_median': daily_task_median,
+            'daily_task_tokens_median': daily_task_tokens_median,
             'daily_task_unmeasured': daily_unmeasured,
             'partial_count': sum(r['partial'] for r in current),
             'note': '현재 보존된 완료 기록 기준이에요. 부분 측정 이슈는 평균에서 제외해요. 병렬 실행 시간은 각각 합산해요.'}
