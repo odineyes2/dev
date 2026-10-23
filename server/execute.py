@@ -280,8 +280,9 @@ def reject_capture_changes(cwd, *revision):
 
 def capture_instructions(viewer, ref=None):
     import regression
-    if not regression.enabled('agent_capture', ref):
-        return 'Settings에서 UI 캡처 확인을 껐다. 캡처를 실행하지 않고 미실시로 기록한다.\n'
+    reason = regression.capture_skip_reason(ref)
+    if reason:
+        return reason + ' 캡처를 실행하지 않고 미실시로 기록한다. 미실시 사유는 위 문장을 그대로 적는다.\n'
     return prompts.render("capture.md", viewer=viewer)
 
 
@@ -543,6 +544,9 @@ def register_completion(actor, ref, cwd, run_id, note):
     off = regression.resolve(ref, cwd)['changed_tests_off']
     if off:   # DEV-147 — 바뀐 검사는 항상 돌지만 사람이 Settings에서 끈 것만 예외다
         note += '\n\n⚠️ Task가 추가·수정한 검사를 사람이 Settings에서 꺼서 돌리지 않았어요: ' + ', '.join(f'`{n}`' for n in off)
+    changed = _git(cwd, 'diff', '--name-only', f'{BASE_BRANCH}...HEAD').splitlines()
+    if any(p.startswith(('static/', 'src/components/', 'src/pages/')) or p.endswith(('.css', '.html', '.tsx', '.jsx', '.vue')) for p in changed) and regression.capture_planned_off(ref, cwd):
+        note += '\n\n⚠️ 화면 파일이 바뀌었지만 캡처를 하지 않았어요.'
     if regression.enabled('server_api_warning', ref, cwd) and untested_routes(cwd):
         note += '\n\n⚠️ 새 HTTP 라우트가 생겼는데 tests/에 실제 요청(`/api/…` 경로) 검사가 없어요 — 함수 직접 호출로는 라우트 등록·인증을 못 봐요(NS-60).'
     with db.connect() as c:

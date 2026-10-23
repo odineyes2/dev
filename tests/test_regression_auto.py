@@ -8,7 +8,7 @@ from pathlib import Path
 os.environ['DEV_DATA_DIR'] = tempfile.mkdtemp()
 os.environ['NTFY_TOPIC'] = ''
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
-import db, issues, orchestrate, regression
+import db, execute, issues, orchestrate, regression
 
 db.init()
 me = {'kind': 'human', 'name': 'admin'}
@@ -44,6 +44,33 @@ for module in ('db', 'execute', 'review', 'jobs', 'orchestrate', 'rollback', 're
     assert regression.resolve(ref, repo, ['server/' + module + '.py'])['level'] == 'high'
 manual = issues.create_issue(me, 'AUTO', 'legacy task', body='tests/test_ui.py', parent=parent['ref'])
 assert regression.resolve(manual['ref'], repo, ['static/app.css'])['checks']['file:test_ui.py']['enabled']
+numbered = issues.create_issue(me, 'AUTO', 'parent', body='AUTO plan v1 Task 1.', parent=parent['ref'])
+numbered_scope = regression.resolve(numbered['ref'], repo)
+assert 'static/app.js' in numbered_scope['changed_files'] and numbered_scope['planned']
+assert numbered_scope['checks']['agent_capture']['enabled']
+assert regression._plan_task({'ref': ref, 'parent_ref': parent['ref'], 'title': 'different', 'body': ''}, plan)['n'] == 1
+assert not regression.capture_planned_off(numbered['ref'], repo)
+
+plan_parent = issues.create_issue(me, 'AUTO', 'old parent')
+issues.post_plan(me, plan_parent['ref'], 'Legacy plan: `static/js/13b-board-command.js`')
+issues.decide(me, plan_parent['ref'], 'approve', plan_version=1)
+legacy = issues.create_issue(me, 'AUTO', 'old task', body='Plan v1 Task 1.', parent=plan_parent['ref'])
+legacy_scope = regression.resolve(legacy['ref'], repo)
+assert legacy_scope['checks']['agent_capture']['enabled']
+assert '계획서 경로로 추정' in legacy_scope['checks']['agent_capture']['reason']
+plain_parent = issues.create_issue(me, 'AUTO', 'plain parent')
+issues.post_plan(me, plain_parent['ref'], 'Legacy plan without paths')
+issues.decide(me, plain_parent['ref'], 'approve', plan_version=1)
+plain = issues.create_issue(me, 'AUTO', 'plain task', body='Plan v1 Task 1.', parent=plain_parent['ref'])
+assert not regression.resolve(plain['ref'], repo)['checks']['agent_capture']['enabled']
+assert regression.capture_planned_off(plain['ref'], repo)
+assert regression.capture_skip_reason(plain['ref'], repo).startswith('Auto:')
+assert execute.capture_instructions('Read', plain['ref']).startswith('Auto:')
+regression.update(me, {'agent_capture': 'off'})
+assert not regression.resolve(legacy['ref'], repo)['checks']['agent_capture']['enabled']
+assert regression.capture_skip_reason(legacy['ref'], repo).startswith('사람 설정')
+assert execute.capture_instructions('Read', legacy['ref']).startswith('사람 설정')
+regression.update(me, {'agent_capture': 'auto'})
 regression.update(me, {'agent_api': 'off', 'file:test_ui.py': 'on'})
 assert not regression.resolve(ref, repo, ['server/auth.py'])['checks']['agent_api']['enabled']
 assert regression.resolve(ref, repo, ['README.md'])['checks']['server_completion']['enabled']
