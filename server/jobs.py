@@ -335,19 +335,17 @@ STALLED = ("on_hold", "changes_requested")
 
 def _reservations(c, keep_stalled: bool = False) -> dict[int, tuple[str, set[str]]]:
     """진행 중인 부모(Task가 한 번이라도 실행됐고 남은 Task가 있는 부모)가 아직 쓸 파일 — {부모 id: (ref, 파일)}.
-    남은 Task 중 사람을 기다리는 것(on_hold·changes_requested)이 있으면 예약을 푼다 — 사람이 없을 때 전체가 멈추지 않게.
-    그 부모가 다시 돌 때는 execute.refresh_worktree가 최신 base를 병합한다.
-    keep_stalled면 사람을 기다리는 부모도 남은 Task 파일 전부로 넣는다(검토 프롬프트용 — 언젠가 다시 돈다)."""
+    사람을 기다리는 부모도 남은 Task 파일을 예약한다. keep_stalled는 검토 프롬프트와의 호환 인자다."""
     import execute
     held = {}
     for p in c.execute(f"""SELECT DISTINCT q.id, {issues.ref_sql('q', 'k')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id
             JOIN issues q ON q.id=i.parent_id JOIN projects k ON k.id=q.project_id WHERE r.mode='execute'""").fetchall():
         kids = c.execute(f"SELECT i.status, i.body FROM issues i WHERE i.parent_id=? AND i.status NOT IN ('done','closed') AND {issues._SUPERSEDED} IS NULL", (p["id"],)).fetchall()
-        if not kids or (not keep_stalled and any(k["status"] in STALLED for k in kids)):
+        if not kids:
             continue
-        todo = ("backlog", "waiting", "in_progress") + (STALLED if keep_stalled else ())
+        todo = ("backlog", "waiting", "in_progress") + STALLED
         files = set().union(*(execute.task_files({"body": k["body"]}) for k in kids if k["status"] in todo))
-        if files:
+        if files or any(k["status"] in STALLED for k in kids):
             held[p["id"]] = (p["ref"], files)
     return held
 
@@ -357,35 +355,84 @@ def _overlap(a: set[str], b: set[str]) -> list[str]:
     return sorted({x for x in a for y in b if x == y or x.startswith(y.rstrip("/") + "/") or y.startswith(x.rstrip("/") + "/")})
 
 
-def schedule(c, queued: list[dict]) -> tuple[list[dict], dict[int, str]]:
+def schedule(c, queued: list[dict], stalled_waiters: dict[int, set[str]] | None = None,
+             stalled_jobs: set[int] | None = None) -> tuple[list[dict], dict[int, str]]:
     """꺼낼 순서와 파일 겹침으로 기다릴 항목의 메모 {job id: 메모}.
     순서: 진행 중인 부모의 실행 → 그 밖의 실행 → 검토(같은 묶음 안은 대기열 순서). 시작한 부모를 먼저 끝내
-    다른 이슈의 Task가 사이에 끼어 같은 파일을 바꾸지 않게 한다(DEV-68·70, DEV-81·82). 진행 중인 부모끼리는 막지 않는다."""
+    다른 이슈의 Task가 사이에 끼어 같은 파일을 바꾸지 않게 한다(DEV-68·70, DEV-81·82).
+    진행 중인 부모끼리는 멈춘 부모와 겹치는 경우에만 막는다."""
     import execute
     held = _reservations(c)
     info = {r["id"]: r for r in c.execute(
-        f"SELECT id, project_id, parent_id, body FROM issues WHERE id IN ({','.join('?' * len(queued))})", [j["issue_id"] for j in queued])} if queued else {}
+        f"SELECT i.id, i.project_id, i.parent_id, i.body, {issues.ref_sql('i', 'p')} AS ref "
+        f"FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id IN ({','.join('?' * len(queued))})",
+        [j["issue_id"] for j in queued])} if queued else {}
     held_projects = {r["id"]: r["project_id"] for r in c.execute(
         f"SELECT id, project_id FROM issues WHERE id IN ({','.join('?' * len(held))})", list(held))} if held else {}
+    stalled = {r["parent_id"] for r in c.execute(
+        f"SELECT DISTINCT i.parent_id FROM issues i WHERE i.parent_id IN ({','.join('?' * len(held))}) "
+        f"AND i.status IN ('on_hold','changes_requested') AND {issues._SUPERSEDED} IS NULL", list(held))} if held else set()
+
+    def stalled_predecessors(parent_id):
+        if parent_id is None or not stalled:
+            return set()
+        return {r[0] for r in c.execute("""WITH RECURSIVE chain(id) AS (
+            SELECT blocked_by_id FROM issue_deps WHERE issue_id=?
+            UNION SELECT d.blocked_by_id FROM issue_deps d JOIN chain ON d.issue_id=chain.id)
+            SELECT id FROM chain""", (parent_id,))} & stalled
 
     def group(j):
         if j["mode"] != "execute":
             return 2
-        return 0 if info[j["issue_id"]]["parent_id"] in held else 1
+        parent_id = info[j["issue_id"]]["parent_id"]
+        return 0 if parent_id in held and parent_id not in stalled else 1
     ordered = sorted(queued, key=group)
     notes = {}
     for j in ordered:
-        if group(j) != 1:
+        if j["mode"] != "execute":
             continue
+        parent_id = info[j["issue_id"]]["parent_id"]
+        ancestors = stalled_predecessors(parent_id)
         mine = execute.task_files({"body": info[j["issue_id"]]["body"]})
         for parent_id, (ref, files) in held.items():
+            if parent_id == info[j["issue_id"]]["parent_id"]:
+                continue
             if held_projects[parent_id] != info[j["issue_id"]]["project_id"]:
                 continue
-            hit = _overlap(mine, files)
-            if hit:
-                notes[j["id"]] = f"{ref} 작업이 끝날 때까지 기다려요 — 겹치는 파일: " + ", ".join(hit[:5]) + (" 외" if len(hit) > 5 else "")
+            if parent_id in ancestors:
+                notes[j["id"]] = f"{ref}이 사람을 기다려요 — 선행이라 함께 기다려요"
+            elif parent_id in stalled:
+                hit = _overlap(mine, files)
+                if hit:
+                    notes[j["id"]] = f"{ref}이 사람을 기다려요 — 겹치는 파일: " + ", ".join(hit[:5]) + (" 외" if len(hit) > 5 else "")
+            elif group(j) == 1:
+                hit = _overlap(mine, files)
+                if hit:
+                    notes[j["id"]] = f"{ref} 작업이 끝날 때까지 기다려요 — 겹치는 파일: " + ", ".join(hit[:5]) + (" 외" if len(hit) > 5 else "")
+            if j["id"] in notes:
+                if parent_id in stalled:
+                    if stalled_waiters is not None:
+                        stalled_waiters.setdefault(parent_id, set()).add(info[j["issue_id"]]["ref"])
+                    if stalled_jobs is not None:
+                        stalled_jobs.add(j["id"])
                 break
     return ordered, notes
+
+
+def _notify_stalled(c, waiters: dict[int, set[str]]) -> None:
+    """멈춘 Task의 이번 보류 기간에 대기 알림을 한 번만 남긴다."""
+    for parent_id, refs in waiters.items():
+        last_stall = c.execute("""SELECT MAX(e.id) FROM events e JOIN issues i ON i.id=e.issue_id
+            WHERE i.parent_id=? AND e.kind='status'
+            AND json_extract(e.data_json,'$.to') IN ('on_hold','changes_requested')""", (parent_id,)).fetchone()[0] or 0
+        last_notice = c.execute("""SELECT MAX(id) FROM events WHERE issue_id=? AND kind='comment'
+            AND json_extract(data_json,'$.source')='stalled_job_wait'""", (parent_id,)).fetchone()[0] or 0
+        if last_notice > last_stall:
+            continue
+        issues._event(c, parent_id, {"kind": "agent", "id": "dev/queue"}, "comment",
+                      "이 이슈 때문에 " + ", ".join(sorted(refs)) + "이 기다리고 있어요.",
+                      {"source": "stalled_job_wait"})
+        c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), parent_id))
 
 
 def _note(job_id: int, note: str) -> None:
@@ -403,8 +450,11 @@ def pump() -> None:
             orchestrate.recover()   # 병합을 이어받는 스레드가 없을 때만 — 도는 병합과 겹치지 않게
         automation.sync()
         reconcile()
+        stalled_waiters, stalled_jobs = {}, set()
         with db.connect() as c:
-            queued, waits = schedule(c, _rows(c))
+            c.execute('BEGIN IMMEDIATE')
+            queued, waits = schedule(c, _rows(c), stalled_waiters, stalled_jobs)
+            _notify_stalled(c, stalled_waiters)
         for j in queued:
             actor = _actor(j["actor"])
             if j['mode'] == 'review':
@@ -420,8 +470,9 @@ def pump() -> None:
                 if j["mode"] == "execute":
                     try:
                         issue = issues.get_issue(j["ref"])
-                        own = (execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None)
-                               or execute.predecessor_merge_reason(issue) or waits.get(j["id"]))
+                        own = (waits.get(j["id"]) if j["id"] in stalled_jobs else None) or (
+                            execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None)
+                            or execute.predecessor_merge_reason(issue) or waits.get(j["id"]))
                     except issues.StoreError:
                         pass
                 _note(j["id"], own or block)
@@ -466,7 +517,8 @@ def pump() -> None:
                         _set(j["id"], "skipped", never)
                         issues.add_comment(actor, j["ref"], f"⏭ 대기열의 실행을 건너뛰었어요 — {never}")
                         continue
-                    why = execute.blocked_reason(issue, parent) or execute.predecessor_merge_reason(issue) or waits.get(j["id"])
+                    why = (waits.get(j["id"]) if j["id"] in stalled_jobs else None) or (
+                        execute.blocked_reason(issue, parent) or execute.predecessor_merge_reason(issue) or waits.get(j["id"]))
                     if why:   # 선행·겹치는 파일 대기 — 뒤 항목을 먼저 본다
                         _set(j["id"], "queued", why)
                         continue
