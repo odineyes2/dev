@@ -686,3 +686,59 @@ print('OK web build: SHA, repeated deploy, pre-ff failure, revision rollback, da
 
 with patch.object(orchestrate.subprocess, 'run', side_effect=subprocess.TimeoutExpired('restart', 300)):
     assert 'TimeoutExpired' in orchestrate._restart(str(repo), {**orchestrate.DEFAULTS, 'pm2_app': 'web'})
+
+# 사람 API는 실제 라우트·권한을 통과하고, 강제 종료 뒤에만 orphaned로 복구한다.
+from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock
+from datetime import datetime, timedelta, timezone
+import app
+ref, rid = ready(restart=True)
+other = issues.create_issue(me, 'FLOW', '도는 작업')
+with db.connect() as c:
+    c.execute("UPDATE execution_completion SET phase='deployed',worker_id=?,updated_at=? WHERE run_id=?",
+              (orchestrate.PROCESS_ID, (datetime.now(timezone.utc) - timedelta(minutes=62)).isoformat(), rid))
+    active_run = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'review','running','human:admin',?)",
+                           (other['id'], db.now_iso())).lastrowid
+    assert jobs.self_restart_state(c)['overdue_minutes'] > 0
+client = TestClient(app.app)
+with patch.object(app, '_resolve_actor', AsyncMock(return_value=({'kind': 'agent', 'id': 1}, ''))):
+    assert client.post('/api/orchestrate/self-restart/now').status_code == 403
+proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+review.ACTIVE_PROCESSES[active_run] = proc
+with patch.object(app, '_resolve_actor', AsyncMock(return_value=(me, ''))):
+    headers = {'X-Requested-With': 'dev'}
+    assert client.post('/api/orchestrate/self-restart/now', headers=headers).status_code == 200
+    assert client.post('/api/orchestrate/self-restart/release', headers=headers).status_code == 409
+    assert orchestrate._restart_actions.pop(ref) == 'now'
+    orchestrate._interrupt_running(rid)
+    assert proc.poll() is not None
+    review.ACTIVE_PROCESSES.pop(active_run)
+    with db.connect() as c:
+        assert c.execute('SELECT status FROM runs WHERE id=?', (active_run,)).fetchone()[0] == 'orphaned'
+        assert c.execute('SELECT phase FROM execution_completion WHERE run_id=?', (rid,)).fetchone()[0] == 'deployed'
+        assert jobs.start_block(c, 'FLOW', 'review')
+    # 보류 선택은 재시작을 생략하고 기존 held 상태로 끝나 새 작업 막기를 푼다.
+    with db.connect() as c:
+        active_run = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'review','running','human:admin',?)",
+                               (other['id'], db.now_iso())).lastrowid
+    assert client.post('/api/orchestrate/self-restart/release', headers=headers).status_code == 200
+    with patch.object(orchestrate, '_busy', return_value=True):
+        assert orchestrate._wait_idle({'pm2_app': 'dev', 'wait_minutes': 60, 'poll_seconds': 0}, rid, lambda _: None, ref) == 'release'
+    with db.connect() as c:
+        c.execute("UPDATE runs SET status='orphaned' WHERE id=?", (active_run,))
+    orchestrate._finish(me, orchestrate.completion(ref), 'on_hold', '재시작은 나중에')
+    with db.connect() as c:
+        assert not jobs.start_block(c, 'FLOW', 'review')
+    assert client.post('/api/orchestrate/self-restart/now', headers=headers).status_code == 409
+client.close()
+ref_now, rid_now = ready(restart=True)
+with patch.object(orchestrate, 'run_tests', return_value=None), \
+        patch.object(orchestrate, '_wait_idle', return_value='now'), \
+        patch.object(orchestrate, '_interrupt_running') as interrupted, \
+        patch.object(orchestrate, '_restart', return_value=None) as restarted, \
+        patch.object(orchestrate, '_verified_health', return_value=True):
+    assert orchestrate.handle(me, ref_now) == 'merged'
+    interrupted.assert_called_once_with(rid_now)
+    restarted.assert_called_once()
+print('OK self restart actions')

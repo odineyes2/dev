@@ -45,8 +45,14 @@ def check_self_restart_banner(page, shots):
     assert page.locator('.restart-next a').count() == 2
     for phase, phrase in (('merging', '병합을 검사'), ('waiting', 'NS-98-2(12분째)'), ('restarting', '다시 연결되면')):
         state['phase'] = phase
+        state['overdue_minutes'] = 1 if phase == 'waiting' else 0
         page.evaluate('restartJobsSnapshot()')
         assert phrase in banner.inner_text()
+        assert page.locator('.restart-now').count() == int(phase == 'waiting')
+        assert page.locator('.restart-release').count() == int(phase == 'waiting')
+        if phase == 'waiting':
+            assert '60분 넘게 밀리고 있어요' in banner.inner_text()
+            assert page.locator('.restart-actions.overdue').count() == 1
         for width in (1920, 1300, 390):
             page.set_viewport_size({'width': width, 'height': 850})
             for theme in ('light', 'dark'):
@@ -54,6 +60,29 @@ def check_self_restart_banner(page, shots):
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), (phase, width)
                 assert banner.evaluate('(e) => e.getBoundingClientRect().right <= innerWidth + 1')
                 page.screenshot(path=str(shots / f'self-restart-{phase}-{theme}-{width}.png'), full_page=True)
+    state['phase'] = 'waiting'
+    page.evaluate('restartJobsSnapshot()')
+    page.evaluate("me = {kind:'agent'}; paintRestartBanner()")
+    assert page.locator('.restart-now').count() == 0
+    page.evaluate("me = {kind:'human'}; paintRestartBanner()")
+    requests = []
+    page.route('**/api/orchestrate/self-restart/*', lambda route: (requests.append(route.request.url), route.fulfill(json={'status':'requested'})))
+    page.evaluate("window.confirm = message => { window.restartConfirm = message; return false; }")
+    page.locator('.restart-now').click()
+    assert 'orphaned' in page.evaluate('window.restartConfirm') and 'NS-98-2' in page.evaluate('window.restartConfirm')
+    assert not requests
+    page.evaluate('window.confirm = message => { window.restartConfirm = message; return true; }')
+    page.locator('.restart-release').click()
+    assert '옛 코드' in page.evaluate('window.restartConfirm')
+    assert requests[-1].endswith('/release')
+    assert page.locator('.restart-release').is_disabled()
+    state['phase'] = 'restarting'
+    page.evaluate('restartJobsSnapshot()')
+    state['phase'] = 'waiting'
+    page.evaluate('restartJobsSnapshot()')
+    page.locator('.restart-now').click()
+    assert requests[-1].endswith('/now')
+    page.unroute('**/api/orchestrate/self-restart/*')
     for route, selector in (('trends', '.trend-page'), ('settings', '.auto-settings')):
         page.goto(BASE + '/#/' + route)
         page.wait_for_selector(selector)

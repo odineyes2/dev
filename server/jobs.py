@@ -131,7 +131,9 @@ def self_restart_state(c) -> dict | None:
     phase = record['phase']
     phase = ('waiting' if busy else 'restarting') if phase == 'deployed' else (
         'restarting' if phase in ('restart_requested', 'rollback_requested', 'rollback_applied') else 'merging')
+    overdue = max(0, minutes(record['updated_at']) - int(json.loads(record['cfg_json']).get('wait_minutes', 60))) if phase == 'waiting' else 0
     return {'phase': phase, 'ref': record['ref'], 'since': record['updated_at'], 'busy': busy,
+            'overdue_minutes': overdue,
             'waiting': [j['ref'] for j in _rows(c)],
             'process_id': orchestrate.PROCESS_ID, 'revision': orchestrate.BOOT_SHA}
 

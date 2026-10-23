@@ -46,6 +46,9 @@ PROCESS_ID = uuid.uuid4().hex
 BOOT_SHA = _run_git(str(Path(__file__).resolve().parent.parent), "rev-parse", "HEAD").stdout.strip()
 ACTIVE_PHASES = ("ready", "checking", "building", "applying", "deployed", "restart_requested", "rollback_requested", "rollback_applied")
 _lock = threading.RLock()   # 병합과 거절 롤백을 같은 순서로 직렬화한다.
+_restart_actions = {}   # 대기 중인 병합 스레드에 사람의 선택을 전달한다.
+_action_lock = threading.Lock()
+_restart_signal = threading.Event()
 DEFAULTS = {"restart_when": ["server/*", "ecosystem.config.js"], "restart_cmd": "npx pm2 restart ecosystem.config.js --only {app} --update-env",
             "health_seconds": 60, "wait_minutes": 60, "poll_seconds": 30}
 
@@ -166,7 +169,14 @@ def _wait_idle(cfg, exclude_run, say, ref=None) -> bool:
     started = time.monotonic()
     deadline = started + cfg['wait_minutes'] * 60
     next_notice = deadline
-    while _busy(cfg, exclude_run):
+    while True:
+        if own and ref:
+            with _action_lock:
+                action = _restart_actions.pop(ref, None)
+            if action:
+                return action
+        if not _busy(cfg, exclude_run):
+            return True
         now = time.monotonic()
         if now >= deadline and not own:
             return False
@@ -178,8 +188,59 @@ def _wait_idle(cfg, exclude_run, say, ref=None) -> bool:
             if ref:
                 import notify
                 notify.send(ref, '⏳ dev 재시작이 밀리고 있어요', '도는 작업이 끝나기를 기다리며 새 작업을 막고 있어요')
-        time.sleep(cfg['poll_seconds'])
-    return True
+        if own and ref:
+            _restart_signal.wait(cfg['poll_seconds'])
+            _restart_signal.clear()
+        else:
+            time.sleep(cfg['poll_seconds'])
+
+
+def self_restart_action(actor: dict, action: str) -> dict:
+    """사람의 선택을 이미 대기 중인 dev 병합에 전달한다."""
+    import jobs
+    if actor.get('kind') != 'human' or action not in ('now', 'release'):
+        raise issues.StoreError('사람(관리자)만 할 수 있어요.', 403)
+    with db.connect() as c:
+        state = jobs.self_restart_state(c)
+        if not state or state['phase'] != 'waiting':
+            raise issues.StoreError('대기 중인 dev 재시작이 없어요.', 409)
+        if action == 'now':
+            import review
+            if any(item['mode'] not in ('review', 'execute') for item in state['busy']):
+                raise issues.StoreError('점검·초기 생성·재현이 도는 동안에는 강제 재시작할 수 없어요.', 409)
+            run_ids = [r['id'] for r in c.execute("SELECT id FROM runs WHERE status='running' AND id<>?", (
+                next(m['run_id'] for m in jobs._pending_merges(c) if m['ref'] == state['ref']),))]
+            if any(run_id not in review.ACTIVE_PROCESSES for run_id in run_ids):
+                raise issues.StoreError('실행 프로세스를 확인하지 못해 강제 재시작할 수 없어요.', 409)
+        ref = state['ref']
+    with _action_lock:
+        if ref in _restart_actions:
+            raise issues.StoreError('재시작 선택을 이미 처리하고 있어요.', 409)
+        _restart_actions[ref] = action
+        _restart_signal.set()
+    return {'ref': ref, 'action': action, 'status': 'requested'}
+
+
+def _interrupt_running(exclude_run: int) -> None:
+    """실행 자식을 끝낸 뒤에만 고아로 기록한다. 새 서버는 기존 복구 흐름을 쓴다."""
+    import jobs
+    import review
+    with db.connect() as c:
+        running = [r['id'] for r in c.execute("SELECT id FROM runs WHERE status='running' AND id<>?", (exclude_run,))]
+    if any(run_id not in review.ACTIVE_PROCESSES for run_id in running):
+        raise issues.StoreError('실행 프로세스를 확인하지 못해 강제 재시작하지 않았어요.', 409)
+    for run_id in running:
+        proc = review.ACTIVE_PROCESSES.get(run_id)
+        review.FORCED_RUNS.add(run_id)
+        review._kill_tree(proc)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            raise issues.StoreError('실행 프로세스가 종료되지 않아 재시작하지 않았어요.', 409) from error
+    with db.connect() as c:
+        c.execute("UPDATE runs SET status='orphaned',ended_at=?,note='강제 dev 재시작으로 끊겼어요' WHERE status='running' AND id<>?",
+                  (db.now_iso(), exclude_run))
+    jobs.reconcile()
 
 
 def deploy(repo: str, cfg: dict, sha: str, say=lambda msg: None) -> tuple[str, str]:
@@ -723,7 +784,18 @@ def _post_deploy(actor, repo, cfg, record):
             else:
                 return _finish(actor, record, 'merged', _no_restart_note(hits))
     if record['phase'] == 'deployed':
-        if not _wait_idle(cfg, record['run_id'], lambda body: issues.add_comment(actor, record['ref'], body), record['ref']):
+        while True:
+            decision = _wait_idle(cfg, record['run_id'], lambda body: issues.add_comment(actor, record['ref'], body), record['ref'])
+            if decision == 'now':
+                try:
+                    _interrupt_running(record['run_id'])
+                except issues.StoreError as error:
+                    issues.add_comment(actor, record['ref'], str(error))
+                    continue
+            break
+        if decision == 'release':
+            return _finish(actor, record, 'on_hold', '병합은 유지하고 새 작업 막기를 풀었어요. dev는 재시작 전까지 이전 코드로 실행돼요 — 나중에 직접 재시작해 주세요.')
+        if not decision:
             return _finish(actor, record, 'on_hold', '작업 종료 대기 시간 제한을 넘었어요. 병합은 반영됐으며 재시작 확인이 필요해요.')
         _save(record, 'restart_requested', process_id=PROCESS_ID)
         err = _restart(repo, cfg) if cfg.get('pm2_app') else None

@@ -142,6 +142,7 @@ const restartBanner = document.getElementById('restart-banner');
 let restartState = null, restartIdentity = null, restartExpanded = false, restartNeedsReload = false;
 let restartTimer = null, restartDoneTimer = null, restartRequest = null, restartEpoch = 0, restartWatching = false;
 let restartRecovering = false;
+let restartChoicePending = false;
 const restartEdited = new Set();
 document.addEventListener('input', e => {
   if(e.target.matches('input, textarea, select, [contenteditable]')) restartEdited.add(e.target);
@@ -165,7 +166,7 @@ function paintRestartBanner(){
   const busy = (s.busy || []).map(r => `${r.ref}(${r.minutes}분째)`).join(', ');
   const words = {
     merging: `${s.ref} 병합을 검사하고 있어요 — 끝나면 dev 서버가 재시작돼요.`,
-    waiting: `dev 재시작을 기다리고 있어요 — ${busy || '도는 작업'}이 끝나면 재시작해요.`,
+    waiting: `dev 재시작을 기다리고 있어요 — ${busy || '도는 작업'}이 끝나면 재시작해요.${s.overdue_minutes > 0 ? ' (60분 넘게 밀리고 있어요)' : ''}`,
     restarting: 'dev 서버를 재시작하고 있어요. 다시 연결되면 화면을 새로 고쳐요.',
     complete: '재시작을 마쳤어요. 대기열을 이어서 진행해요.'
   };
@@ -173,14 +174,28 @@ function paintRestartBanner(){
   restartBanner.innerHTML = `<div class="restart-banner-inner"><span class="restart-dot" aria-hidden="true"></span>
     <div class="restart-copy"><span>${esc(words[s.phase] || words.restarting)}</span>${refs.length ? ` <span class="restart-next">다음 작업: ${links}${more}</span>` : ''}</div>
     ${refs.length > 2 ? `<button type="button" class="ghost restart-expand" aria-expanded="${restartExpanded}" aria-label="다음 작업 ${restartExpanded ? '접기' : '모두 보기'}">${restartExpanded ? '접기' : '모두 보기'}</button>` : ''}
+    ${s.phase === 'waiting' && me?.kind === 'human' ? `<div class="restart-actions${s.overdue_minutes > 0 ? ' overdue' : ''}"><button type="button" class="restart-now" ${restartChoicePending ? 'disabled' : ''}>지금 재시작</button><button type="button" class="ghost restart-release" ${restartChoicePending ? 'disabled' : ''}>재시작은 나중에</button></div>` : ''}
     ${restartNeedsReload ? '<button type="button" class="restart-reload">새로 고침</button>' : ''}</div>`;
   restartBanner.querySelector('.restart-expand')?.addEventListener('click', () => { restartExpanded = !restartExpanded; paintRestartBanner(); });
   restartBanner.querySelector('.restart-reload')?.addEventListener('click', () => location.reload());
+  restartBanner.querySelector('.restart-now')?.addEventListener('click', () => chooseRestart('now'));
+  restartBanner.querySelector('.restart-release')?.addEventListener('click', () => chooseRestart('release'));
   restartBanner.querySelector('.restart-copy').onclick = e => {
     if(refs.length > 2 && !e.target.closest('a')){ restartExpanded = !restartExpanded; paintRestartBanner(); }
   };
   if(focused === 'ghost restart-expand') restartBanner.querySelector('.restart-expand')?.focus();
   if(focused === 'restart-reload') restartBanner.querySelector('.restart-reload')?.focus();
+}
+async function chooseRestart(action){
+  const count = restartState?.busy?.length || 0;
+  const refs = (restartState?.busy || []).map(r => r.ref).join(', ');
+  const message = action === 'now'
+    ? `도는 작업 ${count}개(${refs})를 종료하고 재시작할까요? 끊긴 실행은 orphaned로 기록되고 기존 재시작 복구 흐름에 따라 정리돼요. 필요하면 다시 대기열에 넣어 주세요.`
+    : '병합은 그대로 두고 새 작업 막기를 풀까요? dev는 재시작 전까지 옛 코드로 돌아요 — 나중에 직접 재시작해 주세요.';
+  if(restartChoicePending || !confirm(message)) return;
+  restartChoicePending = true; paintRestartBanner();
+  try{ await api('POST', `/api/orchestrate/self-restart/${action}`); toast(action === 'now' ? '재시작을 요청했어요.' : '재시작 대기를 해제했어요.'); }
+  catch(error){ restartChoicePending = false; paintRestartBanner(); }
 }
 function finishRestart(identity){
   const changedCode = identity.revision !== restartIdentity.revision;
@@ -210,6 +225,7 @@ function receiveRestartState(state){
   restartIdentity ||= {process_id:state.process_id, revision:state.revision};
   restartRecovering = false;
   restartState = state;
+  if(state.phase !== 'waiting') restartChoicePending = false;
   restartGraceUntil = Date.now() + 30000;
   paintRestartBanner();
 }
@@ -256,6 +272,7 @@ function stopRestartPolling(){
   clearTimeout(restartTimer); clearTimeout(restartDoneTimer);
   restartRequest = null; restartState = null; restartIdentity = null; restartRecovering = false;
   restartExpanded = false; restartNeedsReload = false; restartGraceUntil = 0;
+  restartChoicePending = false;
   paintRestartBanner();
 }
 function startRestartPolling(){
