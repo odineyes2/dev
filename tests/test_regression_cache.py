@@ -65,6 +65,13 @@ ref = new_ref(repo, 'CA')
 assert orchestrate.run_tests(str(repo), 'server_completion', ref, CHANGED) is None
 assert git(repo, 'status', '--porcelain', '--untracked-files=all') == before     # 작업 폴더·인덱스 불변
 assert summary(ref, 'server_completion')['cache']['used'] is False
+done = summary(ref, 'server_completion')
+assert done['durations'] and set(done['durations']) == {k for k, v in done['results'].items() if v == 'passed'}, done   # DEV-160-2
+assert all(isinstance(v, float) and v >= 0 for v in done['durations'].values())
+assert all(isinstance(v, str) for v in done['results'].values())                  # results 형식은 그대로
+line = orchestrate.slowest_line({f't{i}.py': 10 * i for i in range(1, 8)})
+assert line.startswith('가장 오래 걸린 검사: t7.py 70초 · t6.py 60초') and line.count('·') == 4 and '전체 4.7분' in line, line
+assert orchestrate.slowest_line({'a.py': 3.2}).endswith('전체 3초')
 commit_all(repo, 'task')
 git(repo, 'checkout', '-q', 'main')
 copy = merge_copy(repo, 'relay/x')
@@ -72,6 +79,7 @@ assert orchestrate.run_tests(str(copy), 'server_merge', ref, CHANGED) is None
 rec = summary(ref, 'server_merge')
 assert set(rec['results'].values()) == {'reused'}, rec
 assert rec['cache']['used'] is True
+assert rec['durations'] == {}                                                     # 재사용만 했으면 돌린 시간 없음
 
 # 2. Claude 흐름 — 먼저 커밋한 폴더도 그대로 재사용
 repo = make_repo()

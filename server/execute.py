@@ -544,6 +544,10 @@ def register_completion(actor, ref, cwd, run_id, note):
     off = regression.resolve(ref, cwd)['changed_tests_off']
     if off:   # DEV-147 — 바뀐 검사는 항상 돌지만 사람이 Settings에서 끈 것만 예외다
         note += '\n\n⚠️ Task가 추가·수정한 검사를 사람이 Settings에서 꺼서 돌리지 않았어요: ' + ', '.join(f'`{n}`' for n in off)
+    timed = regression.load_record('regression-selection:' + ref + ':server_completion').get('durations')
+    if timed:
+        import orchestrate
+        note += '\n\n⏱️ 완료 ' + orchestrate.slowest_line(timed)
     changed = _git(cwd, 'diff', '--name-only', f'{BASE_BRANCH}...HEAD').splitlines()
     if any(p.startswith(('static/', 'src/components/', 'src/pages/')) or p.endswith(('.css', '.html', '.tsx', '.jsx', '.vue')) for p in changed) and regression.capture_planned_off(ref, cwd):
         note += '\n\n⚠️ 화면 파일이 바뀌었지만 캡처를 하지 않았어요.'

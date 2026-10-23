@@ -290,6 +290,14 @@ def run_test(repo, t, args=(), env=None):
         return subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
 
 
+def slowest_line(durations: dict, top=5) -> str:
+    """가장 오래 걸린 검사 상위 N개와 전체 시간을 한 줄로 만든다(DEV-160-2)."""
+    ranked = sorted(durations.items(), key=lambda kv: -kv[1])[:top]
+    total = sum(durations.values())
+    whole = f'{total / 60:.1f}분' if total >= 60 else f'{total:.0f}초'
+    return '가장 오래 걸린 검사: ' + ' · '.join(f'{n} {s:.0f}초' for n, s in ranked) + f', 전체 {whole}'
+
+
 def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
     """발견한 검사를 한 번씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다."""
     import regression
@@ -309,6 +317,7 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
     cached = regression.load_record('regression-cache:' + ref) if ref else {}
     identity = regression.tree_identity(repo) if ref else None
     results = {}
+    durations = {}   # 실제로 돌린 검사의 파일별 초(재사용·건너뜀은 없음)
     # 지문이 어긋난 이유를 가리려고 지문의 재료(트리·regression.py·검사 파일)를 따로 남긴다.
     old_meta = cached.pop('_meta', {}) if isinstance(cached.get('_meta'), dict) else {}
     meta = {'tree': hashlib.sha256((identity or '').encode()).hexdigest(),
@@ -337,7 +346,9 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
                 miss[t.name] = '트리가 다름 — main이 바뀌어 병합 결과가 달라짐'
             else:
                 miss[t.name] = '실행 환경(Python)이 다름'
+        started = time.monotonic()
         r = run_test(repo, t)
+        durations[t.name] = round(time.monotonic() - started, 1)
         results[t.name] = 'failed' if r.returncode else 'passed'
         if not r.returncode and stamp:
             cached[t.name] = stamp
@@ -359,7 +370,10 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
         reused = sum(1 for v in results.values() if v == 'reused')
         reason = next(iter(miss.values()), '') if not reused else ''
         regression.save_record('regression-selection:' + ref + ':' + stage,
-                               {**selection, 'results': results, 'cache': {'used': bool(reused), 'reused': reused, 'reason': reason}})
+                               {**selection, 'results': results, 'durations': durations,
+                                'cache': {'used': bool(reused), 'reused': reused, 'reason': reason}})
+        if stage == 'server_merge' and durations:
+            issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref, '⏱️ 병합 ' + slowest_line(durations))
         if stage == 'server_merge' and miss and not reused and not reason.startswith('트리가 다름'):
             done = regression.load_record('regression-selection:' + ref + ':server_completion').get('results')
             if done:
