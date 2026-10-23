@@ -489,11 +489,36 @@ with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(not
         cfg = json.loads(orchestrate.completion(ref)['cfg_json'])
         cfg['wait_minutes'] = 0
         c.execute('UPDATE execution_completion SET cfg_json=? WHERE run_id=?', (json.dumps(cfg), rid))
-    with patch.object(orchestrate, '_busy', return_value=True), patch.object(orchestrate, '_restart') as restart:
-        assert orchestrate.handle(me, ref) == 'on_hold'
-        restart.assert_not_called()
-    assert orchestrate.completion(ref)['phase'] == 'held'
-    assert sent.call_count == notices and not orchestrate.pending()
+    # dev 자신의 재시작은 wait_minutes를 넘겨도 포기하지 않고 ACTIVE_PHASES에 남아 기다리며, 주기마다 댓글·알림을 한 번씩 남긴다.
+    import jobs
+    seen = []
+    def still_blocked(*args):
+        with db.connect() as c:
+            seen.append(jobs.start_block(c, ref.split('-')[0], 'review'))
+        return len(seen) < 3
+    cfg['poll_seconds'] = 0
+    with db.connect() as c:
+        c.execute('UPDATE execution_completion SET cfg_json=? WHERE run_id=?', (json.dumps(cfg), rid))
+    with patch.object(orchestrate, '_busy', side_effect=still_blocked), patch.object(orchestrate, '_restart', return_value=None) as restart, \
+            patch.object(orchestrate, '_verified_health', return_value=True), patch.object(orchestrate, 'OVERDUE_REPEAT_MINUTES', 0):
+        assert orchestrate.handle(me, ref) == 'merged'
+        restart.assert_called_once()
+    assert all(seen[:2]) and 'dev 재시작' in seen[0], seen
+    delayed = [x for x in sent.call_args_list if '밀리고' in x.args[1]]
+    assert len(delayed) == 2 and delayed[0].args[0] == ref, sent.call_args_list
+    assert sum('분째 밀리고 있어요' in e['body'] for e in issues.get_issue(ref)['events'] if e.get('body')) == 2
+    assert not orchestrate.pending()
+
+    # 고아 run(상한 시간을 한참 넘긴 running)은 바쁨에서 빠지고 orphaned로 바뀐다. 최근 run은 그대로 바쁨.
+    with db.connect() as c:
+        stale = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) SELECT issue_id,'execute','running','x','2000-01-01T00:00:00+00:00' FROM runs LIMIT 1").lastrowid
+    assert not orchestrate._busy({'pm2_app': jobs.SELF_PM2_APP})
+    with db.connect() as c:
+        assert c.execute('SELECT status FROM runs WHERE id=?', (stale,)).fetchone()[0] == 'orphaned'
+        fresh = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) SELECT issue_id,'execute','running','x',? FROM runs LIMIT 1", (db.now_iso(),)).lastrowid
+    assert orchestrate._busy({'pm2_app': jobs.SELF_PM2_APP})
+    with db.connect() as c:
+        c.execute("UPDATE runs SET status='ok' WHERE id=?", (fresh,))
 
     # 재시작 대기 중 실제 거절 롤백이 들어오면 오래된 후처리는 되살리지 않는다.
     import rollback

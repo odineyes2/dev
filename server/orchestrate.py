@@ -10,6 +10,7 @@
 
 병합 뒤 재시작(DEV-40-2): 바뀐 파일이 `restart_when` 패턴에 걸릴 때만 `restart_cmd`를 돌린다(화면 파일만이면 생략).
 `busy_url`이 있으면 그 응답 `{"busy": true}`가 풀릴 때까지 최대 `wait_minutes` 기다리고, 넘으면 재시작 없이 on_hold.
+단 dev 자신을 재시작하는 병합은 넘겨도 포기하지 않고 계속 기다리며(새 시작 막기 유지) 주기적으로 알린다(`_wait_idle`).
 재시작 뒤 `health_url`이 `health_seconds` 안에 200이 아니면 병합을 revert하고 한 번 더 재시작해 복구, changes_requested.
 상위 이슈 정리는 DEV-40-3.
 
@@ -31,6 +32,7 @@ import uuid
 
 import db
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -80,6 +82,17 @@ def _get(url, timeout=5):
         return 0, ""
 
 
+def _reap_orphans(c) -> None:
+    """시간 상한(검토·실행 중 큰 값의 2배 + 10분)을 한참 넘겨 running으로 남은 기록은 죽은 것으로 보고 orphaned로 바꾼다.
+    그 기록 하나가 dev 재시작을 무기한 막지 않게 한다 — 서버가 뜰 때의 orphaned 처리와 같은 표시."""
+    import execute
+    import review
+    limit = max(review.TIMEOUT_SEC, execute.TIMEOUT_SEC) * 2 + 600
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=limit)).isoformat(timespec="seconds")
+    c.execute("UPDATE runs SET status='orphaned', ended_at=?, note='상한 시간을 넘겨도 끝나지 않아 끊긴 것으로 봤어요' "
+              "WHERE status='running' AND started_at<?", (db.now_iso(), cutoff))
+
+
 def _busy(cfg, exclude_run: int | None = None) -> bool:
     import jobs
     # dev 자신을 재시작하면 다른 줄에서 도는 에이전트 실행이 끊긴다 — 끝날 때까지 기다린다(jobs가 그동안 새로 시작하지 않는다).
@@ -88,6 +101,7 @@ def _busy(cfg, exclude_run: int | None = None) -> bool:
         with db.connect() as c:
             import project_activity
             import reproduce
+            _reap_orphans(c)
             if reproduce.running(c):
                 return True
             if project_activity.lanes(c):
@@ -133,6 +147,41 @@ def _restart(repo, cfg) -> str | None:
     return ((r.stdout + r.stderr).strip()[-800:] or f"종료 코드 {r.returncode}") if r.returncode else None
 
 
+OVERDUE_REPEAT_MINUTES = 60   # dev 재시작이 밀릴 때 알림을 다시 남기는 간격
+
+
+def _running_refs() -> str:
+    with db.connect() as c:
+        rows = c.execute(f"SELECT {issues.ref_sql('i', 'p')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id "
+                         "JOIN projects p ON p.id=i.project_id WHERE r.status='running' ORDER BY r.id").fetchall()
+    return ', '.join(r['ref'] for r in rows[:5]) or '재현·점검 등'
+
+
+def _wait_idle(cfg, exclude_run, say, ref=None) -> bool:
+    """도는 작업이 끝날 때까지 기다린다. 끝났으면 True.
+    dev 자신을 재시작하는 병합은 wait_minutes를 넘겨도 포기하지 않는다(포기하면 새 시작 막기가 풀려 옛 코드로 계속 돈다) —
+    넘긴 순간 한 번, 그 뒤 OVERDUE_REPEAT_MINUTES마다 한 번 알린다. 다른 프로젝트는 넘기면 False(on_hold)."""
+    import jobs
+    own = cfg.get('pm2_app') == jobs.SELF_PM2_APP
+    started = time.monotonic()
+    deadline = started + cfg['wait_minutes'] * 60
+    next_notice = deadline
+    while _busy(cfg, exclude_run):
+        now = time.monotonic()
+        if now >= deadline and not own:
+            return False
+        if own and now >= next_notice:
+            next_notice = now + OVERDUE_REPEAT_MINUTES * 60
+            minutes = int((now - started) // 60)
+            say(f"⏳ dev 재시작이 {minutes}분째 밀리고 있어요 — 도는 작업: {_running_refs()}. 새 작업은 시작하지 않고 기다려요. "
+                "급하면 안내 띠의 '지금 재시작'을 눌러 주세요.")
+            if ref:
+                import notify
+                notify.send(ref, '⏳ dev 재시작이 밀리고 있어요', '도는 작업이 끝나기를 기다리며 새 작업을 막고 있어요')
+        time.sleep(cfg['poll_seconds'])
+    return True
+
+
 def deploy(repo: str, cfg: dict, sha: str, say=lambda msg: None) -> tuple[str, str]:
     """병합 커밋 sha 뒤 필요하면 재시작하고 health를 본다. (Task가 갈 상태, 메모) — 문제없으면 ("merged", 메모).
     dev가 자기 자신(pm2_app=dev)을 재시작하면 이 스레드도 죽어 health 확인·복구를 못 한다 — 상태를 DB에 적고 뜬 뒤 이어 하기는 필요해지면."""
@@ -143,11 +192,8 @@ def deploy(repo: str, cfg: dict, sha: str, say=lambda msg: None) -> tuple[str, s
         return "merged", _no_restart_note(hits)
     if _busy(cfg):
         say(f"⏳ 실행 중인 작업이 있어 끝나면 `{cfg['pm2_app']}`를 재시작할 예정이에요(최대 {cfg['wait_minutes']}분).")
-        deadline = time.monotonic() + cfg["wait_minutes"] * 60
-        while _busy(cfg):
-            if time.monotonic() >= deadline:
-                return "on_hold", f"실행 중인 작업이 {cfg['wait_minutes']}분 안에 안 끝나 `{cfg['pm2_app']}`를 재시작하지 않았어요 — 병합은 됐으니 작업이 끝난 뒤 직접 재시작해 주세요."
-            time.sleep(cfg["poll_seconds"])
+        if not _wait_idle(cfg, None, say):
+            return "on_hold", f"실행 중인 작업이 {cfg['wait_minutes']}분 안에 안 끝나 `{cfg['pm2_app']}`를 재시작하지 않았어요 — 병합은 됐으니 작업이 끝난 뒤 직접 재시작해 주세요."
     err = _restart(repo, cfg)
     if not err and _healthy(cfg):
         return "merged", f"`{cfg['pm2_app']}`를 재시작했고 health 확인을 통과했어요({', '.join(hits[:5])} 변경)."
@@ -677,11 +723,8 @@ def _post_deploy(actor, repo, cfg, record):
             else:
                 return _finish(actor, record, 'merged', _no_restart_note(hits))
     if record['phase'] == 'deployed':
-        deadline = time.monotonic() + cfg['wait_minutes'] * 60
-        while _busy(cfg, record['run_id']):
-            if time.monotonic() >= deadline:
-                return _finish(actor, record, 'on_hold', '작업 종료 대기 시간 제한을 넘었어요. 병합은 반영됐으며 재시작 확인이 필요해요.')
-            time.sleep(cfg['poll_seconds'])
+        if not _wait_idle(cfg, record['run_id'], lambda body: issues.add_comment(actor, record['ref'], body), record['ref']):
+            return _finish(actor, record, 'on_hold', '작업 종료 대기 시간 제한을 넘었어요. 병합은 반영됐으며 재시작 확인이 필요해요.')
         _save(record, 'restart_requested', process_id=PROCESS_ID)
         err = _restart(repo, cfg) if cfg.get('pm2_app') else None
         if err:
