@@ -382,4 +382,44 @@ with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._t
     assert client.get('/api/trends/stages', headers={'Authorization': 'Bearer invalid'}).status_code == 401
     with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
         assert client.get('/api/trends/stages', cookies={'ns_session': 'temporary'}).status_code == 403
+
+# agent 필터: all은 기존 결과와 같고, 실행이 모두 codex인 데이터는 codex와 같으며 claude는 비어 있다.
+with db.connect() as c:   # 테스트 대기열 행은 기본 provider(claude)라 실행과 같은 codex로 맞춘다.
+    c.execute("UPDATE jobs SET provider='codex'")
+base = usage.stage_summary('2026-02-01', '2026-02-01', 'STG', as_of=fixed_now)
+assert base['agent'] == 'all'
+codex_only = usage.stage_summary('2026-02-01', '2026-02-01', 'STG', as_of=fixed_now, agent='codex')
+assert codex_only['issues'] == base['issues'] and codex_only['stages'] == base['stages']
+claude_only = usage.stage_summary('2026-02-01', '2026-02-01', 'STG', as_of=fixed_now, agent='claude')
+assert claude_only['agent'] == 'claude' and claude_only['issues'] == []
+assert claude_only['distribution'] == {'seconds': {'unit': 'seconds', 'bins': [], 'n': 0},
+                                       'tokens': {'unit': 'tokens', 'bins': [], 'n': 0}}
+# 분포 구간 합 = 부분 측정이 아닌 Issue 수
+for kind in ('seconds', 'tokens'):
+    dist = base['distribution'][kind]
+    assert dist['n'] == sum(not r['partial'] for r in base['issues']) == sum(b['count'] for b in dist['bins']) and len(dist['bins']) == 8
+# 한 Issue를 두 에이전트가 나눠 했으면 각자 자기 몫만 잡힌다.
+with db.connect() as c:
+    c.execute("UPDATE runs SET provider='claude' WHERE id=?", (review_id,))
+mixed_claude = usage.stage_summary('2026-02-01', '2026-02-01', 'STG', as_of=fixed_now, agent='claude')
+claude_row = next(r for r in mixed_claude['issues'] if r['ref'] == stage_parent['ref'])
+assert claude_row['stages']['review'] == {'seconds': 60, 'tokens': 12} and claude_row['stages']['execute']['seconds'] == 0
+assert claude_row['stages']['completion']['seconds'] == 0 and claude_row['stages']['queue']['seconds'] == 0
+mixed_codex = usage.stage_summary('2026-02-01', '2026-02-01', 'STG', as_of=fixed_now, agent='codex')
+codex_row = next(r for r in mixed_codex['issues'] if r['ref'] == stage_parent['ref'])
+assert codex_row['stages']['review']['seconds'] == 0 and codex_row['stages']['execute'] == {'seconds': 180, 'tokens': 57}
+try:
+    usage.stage_summary(agent='gpt')
+    raise AssertionError('invalid agent accepted')
+except issues.StoreError:
+    pass
+
+with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
+    client.cookies.set('ns_session', 'temporary')
+    for name in ('all', 'claude', 'codex'):
+        r = client.get(f'/api/trends/stages?from=2026-02-01&to=2026-02-01&project=stg&agent={name}')
+        assert r.status_code == 200 and r.json()['agent'] == name and 'distribution' in r.json(), r.text
+    assert client.get('/api/trends/stages?agent=gpt').status_code == 400
+    client.cookies.clear()
+    assert client.get('/api/trends/stages?agent=claude').status_code == 401
 print('OK stage usage')
