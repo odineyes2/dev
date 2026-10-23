@@ -319,7 +319,8 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
             results[t.name] = 'skipped'
             continue
         stamp = regression.fingerprint(t, identity) if ref else None
-        meta['files'][t.name] = hashlib.sha256(t.read_bytes()).hexdigest()
+        if ref:
+            meta['files'][t.name] = hashlib.sha256(t.read_bytes()).hexdigest()
         if stamp and cached.get(t.name) == stamp:
             results[t.name] = 'reused'
             continue
