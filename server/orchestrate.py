@@ -586,7 +586,7 @@ def manual_merge(actor, ref):
             c.execute('INSERT INTO execution_completion(run_id,issue_id,ref,actor,task_sha,auto_merge,phase,note,owner_event,cfg_json,updated_at) VALUES(?,?,?,?,?,1,?,?,?,?,?)',
                       (run_id, row['id'], ref, issues.actor_label(actor), sha, 'ready', note, owner_event, json.dumps(cfg), now))
         try:
-            threading.Thread(target=jobs.run_then_pump, args=(handle, actor, ref), daemon=True).start()
+            threading.Thread(target=jobs.run_then_pump, args=(handle, actor, ref), kwargs={'lane': (issue['project_key'], 'execute')}, daemon=True).start()
         except Exception as error:
             _finish(actor, completion(ref), 'on_hold', '수동 병합 스레드를 시작하지 못했습니다: ' + str(error))
             raise issues.StoreError('수동 병합 스레드를 시작하지 못했습니다.', 503) from error
@@ -651,7 +651,7 @@ def retry_merge(actor, ref, *, reproduction_id=None):
             c.execute("UPDATE execution_completion SET phase='ready',worker_id=?,owner_event=?,actor=?,cfg_json=?,updated_at=? WHERE run_id=?",
                       (PROCESS_ID, event, issues.actor_label(actor), json.dumps(cfg), db.now_iso(), record['run_id']))
         try:
-            threading.Thread(target=jobs.run_then_pump, args=(handle, actor, ref), daemon=True).start()
+            threading.Thread(target=jobs.run_then_pump, args=(handle, actor, ref), kwargs={'lane': (issue['project_key'], 'execute')}, daemon=True).start()
         except Exception as error:
             _finish(actor, completion(ref), 'on_hold', '병합 재시도 스레드를 시작하지 못했어요: ' + str(error))
             raise issues.StoreError('병합 재시도를 시작하지 못했어요.', 409) from error

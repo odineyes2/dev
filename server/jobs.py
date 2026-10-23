@@ -492,8 +492,13 @@ def pump() -> None:
     with _lock:
         import automation
         import orchestrate
-        if not any(n for lane, n in _threads.items() if lane and lane[1] == "execute"):
-            orchestrate.recover()   # 병합을 이어받는 스레드가 없을 때만 — 도는 병합과 겹치지 않게
+        # 병합을 이어받는 스레드가 없을 때만 — 도는 병합과 겹치지 않게. 병합 잠금은 기다리지 않는다:
+        # 이 _lock을 쥔 채 병합 검사(수십 분)를 기다리면 넣기·취소·화면 요청까지 모두 멈춘다(DEV-160-1 병합 재시도).
+        if not any(n for lane, n in _threads.items() if lane and lane[1] == "execute") and orchestrate._lock.acquire(blocking=False):
+            try:
+                orchestrate.recover()
+            finally:
+                orchestrate._lock.release()
         automation.sync()
         reconcile()
         stalled_waiters, stalled_jobs = {}, set()

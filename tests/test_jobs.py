@@ -313,6 +313,30 @@ with patch.object(orchestrate, 'recover', side_effect=lambda: sequence.append('r
     assert sequence == ['recover', 'start', 'recover']
 print('OK completion queue boundary')
 
+# 다른 스레드의 병합이 orchestrate._lock을 쥐고 있으면 펌프는 복구를 건너뛰고 바로 끝난다(DEV-160-1 병합 재시도 중 서버 전체 멈춤).
+import threading
+held, release = threading.Event(), threading.Event()
+def merging():
+    with orchestrate._lock:
+        held.set(); release.wait(10)
+merger = threading.Thread(target=merging, daemon=True)
+merger.start()
+held.wait(5)
+recovered = []
+def recover_like_handle():   # 실제 recover → handle처럼 병합 잠금을 잡는다
+    with orchestrate._lock:
+        recovered.append(1)
+with patch.object(orchestrate, 'recover', side_effect=recover_like_handle):
+    pumping = threading.Thread(target=jobs.pump, daemon=True)
+    pumping.start(); pumping.join(5)
+    blocked = pumping.is_alive()
+    release.set(); pumping.join(5); merger.join(5)
+assert not blocked and not recovered, '병합 잠금을 기다리느라 펌프가 멈췄다'
+with patch.object(orchestrate, 'recover', side_effect=recover_like_handle):
+    jobs.pump()
+assert recovered, '잠금이 풀리면 다시 복구한다'
+print('OK pump does not wait for merge lock')
+
 # 대기열 순서 이동(DEV-85) — 사람만, 화면에서 본 이웃과 한 칸 교환, 재시작 후 유지, 펌프도 같은 순서.
 with db.connect() as c:
     c.execute("UPDATE runs SET status='ok' WHERE status='running'")

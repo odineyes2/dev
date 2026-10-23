@@ -594,7 +594,7 @@ async def api_update_token_settings(request: Request):
 async def api_update_global_auto_settings(request: Request):
     import auto_settings
     result = auto_settings.update_settings(human_only(request), None, await json_body(request))
-    jobs.pump()
+    await run_in_threadpool(jobs.pump)
     return result
 
 
@@ -852,14 +852,14 @@ import jobs  # noqa: E402
 async def api_execute(ref: str, request: Request):
     me = actor(request)
     b = await json_body(request) if await request.body() else {}
-    return jobs.enqueue(me, ref, "execute", b.get("provider"))
+    return await run_in_threadpool(jobs.enqueue, me, ref, "execute", b.get("provider"))   # 대기열 잠금을 이벤트 루프에서 기다리면 서버 전체가 멈춘다
 
 
 @app.post("/api/issues/{ref}/review")
 async def api_review(ref: str, request: Request):
     me = actor(request)
     b = await json_body(request) if await request.body() else {}
-    return jobs.enqueue(me, ref, "review", b.get("provider"), note=b.get("note"), plan_version=b.get("plan_version"))
+    return await run_in_threadpool(jobs.enqueue, me, ref, "review", b.get("provider"), note=b.get("note"), plan_version=b.get("plan_version"))
 
 
 @app.post('/api/issues/{ref}/retry-merge')
@@ -924,7 +924,7 @@ def api_cancel_job(job_id: int, request: Request):
 async def api_move_job(job_id: int, request: Request):
     me = human_only(request)
     b = await json_body(request)
-    return jobs.move(me, job_id, b.get("direction"), b.get("neighbor_id"))
+    return await run_in_threadpool(jobs.move, me, job_id, b.get("direction"), b.get("neighbor_id"))
 
 
 @app.get("/api/settings/queue")
