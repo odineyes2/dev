@@ -245,6 +245,9 @@ unfinished_parent = issues.create_issue(human, 'STG', 'unfinished stage parent')
 unfinished_task = issues.create_issue(human, 'STG', 'unfinished stage task', parent=unfinished_parent['ref'])
 partial_parent = issues.create_issue(human, 'STG', 'partial stage parent')
 partial_task = issues.create_issue(human, 'STG', 'partial stage task', parent=partial_parent['ref'])
+issues.create_project(human, 'DEV', 'dev changes')
+dev_parent = issues.create_issue(human, 'DEV', 'dev parent')
+dev_task = issues.create_issue(human, 'DEV', 'dev task', parent=dev_parent['ref'])
 
 def stage_run(c, iid, mode, begin, stop, inp, out, status='ok'):
     return c.execute('''INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,
@@ -287,6 +290,11 @@ with db.connect() as c:
     partial_run = stage_run(c, partial_task['id'], 'execute',
                             '2026-01-31T15:06:00+00:00', '2026-01-31T15:07:00+00:00', None, 2)
     stage_completion(c, partial_task['id'], partial_task['ref'], partial_run, '2026-01-31T15:08:00+00:00')
+    dev_run = stage_run(c, dev_task['id'], 'execute',
+                        '2026-01-31T14:59:00+00:00', '2026-01-31T15:03:00+00:00', 2, 1)
+    stage_completion(c, dev_task['id'], dev_task['ref'], dev_run, '2026-01-31T15:06:00+00:00')
+    c.execute("INSERT INTO jobs(issue_id,mode,actor,status,created_at,started_at,run_id) VALUES(?,'execute','human:admin','started',?,?,?)",
+              (dev_task['id'], '2026-01-31T14:57:00+00:00', '2026-01-31T14:59:00+00:00', dev_run))
 
 stage_result = usage.stage_summary('2026-02-01', '2026-02-01', 'STG', as_of=fixed_now)
 assert stage_result['previous'] == {'from_date': '2026-01-31', 'to_date': '2026-01-31'}
@@ -303,6 +311,13 @@ assert (stage_row['execute_runs'], stage_row['failed_runs'], stage_row['total_to
 assert not stage_row['partial']
 assert next(r for r in stage_result['issues'] if r['ref'] == partial_parent['ref'])['partial']
 assert stage_result['partial_count'] == 1
+assert stage_result['daily_task_median'] == [{'date': '2026-02-01', 'seconds': 420, 'n': 1}]
+assert stage_result['daily_task_unmeasured'] == 1
+assert stage_result['dev_changes'] == [{'ref': dev_task['ref'], 'title': 'dev task',
+    'merged_at': '2026-01-31T15:06:00+00:00', 'date': '2026-02-01',
+    'merged_at_local': '2026-02-01 00:06'}]
+assert usage.stage_summary('2026-02-01', '2026-02-01', as_of=fixed_now)['daily_task_median'][0] == {
+    'date': '2026-02-01', 'seconds': 480, 'n': 2}
 execute_stats = next(s for s in stage_result['stages'] if s['key'] == 'execute')
 assert execute_stats['seconds'] == {'mean': 180, 'median': 180, 'p90': 180, 'n': 1}
 assert execute_stats['previous']['seconds']['mean'] == 60
