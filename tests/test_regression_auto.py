@@ -72,7 +72,8 @@ assert not regression.resolve(legacy['ref'], repo)['checks']['agent_capture']['e
 assert regression.capture_skip_reason(legacy['ref'], repo).startswith('사람 설정')
 assert execute.capture_instructions('Read', legacy['ref']).startswith('사람 설정')
 regression.update(me, {'agent_capture': 'auto'})
-regression.update(me, {'agent_api': 'off', 'file:test_ui.py': 'on'})
+regression.update(me, {'agent_api': 'off'})
+regression.update(me, {'file:test_ui.py': 'on'}, 'AUTO')   # 파일 설정은 프로젝트별(DEV-161-1)
 assert not regression.resolve(ref, repo, ['server/auth.py'])['checks']['agent_api']['enabled']
 assert regression.resolve(ref, repo, ['README.md'])['checks']['server_completion']['enabled']
 for bad in ('## 검사 선택\nno json', '## 검사 선택\n```json\n{"1":{"level":"light","reason":"x","checks":{"unknown":true}}}\n```'):

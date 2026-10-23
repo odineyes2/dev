@@ -932,18 +932,26 @@ def api_queue_settings():
     return {"queue_concurrency": jobs.concurrency(), "max": jobs.MAX_CONCURRENCY}
 
 
+def _regression_project(project: str):
+    """?project=키 — 없으면 dev 기본. 모르는 프로젝트는 404."""
+    project = (project or '').strip().upper()
+    if project and project not in {p['key'] for p in issues.list_projects()}:
+        raise issues.StoreError('없는 프로젝트예요.', 404)
+    return project or None
+
+
 @app.get('/api/settings/regression')
-def api_regression_settings():
+def api_regression_settings(project: str = ''):
     import regression
-    return regression.settings()
+    return regression.settings(_regression_project(project))
 
 
 @app.put('/api/settings/regression')
-async def api_update_regression_settings(request: Request):
+async def api_update_regression_settings(request: Request, project: str = ''):
     import regression
     me = human_only(request)
     body = await json_body(request)
-    return await run_in_threadpool(regression.update, me, body.get('checks'))
+    return await run_in_threadpool(regression.update, me, body.get('checks'), _regression_project(project))
 
 
 @app.put("/api/settings/queue")
