@@ -138,12 +138,18 @@ body:has(#list-body) .tab-bar-inner{ max-width:none; padding-left:var(--list-gut
 .trend-task-row[hidden]{ display:none; }
 .trend-stage-history{ margin-bottom:var(--sp-4); }
 .trend-stage-history p{ margin:0 0 var(--sp-3); font-size:13px; }
-.trend-stage-daily-chart{ display:block; width:min(100%,520px); height:auto; color:var(--accent); }
-.trend-stage-daily-chart text{ fill:var(--dim); font:11px var(--mono); }
-.trend-stage-axis{ stroke:var(--border); }
-.trend-dev-mark{ stroke:var(--dim); stroke-width:1; stroke-dasharray:4 4; }
+.trend-stage-daily-grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-4); }
+.trend-stage-daily-grid h3{ margin:0 0 var(--sp-2); font-size:13px; font-weight:600; }
+.trend-stage-daily-chart{ display:block; width:100%; height:auto; color:var(--accent); }
+.trend-stage-daily-chart text{ fill:var(--dim); font:10px var(--mono); }
+.trend-stage-daily-chart .trend-stage-value{ fill:var(--text); font-size:10px; }
+.trend-stage-day{ stroke:var(--border); stroke-width:1; opacity:.6; }
+.trend-stage-hline{ stroke:var(--border); stroke-width:1; }
+.trend-stage-area{ fill:var(--accent); opacity:.12; }
+.trend-dev-mark{ stroke:var(--dim); stroke-width:1.5; stroke-dasharray:4 4; }
 .trend-stage-line{ fill:none; stroke:var(--accent); stroke-width:2; stroke-linejoin:round; }
 .trend-stage-point{ fill:var(--accent); stroke:var(--panel); stroke-width:2; }
+.trend-stage-point:hover{ r:6; }
 .trend-dev-changes{ margin-top:var(--sp-3); font-size:13px; }
 .trend-dev-changes summary{ min-height:40px; cursor:pointer; color:var(--accent); }
 .trend-dev-changes ul{ margin:0; padding-left:var(--sp-5); }
@@ -152,7 +158,7 @@ body:has(#list-body) .tab-bar-inner{ max-width:none; padding-left:var(--list-gut
 .trend-dev-changes time{ color:var(--dim); white-space:nowrap; }
 @media(max-width:800px){
   .trend-grid{ grid-template-columns:minmax(0,1fr); }
-  .trend-stage-grid, .trend-stage-labels{ grid-template-columns:minmax(0,1fr); }
+  .trend-stage-grid, .trend-stage-labels, .trend-stage-daily-grid{ grid-template-columns:minmax(0,1fr); }
   .trend-filter label:first-child, .trend-filter select, .trend-periods{ width:100%; }
   .trend-periods button{ flex:1; }
   .trend-filter label:has(input){ flex:1 1 120px; }
