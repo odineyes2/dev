@@ -439,10 +439,66 @@ function followProgress(refresh, current){
 }
 const LIVE_MERGE = new Set(['병합 검사 중', '운영 반영 중', '재시작 확인 중', '복구 중', '복구 확인 중']);
 function activeProgress(i){ return i.review_running || i.job || i.execute?.reproduction?.result?.status === 'running' || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
+function splitProgress(text){
+  if(text.length <= 20 && !text.includes('—')) return {short:text, long:''};
+  const ref = '[A-Z][A-Z0-9]*-\\d+(?:-\\d+)?';
+  let short = '';
+  const waiting = text.match(new RegExp(`^(${ref})(?: 작업이 끝날 때까지 기다려요|이 사람을 기다려요)`));
+  if(waiting) short = `대기: ${waiting[1]}`;
+  if(!short && /(?:병합·운영 반영 완료|Task 병합)(?:을|를) 기다려요/.test(text)){
+    const first = text.match(new RegExp(ref));
+    if(first) short = `병합 대기: ${first[0]}`;
+  }
+  if(!short && /^선행 (?:Task|Issue|이슈)\(/.test(text)){
+    const refs = (text.match(new RegExp(ref, 'g')) || []).join(', ');
+    if(refs) short = `선행: ${refs}`;
+  }
+  if(!short && text.startsWith('동시 실행 상한')) short = '동시 실행 상한 대기';
+  if(!short) short = text.split('—')[0].trim();
+  if(Array.from(short).length > 28) short = Array.from(short).slice(0, 27).join('') + '…';
+  return {short, long:text};
+}
 function progressHtml(i){
   const text = i.job?.note || i.merge_state || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
-  return text ? `<div class="progress-note">${esc(text)}</div>` : '';
+  if(!text) return '';
+  const {short, long} = splitProgress(text);
+  return `<div class="progress-note"><span class="progress-short">${esc(short)}</span>${long ? `<button type="button" class="progress-more" aria-label="자세히 보기" title="자세히 보기" aria-expanded="false" data-progress="${esc(long)}">ⓘ</button>` : ''}</div>`;
 }
+let progressButton = null;
+function closeProgress(){
+  if(progressButton){ progressButton.setAttribute('aria-expanded', 'false'); progressButton.removeAttribute('aria-describedby'); }
+  progressButton = null;
+  document.querySelector('#progress-pop')?.remove();
+}
+function positionProgress(){
+  if(!progressButton) return;
+  const pop = document.querySelector('#progress-pop');
+  if(!pop || !progressButton.isConnected){ closeProgress(); return; }
+  const anchor = progressButton.getBoundingClientRect();
+  if(anchor.bottom < 0 || anchor.top > innerHeight){ closeProgress(); return; }
+  const box = pop.getBoundingClientRect();
+  pop.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8))}px`;
+  pop.style.top = `${anchor.bottom + box.height <= innerHeight - 8 ? anchor.bottom : Math.max(8, anchor.top - box.height)}px`;
+}
+document.addEventListener('click', e => {
+  const button = e.target.closest('.progress-more');
+  if(!button){ if(progressButton && !e.target.closest('#progress-pop')) closeProgress(); return; }
+  e.preventDefault(); e.stopPropagation();
+  if(progressButton === button){ closeProgress(); return; }
+  closeProgress();
+  progressButton = button;
+  button.setAttribute('aria-expanded', 'true');
+  button.setAttribute('aria-describedby', 'progress-pop');
+  const pop = document.createElement('div');
+  pop.id = 'progress-pop'; pop.className = 'progress-pop'; pop.setAttribute('role', 'tooltip');
+  pop.textContent = button.dataset.progress;
+  document.body.append(pop);
+  positionProgress();
+}, true);
+document.addEventListener('keydown', e => { if(e.key === 'Escape') closeProgress(); });
+window.addEventListener('scroll', positionProgress, true);
+window.addEventListener('resize', positionProgress);
+window.addEventListener('hashchange', closeProgress);
 
 // ---- 목록 ----
 
@@ -973,6 +1029,7 @@ async function renderList(){
     if(L !== listLoad) return;
     const tbody = body.querySelector('tbody');
     if(tbody){
+      closeProgress();
       tbody.innerHTML = '';
       data.issues.forEach(i => placeRow(tbody, i));
       bindActions(tbody, L.actions, loadList);   // 새로 그린 Action 버튼에 핸들러를 다시 붙인다(DEV-97)
@@ -1384,6 +1441,7 @@ async function renderIssue(ref, background = false){
   // 검토 절은 Task가 아닐 때만 — 도는 중이면 버튼 대신 상태 줄
   const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job) : reviewBusy ? busyLine(reviewProvider, '검토')
     : `<div class="agent-btns" id="review-btns">${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}</div>${it.review_busy ? `<div class="dim hint">다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}</div>` : ''}`}`;
+  closeProgress();
   view.innerHTML = `
     <div class="detail">
       <div>
