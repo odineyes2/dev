@@ -32,7 +32,8 @@ button.save[aria-busy="true"]{ justify-content:center; }
 .login-box p.dim{ text-align:center; margin:0 0 var(--sp-2); font-size:13px; }
 .login-box .primary{ justify-content:center; padding:10px; border-radius:999px; margin-top:var(--sp-1); }
 
-main:has(#list-body){ max-width:none; }
+main:has(#list-body){ max-width:none; padding-left:calc(var(--sp-5) * 2); padding-right:calc(var(--sp-5) * 2); }
+body:has(#list-body) .tab-bar-inner{ max-width:none; padding-left:calc(var(--sp-5) * 2); padding-right:calc(var(--sp-5) * 2); }
 .ops-split:has(#list-body), .issue-summary, #list-body{ min-width:0; max-width:100%; }
 #list-body{ overflow-x:auto; }
 
@@ -151,6 +152,8 @@ table.issues.tasks td:nth-child(2){ overflow-wrap:anywhere; }
 .tog[aria-expanded="false"] i{ transform:translateX(-2px) rotate(-45deg); }
 .title-cell{ font-weight:500; }
 table.issues:not(.tasks) .title-cell{ width:100%; min-width:240px; overflow-wrap:anywhere; padding-top:8px; padding-bottom:8px; }
+#list-body table.issues:not(.tasks) .title-cell{ max-width:0; overflow:hidden; }
+#list-body .issue-title-line{ display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .issue-badges:empty{ display:none; }
 .issue-badges .label:first-child{ margin-left:0; }
 .goal-badge{ color:var(--accent); font-size:12px; font-weight:500; white-space:nowrap; }
@@ -689,6 +692,7 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 
 /* 목록·Task·보드가 같은 토큰 상태를 표시한다. */
 .issue-tokens{ font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+#list-body .completion-time, #list-body .issue-col-updated{ font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
 .issue-tokens-lines{ display:inline-flex; flex-direction:column; align-items:flex-start; gap:2px; min-width:0; vertical-align:middle; }
 .issue-tokens-own{ display:inline-flex; align-items:baseline; gap:4px; min-width:0; }
 .issue-tokens-label{ flex:none; white-space:nowrap; font-size:11px; color:var(--dim); }
@@ -717,6 +721,10 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 @media(max-width:1000px){
   #list-body .issue-col-agent{ display:none; }
   #list-body .issue-meta-agent{ display:inline; }
+}
+@media(max-width:800px){
+  main:has(#list-body){ padding-left:14px; padding-right:14px; }
+  body:has(#list-body) .tab-bar-inner{ padding-left:14px; padding-right:14px; }
 }
 .token-explanation{ margin:var(--sp-2) 0 0; font-size:12px; color:var(--dim); overflow-wrap:anywhere; }
 .issue-token-detail > div{ min-width:0; }
