@@ -226,7 +226,23 @@ def check_trend_stages(page, shots):
     assert page.locator('.trend-subtabs [aria-current="page"]').inner_text() == '단계별 소요'
     assert page.locator('.trend-donut').count() == 2
     assert page.locator('.trend-donut circle[aria-label]').count() == 8
+    assert page.locator('.trend-donut-caption').count() == 0
+    assert '평균 Issue 1건' not in page.inner_text('.trend-stage-grid')
+    assert page.locator('.trend-donut text').count() == 2
+    assert page.locator('.trend-donut-legend li').count() == 8
+    assert '대기열 대기' in page.locator('.trend-donut-legend').nth(0).inner_text()
+    assert '1분 · 7%' in page.locator('.trend-donut-legend').nth(0).inner_text()
+    assert '검토·계획' in page.locator('.trend-donut-legend').nth(1).inner_text()
+    assert '2,000 · 22%' in page.locator('.trend-donut-legend').nth(1).inner_text()
+    for card in page.locator('.trend-stage-card').all():
+        colors = card.locator('.trend-donut circle[aria-label]').evaluate_all(
+            '(nodes) => nodes.map(node => getComputedStyle(node).stroke)')
+        dots = card.locator('.trend-donut-legend .trend-stage-dot').evaluate_all(
+            '(nodes) => nodes.map(node => getComputedStyle(node).backgroundColor)')
+        assert len(colors) == len(set(colors))
+        assert colors == dots
     assert page.locator('.trend-stage-labels li').count() == 5
+    page.locator('.trend-stage-details summary').click()
     assert '빈 대기열 대기' in page.inner_text('.trend-stage-labels')
     assert page.locator('.trend-stage-daily-chart .trend-stage-point').count() == 5
     assert page.locator('.trend-stage-daily-chart .trend-stage-line').count() == 2
@@ -244,6 +260,10 @@ def check_trend_stages(page, shots):
     assert page.locator('.trend-issue-row .ref').all_inner_texts() == ['STGE-2', 'STGE-1']
     page.check('#trend-human')
     assert page.locator('.trend-stage-labels li').count() == 7
+    assert page.locator('.trend-donut-legend li').count() == 10
+    human_colors = page.locator('.trend-stage-card').first.locator('.trend-donut circle[aria-label]').evaluate_all(
+        '(nodes) => nodes.map(node => getComputedStyle(node).stroke)')
+    assert len(human_colors) == len(set(human_colors))
     assert '계획 결정 대기' in page.inner_text('.trend-stage-table thead')
     page.select_option('#trend-project', 'STGE')
     page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
