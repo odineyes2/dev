@@ -32,8 +32,9 @@ button.save[aria-busy="true"]{ justify-content:center; }
 .login-box p.dim{ text-align:center; margin:0 0 var(--sp-2); font-size:13px; }
 .login-box .primary{ justify-content:center; padding:10px; border-radius:999px; margin-top:var(--sp-1); }
 
-main:has(#list-body){ max-width:none; padding-left:calc(var(--sp-5) * 2); padding-right:calc(var(--sp-5) * 2); }
-body:has(#list-body) .tab-bar-inner{ max-width:none; padding-left:calc(var(--sp-5) * 2); padding-right:calc(var(--sp-5) * 2); }
+body:has(#list-body){ --list-gutter:clamp(48px, calc((100vw - 900px) / 4), 148px); }
+main:has(#list-body){ max-width:none; padding-left:var(--list-gutter); padding-right:var(--list-gutter); }
+body:has(#list-body) .tab-bar-inner{ max-width:none; padding-left:var(--list-gutter); padding-right:var(--list-gutter); }
 .ops-split:has(#list-body), .issue-summary, #list-body{ min-width:0; max-width:100%; }
 #list-body{ overflow-x:auto; }
 
