@@ -180,7 +180,7 @@ def check_trends(page):
 
 
 def check_trend_stages(page, shots):
-    """단계별 소요의 서브탭·공유 필터·정렬·Task 펼치기·사람 대기를 확인한다."""
+    """단계별 소요와 dev 변경 표시·일별 중앙값 그래프를 확인한다."""
     from urllib.parse import parse_qs, urlsplit
     headers = {'X-Requested-With': 'dev'}
     assert page.request.post(BASE + '/api/projects', headers=headers,
@@ -214,6 +214,12 @@ def check_trend_stages(page, shots):
                                 previous={'from_date':'2026-10-10','to_date':'2026-10-16'},
                                 project=calls[-1].get('project', [None])[0], stages=stages,
                                 queue_idle_seconds=stats(90), issues=[first, second],
+                                 daily_task_median=[{'date':f'2026-10-{day:02d}', 'seconds': seconds, 'n': int(seconds is not None)}
+                                                    for day, seconds in [(17,None),(18,600),(19,900),(20,None),(21,1200),(22,1800),(23,2400)]],
+                                 daily_task_unmeasured=1,
+                                 dev_changes=[{'ref':'DEV-153-1', 'title':'목록 정렬',
+                                               'merged_at':'2026-10-22T03:00:00+00:00', 'date':'2026-10-22',
+                                               'merged_at_local':'2026-10-22 12:00'}],
                                 partial_count=1, note='임시 기록 기준이에요.'))
     page.route('**/api/trends/stages?*', respond)
     page.goto(BASE + '/#/trends/stages'); page.wait_for_selector('.trend-stage-table')
@@ -222,6 +228,13 @@ def check_trend_stages(page, shots):
     assert page.locator('.trend-donut circle[aria-label]').count() == 8
     assert page.locator('.trend-stage-labels li').count() == 5
     assert '빈 대기열 대기' in page.inner_text('.trend-stage-labels')
+    assert page.locator('.trend-stage-daily-chart .trend-stage-point').count() == 5
+    assert page.locator('.trend-stage-daily-chart .trend-stage-line').count() == 2
+    assert page.locator('.trend-stage-daily-chart .trend-dev-mark').count() == 1
+    assert '시작 기록이 없는 Task 1건' in page.inner_text('.trend-stage-history')
+    page.locator('.trend-dev-changes summary').click()
+    assert page.locator('.trend-dev-changes a').get_attribute('href') == '#/issue/DEV-153-1'
+    assert page.locator('.trend-dev-changes time').inner_text() == '2026-10-22 12:00'
     assert page.locator('.trend-issue-row .ref').all_inner_texts() == ['STGE-1', 'STGE-2']
     assert not page.locator('.trend-task-row').is_visible()
     page.click('[data-stage-expand="STGE-1"]')

@@ -357,6 +357,8 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
     previous_begin = datetime.combine(previous_start, time.min, seoul).astimezone(timezone.utc)
     records = []
     dev_changes = []
+    daily_task_durations = {}
+    daily_unmeasured = 0
 
     with db.connect() as c:
         c.execute('BEGIN')
@@ -539,10 +541,34 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
         for row in c.execute(f'''SELECT {issues.ref_sql('i', 'p')} AS ref,i.title,e.updated_at AS merged_at
             FROM execution_completion e JOIN issues i ON i.id=e.issue_id JOIN projects p ON p.id=i.project_id
             WHERE p.key='DEV' AND e.phase='complete' AND e.merge_sha<>''
+             AND e.updated_at=(SELECT MAX(e2.updated_at) FROM execution_completion e2
+                               WHERE e2.issue_id=i.id AND e2.phase='complete' AND e2.merge_sha<>'')
             AND julianday(e.updated_at)>=julianday(?) AND julianday(e.updated_at)<julianday(?)
             AND julianday(e.updated_at)<=julianday(?)''',
             (begin.isoformat(), finish.isoformat(), now.isoformat())):
-            dev_changes.append(dict(row))
+            local_merge = _time(row['merged_at']).astimezone(seoul)
+            dev_changes.append({**dict(row), 'date': local_merge.date().isoformat(),
+                                'merged_at_local': local_merge.strftime('%Y-%m-%d %H:%M')})
+        # 병합일별 Task 전체 시간은 첫 구현 대기열 등록부터 병합 완료까지 잰다.
+        for row in c.execute('''SELECT p.key AS project,e.updated_at AS merged_at,
+            (SELECT MIN(j.created_at) FROM jobs j WHERE j.issue_id=i.id AND j.mode='execute'
+             AND julianday(j.created_at)<=julianday(e.updated_at)) AS queued_at
+            FROM execution_completion e JOIN issues i ON i.id=e.issue_id
+            JOIN projects p ON p.id=i.project_id
+            WHERE i.parent_id IS NOT NULL AND e.phase='complete' AND e.merge_sha<>''
+            AND e.updated_at=(SELECT MAX(e2.updated_at) FROM execution_completion e2
+                              WHERE e2.issue_id=i.id AND e2.phase='complete' AND e2.merge_sha<>'')
+            AND julianday(e.updated_at)>=julianday(?) AND julianday(e.updated_at)<julianday(?)
+            AND julianday(e.updated_at)<=julianday(?)
+            AND (? IS NULL OR i.project_id=?)''',
+            (begin.isoformat(), finish.isoformat(), now.isoformat(), project_id, project_id)):
+            merged_at = _time(row['merged_at'])
+            day = merged_at.astimezone(seoul).date().isoformat()
+            seconds = _seconds(row['queued_at'], row['merged_at']) if row['queued_at'] else None
+            if seconds is None:
+                daily_unmeasured += 1
+            else:
+                daily_task_durations.setdefault(day, []).append(seconds)
 
     current = [r for r in records if _time(r['done_at']) >= begin]
     previous = [r for r in records if _time(r['done_at']) < begin]
@@ -557,11 +583,20 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
                        'previous': {'seconds': stats(previous, 'seconds'),
                                     'tokens': stats(previous, 'tokens') if key in ('review', 'execute', 'qa') else None}})
     complete = [r for r in current if not r['partial']]
+    daily_task_median = []
+    for offset in range(days):
+        day = (start_day + timedelta(days=offset)).isoformat()
+        values = daily_task_durations.get(day, [])
+        daily_task_median.append({'date': day, 'seconds': _stage_stats(values)['median'] if values else None,
+                                  'n': len(values)})
+    dev_changes.sort(key=lambda row: (row['merged_at'], row['ref']))
     return {'from_date': start_day.isoformat(), 'to_date': end_day.isoformat(),
             'previous': {'from_date': previous_start.isoformat(), 'to_date': previous_end.isoformat()},
             'project': project.upper() if project else None, 'include_human': bool(include_human),
             'stages': stages, 'queue_idle_seconds': _stage_stats([r['queue_idle_seconds'] for r in complete]),
-            'issues': current, 'dev_changes': dev_changes, 'partial_count': sum(r['partial'] for r in current),
+            'issues': current, 'dev_changes': dev_changes, 'daily_task_median': daily_task_median,
+            'daily_task_unmeasured': daily_unmeasured,
+            'partial_count': sum(r['partial'] for r in current),
             'note': '현재 보존된 완료 기록 기준이에요. 부분 측정 이슈는 평균에서 제외해요. 병렬 실행 시간은 각각 합산해요.'}
 
 

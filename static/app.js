@@ -552,6 +552,32 @@ function paintStageTable(root){
   table.querySelectorAll('th[aria-sort]').forEach(th => th.removeAttribute('aria-sort'));
   table.querySelector(`[data-stage-sort="${trendStageSort}"]`)?.closest('th').setAttribute('aria-sort', trendStageAsc ? 'ascending' : 'descending');
 }
+function stageDailyChart(data){
+  const days = data.daily_task_median || [], measured = days.filter(day => day.seconds != null);
+  if(!measured.length && !(data.dev_changes || []).length) return '<div class="empty">이 기간에 전체 시간을 측정한 Task가 없어요.</div>';
+  const width = 340, left = 44, right = 16, top = 16, bottom = 36, height = 154;
+  const x = index => left + (days.length === 1 ? .5 : index / (days.length - 1)) * (width - left - right);
+  const maximum = Math.max(...measured.map(day => day.seconds), 60);
+  const y = seconds => top + (1 - seconds / maximum) * (height - top - bottom);
+  const points = days.map((day, index) => day.seconds == null ? null : [x(index), y(day.seconds), day]).filter(Boolean);
+  const runs = []; let run = [];
+  days.forEach((day, index) => { if(day.seconds == null){ if(run.length) runs.push(run); run = []; } else run.push(`${x(index).toFixed(1)},${y(day.seconds).toFixed(1)}`); });
+  if(run.length) runs.push(run);
+  const changes = (data.dev_changes || []).map(change => {
+    const index = days.findIndex(day => day.date === change.date);
+    return index < 0 ? null : {...change, index};
+  }).filter(Boolean);
+  const marks = [...new Set(changes.map(change => change.index))].map(index => {
+    const refs = changes.filter(change => change.index === index).map(change => change.ref);
+    return `<line class="trend-dev-mark" x1="${x(index)}" x2="${x(index)}" y1="${top}" y2="${height-bottom}"><title>${esc(days[index].date)} · dev 병합 ${esc(refs.join(', '))}</title></line>`;
+  }).join('');
+  return `<svg class="trend-stage-daily-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="일별 Task 전체 시간 중앙값과 dev 병합일">
+    <line class="trend-stage-axis" x1="${left}" x2="${width-right}" y1="${height-bottom}" y2="${height-bottom}"/>${marks}
+    ${runs.map(points => points.length > 1 ? `<polyline class="trend-stage-line" points="${points.join(' ')}"/>` : '').join('')}
+    ${points.map(([px, py, day]) => `<circle class="trend-stage-point" cx="${px}" cy="${py}" r="4" aria-label="${esc(day.date)} 중앙값 ${esc(stageDuration(day.seconds))}, ${day.n}건"><title>${esc(day.date)} · 중앙 ${esc(stageDuration(day.seconds))} · ${day.n}건</title></circle>`).join('')}
+    <text x="${left}" y="${height-8}">${esc(days[0].date)}</text><text x="${width-right}" y="${height-8}" text-anchor="end">${esc(days.at(-1).date)}</text>
+    <text x="${left-6}" y="${top+4}" text-anchor="end">${esc(stageDuration(maximum))}</text></svg>${measured.length ? '' : '<p class="dim">이 기간에 전체 시간을 측정한 Task가 없어요.</p>'}`;
+}
 function stageResults(data){
   const visible = data.stages.filter(s => trendHuman || s.kind === 'machine');
   const label = s => `<li><span class="trend-stage-dot" style="opacity:${(1 - visible.indexOf(s) * .11).toFixed(2)}" aria-hidden="true"></span><div><strong>${esc(s.name)}</strong><span>평균 ${stageDuration(s.seconds.mean)} · 중앙 ${stageDuration(s.seconds.median)}${stageDelta(s.seconds.median, s.previous.seconds.median)}</span>${s.tokens ? `<span>토큰 평균 ${formatTokens(s.tokens.mean)} · 중앙 ${formatTokens(s.tokens.median)}${stageDelta(s.tokens.median, s.previous.tokens.median)}</span>` : ''}${s.key === 'queue' ? `<span>그중 빈 대기열 대기 평균 ${stageDuration(data.queue_idle_seconds.mean)}</span>` : ''}</div></li>`;
@@ -560,6 +586,8 @@ function stageResults(data){
     ${data.partial_count ? `<p class="trend-partial" role="status">부분 측정 ${data.partial_count}건 · 평균과 중앙값에서 제외해요.</p>` : ''}
     <div class="trend-stage-grid"><section class="trend-stage-card"><h2>평균 시간 구성</h2>${stageDonut(visible, 'seconds', '평균 시간 구성', data.issues.length - data.partial_count)}</section><section class="trend-stage-card"><h2>평균 토큰 구성</h2>${stageDonut(visible.filter(s => s.tokens), 'tokens', '평균 토큰 구성', data.issues.length - data.partial_count, visible)}</section></div>
     <ul class="trend-stage-labels">${visible.map(label).join('')}</ul>
+    <section class="trend-stage-section trend-stage-history"><h2>Task 전체 시간 중앙값</h2><p class="dim">구현 대기열 등록부터 병합 완료까지 · 병합일 기준 · 세로 눈금은 dev 변경이에요.${data.daily_task_unmeasured ? ` 시작 기록이 없는 Task ${data.daily_task_unmeasured}건은 제외했어요.` : ''}</p>${stageDailyChart(data)}
+      <details class="trend-dev-changes"><summary>이 기간에 병합된 dev 변경 ${data.dev_changes?.length || 0}건</summary>${data.dev_changes?.length ? `<ul>${data.dev_changes.map(change => `<li><a href="#/issue/${encodeURIComponent(change.ref)}">${esc(change.ref)} · ${esc(change.title)}</a><time datetime="${esc(change.merged_at)}">${esc(change.merged_at_local || '')}</time></li>`).join('')}</ul>` : '<p class="dim">병합된 dev 변경이 없어요.</p>'}</details></section>
     <section class="trend-stage-section"><h2>Issue별 소요</h2>${data.issues.length ? `<div class="trend-stage-scroll"><table class="trend-stage-table"><thead><tr><th><button data-stage-sort="ref" type="button">Issue</button></th><th><button data-stage-sort="project" type="button">프로젝트</button></th><th><button data-stage-sort="done_at" type="button">완료 시각</button></th><th><button data-stage-sort="task_count" type="button">Task</button></th>${STAGE_COLUMNS.map(([key,name]) => `<th><button data-stage-sort="${key}" type="button">${name}</button></th>`).join('')}<th aria-sort="${trendStageAsc ? 'ascending' : 'descending'}"><button data-stage-sort="total_machine_seconds" type="button">기계 합계</button></th>${trendHuman ? '<th><button data-stage-sort="plan_wait" type="button">계획 결정 대기</button></th><th><button data-stage-sort="done_wait" type="button">완료 확인 대기</button></th>' : ''}<th><button data-stage-sort="total_tokens" type="button">토큰 합계</button></th></tr></thead><tbody>${stageRows()}</tbody></table></div>` : '<div class="empty">이 기간에 완료된 Issue가 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>'}</section><p class="trend-note">${esc(data.note)}</p>`;
 }
 function trendChart(days, key, label){
