@@ -430,6 +430,11 @@ def _kill_tree(proc) -> None:
         proc.kill()
 
 
+# 강제 dev 재시작에서 실행 자식을 먼저 종료할 수 있게 현재 프로세스만 보관한다.
+ACTIVE_PROCESSES = {}
+FORCED_RUNS = set()
+
+
 def codex_failure(out: str) -> str | None:
     """완료 전에 복구된 스트림 오류와 실제 턴 실패를 구분한다."""
     pending = None
@@ -483,6 +488,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             proc = subprocess.Popen(launch_cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                     stdin=subprocess.DEVNULL if prompt is None else subprocess.PIPE,
                                     env=env or {**os.environ, "PYTHONIOENCODING": "utf-8"}, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            ACTIVE_PROCESSES[run_id] = proc
             try:
                 out, err = proc.communicate(input=prompt, timeout=timeout)
                 code = proc.returncode
@@ -490,8 +496,13 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
                 _kill_tree(proc)
                 out, err = proc.communicate()
                 status, note = "timeout", f"{int(timeout // 60)}분 안에 끝나지 않아 멈췄어요"
+            finally:
+                ACTIVE_PROCESSES.pop(run_id, None)
         except OSError as e:
             status, note = "failed", f"{name}를 실행하지 못했어요({e})"
+        if run_id in FORCED_RUNS:
+            FORCED_RUNS.discard(run_id)
+            return "orphaned"
         if code:
             status = "failed"
         save_events(log_path, out)
@@ -567,8 +578,11 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     log_path.write_text(earlier + text + ('\n\n' + capture_warning if capture_warning else '') + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
+        # 완료 등록이 이 행을 먼저 ok로 바꾼다. 강제 재시작으로 orphaned가 된 경우만 덮지 않는다.
+        if c.execute('SELECT status FROM runs WHERE id=?', (run_id,)).fetchone()[0] not in ('running', 'ok'):
+            return 'orphaned'
         finish_codex_status(c, actor, ref, run_id, status, label)
-        c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=?",
+        c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=? AND status IN ('running','ok')",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
         if exhausted and status != "ok" and not recovery:   # 복구는 추가 유료 호출·이관 없이 끝낸다
             c.execute("INSERT OR IGNORE INTO provider_run_failures(run_id,failure_reason) VALUES(?,'token_exhausted')", (run_id,))

@@ -903,6 +903,16 @@ def api_jobs():
     return {"jobs": jobs.list_jobs(), "in_progress": jobs.list_in_progress(), "self_restart": self_restart}
 
 
+@app.post('/api/orchestrate/self-restart/now')
+def api_self_restart_now(request: Request):
+    return orchestrate.self_restart_action(human_only(request), 'now')
+
+
+@app.post('/api/orchestrate/self-restart/release')
+def api_self_restart_release(request: Request):
+    return orchestrate.self_restart_action(human_only(request), 'release')
+
+
 @app.delete("/api/jobs/{job_id}")
 def api_cancel_job(job_id: int, request: Request):
     return jobs.cancel(actor(request), job_id)
