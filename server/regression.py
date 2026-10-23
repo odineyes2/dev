@@ -61,7 +61,11 @@ def project_key(repo=None, issue=None):
         return issue.get('project_key') or DEV_KEY
     if _is_dev(repo):
         return DEV_KEY
-    return next((p['key'] for p in issues.list_projects() if p['local_path'] and Path(p['local_path']).resolve() == Path(repo).resolve()), '?')
+    try:
+        projects = issues.list_projects()
+    except Exception:   # DB 초기화 전(프롬프트 생성·독립 Git 검사)에는 프로젝트를 알 수 없다
+        return '?'
+    return next((p['key'] for p in projects if p['local_path'] and Path(p['local_path']).resolve() == Path(repo).resolve()), '?')
 
 
 def values():
