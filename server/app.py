@@ -559,6 +559,16 @@ def api_trends(from_date: str | None = Query(None, alias='from'),
     return usage.trends(from_date, to_date, project)
 
 
+@app.get("/api/trends/stages")
+def api_trend_stages(from_date: str | None = Query(None, alias='from'),
+                     to_date: str | None = Query(None, alias='to'),
+                     project: str | None = None, human: int = 0):
+    if human not in (0, 1):
+        raise issues.StoreError('human은 0 또는 1이어야 해요.')
+    import usage
+    return usage.stage_summary(from_date, to_date, project, bool(human))
+
+
 @app.get("/api/settings/auto")
 def api_global_auto_settings():
     import auto_settings
