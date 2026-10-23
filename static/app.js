@@ -137,8 +137,136 @@ function inline(s){
     .replace(/\b([A-Z][A-Z0-9]{0,9}-\d+(?:-\d+)?)\b/g, '<a href="#/issue/$1">$1</a>');
 }
 
+// ---- 전역 재시작 안내(DEV-159) — 탭 이동과 무관하게 같은 요청·타이머를 쓴다. ----
+const restartBanner = document.getElementById('restart-banner');
+let restartState = null, restartIdentity = null, restartExpanded = false, restartNeedsReload = false;
+let restartTimer = null, restartDoneTimer = null, restartRequest = null, restartEpoch = 0, restartWatching = false;
+let restartRecovering = false;
+const restartEdited = new Set();
+document.addEventListener('input', e => {
+  if(e.target.matches('input, textarea, select, [contenteditable]')) restartEdited.add(e.target);
+});
+function restartHasDraft(){
+  for(const el of restartEdited){
+    if(!el.isConnected){ restartEdited.delete(el); continue; }
+    if(el.isContentEditable ? el.textContent.trim() : el.type === 'file' ? el.files.length : String(el.value || '').trim()) return true;
+  }
+  return !!document.querySelector('#cmp-files .cmp-chip') || !!document.getElementById('cmp-body').value.trim();
+}
+function paintRestartBanner(){
+  const s = restartState;
+  const focused = restartBanner.contains(document.activeElement) ? document.activeElement.className : '';
+  restartBanner.hidden = !s;
+  document.body.classList.toggle('has-restart-banner', !!s);
+  if(!s){ restartBanner.replaceChildren(); return; }
+  const refs = s.waiting || [], shown = restartExpanded ? refs : refs.slice(0, 2);
+  const links = shown.map(ref => `<a href="#/issue/${encodeURIComponent(ref)}">${esc(ref)}</a>`).join(', ');
+  const more = !restartExpanded && refs.length > 2 ? ` 외 ${refs.length - 2}건` : '';
+  const busy = (s.busy || []).map(r => `${r.ref}(${r.minutes}분째)`).join(', ');
+  const words = {
+    merging: `${s.ref} 병합을 검사하고 있어요 — 끝나면 dev 서버가 재시작돼요.`,
+    waiting: `dev 재시작을 기다리고 있어요 — ${busy || '도는 작업'}이 끝나면 재시작해요.`,
+    restarting: 'dev 서버를 재시작하고 있어요. 다시 연결되면 화면을 새로 고쳐요.',
+    complete: '재시작을 마쳤어요. 대기열을 이어서 진행해요.'
+  };
+  restartBanner.dataset.phase = s.phase;
+  restartBanner.innerHTML = `<div class="restart-banner-inner"><span class="restart-dot" aria-hidden="true"></span>
+    <div class="restart-copy"><span>${esc(words[s.phase] || words.restarting)}</span>${refs.length ? ` <span class="restart-next">다음 작업: ${links}${more}</span>` : ''}</div>
+    ${refs.length > 2 ? `<button type="button" class="ghost restart-expand" aria-expanded="${restartExpanded}" aria-label="다음 작업 ${restartExpanded ? '접기' : '모두 보기'}">${restartExpanded ? '접기' : '모두 보기'}</button>` : ''}
+    ${restartNeedsReload ? '<button type="button" class="restart-reload">새로 고침</button>' : ''}</div>`;
+  restartBanner.querySelector('.restart-expand')?.addEventListener('click', () => { restartExpanded = !restartExpanded; paintRestartBanner(); });
+  restartBanner.querySelector('.restart-reload')?.addEventListener('click', () => location.reload());
+  restartBanner.querySelector('.restart-copy').onclick = e => {
+    if(refs.length > 2 && !e.target.closest('a')){ restartExpanded = !restartExpanded; paintRestartBanner(); }
+  };
+  if(focused === 'ghost restart-expand') restartBanner.querySelector('.restart-expand')?.focus();
+  if(focused === 'restart-reload') restartBanner.querySelector('.restart-reload')?.focus();
+}
+function finishRestart(identity){
+  const changedCode = identity.revision !== restartIdentity.revision;
+  restartIdentity = identity;
+  restartRecovering = false;
+  restartGraceUntil = 0;
+  restartNeedsReload = changedCode && restartHasDraft();
+  restartState = {phase:'complete', waiting:[]};
+  paintRestartBanner();
+  if(changedCode && !restartNeedsReload){ location.reload(); return; }
+  clearTimeout(restartDoneTimer);
+  if(!restartNeedsReload) restartDoneTimer = setTimeout(() => { restartState = null; paintRestartBanner(); }, 6000);
+}
+async function checkRestartHealth(epoch){
+  const response = await fetch('/api/health?execution_identity=1', {cache:'no-store', signal:AbortSignal.timeout(5000)});
+  if(!response.ok) throw new Error('재시작을 기다리고 있어요.');
+  const identity = await response.json();
+  if(epoch !== restartEpoch || !restartWatching) return;
+  if(identity.process_id && restartIdentity && identity.process_id !== restartIdentity.process_id){ finishRestart(identity); return; }
+  // 같은 프로세스에서 대기 기록만 사라지면 보류·해제된 것이므로 재시작 완료로 알리지 않는다.
+  if(!restartRecovering && restartState?.phase !== 'complete'){ restartState = null; restartIdentity = null; paintRestartBanner(); }
+}
+function receiveRestartState(state){
+  if(!state) return;
+  if(restartIdentity && state.process_id !== restartIdentity.process_id){ finishRestart(state); return; }
+  clearTimeout(restartDoneTimer);
+  restartIdentity ||= {process_id:state.process_id, revision:state.revision};
+  restartRecovering = false;
+  restartState = state;
+  restartGraceUntil = Date.now() + 30000;
+  paintRestartBanner();
+}
+function restartJobsSnapshot(){
+  if(restartRequest) return restartRequest;
+  const epoch = restartEpoch;
+  const request = (async () => {
+    try{
+      const response = await fetch('/api/jobs', {cache:'no-store', signal:AbortSignal.timeout(5000)});
+      if(!response.ok){
+        if(response.status === 401 && !restartIdentity && epoch === restartEpoch) showLogin();
+        throw new Error('대기열을 읽지 못했어요.');
+      }
+      const data = await response.json();
+      if(epoch === restartEpoch && restartWatching){
+        if(data.self_restart) receiveRestartState(data.self_restart);
+        else if(restartIdentity && restartState?.phase !== 'complete') await checkRestartHealth(epoch);
+      }
+      return data;
+    }catch(error){
+      if(epoch === restartEpoch && restartWatching && restartIdentity && restartState?.phase !== 'complete'){
+        restartRecovering = true;
+        restartGraceUntil = Date.now() + 30000;
+        restartState = {...restartState, phase:'restarting'};
+        paintRestartBanner();
+      }
+      throw error;
+    }finally{ if(restartRequest === request) restartRequest = null; }
+  })();
+  restartRequest = request;
+  return request;
+}
+async function pollRestart(){
+  const epoch = restartEpoch;
+  try{
+    if(restartRecovering) await checkRestartHealth(epoch);
+    else await restartJobsSnapshot();
+  }catch(error){ /* 안내 띠를 유지하고 다음 주기에 다시 연결한다. */ }
+  if(epoch !== restartEpoch || !restartWatching) return;
+  restartTimer = setTimeout(pollRestart, restartRecovering ? 2000 : restartState && restartState.phase !== 'complete' ? 5000 : 20000);
+}
+function stopRestartPolling(){
+  restartWatching = false; restartEpoch++;
+  clearTimeout(restartTimer); clearTimeout(restartDoneTimer);
+  restartRequest = null; restartState = null; restartIdentity = null; restartRecovering = false;
+  restartExpanded = false; restartNeedsReload = false; restartGraceUntil = 0;
+  paintRestartBanner();
+}
+function startRestartPolling(){
+  stopRestartPolling();
+  restartWatching = true;
+  pollRestart();
+}
+
 // ---- 로그인 ----
 function showLogin(reason){
+  stopRestartPolling();
   document.getElementById('open-jupyter').hidden = true;
   document.getElementById('shell').hidden = true;
   document.getElementById('login').hidden = false;
@@ -1041,7 +1169,7 @@ function queuedMsg(r, started){ return r && r.queued ? `대기열에 넣었어�
 async function loadJobs(){   // 목록·Board 위의 대기열(DEV-91) — 늘 펼친 상자: 위는 In Progress, 아래는 대기 항목. 항목 수를 돌려준다
   const box = view.querySelector('#jobs-box');
   if(!box) return 0;
-  const { jobs, in_progress: prog = [] } = await api('GET', '/api/jobs');
+  const { jobs, in_progress: prog = [] } = await restartJobsSnapshot();
   if(box !== view.querySelector('#jobs-box')) return 0;
   const progHtml = prog.map(p => `<li><span class="status" style="--sc:var(--s-in_progress)">In Progress</span> <a href="#/issue/${esc(p.ref)}">${esc(p.ref)}</a> <span class="job-title">${esc(p.title)}</span>
     <span class="dim">${p.started_at ? `${PROVIDER_NAME[p.provider] || 'Claude'} ${RUN_MODE[p.mode] || esc(p.mode)} 중 · ${fmtTime(p.started_at)}` : ''}</span></li>`).join('');
@@ -2819,6 +2947,7 @@ async function boot(){
   await Promise.all([loadProjects(), loadAgents(), loadTokenSettings()]);
   document.getElementById('login').hidden = true;
   document.getElementById('shell').hidden = false;
+  startRestartPolling();
   route();
 }
 boot();
