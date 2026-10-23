@@ -35,6 +35,8 @@ def classify(text, status):
         return 'configuration', '설정·필수 정보가 필요해요. 아래 진단을 확인해 주세요.'
     if status in ('timeout', 'orphaned'):
         return 'interrupted', '시간 초과·서버 중단 기록이에요. 실행 결과를 확인한 뒤 수동으로 요청해 주세요.'
+    if '불안정한 검사 —' in text:   # orchestrate.FLAKY_MARK — 자동 복구가 코드 고치기로 오인하지 않게 따로 가른다
+        return 'flaky', '같은 코드에서 통과·실패가 섞인 검사예요. 검사 코드의 기다리기·순서 가정을 확인해 주세요.'
     if re.search(r'검사.*실패|test.*fail|FAIL:|FAILED|AssertionError|Traceback|SyntaxError|TypeError', text, re.I):
         return 'code', ''
     return 'unknown', '원인이 확정되지 않았어요. 진단을 보고 수동으로 요청할 수 있어요.'

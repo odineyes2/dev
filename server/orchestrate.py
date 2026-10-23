@@ -290,6 +290,9 @@ def run_test(repo, t, args=(), env=None):
         return subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
 
 
+FLAKY_MARK = '불안정한 검사 —'   # 같은 코드에서 통과·실패가 섞인 검사(troubleshoot가 이 글자로 flaky를 가른다)
+
+
 def slowest_line(durations: dict, top=5) -> str:
     """가장 오래 걸린 검사 상위 N개와 전체 시간을 한 줄로 만든다(DEV-160-2)."""
     ranked = sorted(durations.items(), key=lambda kv: -kv[1])[:top]
@@ -323,6 +326,7 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
     meta = {'tree': hashlib.sha256((identity or '').encode()).hexdigest(),
             'reg': hashlib.sha256(Path(regression.__file__).read_bytes()).hexdigest(), 'files': {}}
     miss = {}
+    changed_tests = set(selection.get('changed_tests') or [])
     for t in regression.test_files(repo):
         if not policy.get('file:' + t.name, {'enabled': True})['enabled']:
             results[t.name] = 'skipped'
@@ -348,13 +352,22 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
                 miss[t.name] = '실행 환경(Python)이 다름'
         started = time.monotonic()
         r = run_test(repo, t)
+        # 불안정 검사 대책(DEV-160-3): 바뀐 검사는 완료 때 3번, 병합에서 실패한 검사는 2번 더 돌려 섞임을 가린다.
+        runs, bad = [r], ([r] if r.returncode else [])
+        if (stage == 'server_completion' and t.name in changed_tests) or (stage == 'server_merge' and r.returncode):
+            for _ in range(2):
+                again = run_test(repo, t)
+                runs.append(again)
+                if again.returncode:
+                    bad.append(again)
         durations[t.name] = round(time.monotonic() - started, 1)
-        results[t.name] = 'failed' if r.returncode else 'passed'
-        if not r.returncode and stamp:
+        results[t.name] = 'failed' if bad else 'passed'
+        if not bad and stamp:
             cached[t.name] = stamp
-        elif r.returncode:
+        elif bad:
             cached.pop(t.name, None)
-        if r.returncode:
+        if bad:
+            r = bad[0]
             detail = (f"검사: {t}\n작업 폴더: {repo}\nPython: {sys.executable}\n"
                       f"종료 코드: {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n"
                       f"\n--- stdout ---\n{r.stdout}\n--- stderr ---\n{r.stderr}")
@@ -363,7 +376,10 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
             log = logs / f"{t.stem}-{time.time_ns()}.log"
             log.write_text(detail, encoding="utf-8")
             output = (r.stdout + r.stderr).strip() or "표준 출력과 오류 출력이 없어요."
-            failures.append(f"{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
+            flaky = ''
+            if len(runs) > 1 and len(bad) < len(runs):
+                flaky = f"{FLAKY_MARK} {t.name}가 같은 코드에서 {len(runs)}번 중 {len(bad)}번 실패했어요 — 검사 코드의 기다리기·순서 가정을 먼저 확인해 주세요\n"
+            failures.append(f"{flaky}{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
     if ref:
         cached['_meta'] = meta
         regression.save_record('regression-cache:' + ref, cached)

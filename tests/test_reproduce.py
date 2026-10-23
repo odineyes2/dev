@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 os.environ['DEV_DATA_DIR'] = tempfile.mkdtemp()
 os.environ['NTFY_TOPIC'] = ''
+os.environ.pop('GIT_CONFIG_COUNT', None)   # 에이전트 안에서 돌리면 빈 값 항목이 사라진 채 상속돼 git이 깨진다
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 import httpx
 from fastapi.testclient import TestClient

@@ -550,6 +550,8 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         retry = ("\n\n이전 실행의 결과가 이 worktree에 그대로 남아 있다. 서버가 tests/test_*.py 전체 검사를 돌렸더니 아래가 실패했다. "
                  "실패한 검사에 관련된 원인만 고치고 해당 검사만 다시 확인한 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 마친다. 전체 검사는 서버가 다시 수행한다. "
                  "검사가 만든 파일을 커밋하지 말고 Task 범위 밖은 고치지 않는다.\n```\n" + failed[-6000:] + "\n```")
+        if orchestrate.FLAKY_MARK in failed:   # 같은 코드에서 통과·실패가 섞였다 — 기능 코드가 아니라 검사 코드의 기다리기·순서 가정을 본다
+            retry += "\n\n⚠️ 위 검사는 같은 코드에서 통과와 실패가 섞였다. 기능 코드 대신 검사 코드의 기다리기(응답·화면 상태를 기다리는지)와 순서 가정(목록 순서 대신 id로 찾는지)을 먼저 고친다."
         cmd = cmd[:2] + [cmd[2] + retry] + cmd[3:] if provider == "claude" else cmd[:-1] + [cmd[-1] + retry]
     stats = spent
     exhausted = status != "timeout" and token_exhausted(out, err, provider)

@@ -82,7 +82,7 @@ else:
          patch.object(orchestrate,'_verified_health',return_value=True) as health, \
          patch.object(orchestrate,'run_test',wraps=orchestrate.run_test) as tests:
         orchestrate.handle(me,ref)
-    assert tests.call_count==1
+    assert tests.call_count==(1 if full_exit==0 else 3)   # 병합 검사 실패는 같은 검사를 2번 더 돌려 불안정 여부를 가린다(DEV-160-3)
     if full_exit==0:
         assert issues.get_issue(ref)['status']=='in_review'
         assert reproduce.result(ref)['followup']=='complete'
