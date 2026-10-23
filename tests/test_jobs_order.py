@@ -1,5 +1,5 @@
 """대기열 꺼낼 순서와 파일 겹침 대기 — 시작한 부모의 Task를 먼저, 그와 파일이 겹치는 다른 부모의 Task는 기다린다.
-진행 중인 부모가 사람을 기다리면(on_hold·changes_requested) 예약을 푼다. 검토는 실행 뒤에."""
+진행 중인 부모가 사람을 기다리면 선행·파일 겹침 이슈도 기다린다. 검토는 실행 뒤에."""
 import os, sys, tempfile
 from pathlib import Path
 
@@ -49,9 +49,10 @@ order, notes = plan()
 assert order == [4, 2, 3, 1], order
 assert list(notes) == [2] and a in notes[2] and "static/app.js" in notes[2], notes
 
-# A의 남은 Task가 사람을 기다리면 예약을 푼다
+# A의 남은 Task가 사람을 기다려도 겹치는 B1은 기다리고 C1은 진행한다.
 status(a2, "changes_requested")
-assert plan() == ([2, 3, 4, 1], {})
+order, notes = plan()
+assert order == [2, 3, 4, 1] and list(notes) == [2] and "사람을 기다려요" in notes[2], (order, notes)
 status(a2, "waiting")
 assert list(plan()[1]) == [2]
 
@@ -102,3 +103,47 @@ prompt = review.prompt_for(r)
 assert f"{q} Q" not in prompt and f"{s} S" not in prompt, prompt[-800:]
 assert f"{p} P" not in review.prompt_for(issues.create_issue(me, "OX", "다른 프로젝트 2")["ref"])
 print("ok review planned")
+
+
+# 멈춘 부모를 직접·간접 선행으로 둔 이슈와 파일이 겹치는 이슈는 기다리고, 무관한 일은 진행한다.
+f = issues.create_issue(me, "OQ", "F")["ref"]
+f1 = issues.create_issue(me, "OQ", "F1", parent=f, body="바꿀 파일: server/one.py")["ref"]
+f2 = issues.create_issue(me, "OQ", "F2", parent=f, body="바꿀 파일: static/")["ref"]
+with db.connect() as c:
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'execute','ok','human:admin',?)", (iid(f1), db.now_iso()))
+status(f1, "done")
+status(f2, "on_hold")
+g = issues.create_issue(me, "OQ", "G", blocked_by=[f])["ref"]
+h = issues.create_issue(me, "OQ", "H", blocked_by=[g])["ref"]
+j = issues.create_issue(me, "OQ", "J")["ref"]
+k = issues.create_issue(me, "OQ", "K")["ref"]
+g1 = issues.create_issue(me, "OQ", "G1", parent=g, body="바꿀 파일: other/g.py")["ref"]
+h1 = issues.create_issue(me, "OQ", "H1", parent=h, body="바꿀 파일: other/h.py")["ref"]
+j1 = issues.create_issue(me, "OQ", "J1", parent=j, body="바꿀 파일: static/app.js")["ref"]
+k1 = issues.create_issue(me, "OQ", "K1", parent=k, body="바꿀 파일: README.md")["ref"]
+waiting_queue = [{"id": n, "issue_id": iid(ref), "mode": "execute"} for n, ref in
+                 enumerate((g1, h1, j1, k1), 10)]
+with db.connect() as c:
+    waiters, stalled_jobs = {}, set()
+    ordered, notes = jobs.schedule(c, waiting_queue, waiters, stalled_jobs)
+    assert [x["id"] for x in ordered] == [10, 11, 12, 13]
+    assert set(notes) == {10, 11, 12} and stalled_jobs == set(notes)
+    assert "선행이라" in notes[10] and "선행이라" in notes[11]
+    assert "static/app.js" in notes[12] and 13 not in notes
+    assert waiters[iid(f)] == {g1, h1, j1}
+    jobs._notify_stalled(c, waiters)
+    jobs._notify_stalled(c, waiters)
+    count = c.execute("SELECT COUNT(*) FROM events WHERE issue_id=? AND json_extract(data_json,'$.source')='stalled_job_wait'", (iid(f),)).fetchone()[0]
+    assert count == 1, count
+status(f2, "waiting")
+with db.connect() as c:
+    _, notes = jobs.schedule(c, waiting_queue)
+assert set(notes) == {12} and "작업이 끝날 때까지" in notes[12], notes
+issues.set_status(me, f2, "on_hold")
+with db.connect() as c:
+    waiters = {}
+    jobs.schedule(c, waiting_queue, waiters)
+    jobs._notify_stalled(c, waiters)
+    count = c.execute("SELECT COUNT(*) FROM events WHERE issue_id=? AND json_extract(data_json,'$.source')='stalled_job_wait'", (iid(f),)).fetchone()[0]
+    assert count == 2, count
+print("ok stalled reservations")
