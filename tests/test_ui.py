@@ -9,6 +9,56 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_progress_note(page, shots):
+    """상태 메모의 축약·전체 사유와 클릭 팝오버의 닫기를 확인한다."""
+    long = 'DEV-157 작업이 끝날 때까지 기다려요 — 겹치는 파일: static/app.css, static/app.js, tests/test_ui.py'
+    fallback = '알려지지 않은 매우 긴 상태 설명이 이어져 상태 칸을 넓힐 수 있어요 — 원문은 계속 볼 수 있어야 해요'
+    assert page.evaluate("splitProgress('구현 중')") == {'short': '구현 중', 'long': ''}
+    assert page.evaluate('(s) => splitProgress(s)', long) == {'short': '대기: DEV-157', 'long': long}
+    other = page.evaluate('(s) => splitProgress(s)', fallback)
+    assert other['long'] == fallback and other['short'].endswith('…') and len(other['short']) <= 28
+    assert page.evaluate("splitProgress('선행 Task(DEV-42-1)가 done이 되어야 해요.')")['short'] == '선행: DEV-42-1'
+    assert page.evaluate("splitProgress('DEV-79-3의 병합·운영 반영 완료를 기다려요')")['short'] == '병합 대기: DEV-79-3'
+    assert page.evaluate("splitProgress('선행 이슈(DEV-79)의 Task 병합을 기다려요 — 검사 중')")['short'] == '병합 대기: DEV-79'
+    h = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=h, data={'key': 'PN', 'name': '진행 메모 검사'}).ok
+    parent = page.request.post(BASE + '/api/issues', headers=h, data={'project': 'PN', 'title': '진행 메모 부모'}).json()['ref']
+    child = page.request.post(BASE + '/api/issues', headers=h, data={'project': 'PN', 'parent': parent, 'title': '진행 메모 Task'}).json()['ref']
+    page.goto(BASE + '/#/'); page.reload(); page.wait_for_selector('#list-project option[value="PN"]', state='attached')
+    page.select_option('#list-project', 'PN')
+    page.wait_for_selector(f'#list-body tr[data-ref="{child}"]')
+    for theme in ('light', 'dark'):
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
+            page.evaluate("({ref,note}) => document.querySelector('#list-body tr[data-ref=\"'+ref+'\"] td:nth-child(3)').insertAdjacentHTML('beforeend', progressHtml({job:{note}}))", {'ref': child, 'note': long})
+            button = page.locator(f'#list-body tr[data-ref="{child}"] .progress-more')
+            assert button.get_attribute('aria-expanded') == 'false'
+            assert page.locator(f'#list-body tr[data-ref="{child}"] .progress-short').inner_text() == '대기: DEV-157'
+            button.click()
+            assert button.get_attribute('aria-expanded') == 'true' and page.locator('#progress-pop').inner_text() == long
+            assert page.url.endswith('/#/')
+            assert page.evaluate("() => {const r=document.querySelector('#progress-pop').getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight}")
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'progress-note-list-{theme}-{width}.png'))
+            page.keyboard.press('Escape')
+            assert button.get_attribute('aria-expanded') == 'false' and page.locator('#progress-pop').count() == 0
+            button.click(); page.locator('#list-body').click(position={'x': 2, 'y': 2})
+            assert page.locator('#progress-pop').count() == 0
+            page.evaluate('ref => document.querySelector(\'#list-body tr[data-ref="\'+ref+\'"] .progress-note\').remove()', child)
+            page.goto(BASE + f'/#/issue/{parent}'); page.wait_for_selector('.tasks tr.row')
+            page.evaluate("note => document.querySelector('.tasks tr.row td:nth-child(3)').insertAdjacentHTML('beforeend', progressHtml({job:{note}}))", long)
+            detail_button = page.locator('.tasks .progress-more')
+            detail_button.click()
+            assert page.url.endswith(f'/#/issue/{parent}') and page.locator('#progress-pop').inner_text() == long
+            assert page.evaluate("() => {const r=document.querySelector('#progress-pop').getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight}")
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'progress-note-detail-{theme}-{width}.png'))
+            assert page.locator('#progress-pop').count() == 1
+            page.keyboard.press('Escape')
+            page.goto(BASE + '/#/'); page.wait_for_selector('#list-body[aria-busy="false"]')
+
+
 def check_self_restart_banner(page, shots):
     """가짜 재시작 응답으로 단계·키보드·초안 보존·새 코드 반영과 폭별 캡처를 확인한다."""
     assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
@@ -4583,6 +4633,10 @@ try:
             check_progress_refresh(page, shots)
             assert not errs, errs
             print('OK: progress refresh'); sys.exit(0)
+        if '--progress-note-only' in sys.argv:
+            check_progress_note(page, shots)
+            assert not errs, errs
+            print('OK: progress note'); sys.exit(0)
         if '--board-actions-only' in sys.argv:
             check_board_actions(page, shots, answers, asked)
             assert not errs, errs
@@ -5255,6 +5309,7 @@ try:
         check_rating(page, shots)
 
         check_progress_refresh(page, shots)
+        check_progress_note(page, shots)
         check_reproduce(page, shots)
         # 로그아웃(사용자 메뉴 안)
         check_management_agents(page, shots)
