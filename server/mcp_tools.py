@@ -180,9 +180,10 @@ def create_issue(project: str, title: str, body: str = "", priority: str = "none
 
 @mcp.tool
 def update_issue(ref: str, title: str | None = None, body: str | None = None, priority: str | None = None,
-                 labels: list[str] | None = None, type_ids: list[int] | None = None) -> dict:
+                 labels: list[str] | None = None, type_ids: list[int] | None = None,
+                 blocked_by: list[str] | None = None) -> dict:
     """이슈 고치기. 제목·본문은 자기가 만든 이슈만 — 단, 제목이 없는 이슈(title_missing)는 제목만 채울 수 있다."""
-    fields = {k: v for k, v in (("title", title), ("body", body), ("priority", priority), ("labels", labels), ("type_ids", type_ids)) if v is not None}
+    fields = {k: v for k, v in (("title", title), ("body", body), ("priority", priority), ("labels", labels), ("type_ids", type_ids), ("blocked_by", blocked_by)) if v is not None}
     return _call(issues.update_issue, _actor(), ref, fields)
 
 

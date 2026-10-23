@@ -490,7 +490,7 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
     return out
 
 
-def dep_candidates(project) -> list[dict]:
+def dep_candidates(project, include_review=False) -> list[dict]:
     """발행 시 선행으로 고를 수 있는 같은 프로젝트의 이슈만 간단히 반환한다."""
     with db.connect() as c:
         proj = c.execute("SELECT id FROM projects WHERE key=?", (str(project or "").upper(),)).fetchone()
@@ -499,7 +499,8 @@ def dep_candidates(project) -> list[dict]:
         return [{"ref": r["ref"], "title": r["title"], "status": r["status"]} for r in c.execute(
             f"SELECT {ref_sql('i', 'p')} AS ref, i.title, i.status FROM issues i "
             "JOIN projects p ON p.id=i.project_id WHERE i.project_id=? "
-            "AND i.status NOT IN ('done','closed','in_review') ORDER BY i.id DESC", (proj["id"],))]
+             "AND i.status NOT IN ('done','closed') " + ("" if include_review else "AND i.status!='in_review' ") +
+             "ORDER BY i.id DESC", (proj["id"],))]
 
 
 def plan_revision_note(c, issue_id, version):
@@ -763,6 +764,44 @@ def update_issue(actor, ref, fields: dict) -> dict:
         row = _find(c, ref)
         own = row["reporter"] == actor_label(actor)
         _guard_goal(row, actor, "제목·본문·라벨·우선순위·종류")
+        deps_changed = False
+        if "blocked_by" in fields:
+            if not _is_human(actor) and (not own or row["parent_id"] is not None):
+                raise _forbidden("선행 관계는 자신이 만든 최상위 이슈만 바꿀 수 있어요.")
+            old_refs = {r["id"]: r["ref"] for r in c.execute(
+                f"SELECT b.id, {ref_sql('b', 'p')} AS ref FROM issue_deps d JOIN issues b ON b.id=d.blocked_by_id "
+                "JOIN projects p ON p.id=b.project_id WHERE d.issue_id=?", (row["id"],))}
+            old = set(old_refs)
+            refs = fields["blocked_by"]
+            if not isinstance(refs, list) or len(refs) > 10:
+                raise StoreError("선행 이슈는 최대 10개까지 목록으로 지정해 주세요.")
+            blockers = []
+            for dep_ref in refs:
+                if not isinstance(dep_ref, str) or not REF_RE.fullmatch(dep_ref.strip().upper()):
+                    raise StoreError("선행 이슈 ref 형식이 달라요.")
+                dep = _find(c, dep_ref)
+                if dep["id"] == row["id"]:
+                    raise StoreError("자기 자신을 선행 이슈로 지정할 수 없어요.")
+                if dep["project_id"] != row["project_id"] or (dep["status"] in ("done", "closed") and dep["id"] not in old):
+                    raise StoreError("선행 이슈는 같은 프로젝트의 진행 가능한 이슈여야 해요.")
+                if dep["id"] not in [b["id"] for b in blockers]:
+                    blockers.append(dep)
+            new = {b["id"] for b in blockers}
+            if new != old:
+                for dep in blockers:
+                    reaches = c.execute("""WITH RECURSIVE chain(id) AS (
+                        SELECT blocked_by_id FROM issue_deps WHERE issue_id=?
+                        UNION SELECT d.blocked_by_id FROM issue_deps d JOIN chain ON d.issue_id=chain.id
+                    ) SELECT 1 FROM chain WHERE id=? LIMIT 1""", (dep["id"], row["id"])).fetchone()
+                    if reaches:
+                        raise StoreError("서로를 기다리는 선행 관계는 지정할 수 없어요.")
+                c.execute("DELETE FROM issue_deps WHERE issue_id=?", (row["id"],))
+                for dep in blockers:
+                    c.execute("INSERT INTO issue_deps(issue_id, blocked_by_id) VALUES(?,?)", (row["id"], dep["id"]))
+                added = [b["ref"] + " 추가" for b in blockers if b["id"] not in old]
+                removed = [old_refs[i] + " 제거" for i in old - new]
+                _event(c, row["id"], actor, "edit", "연관 이슈: " + " · ".join(added + removed), {"blocked_by": [b["ref"] for b in blockers]})
+                deps_changed = True
         sets, changed = {}, []
         if "title" in fields or "body" in fields:
             # 예외: 제목이 없는 이슈(DEV-8)는 에이전트가 제목만 채울 수 있다 — 본문(지시)은 여전히 못 고친다.
@@ -802,8 +841,13 @@ def update_issue(actor, ref, fields: dict) -> dict:
             if types_changed:
                 _replace_types(c, row["id"], ids, actor)
         sets = {k: v for k, v in sets.items() if row[k] != v}
-        if not sets and not types_changed:
-            return _issue_dict(row)
+        if not sets and not types_changed and not deps_changed:
+            result = _issue_dict(row)
+            if "blocked_by" in fields:
+                result["blocked_by"] = [{"ref": r["ref"], "status": r["status"]} for r in c.execute(
+                    f"SELECT {ref_sql('b', 'p')} AS ref, b.status FROM issue_deps d JOIN issues b ON b.id=d.blocked_by_id "
+                    "JOIN projects p ON p.id=b.project_id WHERE d.issue_id=? ORDER BY b.id", (row["id"],))]
+            return result
         sets["updated_at"] = db.now_iso()
         c.execute(f"UPDATE issues SET {', '.join(k + '=?' for k in sets)} WHERE id=?", (*sets.values(), row["id"]))
         changed = [k.replace("_json", "") for k in sets if k != "updated_at"]
@@ -814,7 +858,17 @@ def update_issue(actor, ref, fields: dict) -> dict:
             changed.remove("assignee_agent_id")
         if changed:
             _event(c, row["id"], actor, "edit", data={"fields": changed})
-        return _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
+        result = _issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["id"],)).fetchone())
+        if "blocked_by" in fields:
+            result["blocked_by"] = [{"ref": r["ref"], "status": r["status"]} for r in c.execute(
+                f"SELECT {ref_sql('b', 'p')} AS ref, b.status FROM issue_deps d JOIN issues b ON b.id=d.blocked_by_id "
+                "JOIN projects p ON p.id=b.project_id WHERE d.issue_id=? ORDER BY b.id", (row["id"],))]
+        return result
+
+
+def set_blocked_by(actor, ref, refs) -> dict:
+    """이미 만든 이슈의 선행 목록 전체를 교체한다."""
+    return update_issue(actor, ref, {"blocked_by": refs})
 
 
 def delete_issue(actor, ref) -> None:

@@ -1186,7 +1186,7 @@ async function renderIssue(ref, background = false){
   const seq = ++issueRenderSeq, hash = location.hash;
   const [it, { runs }, catalog] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), api('GET', '/api/issue-types?include_inactive=true'), agentsById.size ? null : loadAgents()]);
   if(seq !== issueRenderSeq || hash !== location.hash) return;
-  if(background && (pendingActions.size || pendingTasks.size || pendingExecutions.size || pendingReviews.size || document.activeElement?.matches('input, select'))) return;
+  if(background && (pendingActions.size || pendingTasks.size || pendingExecutions.size || pendingReviews.size || view.querySelector('#dep-editor[open]') || document.activeElement?.matches('input, select'))) return;
   if(background && [...view.querySelectorAll('textarea, .edit-title')].some(el => el.id !== 'comment' && el.id !== 'rating-review' && el.offsetParent)) return;
   if(background && [...view.querySelectorAll('#labels, #issue-type-editor input, #rating-editor input, #rating-review')].some(el => ['checkbox', 'radio'].includes(el.type) ? el.checked !== el.defaultChecked : el.value !== el.defaultValue)) return;
   const previousEditor = view.querySelector('#issue-type-editor');
@@ -1210,7 +1210,12 @@ async function renderIssue(ref, background = false){
         <div class="ref">${esc(it.ref)}${it.parent_ref ? ` · Task of <a href="#/issue/${esc(it.parent_ref)}">${esc(it.parent_ref)}</a>` : ''}</div>
         <h1 id="title">${titleHtml(it)}</h1>
         <div class="byline">${actorHtml(it.reporter)}<span>·</span><span>${fmtTime(it.created_at)}</span>${labelsHtml(it.labels)}${typesHtml(it)}</div>
-        ${blockedHtml(it.blocked_by)}
+        <div class="issue-deps">${blockedHtml(it.blocked_by)}<button type="button" id="edit-deps">연관 이슈 편집</button></div>
+        <dialog id="dep-editor" class="dep-dialog"><form method="dialog"><fieldset class="dep-picker"><legend>연관 이슈 (선행)</legend>
+          <p class="dim">최대 10개까지 선택할 수 있어요.</p><label for="dep-search">이슈 검색<input id="dep-search" type="search" placeholder="번호 또는 제목으로 검색" autocomplete="off"></label>
+          <div id="dep-selected" class="dep-selected" aria-label="선택한 연관 이슈"></div><div id="dep-list" class="dep-list" aria-label="연관 이슈 후보"></div>
+          <p id="dep-status" role="status"></p><div class="row-end"><button type="button" id="dep-cancel">취소</button><button type="button" class="primary" id="dep-save">저장</button></div>
+        </fieldset></form></dialog>
         ${stageHtml(it, liveMode, liveRun.provider)}
         <div class="panel"><h2>Description<span class="right"><button id="edit-body">고치기</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
@@ -1272,6 +1277,38 @@ async function renderIssue(ref, background = false){
   const R = encodeURIComponent(it.ref);
   const reload = () => renderIssue(it.ref);
   const $ = (id) => view.querySelector('#' + id);
+  const depDialog = $('dep-editor'), depSelected = new Set((it.blocked_by || []).map(b => b.ref));
+  let depCandidates = [];
+  const drawDepEditor = () => {
+    const query = $('dep-search').value.trim().toLocaleLowerCase();
+    $('dep-selected').innerHTML = [...depSelected].map(ref => `<button type="button" class="dep-tag" data-dep-remove="${esc(ref)}" aria-label="${esc(ref)} 연관 이슈 제거">${esc(ref)} ×</button>`).join('');
+    $('dep-list').innerHTML = depCandidates.filter(d => d.ref !== it.ref && `${d.ref} ${d.title}`.toLocaleLowerCase().includes(query)).map(d =>
+      `<button type="button" class="dep-option" data-dep="${esc(d.ref)}" aria-pressed="${depSelected.has(d.ref)}"><span class="ref">${esc(d.ref)}</span><span>${esc(d.title || '(제목 없음)')}</span><span class="dim">${esc(d.status)}</span></button>`).join('') || '<p class="dim">선택할 이슈가 없어요.</p>';
+  };
+  $('edit-deps').onclick = async () => {
+    depSelected.clear(); (it.blocked_by || []).forEach(b => depSelected.add(b.ref));
+    depDialog.showModal(); $('dep-status').textContent = '연관 이슈를 불러오는 중…';
+    try{ const result = await api('GET', `/api/projects/${encodeURIComponent(it.ref.split('-')[0])}/dep-candidates?include_review=true`);
+      if(!depDialog.isConnected || !depDialog.open) return;
+      depCandidates = result.issues; $('dep-status').textContent = ''; drawDepEditor(); $('dep-search').focus();
+    }catch(e){ if(depDialog.isConnected) $('dep-status').textContent = e.message; }
+  };
+  $('dep-search').oninput = drawDepEditor;
+  depDialog.onclick = e => {
+    const remove = e.target.closest('[data-dep-remove]'), option = e.target.closest('[data-dep]');
+    if(remove) depSelected.delete(remove.dataset.depRemove);
+    if(option){ if(depSelected.has(option.dataset.dep)) depSelected.delete(option.dataset.dep);
+      else if(depSelected.size < 10) depSelected.add(option.dataset.dep);
+      else { $('dep-status').textContent = '연관 이슈는 최대 10개까지 선택할 수 있어요.'; return; } }
+    if(remove || option){ $('dep-status').textContent = ''; drawDepEditor(); }
+  };
+  $('dep-cancel').onclick = () => depDialog.close();
+  $('dep-save').onclick = async () => {
+    $('dep-save').disabled = true; $('dep-status').textContent = '저장 중…';
+    try{ await api('PATCH', `/api/issues/${R}`, {blocked_by:[...depSelected]}, () => depDialog.isConnected, {notifyErrors:false}); depDialog.close(); await reload(); }
+    catch(e){ if(depDialog.isConnected) $('dep-status').textContent = e.message; }
+    finally{ if(depDialog.isConnected) $('dep-save').disabled = false; }
+  };
   const ratingBox = $('rating-editor');
   const paintStars = () => ratingBox.querySelectorAll('.stars label').forEach(l => { l.querySelector('span').textContent = l.querySelector('input').checked || l.dataset.on ? '★' : '☆'; });
   const starsUpTo = (v) => ratingBox.querySelectorAll('.stars label').forEach((l, i) => { l.dataset.on = i < v ? '1' : ''; });
