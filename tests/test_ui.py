@@ -216,6 +216,8 @@ def check_trend_stages(page, shots):
                                 queue_idle_seconds=stats(90), issues=[first, second],
                                  daily_task_median=[{'date':f'2026-10-{day:02d}', 'seconds': seconds, 'n': int(seconds is not None)}
                                                     for day, seconds in [(17,None),(18,600),(19,900),(20,None),(21,1200),(22,1800),(23,2400)]],
+                                 daily_task_tokens_median=[{'date':f'2026-10-{day:02d}', 'tokens': tokens, 'n': int(tokens is not None)}
+                                                           for day, tokens in [(17,None),(18,6000),(19,9000),(20,None),(21,12000),(22,18000),(23,24000)]],
                                  daily_task_unmeasured=1,
                                  dev_changes=[{'ref':'DEV-153-1', 'title':'목록 정렬',
                                                'merged_at':'2026-10-22T03:00:00+00:00', 'date':'2026-10-22',
@@ -244,9 +246,15 @@ def check_trend_stages(page, shots):
     assert page.locator('.trend-stage-labels li').count() == 5
     page.locator('.trend-stage-details summary').click()
     assert '빈 대기열 대기' in page.inner_text('.trend-stage-labels')
-    assert page.locator('.trend-stage-daily-chart .trend-stage-point').count() == 5
-    assert page.locator('.trend-stage-daily-chart .trend-stage-line').count() == 2
-    assert page.locator('.trend-stage-daily-chart .trend-dev-mark').count() == 1
+    assert page.locator('.trend-stage-daily-chart').count() == 2
+    for series in ('seconds', 'tokens'):
+        chart = page.locator(f'.trend-stage-daily-chart[data-series="{series}"]')
+        assert chart.locator('.trend-stage-point').count() == 5
+        assert chart.locator('.trend-stage-value').count() == 5
+        assert chart.locator('.trend-stage-line').count() == 2
+        assert chart.locator('.trend-stage-day').count() == 7
+        assert chart.locator('.trend-dev-mark').count() == 1
+    assert '토큰 중앙값' in page.inner_text('.trend-stage-daily-grid')
     assert '시작 기록이 없는 Task 1건' in page.inner_text('.trend-stage-history')
     page.locator('.trend-dev-changes summary').click()
     assert page.locator('.trend-dev-changes a').get_attribute('href') == '#/issue/DEV-153-1'
