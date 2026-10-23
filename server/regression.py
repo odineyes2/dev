@@ -3,6 +3,7 @@ import ast
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -311,16 +312,36 @@ def test_files(repo):
                    for path in Path(repo, folder).glob('test_*.py')})
 
 
-def tree_identity(repo):
+def work_tree_hash(repo):
+    """작업 폴더의 실제 내용으로 만든 트리 해시. 임시 인덱스를 쓰므로 실제 인덱스·작업 폴더는 그대로다.
+    커밋 전(Codex 완료 검사)이어도 execute가 나중에 만들 커밋의 트리와 같다(같은 add -A·캡처 경로 제외 규칙)."""
     import execute
+    import os
+    import tempfile
     if not Path(repo).is_dir():
         return None
-    status = execute._run_git(str(repo), 'status', '--porcelain', '--untracked-files=no')
-    tree = execute._run_git(str(repo), 'rev-parse', 'HEAD^{tree}')
-    added = execute._run_git(str(repo), 'ls-files', '--others', '--exclude-standard')
-    if status.returncode or status.stdout.strip() or tree.returncode or added.returncode or any(p.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.vue', '.css', '.html')) for p in added.stdout.splitlines()):
-        return None
-    return tree.stdout + sys.version + str(sys.executable)
+    fd, index = tempfile.mkstemp(prefix='dev-index-')
+    os.close(fd)
+    os.unlink(index)   # git이 빈 인덱스를 새로 만들게 한다
+    env = {**os.environ, 'GIT_INDEX_FILE': index}
+
+    def git(*args):
+        return subprocess.run(['git', *args], cwd=str(repo), env=env, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    try:
+        for args in (('read-tree', 'HEAD'), ('add', '-A', '--', '.'),
+                     ('rm', '-r', '--cached', '-q', '--ignore-unmatch', '--', *execute.CAPTURE_PATHS)):
+            if git(*args).returncode:
+                return None
+        tree = git('write-tree')
+        return tree.stdout.strip() if not tree.returncode and tree.stdout.strip() else None
+    finally:
+        Path(index).unlink(missing_ok=True)
+
+
+def tree_identity(repo):
+    tree = work_tree_hash(repo)
+    return tree + '\n' + sys.version + str(sys.executable) if tree else None
 
 
 def fingerprint(test, identity):

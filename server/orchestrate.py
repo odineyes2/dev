@@ -21,6 +21,7 @@
              "restart_when": ["server/*", "ecosystem.config.js"], "busy_url": "http://127.0.0.1:8000/api/jobs/busy"}}
 """
 import fnmatch
+import hashlib
 import json
 import os
 import subprocess
@@ -308,14 +309,34 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
     cached = regression.load_record('regression-cache:' + ref) if ref else {}
     identity = regression.tree_identity(repo) if ref else None
     results = {}
+    # 지문이 어긋난 이유를 가리려고 지문의 재료(트리·regression.py·검사 파일)를 따로 남긴다.
+    old_meta = cached.pop('_meta', {}) if isinstance(cached.get('_meta'), dict) else {}
+    meta = {'tree': hashlib.sha256((identity or '').encode()).hexdigest(),
+            'reg': hashlib.sha256(Path(regression.__file__).read_bytes()).hexdigest(), 'files': {}}
+    miss = {}
     for t in regression.test_files(repo):
         if not policy.get('file:' + t.name, {'enabled': True})['enabled']:
             results[t.name] = 'skipped'
             continue
         stamp = regression.fingerprint(t, identity) if ref else None
+        if ref:
+            meta['files'][t.name] = hashlib.sha256(t.read_bytes()).hexdigest()
         if stamp and cached.get(t.name) == stamp:
             results[t.name] = 'reused'
             continue
+        if ref:
+            if not identity:
+                miss[t.name] = '지문 없음 — git으로 작업 내용을 읽지 못함'
+            elif t.name not in cached:
+                miss[t.name] = '이전 결과 없음'
+            elif old_meta.get('reg') != meta['reg']:
+                miss[t.name] = 'regression.py가 바뀜'
+            elif old_meta.get('files', {}).get(t.name) != meta['files'][t.name]:
+                miss[t.name] = '검사 파일이 바뀜'
+            elif old_meta.get('tree') != meta['tree']:
+                miss[t.name] = '트리가 다름 — main이 바뀌어 병합 결과가 달라짐'
+            else:
+                miss[t.name] = '실행 환경(Python)이 다름'
         r = run_test(repo, t)
         results[t.name] = 'failed' if r.returncode else 'passed'
         if not r.returncode and stamp:
@@ -333,8 +354,17 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
             output = (r.stdout + r.stderr).strip() or "표준 출력과 오류 출력이 없어요."
             failures.append(f"{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
     if ref:
+        cached['_meta'] = meta
         regression.save_record('regression-cache:' + ref, cached)
-        regression.save_record('regression-selection:' + ref + ':' + stage, {**selection, 'results': results})
+        reused = sum(1 for v in results.values() if v == 'reused')
+        reason = next(iter(miss.values()), '') if not reused else ''
+        regression.save_record('regression-selection:' + ref + ':' + stage,
+                               {**selection, 'results': results, 'cache': {'used': bool(reused), 'reused': reused, 'reason': reason}})
+        if stage == 'server_merge' and miss and not reused and not reason.startswith('트리가 다름'):
+            done = regression.load_record('regression-selection:' + ref + ':server_completion').get('results')
+            if done:
+                issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref,
+                                   f'⚠️ 같은 코드인데 검사 결과를 재사용하지 못했어요 — 이유: {reason}')
     return '\n\n'.join(failures) or None
 
 

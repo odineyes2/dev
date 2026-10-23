@@ -18,6 +18,7 @@ def git(*args):
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
 git('init', '-q', '-b', 'main')
+(repo / '.git' / 'info' / 'exclude').write_text('count\n')   # 가짜 검사가 남기는 산출물 — 작업 내용 지문에 섞이지 않게
 (repo / 'tests').mkdir()
 (repo / 'tests/test_ui.py').write_text("from pathlib import Path\np=Path('count');p.write_text(p.read_text()+'x' if p.exists() else 'x')")
 (repo / 'README.md').write_text('base')
