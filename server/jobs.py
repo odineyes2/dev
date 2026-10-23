@@ -92,6 +92,50 @@ def _pending_merges(c) -> list[dict]:
     return [dict(r) for r in c.execute("SELECT * FROM execution_completion WHERE phase IN (%s) ORDER BY run_id" % ','.join('?' * len(orchestrate.ACTIVE_PHASES)), orchestrate.ACTIVE_PHASES)]
 
 
+def self_restart_state(c) -> dict | None:
+    """dev 자신을 재시작할 병합과 기다리는 작업을 읽는다. 고아 정리·외부 요청은 하지 않는다."""
+    from datetime import datetime, timezone
+    import orchestrate
+    import reproduce
+    record = next((m for m in _pending_merges(c)
+                   if json.loads(m['cfg_json']).get('pm2_app') == SELF_PM2_APP), None)
+    if record is None:
+        return None
+    now = datetime.now(timezone.utc)
+
+    def minutes(since):
+        try:
+            stamp = datetime.fromisoformat(since)
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            return max(0, int((now - stamp).total_seconds() // 60))
+        except (TypeError, ValueError):
+            return 0
+
+    busy = [dict(r) for r in c.execute(
+        f"SELECT {issues.ref_sql('i', 'p')} AS ref, r.mode, r.provider, r.started_at "
+        "FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id "
+        "WHERE r.status='running' AND r.id<>? ORDER BY r.id", (record['run_id'],))]
+    for table, mode, active, stamp in (
+            ('project_audits', 'audit', "'preparing','running','cancelling'", 'COALESCE(a.started_at,a.created_at)'),
+            ('project_initializations', 'initialization', "'running','cancelling'", 'a.created_at')):
+        busy.extend(dict(r) for r in c.execute(
+            f"SELECT p.key AS ref, '{mode}' AS mode, a.provider, {stamp} AS started_at "
+            f"FROM {table} a JOIN projects p ON p.id=a.project_id WHERE a.status IN ({active}) ORDER BY a.project_id"))
+    for row in c.execute("SELECT key,value FROM app_settings WHERE key LIKE ? "
+                         "AND json_extract(value,'$.status')='running' AND json_extract(value,'$.process')=? ORDER BY key",
+                         (reproduce.PREFIX + '%', reproduce.PROCESS)):
+        state = json.loads(row['value'])
+        busy.append({'ref': row['key'][len(reproduce.PREFIX):], 'mode': 'reproduce', 'provider': '', 'started_at': state.get('started_at')})
+    busy = [{**{k: r[k] for k in ('ref', 'mode', 'provider')}, 'minutes': minutes(r['started_at'])} for r in busy]
+    phase = record['phase']
+    phase = ('waiting' if busy else 'restarting') if phase == 'deployed' else (
+        'restarting' if phase in ('restart_requested', 'rollback_requested', 'rollback_applied') else 'merging')
+    return {'phase': phase, 'ref': record['ref'], 'since': record['updated_at'], 'busy': busy,
+            'waiting': [j['ref'] for j in _rows(c)],
+            'process_id': orchestrate.PROCESS_ID, 'revision': orchestrate.BOOT_SHA}
+
+
 def _active_lanes(c) -> set[tuple]:
     """지금 바쁜 줄 — 도는 runs, 병합·반영 중인 실행, 아직 끝나지 않은 작업 스레드."""
     lanes = {(r["key"], r["mode"]) for r in c.execute(

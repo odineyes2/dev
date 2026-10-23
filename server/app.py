@@ -898,7 +898,9 @@ def api_reproduction_log(ref: str, request: Request):
 
 @app.get("/api/jobs")
 def api_jobs():
-    return {"jobs": jobs.list_jobs(), "in_progress": jobs.list_in_progress()}
+    with db.connect() as c:
+        self_restart = jobs.self_restart_state(c)
+    return {"jobs": jobs.list_jobs(), "in_progress": jobs.list_in_progress(), "self_restart": self_restart}
 
 
 @app.delete("/api/jobs/{job_id}")
