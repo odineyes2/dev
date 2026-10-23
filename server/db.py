@@ -1048,6 +1048,19 @@ ALTER TABLE issues ADD COLUMN rated_at TEXT;
 ALTER TABLE issues ADD COLUMN rated_by TEXT;
 """)
 
+# 검사 파일 번호(DEV-161) — 프로젝트별 T-<키>-### 번호. 지운 파일의 번호도 행으로 남겨 다시 쓰지 않는다.
+MIGRATIONS.append("""
+CREATE TABLE check_files (
+  project_key TEXT NOT NULL,
+  path TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  first_seen TEXT NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (project_key, path),
+  UNIQUE (project_key, number)
+);
+""")
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

@@ -279,7 +279,8 @@ def run_test(repo, t, args=(), env=None):
     """선택한 검사 하나를 기존 시간 제한과 출력 보존 규칙으로 실행한다."""
     try:
         relative = (t.relative_to(Path(repo)) if t.is_relative_to(Path(repo)) else t).as_posix()
-        command = ([sys.executable, '-m', 'unittest', relative[:-3].replace('/', '.')]
+        command = (['node', '--test', str(t)] if relative.endswith('.js') else   # JS 검사(node:test, DEV-161)
+                   [sys.executable, '-m', 'unittest', relative[:-3].replace('/', '.')]
                    if relative.startswith('backend/tests/') else [sys.executable, str(t)])
         return subprocess.run(command + list(args), cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
                               env={**({k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env), "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"}, timeout=600,
@@ -379,7 +380,8 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
             flaky = ''
             if len(runs) > 1 and len(bad) < len(runs):
                 flaky = f"{FLAKY_MARK} {t.name}가 같은 코드에서 {len(runs)}번 중 {len(bad)}번 실패했어요 — 검사 코드의 기다리기·순서 가정을 먼저 확인해 주세요\n"
-            failures.append(f"{flaky}{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
+            tag = f"{policy[stage].get('number', '')} {policy[stage]['name']} 실패 — {policy.get('file:' + t.name, {}).get('number', '')} "
+            failures.append(f"{flaky}{tag}{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
     if ref:
         cached['_meta'] = meta
         regression.save_record('regression-cache:' + ref, cached)

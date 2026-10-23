@@ -7,30 +7,65 @@ import subprocess
 import sys
 from pathlib import Path
 
+import checks as registry
 import db
 import issues
 
-CHECKS = (
-    ('server_completion', '서버', '완료 전 테스트', '작업 완료 등록 전에 선택된 테스트 파일을 실행해요. 실패하면 한 번 수정 재시도해요.'),
-    ('server_merge', '서버', '병합 전 테스트', '시험 병합 결과를 검사해요. 동일 코드의 통과 결과를 재사용해요.'),
-    ('server_rollback', '서버', '롤백 후 테스트', '롤백 사본에서 선택된 테스트 파일을 실행해요.'),
-    ('server_api_warning', '서버', '새 API 검사 누락 경고', '새 라우트에 실제 요청 테스트가 있는지 검사하고, 없으면 완료 요약에 경고해요.'),
-    ('agent_related', '에이전트', 'Task 관련 검사', 'Task 확인 항목과 직접 작성·수정한 검사를 실행하도록 지시해요. Claude·Codex 공통이에요.'),
-    ('agent_api', '에이전트', '새 API 요청 검사', '새 HTTP 라우트에 실제 앱 요청 검사를 작성·실행하도록 지시해요.'),
-    ('agent_capture', '에이전트', 'UI 캡처 확인', '변경 화면을 낮·밤 × PC·모바일로 캡처하고 확인하도록 지시해요.'),
-)
+# 등록부(checks.REGISTRY)에서 Settings로 바꿀 수 있는 항목만 — 키는 저장된 설정·기록과 호환된다.
+CHECKS = tuple((r['key'], '서버' if r['stage'].startswith('서버') else '에이전트', r['name'], r['description'])
+               for r in registry.REGISTRY if r['mode'] == 'settable')
+DEV_KEY = 'DEV'
 
 
-def catalog():
-    rows = [dict(key=k, group=g, name=n, description=d) for k, g, n, d in CHECKS]
-    for path in sorted(Path(__file__).resolve().parents[1].joinpath('tests').glob('test_*.py')):
-        try:
-            doc = ast.get_docstring(ast.parse(path.read_text(encoding='utf-8'))) or '개별 회귀 검사'
-        except (OSError, SyntaxError, UnicodeError):
-            doc = '개별 회귀 검사'
-        rows.append(dict(key='file:' + path.name, group='테스트 파일', name=path.name,
-                         description=doc.splitlines()[0]))
+def _file_doc(path):
+    if path.suffix == '.js':
+        text = path.read_text(encoding='utf-8', errors='replace')
+        m = re.search(r'^\s*(?://|/\*+)\s*(.+?)\s*(?:\*/)?\s*$', text, re.M)
+        return m[1] if m else '개별 회귀 검사'
+    try:
+        return (ast.get_docstring(ast.parse(path.read_text(encoding='utf-8'))) or '개별 회귀 검사').splitlines()[0]
+    except (OSError, SyntaxError, UnicodeError):
+        return '개별 회귀 검사'
+
+
+def catalog(project=None):
+    """project가 없으면 dev 자신의 검사 파일, 있으면 그 프로젝트 저장소의 검사 파일을 담는다."""
+    nums = {r['key']: r['number'] for r in registry.REGISTRY}
+    rows = [dict(key=k, group=g, name=n, description=d, number=nums[k]) for k, g, n, d in CHECKS]
+    repo = Path(__file__).resolve().parents[1]
+    if project and project != DEV_KEY:
+        repo = next((Path(p['local_path']) for p in issues.list_projects() if p['key'] == project and p['local_path']), None)
+    if not project:   # 문맥 없는 목록은 dev 루트 tests/만(기존 동작)
+        files = sorted(p for pattern in ('test_*.py', 'test_*.js') for p in repo.joinpath('tests').glob(pattern))
+    else:
+        files = test_files(repo) if repo and repo.is_dir() else []
+    rels = {p: 'tests/' + p.name if not project else p.relative_to(repo).as_posix() for p in files}
+    labels = registry.file_numbers(project or DEV_KEY, rels.values()) if repo else {}
+    for path in files:
+        rel = rels[path]
+        rows.append(dict(key='file:' + path.name, group='테스트 파일', name=path.name, description=_file_doc(path),
+                         number=labels.get(rel, ''), procedure=registry.FILE_NUMBER, path=rel, kind=registry.kind(path)))
     return rows
+
+
+def file_mode(saved, project, name):
+    """검사 파일의 사람 설정 — 프로젝트별 키 `file:<프로젝트>:<이름>`. 옛 이름 단위 키는 dev 것으로만 읽는다."""
+    key = f'file:{project}:{name}'
+    if key in saved:
+        return saved[key]
+    return saved.get('file:' + name, 'auto') if project == DEV_KEY else 'auto'
+
+
+def project_key(repo=None, issue=None):
+    if issue:
+        return issue.get('project_key') or DEV_KEY
+    if _is_dev(repo):
+        return DEV_KEY
+    try:
+        projects = issues.list_projects()
+    except Exception:   # DB 초기화 전(프롬프트 생성·독립 Git 검사)에는 프로젝트를 알 수 없다
+        return '?'
+    return next((p['key'] for p in projects if p['local_path'] and Path(p['local_path']).resolve() == Path(repo).resolve()), '?')
 
 
 def values():
@@ -46,23 +81,36 @@ def enabled(key, ref=None, repo=None):
     return resolve(ref, repo)['checks'].get(key, {'enabled': True})['enabled']
 
 
-def settings():
+def _row_mode(saved, pk, row):
+    if row['key'].startswith('file:'):
+        return file_mode(saved, pk, row['name'])
+    return saved.get(row['key'], 'auto')
+
+
+def settings(project=None):
+    """project: 파일 목록·파일별 설정의 프로젝트 키(없으면 dev). registry는 번호 순 전체 절차(고정·관리형 포함)."""
     saved = values()
-    return {'checks': [{**row, 'mode': saved.get(row['key'], 'auto')} for row in catalog()]}
+    pk = project or DEV_KEY
+    rows = [{**row, 'mode': _row_mode(saved, pk, row)} for row in catalog(project)]
+    reg = [{**{k: r[k] for k in ('number', 'key', 'name', 'stage', 'description')}, 'kind': r['mode'],
+            'mode': saved.get(r['key'], 'auto') if r['mode'] == 'settable' else r['mode']} for r in registry.REGISTRY]
+    return {'project': pk, 'checks': rows, 'registry': reg}
 
 
-def update(actor, changes):
+def update(actor, changes, project=None):
     if actor['kind'] != 'human':
         raise issues.StoreError('검사 설정은 사람만 바꿀 수 있어요.', 403)
-    keys = {row['key'] for row in catalog()}
+    pk = project or DEV_KEY
+    keys = {row['key'] for row in catalog(project)}   # 고정·관리형 절차는 여기 없어 바꿀 수 없다
     if not isinstance(changes, dict) or not changes or any(k not in keys or v not in ('on', 'off', 'auto') for k, v in changes.items()):
-        raise issues.StoreError('검사 종류와 On·Off·Auto 값을 확인해 주세요.', 400)
+        raise issues.StoreError('검사 종류와 On·Off·Auto 값을 확인해 주세요. (고정 절차는 끌 수 없어요)', 400)
     with db.connect() as c:
         for key, value in changes.items():
+            stored = f'file:{pk}:{key[5:]}' if key.startswith('file:') else key
             c.execute('INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES(?,?,?,?) '
                       'ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by',
-                      ('regression:' + key, value, db.now_iso(), issues.actor_label(actor)))
-    return settings()
+                      ('regression:' + stored, value, db.now_iso(), issues.actor_label(actor)))
+    return settings(project)
 
 
 def parse_plan(body):
@@ -82,7 +130,7 @@ def parse_plan(body):
                 raise ValueError()
             if not isinstance(choice.get('reason'), str) or not choice['reason'].strip() or not isinstance(choice.get('checks'), dict):
                 raise ValueError()
-            if any((k not in keys and not re.fullmatch(r'file:test_[A-Za-z0-9_]+\.py', k)) or type(v) is not bool for k, v in choice['checks'].items()):
+            if any((k not in keys and not registry.valid_file_key(k)) or type(v) is not bool for k, v in choice['checks'].items()):
                 raise ValueError()
         return choices
     except (ValueError, TypeError):
@@ -235,8 +283,9 @@ def resolve(ref=None, repo=None, changed=None):
     code = any(p.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.vue')) for p in changed)
     level = 'high' if high else choice.get('level') or ('normal' if not changed or code else 'light')
     # Task가 추가·수정한 검사 파일(tests/·backend/tests/ 등) — 계획 선택으로 끌 수 없다(DEV-147)
-    changed_tests = {Path(p).name for p in changed if re.search(r'(^|/)tests/test_[A-Za-z0-9_]+\.py$', p)}
+    changed_tests = {Path(p).name for p in changed if re.search(r'(^|/)tests/test_[A-Za-z0-9_]+\.(py|js)$', p)}
     dev = _is_dev(repo, issue)
+    pk = project_key(repo, issue)
     checks = {}
     for row in catalog():
         key = row['key']
@@ -266,7 +315,7 @@ def resolve(ref=None, repo=None, changed=None):
             reason = '계획 에이전트: ' + choice['reason']
         if high and (key.startswith('file:') or key in ('server_completion', 'server_merge', 'server_rollback', 'agent_related', 'agent_api', 'server_api_warning')):
             auto, reason = True, '서버 보강: 인증·DB·공통 실행 변경'
-        mode = saved.get(key, 'auto')
+        mode = file_mode(saved, pk, key[5:]) if key.startswith('file:') else saved.get(key, 'auto')
         checks[key] = {'mode': mode, 'enabled': mode == 'on' or mode == 'auto' and auto,
                        'reason': reason if mode == 'auto' else '사람 설정: ' + mode.upper(), 'name': row['name']}
     # 다른 프로젝트의 독자 테스트는 이름 일치/고위험/계획 선택이 없으면 직접 실행 단계의 기본 검사로 본다.
@@ -275,7 +324,7 @@ def resolve(ref=None, repo=None, changed=None):
             key = 'file:' + path.name
             if key not in checks:
                 auto = high or choice.get('checks', {}).get(key, True)
-                mode = saved.get(key, 'auto')   # 사람의 파일 이름별 On/Off는 다른 프로젝트의 같은 이름 검사에도 적용된다
+                mode = file_mode(saved, pk, path.name)   # 파일 설정은 프로젝트별이라 다른 프로젝트의 같은 이름 검사에 번지지 않는다
                 reason = '서버 보강: 고위험 변경' if high else '계획 에이전트: ' + choice['reason'] if key in choice.get('checks', {}) else '프로젝트 자체 테스트'
                 checks[key] = {'mode': mode, 'enabled': mode == 'on' or mode == 'auto' and auto,
                                'reason': reason if mode == 'auto' else '사람 설정: ' + mode.upper(), 'name': path.name}
@@ -302,14 +351,22 @@ def resolve(ref=None, repo=None, changed=None):
             checks[key].update(enabled=selected_files, reason='선택된 테스트 파일이 있어 실행' if selected_files else '선택된 테스트 파일 없음')
         if checks[key]['mode'] == 'auto' and changed_on and key != 'server_rollback':
             checks[key].update(enabled=True, reason='Task가 추가·수정한 검사가 있어 실행')
-    return {'level': level, 'changed_files': changed, 'planned': bool(choice), 'checks': checks,
+    scan = Path(repo or Path(__file__).resolve().parents[1])
+    labels = {}
+    if scan.is_dir():
+        found = {f.name: (f.relative_to(scan) if f.is_absolute() and f.is_relative_to(scan) else f).as_posix() for f in test_files(scan)}
+        by_path = registry.file_numbers(pk, found.values())
+        labels = {name: by_path.get(rel, '') for name, rel in found.items()}
+    for key, item in checks.items():
+        item['number'] = labels.get(key[5:], '') if key.startswith('file:') else registry.number_of(key)
+    return {'level': level, 'project': pk, 'changed_files': changed, 'planned': bool(choice), 'checks': checks,
             'changed_tests': sorted(changed_tests), 'changed_tests_off': human_off}
 
 
 def test_files(repo):
     """루트 검사와 Moai의 패키지 검사를 모두 찾는다."""
-    return sorted({path for folder in ('tests', 'backend/tests')
-                   for path in Path(repo, folder).glob('test_*.py')})
+    return sorted({path for folder in ('tests', 'backend/tests') for pattern in ('test_*.py', 'test_*.js')
+                   for path in Path(repo, folder).glob(pattern) if pattern.endswith('py') or folder == 'tests'})
 
 
 def work_tree_hash(repo):
