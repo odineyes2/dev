@@ -15,12 +15,12 @@ SLOTS = {
     "review_codex.md": {"ref", "web_domains"},
     "description_claude.md": {"ref"},
     "description_codex.md": {"ref"},
-    "execute_claude.md": {"ref", "branch", "parent_ref", "api_test", "test_scope"},
-    "execute_codex.md": {"ref", "branch", "parent_ref", "api_test", "test_scope"},
+    "execute_claude.md": {"ref", "branch", "parent_ref", "checks"},
+    "execute_codex.md": {"ref", "branch", "parent_ref", "checks"},
     "capture.md": {"viewer"},
 }
 # 빠지면 에이전트가 어느 이슈·어떤 검사 범위인지 모르게 되는 자리표시
-REQUIRED = {name: ({"ref"} if name != "capture.md" else set()) | ({"test_scope"} if name.startswith("execute_") else set())
+REQUIRED = {name: ({"ref"} if name != "capture.md" else set()) | ({"checks"} if name.startswith("execute_") else set())
             for name in SLOTS}
 
 

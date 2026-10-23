@@ -86,4 +86,17 @@ for key in ('fixed_auth', 'reproduce', 'agent_js_syntax'):
     assert client.put(url, json={'checks': {key: 'off'}}, headers=headers).status_code == 400, key
 assert client.put(url + '?project=BB', json={'checks': {'file:test_x.py': 'on'}}, headers=headers).status_code == 200
 assert mode('BB') == 'on' and mode('AA') == 'auto'
+
+# Task 3 — Claude·Codex가 같은 검사 지시를 받고, Claude 허용 도구에 등록부 명령이 모두 있다
+import execute
+import prompts
+text = execute.checks_instructions('AA-1-1')
+assert 'R02' in text and 'R03' in text and execute.FAILURE_RULE in text
+for name in ('execute_claude.md', 'execute_codex.md'):
+    assert prompts.problems(name, (prompts.DIR / name).read_text(encoding='utf-8')) == [], name
+    assert text in prompts.render(name, ref='AA-1-1', branch='b', parent_ref='AA-1', checks=text), name
+allowed = ' '.join(execute.ALLOWED_TOOLS)
+for needle in ('python tests/*', 'node --test tests/*', 'node --check', 'scripts/capture_ui.py'):
+    assert needle in allowed, needle
+assert 'backend.tests' in execute.checks_instructions('MO-1-1') and 'backend.tests' not in text
 print('checks registry OK')

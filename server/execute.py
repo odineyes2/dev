@@ -38,7 +38,7 @@ WORKTREE_DIR = (config.REPO_ROOT.parent.resolve() / ".dev-worktrees" if _DATA.is
 USER_ISOLATION = ["--setting-sources", "project", "--disable-slash-commands",
                   "--settings", json.dumps({"claudeMdExcludes": [(Path.home() / ".claude" / "CLAUDE.md").as_posix()], "autoMemoryEnabled": False})]
 ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(python tests/*)", "Bash(python -m unittest tests.*)", "Bash(python scripts/capture_ui.py --route *)", "Bash(git status:*)", "Bash(git diff:*)",
-                 "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(node --check:*)"] + [f"mcp__dev__{t}" for t in (
+                 "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(node --check:*)", "Bash(node --test tests/*)"] + [f"mcp__dev__{t}" for t in (
     "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "add_comment", "set_status", "link_commit", "claim_issue", "release_issue")]
 BLOCKED_TOOLS = ["WebFetch", "WebSearch", "NotebookEdit"] + [f"Bash({c}:*)" for c in (
     "git push", "git checkout", "git switch", "git reset", "git rebase", "git merge", "git worktree", "git branch", "git remote",
@@ -268,7 +268,31 @@ def test_scope(ref: str) -> str:
 def api_test_instructions(ref=None):
     import regression
     return '새 HTTP 라우트를 만들면 실제 앱에 요청을 보내는 검사(TestClient 등)를 하나 둔다.' if regression.enabled('agent_api', ref) else 'Settings의 판단으로 새 API 요청 검사를 생략하고 미실시로 기록한다.'
-CODE_PATHSPEC = ('.', *(f':(top,exclude){p}/**' for p in CAPTURE_PATHS))
+
+
+# 등록부(R02~R05)의 에이전트 실행 명령 — Claude 허용 도구(ALLOWED_TOOLS)와 Codex 지시문이 같은 목록을 쓴다.
+AGENT_COMMANDS = ('python tests/test_이름.py', 'python -m unittest tests.test_이름', 'node --test tests/test_이름.js', 'node --check 파일',
+                  'python scripts/capture_ui.py --route 경로')
+MOAI_COMMANDS = ('python -m unittest backend.tests.test_이름', 'npm --prefix apps/web run typecheck', 'npm --prefix apps/web run build')
+FAILURE_RULE = '필수 검사 실패·미실행이면 완료로 내지 않는다 — Claude는 on_hold, Codex는 outcome=blocked로 이유를 적는다.'
+
+
+def checks_instructions(ref):
+    """Claude·Codex에 똑같이 넣는 검사 지시 — 등록부 번호(R02·R03·R05)와 실행 명령, 실패 처리 한 규칙."""
+    import checks
+    names = {r['number']: r['name'] for r in checks.REGISTRY}
+    commands = AGENT_COMMANDS + (MOAI_COMMANDS if ref.startswith('MO-') else ())
+    return '\n'.join([
+        f"검사는 Settings 회귀검사 등록부의 번호 있는 항목만 한다. 완료·요약에는 번호로 적는다(예: R02 {names['R02']}).",
+        f"R02 {names['R02']}: " + test_scope(ref),
+        f"R03 {names['R03']}: " + api_test_instructions(ref),
+        f"R05 {names['R05']}: 바꾼 JS 파일은 `node --check 파일`로 확인한다.",
+        '검사 명령: ' + ', '.join(f'`{c}`' for c in commands) + '. (`python3`·경로 형태 `tests/x.py`를 -m에 쓰는 것은 막혀 있다.)',
+        FAILURE_RULE,
+    ]) + '\n'
+
+
+CODE_PATHSPEC = ('.',*(f':(top,exclude){p}/**' for p in CAPTURE_PATHS))
 
 
 def reject_capture_changes(cwd, *revision):
@@ -288,8 +312,7 @@ def capture_instructions(viewer, ref=None):
 
 def prompt_for(ref: str, parent_ref: str | None) -> str:
     import review
-    return review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("Read", ref) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref, api_test=api_test_instructions(ref),
-        test_scope=test_scope(ref))
+    return review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("Read", ref) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref, checks=checks_instructions(ref))
 
 
 def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
@@ -307,7 +330,7 @@ def codex_command_for(ref: str, parent_ref: str | None) -> list[str]:
     """코드 수정·검사는 worktree 안에서, 커밋과 결과 등록은 서버가 수행한다."""
     import review
     prompt = review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("이미지 보기 도구", ref) + prompts.render("execute_codex.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref,
-        api_test=api_test_instructions(ref), test_scope=test_scope(ref))
+        checks=checks_instructions(ref))
     cmd = review.codex_command(prompt, ["whoami", "get_issue", "list_projects", "read_attachment"], web="cached")
     return cmd[:-1] + ["--output-schema", str(Path(__file__).with_name("codex_execute.schema.json")),
                        cmd[-1]]

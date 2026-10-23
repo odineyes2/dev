@@ -63,7 +63,7 @@ with TestClient(A.app) as client:
         for f in files:
             assert f['exists'] and f['content'] and f['slots'] == sorted(prompts.SLOTS[f['name']]) and f['editable']
             assert f['path'] == 'harness/prompts/' + f['name'] and 'base_sha' in f
-        assert next(f for f in files if f['name'] == 'execute_claude.md')['required'] == ['ref', 'test_scope']
+        assert next(f for f in files if f['name'] == 'execute_claude.md')['required'] == ['checks', 'ref']
         assert L['prompts']['code_filled']
         # 5층 — 네 조합
         items = L['settings']['items']
