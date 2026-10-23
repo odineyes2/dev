@@ -252,7 +252,7 @@ async function route(){
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === (name || 'issues')));
   try{
     if(!name) await renderList();
-    else if(name === 'trends') await renderTrends();
+    else if(name === 'trends' && (!arg || arg === 'stages')) await renderTrends(arg);
     else if(name === 'board') await renderBoard();
     else if(name === 'issue' && arg) await renderIssue(decodeURIComponent(arg));
     else if(name === 'new') await renderNew(new URLSearchParams(location.hash.split('?')[1] || ''));
@@ -483,7 +483,7 @@ function summaryDuration(seconds){
 }
 
 // Trend는 서버가 서울 날짜로 나눈 값을 그대로 그린다. 필터는 이 화면에서만 유지한다.
-let trendRange = 7, trendDates = null, trendRequest = 0;
+let trendRange = 7, trendDates = null, trendRequest = 0, trendHuman = false;
 const TREND_METRICS = [
   ['created_issue_count', '생성 Issue', '개'],
   ['completed_issue_count', '완료 Issue', '개'],
@@ -504,6 +504,64 @@ function trendValue(key, value){
 function trendText(key, value){ return key === 'total_tokens' ? formatTokens(value) : String(trendValue(key, value)); }
 // 표시 옵션(line·marks·values)과 날짜 정렬은 Trend 화면을 쓰는 동안 유지한다. 차트 시간축은 항상 과거→현재.
 let trendMarks = 'values', trendSortAsc = true, trendData = null;
+let trendStageData = null, trendStageSort = 'total_machine_seconds', trendStageAsc = false;
+const STAGE_COLUMNS = [['queue','대기열'], ['review','검토'], ['execute','구현'], ['qa','QA'], ['completion','완료 처리']];
+function stageDuration(value){
+  if(value == null) return '—';
+  const minutes = Math.round(Number(value) / 60);
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}시간 ${minutes % 60}분` : `${minutes}분`;
+}
+function stageDelta(now, before){
+  if(now == null || before == null || before === 0) return '';
+  const percent = Math.round((now - before) / before * 100);
+  return ` <span class="trend-stage-delta" title="이전 기간 대비">${percent > 0 ? '▲' : percent < 0 ? '▼' : '='} ${Math.abs(percent)}%</span>`;
+}
+function stageDonut(stages, field, label, count, allStages = stages){
+  const values = stages.map(s => Math.max(0, Number(s[field]?.mean || 0)));
+  const total = values.reduce((a, b) => a + b, 0), circumference = 2 * Math.PI * 42;
+  let offset = 0;
+  const arcs = stages.map((s, i) => {
+    const length = total ? values[i] / total * circumference : 0;
+    const arc = length ? `<circle cx="60" cy="60" r="42" fill="none" stroke="var(--accent)" stroke-opacity="${(1 - allStages.indexOf(s) * .11).toFixed(2)}" stroke-width="16" stroke-dasharray="${length.toFixed(3)} ${(circumference - length).toFixed(3)}" stroke-dashoffset="${(-offset).toFixed(3)}" transform="rotate(-90 60 60)" role="img" aria-label="${esc(s.name)} ${esc(field === 'seconds' ? stageDuration(values[i]) : formatTokens(values[i]))}"><title>${esc(s.name)} · ${esc(field === 'seconds' ? stageDuration(values[i]) : formatTokens(values[i]))}</title></circle>` : '';
+    offset += length; return arc;
+  }).join('');
+  return `<svg class="trend-donut" viewBox="0 0 120 120" role="img" aria-label="${esc(label)}: ${esc(count ? field === 'seconds' ? stageDuration(total) : formatTokens(total) : '측정 없음')}"><circle cx="60" cy="60" r="42" fill="none" stroke="var(--border)" stroke-width="16"/>${arcs}<text x="60" y="56" text-anchor="middle">${esc(count ? field === 'seconds' ? stageDuration(total) : formatTokens(total) : '—')}</text><text x="60" y="72" text-anchor="middle" class="trend-donut-caption">${count ? '평균 Issue 1건' : '측정 없음'}</text></svg>`;
+}
+function stageCell(row, key){
+  const seconds = row.stages?.[key]?.seconds;
+  const retry = key === 'execute' && row.execute_runs > 1 ? ` <span class="dim">(${row.execute_runs}회)</span>` : '';
+  return `<td>${stageDuration(seconds)}${retry}</td>`;
+}
+function stageIssueRow(row, task = false){
+  const partial = row.partial ? `<span title="${esc(row.partial_reason || '일부 실행이 측정되지 않았어요')}">≈ </span>` : '';
+  const detail = !task && row.tasks?.length ? `<button type="button" class="trend-expand" data-stage-expand="${esc(row.ref)}" aria-expanded="false" aria-label="${esc(row.ref)} Task 펼치기">Task</button>` : '';
+  return `<tr class="${task ? 'trend-task-row' : 'trend-issue-row'}"${task ? ` data-stage-parent="${esc(row.parent)}" hidden` : ''}><th scope="row">${detail}<a href="#/issue/${encodeURIComponent(row.ref)}"><span class="ref">${esc(row.ref)}</span> <span class="trend-row-title" title="${esc(row.title)}">${esc(row.title)}</span></a></th><td>${task ? '—' : esc(row.project)}</td><td>${task ? '—' : esc(row.done_at?.slice(0, 16).replace('T', ' ') || '—')}</td><td>${task ? '—' : row.task_count}</td>${STAGE_COLUMNS.map(([key]) => stageCell(row, key)).join('')}<td>${partial}${stageDuration(row.total_machine_seconds)}</td>${trendHuman ? `<td>${task ? '—' : stageDuration(row.stages?.plan_wait?.seconds)}</td><td>${task ? '—' : stageDuration(row.stages?.done_wait?.seconds)}</td>` : ''}<td>${partial}${tokenHtml(row.total_tokens)}</td></tr>`;
+}
+function stageRows(){
+  const data = trendStageData;
+  const rows = [...data.issues].sort((a, b) => {
+    const value = r => ['ref', 'project', 'done_at', 'task_count', 'total_tokens', 'total_machine_seconds'].includes(trendStageSort) ? r[trendStageSort] : r.stages?.[trendStageSort]?.seconds;
+    const x = value(a), y = value(b), compare = typeof x === 'string' ? x.localeCompare(y) : (x || 0) - (y || 0);
+    return (trendStageAsc ? compare : -compare) || a.ref.localeCompare(b.ref);
+  });
+  return rows.map(row => stageIssueRow(row) + (row.tasks || []).map(task => stageIssueRow({...task, parent:row.ref}, true)).join('')).join('');
+}
+function paintStageTable(root){
+  const table = root.querySelector('.trend-stage-table'); if(!table || !trendStageData) return;
+  table.querySelector('tbody').innerHTML = stageRows();
+  table.querySelectorAll('th[aria-sort]').forEach(th => th.removeAttribute('aria-sort'));
+  table.querySelector(`[data-stage-sort="${trendStageSort}"]`)?.closest('th').setAttribute('aria-sort', trendStageAsc ? 'ascending' : 'descending');
+}
+function stageResults(data){
+  const visible = data.stages.filter(s => trendHuman || s.kind === 'machine');
+  const label = s => `<li><span class="trend-stage-dot" style="opacity:${(1 - visible.indexOf(s) * .11).toFixed(2)}" aria-hidden="true"></span><div><strong>${esc(s.name)}</strong><span>평균 ${stageDuration(s.seconds.mean)} · 중앙 ${stageDuration(s.seconds.median)}${stageDelta(s.seconds.median, s.previous.seconds.median)}</span>${s.tokens ? `<span>토큰 평균 ${formatTokens(s.tokens.mean)} · 중앙 ${formatTokens(s.tokens.median)}${stageDelta(s.tokens.median, s.previous.tokens.median)}</span>` : ''}${s.key === 'queue' ? `<span>그중 빈 대기열 대기 평균 ${stageDuration(data.queue_idle_seconds.mean)}</span>` : ''}</div></li>`;
+  return `<p class="trend-context">${data.project ? esc(data.project) : '전체 프로젝트'} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · 이전 기간 ${esc(data.previous.from_date)} ~ ${esc(data.previous.to_date)}</p>
+    <label class="trend-human-toggle"><input id="trend-human" type="checkbox" ${trendHuman ? 'checked' : ''}> 사람 대기 포함</label>
+    ${data.partial_count ? `<p class="trend-partial" role="status">부분 측정 ${data.partial_count}건 · 평균과 중앙값에서 제외해요.</p>` : ''}
+    <div class="trend-stage-grid"><section class="trend-stage-card"><h2>평균 시간 구성</h2>${stageDonut(visible, 'seconds', '평균 시간 구성', data.issues.length - data.partial_count)}</section><section class="trend-stage-card"><h2>평균 토큰 구성</h2>${stageDonut(visible.filter(s => s.tokens), 'tokens', '평균 토큰 구성', data.issues.length - data.partial_count, visible)}</section></div>
+    <ul class="trend-stage-labels">${visible.map(label).join('')}</ul>
+    <section class="trend-stage-section"><h2>Issue별 소요</h2>${data.issues.length ? `<div class="trend-stage-scroll"><table class="trend-stage-table"><thead><tr><th><button data-stage-sort="ref" type="button">Issue</button></th><th><button data-stage-sort="project" type="button">프로젝트</button></th><th><button data-stage-sort="done_at" type="button">완료 시각</button></th><th><button data-stage-sort="task_count" type="button">Task</button></th>${STAGE_COLUMNS.map(([key,name]) => `<th><button data-stage-sort="${key}" type="button">${name}</button></th>`).join('')}<th aria-sort="${trendStageAsc ? 'ascending' : 'descending'}"><button data-stage-sort="total_machine_seconds" type="button">기계 합계</button></th>${trendHuman ? '<th><button data-stage-sort="plan_wait" type="button">계획 결정 대기</button></th><th><button data-stage-sort="done_wait" type="button">완료 확인 대기</button></th>' : ''}<th><button data-stage-sort="total_tokens" type="button">토큰 합계</button></th></tr></thead><tbody>${stageRows()}</tbody></table></div>` : '<div class="empty">이 기간에 완료된 Issue가 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>'}</section><p class="trend-note">${esc(data.note)}</p>`;
+}
 function trendChart(days, key, label){
   const values = days.map(d => Number(d[key] || 0)), n = values.length;
   const max = Math.max(1, ...values), height = 130, marks = trendMarks !== 'line';
@@ -532,7 +590,7 @@ function paintTrendTable(root){
   root.querySelector('.trend-sort').closest('th').setAttribute('aria-sort', trendSortAsc ? 'ascending' : 'descending');
   root.querySelector('.trend-sort-mark').textContent = trendSortAsc ? '▲' : '▼';
 }
-async function renderTrends(){
+async function renderTrends(tab = ''){
   const today = seoulToday();
   if(!view.querySelector('.trend-page')){
     trendRange = 7;
@@ -541,9 +599,10 @@ async function renderTrends(){
     localStorage.setItem('dev.project', '');
     paintProjectFilter();
   }
-  view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">보존된 기록의 일별 사용 현황을 서울 날짜로 살펴봐요.</p></div></header>
+  view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">${tab === 'stages' ? '완료된 Issue의 단계별 시간과 토큰을 살펴봐요.' : '보존된 기록의 일별 사용 현황을 서울 날짜로 살펴봐요.'}</p></div></header>
+    <nav class="trend-subtabs" aria-label="Trend 하위 메뉴"><a href="#/trends" ${tab ? '' : 'aria-current="page"'}>일별 사용</a><a href="#/trends/stages" ${tab === 'stages' ? 'aria-current="page"' : ''}>단계별 소요</a></nav>
     <form id="trend-filter" class="trend-filter"><label>프로젝트<select id="trend-project">${projectOptionsHtml()}</select></label>
-      <label>차트 표시<select id="trend-marks"><option value="line">추세선</option><option value="marks">마크</option><option value="values">마크 및 수치</option></select></label>
+      ${tab === 'stages' ? '' : '<label>차트 표시<select id="trend-marks"><option value="line">추세선</option><option value="marks">마크</option><option value="values">마크 및 수치</option></select></label>'}
       <div class="trend-periods" role="group" aria-label="빠른 기간">${[7,30,90].map(n => `<button type="button" data-trend-days="${n}" aria-pressed="${trendRange === n}">최근 ${n}일</button>`).join('')}</div>
       <label>시작일<input id="trend-from" type="date" required value="${esc(trendDates[0])}"></label>
       <label>종료일<input id="trend-to" type="date" required value="${esc(trendDates[1])}"></label>
@@ -551,8 +610,8 @@ async function renderTrends(){
     <p id="trend-validation" class="error" role="alert" hidden></p><div id="trend-results" aria-live="polite"></div></div>`;
   const root = view.querySelector('.trend-page'), form = root.querySelector('form');
   root.querySelector('#trend-project').value = currentProject();
-  root.querySelector('#trend-marks').value = trendMarks;
-  root.querySelector('#trend-marks').addEventListener('change', e => { trendMarks = e.target.value; paintTrendCharts(root); });
+  if(!tab){ root.querySelector('#trend-marks').value = trendMarks;
+    root.querySelector('#trend-marks').addEventListener('change', e => { trendMarks = e.target.value; paintTrendCharts(root); }); }
   root.querySelector('#trend-project').addEventListener('change', e => {
     localStorage.setItem('dev.project', e.target.value); paintProjectFilter(); loadTrend();
   });
@@ -570,7 +629,12 @@ async function renderTrends(){
   root.addEventListener('click', e => {
     if(e.target.closest('#trend-retry')) loadTrend();
     if(e.target.closest('.trend-sort')){ trendSortAsc = !trendSortAsc; paintTrendTable(root); }
+    const sort = e.target.closest('[data-stage-sort]');
+    if(sort){ trendStageAsc = trendStageSort === sort.dataset.stageSort ? !trendStageAsc : false; trendStageSort = sort.dataset.stageSort; paintStageTable(root); }
+    const expand = e.target.closest('[data-stage-expand]');
+    if(expand){ const open = expand.getAttribute('aria-expanded') !== 'true'; expand.setAttribute('aria-expanded', String(open)); expand.setAttribute('aria-label', `${expand.dataset.stageExpand} Task ${open ? '접기' : '펼치기'}`); root.querySelectorAll('[data-stage-parent]').forEach(row => { if(row.dataset.stageParent === expand.dataset.stageExpand) row.hidden = !open; }); }
   });
+  root.addEventListener('change', e => { if(e.target.id === 'trend-human'){ trendHuman = e.target.checked; root.querySelector('#trend-results').innerHTML = stageResults(trendStageData); paintStageTable(root); } });
   await loadTrend();
 }
 async function loadTrend(){
@@ -587,8 +651,10 @@ async function loadTrend(){
   results.setAttribute('aria-busy', 'true');
   results.innerHTML = '<div class="usage-loading" role="status">Trend를 불러오는 중이에요…<div class="usage-skeleton" aria-hidden="true"></div></div>';
   try{
-    const data = await api('GET', '/api/trends?' + new URLSearchParams({from, to, ...(project ? {project} : {})}), undefined, current, {notifyErrors:false});
+    const stages = location.hash.split('?')[0] === '#/trends/stages';
+    const data = await api('GET', (stages ? '/api/trends/stages?' : '/api/trends?') + new URLSearchParams({from, to, ...(project ? {project} : {}), ...(stages ? {human:trendHuman ? '1' : '0'} : {})}), undefined, current, {notifyErrors:false});
     if(!current()) return;
+    if(stages){ trendStageData = data; results.innerHTML = stageResults(data); paintStageTable(root); return; }
     trendData = data;
     const s = data.summary, noActivity = !data.days.some(d => TREND_METRICS.some(([key]) => Number(d[key] || 0) > 0));
     results.innerHTML = `<p class="trend-context">${project ? esc(project) : '전체 프로젝트'} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · ${esc(new Date(data.as_of).toLocaleString('ko-KR', {timeZone:'Asia/Seoul'}))} 조회</p>
