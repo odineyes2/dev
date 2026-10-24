@@ -571,6 +571,12 @@ def api_trend_stages(from_date: str | None = Query(None, alias='from'),
     return usage.stage_summary(from_date, to_date, project, bool(human), agent=None if agent == 'all' else agent)
 
 
+@app.get('/api/trends/issues')
+def api_trend_issues(period: str = '7', project: str | None = None, limit: int = 50, offset: int = 0):
+    import usage
+    return usage.trend_issues(period, project, limit, offset)
+
+
 @app.get("/api/settings/auto")
 def api_global_auto_settings():
     import auto_settings

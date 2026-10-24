@@ -294,6 +294,54 @@ def check_issue_table(page, shots):
     page.unroute('**/api/issues?*', long_history)
 
 
+def check_trend_issues(page, shots):
+    """이슈별 소요 전환·필터·더 보기·빈 상태와 네 화면을 확인한다."""
+    original_project = page.evaluate("localStorage.getItem('dev.project')")
+    assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
+                             data={'key': 'EMPTY', 'name': '빈 프로젝트'}).ok
+    page.reload(); page.wait_for_selector('#project-filter')
+    calls = []
+    def respond(route):
+        from urllib.parse import parse_qs, urlsplit
+        query = parse_qs(urlsplit(route.request.url).query)
+        calls.append(query)
+        offset = int(query.get('offset', ['0'])[0])
+        empty = query.get('project') == ['EMPTY']
+        rows = [] if empty else [dict(ref=f'TRND-{offset + 1}', title='표시할 Issue', status='in_progress',
+            project='TRND', created_at='2026-10-24T00:00:00+00:00', last_activity_at='2026-10-24T00:00:00+00:00',
+            total_tokens=12, agent_seconds=60, run_count=1, unmeasured_duration_run_count=0, partial=False)]
+        route.fulfill(json=dict(as_of='2026-10-24T00:00:00+00:00', period=query.get('period', ['7'])[0],
+            project=query.get('project', [None])[0], total=0 if empty else 2, limit=50, offset=offset,
+            has_more=not empty and offset == 0, issues=rows))
+    page.route('**/api/trends/issues?*', respond)
+    page.goto(BASE + '/#/trends/issues')
+    page.wait_for_selector('.trend-issues-table tbody tr')
+    assert page.locator('.trend-subtabs [aria-current="page"]').inner_text() == '이슈별 소요'
+    assert page.locator('[data-issues-period="7"]').get_attribute('aria-pressed') == 'true'
+    page.locator('#trend-issues-more').click()
+    page.wait_for_function("document.querySelectorAll('.trend-issues-table tbody tr').length === 2")
+    page.locator('[data-issues-period="all"]').click()
+    page.wait_for_function("document.querySelector('[data-issues-period=all]').getAttribute('aria-pressed') === 'true'")
+    page.wait_for_selector('#trend-issues-results[aria-busy="false"] .trend-issues-table tbody tr')
+    assert calls[-1]['period'] == ['all']
+    for scheme in ('light', 'dark'):
+        page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}', scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'trend-issues-{scheme}-{width}.png'), full_page=True)
+    page.locator('#trend-issues-project').select_option('EMPTY')
+    page.wait_for_selector('#trend-issues-results .empty')
+    assert calls[-1]['project'] == ['EMPTY']
+    page.unroute('**/api/trends/issues?*', respond)
+    token = page.request.get(BASE + '/api/projects/EMPTY/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/EMPTY', headers={'X-Requested-With': 'dev'},
+                               data={'confirmation_token': token}).ok
+    page.evaluate("key => key === null ? localStorage.removeItem('dev.project') : localStorage.setItem('dev.project', key)", original_project)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+
+
 def check_trends(page):
     """Trend 필터·일별 값·상위 작업·부분 집계와 실패 상태를 임시 응답으로 확인한다."""
     from datetime import date
@@ -4549,6 +4597,10 @@ try:
             check_trends(page)
             assert not errs, errs
             print('OK: Trend'); sys.exit(0)
+        if '--trend-issues-only' in sys.argv:
+            check_trend_issues(page, shots)
+            assert not errs, errs
+            print('OK: Trend issues'); sys.exit(0)
         if '--trend-stages-only' in sys.argv:
             check_trend_stages(page, shots)
             assert not errs, errs
@@ -4818,6 +4870,8 @@ try:
         check_board_actions(page, shots, answers, asked)
         check_harness(page, shots)
         check_page_gutter(page, shots)
+        check_trend_issues(page, shots)
+        page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
         if '--project-flows-only' in sys.argv:
             assert not errs, errs
             print('OK: project flows')

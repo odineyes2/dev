@@ -125,6 +125,10 @@ main{ max-width:none; margin:0; padding-left:var(--page-gutter); padding-right:v
 .trend-subtabs{ display:flex; gap:var(--sp-4); border-bottom:1px solid var(--border); margin-bottom:var(--sp-4); }
 .trend-subtabs a{ display:inline-flex; align-items:center; min-height:40px; padding:0 var(--sp-2); color:var(--dim); border-bottom:2px solid transparent; font-weight:500; }
 .trend-subtabs a[aria-current="page"]{ color:var(--accent); border-bottom-color:var(--accent); }
+.trend-issues-table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+.trend-issues-table th,.trend-issues-table td{ padding:var(--sp-2); border-bottom:1px solid var(--border); text-align:left; white-space:nowrap; }
+.trend-issues-table th:first-child{ min-width:230px; }
+.trend-issues-table td:nth-last-child(-n+2){ text-align:right; }
 .trend-human-toggle{ display:inline-flex; align-items:center; min-height:40px; gap:var(--sp-2); font-size:13px; }
 .trend-stage-grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-4); margin:var(--sp-3) 0; }
 .trend-stage-card, .trend-stage-section{ min-width:0; padding:var(--sp-4); background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); }

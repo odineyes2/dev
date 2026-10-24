@@ -397,7 +397,7 @@ async function route(){
   document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === (name || 'issues')));
   try{
     if(!name) await renderList();
-    else if(name === 'trends' && (!arg || arg === 'stages')) await renderTrends(arg);
+    else if(name === 'trends' && (!arg || arg === 'stages' || arg === 'issues')) await renderTrends(arg);
     else if(name === 'board') await renderBoard();
     else if(name === 'issue' && arg) await renderIssue(decodeURIComponent(arg));
     else if(name === 'new') await renderNew(new URLSearchParams(location.hash.split('?')[1] || ''));
@@ -853,7 +853,46 @@ function paintTrendTable(root){
   root.querySelector('.trend-sort').closest('th').setAttribute('aria-sort', trendSortAsc ? 'ascending' : 'descending');
   root.querySelector('.trend-sort-mark').textContent = trendSortAsc ? '▲' : '▼';
 }
+let trendIssuesPeriod = '7', trendIssuesRequest = 0;
+async function renderTrendIssues(){
+  localStorage.setItem('dev.project', ''); paintProjectFilter();
+  view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">최근 Issue와 Task의 토큰·실행 시간을 살펴보세요.</p></div></header>
+    <nav class="trend-subtabs" aria-label="Trend 하위 메뉴"><a href="#/trends">일별 사용</a><a href="#/trends/stages">단계별 소요</a><a href="#/trends/issues" aria-current="page">이슈별 소요</a></nav>
+    <div class="trend-filter"><label>프로젝트<select id="trend-issues-project">${projectOptionsHtml()}</select></label><div class="trend-periods" role="group" aria-label="조회 기간">${[['7','최근 7일'],['30','최근 30일'],['all','전체']].map(([value,label]) => `<button type="button" data-issues-period="${value}" aria-pressed="${trendIssuesPeriod === value}">${label}</button>`).join('')}</div></div>
+    <div id="trend-issues-results" aria-live="polite"></div></div>`;
+  const root = view.querySelector('.trend-page'), results = root.querySelector('#trend-issues-results');
+  root.querySelector('#trend-issues-project').value = currentProject();
+  let rows = [], offset = 0, total = 0, request = ++trendIssuesRequest;
+  const current = () => request === trendIssuesRequest && root === view.querySelector('.trend-page');
+  const draw = () => {
+    results.innerHTML = `<p class="trend-context">${esc(currentProject() || '전체 프로젝트')} · ${trendIssuesPeriod === 'all' ? '전체' : `최근 ${trendIssuesPeriod}일`} · ${total}건</p>
+      <p class="dim trend-note">부모 Issue 합계에는 Task 실행이 포함돼요. 두 행의 값을 다시 더하지 마세요. 기록이 없으면 토큰은 0이고 실행 시간은 측정되지 않아요.</p>
+      ${rows.length ? `<section class="trend-stage-section"><h2>이슈별 소요</h2><div class="trend-scroll"><table class="trend-issues-table"><thead><tr><th>Issue / Task</th><th>프로젝트</th><th>최근 활동</th><th>토큰</th><th>실행 시간</th></tr></thead><tbody>${rows.map(row => `<tr><th scope="row"><a href="#/issue/${encodeURIComponent(row.ref)}"><span class="ref">${esc(row.ref)}</span> ${esc(row.title)}</a></th><td>${esc(row.project)}</td><td>${esc(new Date(row.last_activity_at).toLocaleString('ko-KR', {timeZone:'Asia/Seoul'}))}</td><td>${row.partial ? '<span title="부분 측정">≈ </span>' : ''}${formatTokens(row.total_tokens)}</td><td>${row.run_count ? `${row.partial ? '<span title="부분 측정">≈ </span>' : ''}${row.unmeasured_duration_run_count === row.run_count ? '측정 없음' : formatDuration(row.agent_seconds)}` : '측정 없음'}</td></tr>`).join('')}</tbody></table></div></section>` : '<div class="empty">이 기간에 Issue나 Task가 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>'}
+      ${rows.length < total ? '<button type="button" id="trend-issues-more">더 보기</button>' : ''}`;
+    root.querySelector('#trend-issues-more')?.addEventListener('click', () => load(false));
+  };
+  const load = async (reset=true) => {
+    if(reset){ rows = []; offset = 0; request = ++trendIssuesRequest; }
+    const chosen = request, project = currentProject();
+    results.setAttribute('aria-busy', 'true');
+    if(reset) results.innerHTML = '<div class="usage-loading" role="status">Trend를 불러오는 중이에요.</div>';
+    try{
+      const data = await api('GET', '/api/trends/issues?' + new URLSearchParams({period:trendIssuesPeriod, ...(project ? {project} : {}), limit:'50', offset:String(offset)}), undefined, () => current() && chosen === request && project === currentProject(), {notifyErrors:false});
+      if(!current() || chosen !== request || project !== currentProject()) return;
+      rows.push(...data.issues); offset = rows.length; total = data.total; draw();
+    }catch(e){ if(current()) results.innerHTML = `<div class="empty" role="alert">Trend를 불러오지 못했어요. ${esc(e.message)} <button type="button" id="trend-issues-retry">다시 불러오기</button></div>`; root.querySelector('#trend-issues-retry')?.addEventListener('click', () => load()); }
+    finally{ if(current()) results.setAttribute('aria-busy', 'false'); }
+  };
+  root.querySelector('#trend-issues-project').addEventListener('change', e => { localStorage.setItem('dev.project', e.target.value); paintProjectFilter(); load(); });
+  root.querySelectorAll('[data-issues-period]').forEach(button => button.addEventListener('click', () => {
+    trendIssuesPeriod = button.dataset.issuesPeriod;
+    root.querySelectorAll('[data-issues-period]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+    load();
+  }));
+  await load();
+}
 async function renderTrends(tab = ''){
+  if(tab === 'issues'){ await renderTrendIssues(); return; }
   const today = seoulToday();
   if(!view.querySelector('.trend-page')){
     trendRange = 7;
@@ -863,7 +902,7 @@ async function renderTrends(tab = ''){
     paintProjectFilter();
   }
   view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">${tab === 'stages' ? '완료된 Issue의 단계별 시간과 토큰을 살펴봐요.' : '보존된 기록의 일별 사용 현황을 서울 날짜로 살펴봐요.'}</p></div></header>
-    <nav class="trend-subtabs" aria-label="Trend 하위 메뉴"><a href="#/trends" ${tab ? '' : 'aria-current="page"'}>일별 사용</a><a href="#/trends/stages" ${tab === 'stages' ? 'aria-current="page"' : ''}>단계별 소요</a></nav>
+    <nav class="trend-subtabs" aria-label="Trend 하위 메뉴"><a href="#/trends" ${tab ? '' : 'aria-current="page"'}>일별 사용</a><a href="#/trends/stages" ${tab === 'stages' ? 'aria-current="page"' : ''}>단계별 소요</a><a href="#/trends/issues">이슈별 소요</a></nav>
     <form id="trend-filter" class="trend-filter"><label>프로젝트<select id="trend-project">${projectOptionsHtml()}</select></label>
       ${tab === 'stages' ? `<label>에이전트<select id="trend-agent">${Object.entries(TREND_AGENTS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>` : '<label>차트 표시<select id="trend-marks"><option value="line">추세선</option><option value="marks">마크</option><option value="values">마크 및 수치</option></select></label>'}
       <div class="trend-periods" role="group" aria-label="빠른 기간">${[7,30,90].map(n => `<button type="button" data-trend-days="${n}" aria-pressed="${trendRange === n}">최근 ${n}일</button>`).join('')}</div>

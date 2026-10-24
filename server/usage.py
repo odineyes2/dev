@@ -651,6 +651,70 @@ def stage_summary(from_date=None, to_date=None, project=None, include_human=Fals
             'note': '현재 보존된 완료 기록 기준이에요. 부분 측정 이슈는 평균에서 제외해요. 병렬 실행 시간은 각각 합산해요.'}
 
 
+def trend_issues(period='7', project=None, limit=50, offset=0, *, as_of=None):
+    """서울 날짜 기간의 Issue·Task 직접 실행과 부모 합계를 한 스냅샷에서 조회한다."""
+    if period not in ('7', '30', 'all'):
+        raise issues.StoreError('period는 7/30/all 중 하나여야 해요.')
+    if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
+        raise issues.StoreError('limit는 1~200, offset은 0 이상이어야 해요.')
+    now = _time(as_of) if as_of is not None else _now()
+    if now is None:
+        raise ValueError('as_of must be an ISO timestamp with a timezone')
+    local = now.astimezone(ZoneInfo('Asia/Seoul'))
+    since = (datetime.combine(local.date() - timedelta(days=int(period) - 1), time.min,
+                              tzinfo=ZoneInfo('Asia/Seoul')).astimezone(timezone.utc)
+             if period != 'all' else None)
+    with db.connect() as c:
+        c.execute('BEGIN')
+        if project:
+            found = c.execute('SELECT id FROM projects WHERE key=?', (project.upper(),)).fetchone()
+            if not found:
+                raise issues.StoreError('없는 프로젝트예요.', 404)
+        rows = [dict(r) for r in c.execute(
+            f"SELECT i.id,i.parent_id,i.title,i.status,i.created_at,p.key AS project,{issues.ref_sql('i', 'p')} AS ref "
+            "FROM issues i JOIN projects p ON p.id=i.project_id WHERE (? IS NULL OR p.key=?)",
+            (project.upper() if project else None, project.upper() if project else None))]
+        by_id = {r['id']: r for r in rows}
+        for row in rows:
+            row.update(_empty())
+            row['partial'] = False
+            row['last_activity_at'] = row['created_at'] if (stamp := _time(row['created_at'])) and stamp <= now and (since is None or stamp >= since) else None
+        for run in c.execute(
+                "SELECT r.issue_id,r.status,r.started_at,r.ended_at,r.input_tokens,r.output_tokens "
+                "FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id "
+                "WHERE (? IS NULL OR p.key=?) AND (? IS NULL OR datetime(r.started_at)>=datetime(?)) "
+                "AND datetime(r.started_at)<=datetime(?)",
+                (project.upper() if project else None, project.upper() if project else None,
+                 since.isoformat() if since else None, since.isoformat() if since else None, now.isoformat())):
+            started = _time(run['started_at'])
+            if not started or started > now or (since is not None and started < since):
+                continue
+            row = by_id[run['issue_id']]
+            _add_tokens(row, run)
+            row['last_activity_at'] = max(row['last_activity_at'] or run['started_at'], run['started_at'])
+            duration = _seconds(run['started_at'], now.isoformat() if run['status'] == 'running' else run['ended_at'])
+            row['agent_seconds'] += duration or 0
+            row['unmeasured_duration_run_count'] += duration is None
+            row['partial'] = bool(row['partial'] or duration is None)
+        # 부모에는 현재 자식 Task의 선택 기간 실행분을 한 번씩만 더한다.
+        for row in rows:
+            parent = by_id.get(row['parent_id'])
+            if not parent or not row['run_count']:
+                continue
+            for key in _empty():
+                parent[key] += row[key]
+            parent['partial'] = bool(parent['partial'] or row['partial'])
+            parent['last_activity_at'] = max(parent['last_activity_at'] or row['last_activity_at'], row['last_activity_at'])
+        selected = [r for r in rows if r['last_activity_at']]
+        selected.sort(key=lambda r: (-_time(r['last_activity_at']).timestamp(), r['ref']))
+        for row in selected:
+            row['partial'] = bool(row['partial'] or row['unmeasured_run_count'] or row['running_run_count'] or row['unmeasured_duration_run_count'])
+            row.pop('id'); row.pop('parent_id')
+        return {'as_of': now.isoformat(), 'period': period, 'project': project.upper() if project else None,
+                'total': len(selected), 'limit': limit, 'offset': offset, 'has_more': offset + limit < len(selected),
+                'issues': selected[offset:offset + limit]}
+
+
 def project_usage(key, limit=50, offset=0, *, as_of=None):
     """같은 조회 시각·DB 스냅샷으로 요약과 페이지를 반환한다."""
     if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
