@@ -337,8 +337,8 @@ def move(actor: dict, job_id: int, direction: str, neighbor_id: int | None) -> d
     끝에서 더 미는 요청(이웃 없음)은 순서를 바꾸지 않는다."""
     if actor["kind"] != "human":
         raise issues.StoreError("대기열은 사람만 고칠 수 있어요.", 403)
-    if direction not in ("up", "down"):
-        raise issues.StoreError("방향은 up 또는 down이에요.", 400)
+    if direction not in ("up", "down", "top", "bottom"):
+        raise issues.StoreError("방향은 up, down, top, bottom 중 하나예요.", 400)
     if neighbor_id is not None and type(neighbor_id) is not int:
         raise issues.StoreError("이웃 항목 번호가 올바르지 않아요.", 400)
     with _lock, db.connect() as c:
@@ -347,11 +347,23 @@ def move(actor: dict, job_id: int, direction: str, neighbor_id: int | None) -> d
         at = next((n for n, r in enumerate(rows) if r["id"] == job_id), None)
         if at is None:
             raise issues.StoreError("대기 중인 항목이 아니에요.", 404)
-        n = at - 1 if direction == "up" else at + 1
-        other = rows[n] if 0 <= n < len(rows) else None
-        if (other["id"] if other else None) != neighbor_id:
-            raise issues.StoreError("대기열이 그 사이 바뀌었어요 — 새로 고친 순서를 보고 다시 옮겨 주세요.", 409)
-        if other:
+        if direction in ("top", "bottom"):
+            # 맨 위/아래: neighbor_id는 화면에서 본 첫/마지막 항목. 이미 그 자리면 순서를 바꾸지 않는다.
+            edge = rows[0] if direction == "top" else rows[-1]
+            if edge["id"] != neighbor_id:
+                raise issues.StoreError("대기열이 그 사이 바뀌었어요 — 새로 고친 순서를 보고 다시 옮겨 주세요.", 409)
+            other = edge if edge["id"] != job_id else None
+            if other:
+                key = rows[0]["sort_key"] - 1 if direction == "top" else rows[-1]["sort_key"] + 1
+                c.execute("UPDATE jobs SET sort_key=? WHERE id=?", (key, job_id))
+            return_after = True
+        else:
+            return_after = False
+            n = at - 1 if direction == "up" else at + 1
+            other = rows[n] if 0 <= n < len(rows) else None
+            if (other["id"] if other else None) != neighbor_id:
+                raise issues.StoreError("대기열이 그 사이 바뀌었어요 — 새로 고친 순서를 보고 다시 옮겨 주세요.", 409)
+        if other and not return_after:
             c.execute("UPDATE jobs SET sort_key=? WHERE id=?", (other["sort_key"], job_id))
             c.execute("UPDATE jobs SET sort_key=? WHERE id=?", (rows[at]["sort_key"], other["id"]))
     return {"moved": bool(other), "jobs": list_jobs()}
