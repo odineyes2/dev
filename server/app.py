@@ -935,7 +935,7 @@ async def api_move_job(job_id: int, request: Request):
 
 @app.get("/api/settings/queue")
 def api_queue_settings():
-    return {"queue_concurrency": jobs.concurrency(), "max": jobs.MAX_CONCURRENCY}
+    return jobs.queue_settings()
 
 
 def _regression_project(project: str):
@@ -964,7 +964,10 @@ async def api_update_regression_settings(request: Request, project: str = ''):
 async def api_update_queue_settings(request: Request):
     me = human_only(request)
     b = await json_body(request)
-    return await run_in_threadpool(jobs.set_concurrency, me, b.get("queue_concurrency"))
+    fields = {k: b[k] for k in ("execute", "review") if k in b}
+    if "queue_concurrency" in b:
+        fields["total"] = b["queue_concurrency"]
+    return await run_in_threadpool(lambda: jobs.set_concurrency(me, **fields))
 
 
 @app.post("/api/issues/{ref}/decision")

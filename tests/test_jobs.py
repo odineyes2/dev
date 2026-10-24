@@ -448,12 +448,62 @@ for bad, status in ((({'kind': 'agent', 'id': 1}, 3), 403), ((me, 0), 400), ((me
         assert e.status == status, (bad, e.status)
 with TestClient(A.app) as c:
     c.cookies.set('ns_session', 'adm')
-    assert c.get('/api/settings/queue').json() == {'queue_concurrency': 2, 'max': jobs.MAX_CONCURRENCY}
-    assert c.put('/api/settings/queue', json={'queue_concurrency': 3}, headers=H).json()['queue_concurrency'] == 3
+    got = c.get('/api/settings/queue').json()
+    assert (got['queue_concurrency'], got['execute'], got['review'], got['max']) == (2, None, None, jobs.MAX_CONCURRENCY), got
+    assert set(got['busy']) == {'execute', 'review', 'total'}
+    assert c.put('/api/settings/queue', json={'queue_concurrency': 3}, headers=H).json()['queue_concurrency'] == 3   # 옛 필드만
     assert c.put('/api/settings/queue', json={'queue_concurrency': 9}, headers=H).status_code == 400
+    r = c.put('/api/settings/queue', json={'execute': 1, 'review': 2}, headers=H).json()
+    assert (r['queue_concurrency'], r['execute'], r['review']) == (3, 1, 2), r
+    assert c.put('/api/settings/queue', json={'execute': None}, headers=H).json()['execute'] is None   # null = 무제한
+    assert c.get('/api/settings/queue').json()['review'] == 2                                         # 안 보낸 항목은 그대로
+    for bad in ({'execute': 0}, {'review': 7}, {'review': '2'}, {'execute': True}, {'queue_concurrency': None}):
+        assert c.put('/api/settings/queue', json=bad, headers=H).status_code == 400, bad
+    assert c.put('/api/settings/queue', json={'review': None}, headers=H).json()['review'] is None
     c.cookies.clear()
     assert c.put('/api/settings/queue', json={'queue_concurrency': 1}, headers={'Authorization': f'Bearer {key}'}).status_code == 403
+    assert c.put('/api/settings/queue', json={'execute': 1}, headers={'Authorization': f'Bearer {key}'}).status_code == 403
 assert jobs.concurrency() == 3
+
+# 3단 상한 — 바쁜 줄을 꾸며 start_block만 본다.
+_real_lanes = jobs._active_lanes
+def block_with(busy, key, mode, **limits):
+    jobs.set_concurrency(me, total=limits.get('total', 5), execute=limits.get('execute'), review=limits.get('review'))
+    jobs._active_lanes = lambda c: set(busy)
+    try:
+        with db.connect() as c:
+            return jobs.start_block(c, key, mode)
+    finally:
+        jobs._active_lanes = _real_lanes
+ex3 = [('P1', 'execute'), ('P2', 'execute'), ('P3', 'execute')]
+assert block_with(ex3, 'P4', 'execute') is None and block_with(ex3, 'P4', 'review') is None   # 무제한 — 지금과 같다
+b = block_with([('P1', 'execute')], 'P2', 'execute', execute=1)
+assert b and '실행 상한(1개)' in b, b
+assert block_with([('P1', 'execute')], 'P2', 'review', execute=1) is None                      # 검토는 시작한다
+b = block_with(ex3 + [('P4', 'review')], 'P5', 'review')                                       # 전체 5 중 실행 3·검토 1 → 검토 1개 더
+assert b is None
+b = block_with(ex3 + [('P4', 'review'), ('P5', 'review')], 'P6', 'review')
+assert b and '전체 동시 실행 상한(5개)' in b and '실행 3·검토 2' in b, b
+b = block_with([('P1', 'review')], 'P2', 'review', review=1)
+assert b and '검토 상한(1개)' in b, b
+assert '실행 상한' not in (block_with([('P1', 'review')], 'P2', 'execute', review=1) or '')
+b = block_with([('P1', 'audit')], 'P2', 'review', review=1)                                    # audit은 검토 칸
+assert b and '검토 상한' in b, b
+b = block_with([('P1', 'initialization')], 'P2', 'execute', execute=1)                         # 초기 생성은 실행 칸
+assert b and '실행 상한' in b, b
+# 병합 중인 실행은 실행 칸으로 센다.
+_real_pm = jobs._pending_merges
+jobs._pending_merges = lambda c: [{'ref': 'P1-1-1', 'cfg_json': '{}'}]
+try:
+    jobs.set_concurrency(me, total=5, execute=1, review=None)
+    with db.connect() as c:
+        assert jobs.lane_counts(c)['execute'] == 1
+finally:
+    jobs._pending_merges = _real_pm
+# 상한을 낮춰도 도는 작업은 그대로 — 새로 시작만 막는다.
+running = [('P1', 'execute'), ('P2', 'execute')]
+assert block_with(running, 'P3', 'execute', execute=1)   # 이미 2개 도는데 상한 1 — 새 시작만 막힌다
+jobs.set_concurrency(me, total=3, execute=None, review=None)
 db.init()
 assert jobs.concurrency() == 3   # 재시작 후에도 유지
 # dev 자신을 재시작하는 병합은 다른 줄에서 도는 실행이 끝날 때까지 기다린다. 다른 앱 재시작은 상관없다.

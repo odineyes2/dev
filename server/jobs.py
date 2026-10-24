@@ -2,7 +2,7 @@
 Claude 맡기기 대기열(DEV-43) — 검토·실행을 여러 개 눌러 두면 차례로 돌린다.
 줄은 (프로젝트, 검토|실행)마다 하나이고 각 줄은 한 번에 하나만 돈다. 실행 줄은 병합·운영 반영이 끝날 때까지 바쁘다
 (프로젝트 안의 실행 순서는 예전 한 줄 대기열 그대로). 전체 규칙 두 가지:
-동시에 바쁜 줄 수는 설정 상한(app_settings.queue_concurrency, 기본 2)까지, dev 자신을 재시작할 병합이 진행 중이면 어느 줄도 새로 시작하지 않는다.
+동시에 바쁜 줄 수는 전체 상한(app_settings.queue_concurrency, 기본 2)과 실행·검토 칸별 상한(queue_concurrency_execute·_review, 없으면 무제한)을 함께 지켜서, dev 자신을 재시작할 병합이 진행 중이면 어느 줄도 새로 시작하지 않는다.
 
 - enqueue: 사람만. 같은 이슈·같은 mode가 이미 줄에 있거나 도는 중이면 새로 넣지 않는다. 실행은 기다려도 풀리지 않는
   조건(Task 아님·계획서 미승인 등)만 거절하고, 선행 Task 미완료·저장소가 깨끗하지 않음은 줄에서 기다린다.
@@ -68,17 +68,68 @@ def concurrency(c=None) -> int:
     return int(row["value"]) if row else DEFAULT_CONCURRENCY
 
 
-def set_concurrency(actor: dict, value) -> dict:
+_UNSET = object()
+_LIMIT_KEYS = {"execute": "queue_concurrency_execute", "review": "queue_concurrency_review"}
+
+
+def concurrency_limits(c=None) -> dict:
+    """전체·실행·검토 상한. 실행·검토는 키가 없으면 None(무제한)."""
+    if c is None:
+        with db.connect() as c:
+            return concurrency_limits(c)
+    out = {"total": concurrency(c)}
+    for kind, key in _LIMIT_KEYS.items():
+        row = c.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+        out[kind] = int(row["value"]) if row and row["value"] not in (None, "") else None
+    return out
+
+
+def queue_settings() -> dict:
+    with db.connect() as c:
+        limits = concurrency_limits(c)
+        counts = lane_counts(c)
+    return {"queue_concurrency": limits["total"], "execute": limits["execute"], "review": limits["review"],
+            "max": MAX_CONCURRENCY, "busy": {**counts, "total": counts["execute"] + counts["review"]}}
+
+
+def set_concurrency(actor: dict, value=_UNSET, *, total=_UNSET, execute=_UNSET, review=_UNSET) -> dict:
+    """안 준 항목은 그대로 둔다. 실행·검토에 None을 주면 무제한."""
     if actor["kind"] != "human":
         raise issues.StoreError("대기열 설정은 사람만 바꿀 수 있어요.", 403)
-    if type(value) is not int or not 1 <= value <= MAX_CONCURRENCY:
-        raise issues.StoreError(f"동시 실행 상한은 1~{MAX_CONCURRENCY} 사이의 정수예요.", 400)
+    if value is not _UNSET:
+        total = value
+    msg = f"동시 실행 상한은 1~{MAX_CONCURRENCY} 사이의 정수예요."
+    for name, v in (("total", total), ("execute", execute), ("review", review)):
+        if v is _UNSET or (v is None and name != "total"):
+            continue
+        if type(v) is not int or not 1 <= v <= MAX_CONCURRENCY:
+            raise issues.StoreError(msg, 400)
+    who, now = issues.actor_label(actor), db.now_iso()
     with db.connect() as c:
-        c.execute("INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES('queue_concurrency',?,?,?) "
-                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by",
-                  (str(value), db.now_iso(), issues.actor_label(actor)))
+        for key, v in (("queue_concurrency", total), (_LIMIT_KEYS["execute"], execute), (_LIMIT_KEYS["review"], review)):
+            if v is _UNSET:
+                continue
+            if v is None:
+                c.execute("DELETE FROM app_settings WHERE key=?", (key,))
+                continue
+            c.execute("INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES(?,?,?,?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by",
+                      (key, str(v), now, who))
     pump()   # 늘렸으면 기다리던 줄을 바로 채운다
-    return {"queue_concurrency": value, "max": MAX_CONCURRENCY}
+    return queue_settings()
+
+
+def lane_kind(mode: str) -> str:
+    """줄의 모드가 세어지는 칸 — 실행(execute·initialization) 아니면 검토(review·audit·qa)."""
+    return "execute" if mode in ("execute", "initialization") else "review"
+
+
+def lane_counts(c, lanes=None) -> dict:
+    """지금 바쁜 줄 수를 칸별로."""
+    counts = {"execute": 0, "review": 0}
+    for lane in (_active_lanes(c) if lanes is None else lanes):
+        counts[lane_kind(lane[1])] += 1
+    return counts
 
 
 def lane_of_run(run_id: int) -> tuple | None:
@@ -186,9 +237,14 @@ def start_block(c, project_key: str, mode: str) -> str | None:
         if merging:
             return f"{merging}의 병합·운영 반영이 끝나면 시작해요."
         return f"{project_key} {'실행' if mode == 'execute' else '검토'} 줄의 앞 작업이 끝나면 시작해요."
-    limit = concurrency(c)
-    if len(lanes) >= limit:
-        return f"동시 실행 상한({limit}개)이 차서 기다려요 — 도는 작업이 끝나면 시작해요."
+    limits = concurrency_limits(c)
+    counts = lane_counts(c, lanes)
+    kind = lane_kind(mode)
+    if limits[kind] is not None and counts[kind] >= limits[kind]:
+        return f"{'실행' if kind == 'execute' else '검토'} 상한({limits[kind]}개)이 차서 기다려요 — 도는 작업이 끝나면 시작해요."
+    if len(lanes) >= limits["total"]:
+        return (f"전체 동시 실행 상한({limits['total']}개)이 차서 기다려요 — "
+                f"지금 실행 {counts['execute']}·검토 {counts['review']}")
     return None
 
 
