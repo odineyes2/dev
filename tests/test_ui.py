@@ -65,6 +65,50 @@ def check_queue_edges(page, shots):
     page.evaluate("t => {if(t === null) localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme', t); document.documentElement.dataset.theme=t || 'light'}", original_theme)
 
 
+def check_queue_limit(page, shots):
+    """Settings 대기열 칸의 전체·실행·검토 입력 셋, 무제한 체크, 바쁜 수, 경고 문구, 네 화면을 확인한다."""
+    original_theme = page.evaluate("localStorage.getItem('dev.theme')")
+    state = {'queue_concurrency': 5, 'execute': None, 'review': None, 'max': 6, 'busy': {'execute': 1, 'review': 1, 'total': 2}}
+    puts = []
+    def respond(route):
+        if route.request.method == 'PUT':
+            body = route.request.post_data_json
+            puts.append(body)
+            state.update({k: body[k] for k in ('queue_concurrency', 'execute', 'review') if k in body})
+        route.fulfill(json=state)
+    page.route('**/api/settings/queue', respond)
+    page.goto(BASE + '/#/settings/auto'); page.reload()
+    box = page.locator('#queue-settings')
+    expect(box.locator('#queue-limit-busy')).to_have_text('지금 바쁨: 실행 1·검토 1 / 전체 5')
+    assert box.locator('.queue-execute').is_disabled() and box.locator('.queue-execute-free').is_checked()
+    box.locator('.queue-execute-free').uncheck()
+    box.locator('.queue-execute').fill('7')
+    expect(box.locator('#queue-limit-hint')).to_contain_text('전체 상한 5개를 넘을 수 없어요')
+    box.locator('.queue-execute').fill('1')
+    box.locator('.queue-review-free').uncheck()
+    box.locator('.queue-review').fill('2')
+    expect(box.locator('#queue-limit-hint')).to_contain_text('검토+실행 합계로 묶여요')
+    with page.expect_response('**/api/settings/queue') as info:
+        box.locator('button[type=submit]').click()
+    assert info.value.ok
+    assert puts[-1] == {'queue_concurrency': 5, 'execute': 1, 'review': 2}, puts
+    box.locator('.queue-review-free').check()
+    with page.expect_response('**/api/settings/queue'):
+        box.locator('button[type=submit]').click()
+    assert puts[-1]['review'] is None and puts[-1]['execute'] == 1, puts
+    for theme in ('light', 'dark'):
+        page.evaluate('t => {localStorage.setItem("dev.theme",t);document.documentElement.dataset.theme=t}', theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.locator('#queue-settings').scroll_into_view_if_needed()
+            page.screenshot(path=str(shots / f'queue-limit-{theme}-{width}.png'), full_page=True)
+    page.unroute('**/api/settings/queue', respond)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("t => {if(t === null) localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme', t); document.documentElement.dataset.theme=t || 'light'}", original_theme)
+
+
 def check_composer_images(page, shots):
     """빠른 입력창의 이미지 미리보기·라이트박스·정리와 네 화면을 확인한다."""
     import base64
@@ -4899,6 +4943,10 @@ try:
             check_result_attach(page, shots)
             assert not errs, errs
             print('OK: result attach'); sys.exit(0)
+        if '--queue-limit-only' in sys.argv:
+            check_queue_limit(page, shots)
+            assert not errs, errs
+            print('OK: queue limit'); sys.exit(0)
         if '--queue-edges-only' in sys.argv:
             check_queue_edges(page, shots)
             assert not errs, errs
