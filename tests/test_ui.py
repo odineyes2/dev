@@ -1446,6 +1446,67 @@ def check_regression_numbers(page, shots):
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
 
 
+def check_new_attachment_images(page, shots):
+    """New issue 이미지 번호·미리보기·본문 대응표와 화면 순서를 확인한다."""
+    import base64
+    H = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=H, data={'key': 'IMGUI', 'name': '이미지 화면 검사'}).ok
+    page.reload(); page.wait_for_selector('#project-filter')
+    page.goto(BASE + '/#/new'); page.wait_for_selector('#n-files')
+    page.select_option('#n-project', 'IMGUI')
+    assert page.evaluate("""() => {
+      const form = document.querySelector('#new-form');
+      const items = [...form.children];
+      return items.indexOf(document.querySelector('#n-title').closest('label')) <
+        items.indexOf(document.querySelector('.attachment-input')) &&
+        items.indexOf(document.querySelector('.attachment-input')) <
+        items.indexOf(document.querySelector('#n-body').closest('label'));
+    }""")
+    png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=')
+    def add(name):
+        page.set_input_files('#n-files', {'name': name, 'mimeType': 'image/png', 'buffer': png})
+        page.wait_for_function('!document.querySelector("#new-form [type=submit]").disabled')
+    add('first.png'); add('second.png')
+    assert page.locator('#n-attachments .attachment-name').all_inner_texts() == [
+        '[이미지 1] first.png — 첨부 준비됐어요', '[이미지 2] second.png — 첨부 준비됐어요']
+    assert page.locator('#n-attachments .attachment-thumb img').count() == 2
+    page.locator('[data-preview="1"]').click()
+    assert page.locator('.attachment-lightbox').is_visible()
+    assert page.locator('.attachment-lightbox img').get_attribute('alt') == '[이미지 2] second.png'
+    page.screenshot(path=str(shots / 'new-attachment-lightbox.png'))
+    page.keyboard.press('Tab')
+    assert page.evaluate('document.activeElement?.classList.contains("attachment-lightbox-close")')
+    page.keyboard.press('Escape')
+    assert page.locator('.attachment-lightbox').is_hidden()
+    assert page.evaluate('document.activeElement?.dataset.preview') == '1'
+    page.locator('[data-remove="0"]').click()
+    page.wait_for_function('document.querySelectorAll("#n-attachments [data-remove]").length === 1')
+    add('third.png')
+    assert '[이미지 3]' in page.locator('#n-attachments .attachment-name').last.inner_text()
+    page.fill('#n-body', '요구: ')
+    page.locator('[data-insert="1"]').click()
+    assert page.input_value('#n-body') == '요구: [이미지 3]'
+    for scheme in ('light', 'dark'):
+        page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}', scheme)
+        page.emulate_media(color_scheme=scheme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'new-attachment-images-{scheme}-{width}.png'), full_page=True)
+    page.click('#new-form [type=submit]'); page.wait_for_selector('#body')
+    ref = page.url.split('/issue/')[-1]
+    saved = page.request.get(BASE + '/api/issues/' + ref).json()
+    assert saved['body'].endswith('---\n첨부 이미지:\n[이미지 2] = second.png\n[이미지 3] = third.png'), saved['body']
+    assert '요구: [이미지 3]' in saved['body']
+    assert {a['name'] for a in saved['attachments']} == {'second.png', 'third.png'}
+    assert page.locator('.attachment-lightbox').count() == 0
+    token = page.request.get(BASE + '/api/projects/IMGUI/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/IMGUI', headers=H, data={'confirmation_token': token}).ok
+    page.set_viewport_size({'width': 1300, 'height': 850}); page.emulate_media(color_scheme='light')
+    page.evaluate('localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
+    page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-filter')
+
+
 def check_attachments(page, shots):
     """혼합 첨부·실패 재시도·취소·미리보기와 네 화면을 확인한다."""
     import base64, io, wave
@@ -4683,6 +4744,10 @@ try:
             check_attachments(page, shots)
             assert not errs, errs
             print('OK: attachments'); sys.exit(0)
+        if '--new-attachment-images-only' in sys.argv:
+            check_new_attachment_images(page, shots)
+            assert not errs, errs
+            print('OK: new attachment images'); sys.exit(0)
         if '--progress-only' in sys.argv:
             check_progress_refresh(page, shots)
             assert not errs, errs
@@ -4748,6 +4813,7 @@ try:
         check_auto_settings(page, shots)
         check_regression_numbers(page, shots)
         check_attachments(page, shots)
+        check_new_attachment_images(page, shots)
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)
         check_harness(page, shots)
