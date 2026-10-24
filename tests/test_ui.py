@@ -3521,6 +3521,7 @@ def check_page_gutter(page, shots):
               mainL: main.left + parseFloat(m.paddingLeft), mainR: main.right - parseFloat(m.paddingRight),
               chip: r('.header-right').right, scroll: document.documentElement.scrollWidth - innerWidth};
     }"""
+    start_url = page.url   # 뒤따르는 검사가 이어 쓰는 화면으로 돌려놓는다.
     for route in ('', 'trends', 'agents', 'settings'):
         for width in (1000, 1300, 1600, 1920, 390):
             page.set_viewport_size({'width': width, 'height': 850})
@@ -3533,6 +3534,7 @@ def check_page_gutter(page, shots):
             if width == 390:
                 assert abs(p['mainL'] - 16) < 1.5, where
     page.set_viewport_size({'width': 1300, 'height': 850})
+    page.goto(start_url); page.wait_for_selector('main > *')
 
 
 def check_board_pan(page, shots):
