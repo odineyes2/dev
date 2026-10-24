@@ -11,6 +11,7 @@ import app, auth, db, issues, review, usage
 import httpx
 from fastapi.testclient import TestClient
 
+
 db.init()
 human = {'kind': 'human', 'name': 'admin'}
 issues.create_project(human, 'US', 'usage')
@@ -423,3 +424,33 @@ with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._t
     client.cookies.clear()
     assert client.get('/api/trends/stages?agent=claude').status_code == 401
 print('OK stage usage')
+
+# 새 읽기 라우트의 부모 합계·기간·페이지·권한을 실제 앱 요청으로 확인한다.
+fixed = '2026-01-01T00:01:00+00:00'
+grouped = usage.trend_issues('7', 'US', as_of=fixed)
+parent_row = next(r for r in grouped['issues'] if r['ref'] == parent['ref'])
+task_row = next(r for r in grouped['issues'] if r['ref'] == task['ref'])
+assert parent_row['total_tokens'] == 15 and task_row['total_tokens'] == 15
+assert parent_row['agent_seconds'] >= task_row['agent_seconds'] and task_row['agent_seconds'] >= 240, (parent_row, task_row)
+assert parent_row['partial'] and task_row['partial']
+assert grouped['issues'] == sorted(grouped['issues'], key=lambda r: (-usage._time(r['last_activity_at']).timestamp(), r['ref']))
+assert usage.trend_issues('7', 'US', as_of='2026-02-01T00:00:00+00:00')['total'] == 0
+assert usage.trend_issues('7', 'US', as_of='2026-01-20T00:00:00+00:00')['total'] == 0
+assert usage.trend_issues('30', 'US', as_of='2026-01-20T00:00:00+00:00')['total'] >= 2
+assert all(r['project'] == 'US' for r in grouped['issues'])
+assert usage.trend_issues('all', 'US', limit=1, offset=1, as_of=fixed)['issues'][0]
+with patch.object(db, 'init'), TestClient(app.app) as client:
+    assert client.get('/api/trends/issues').status_code == 401
+    client.cookies.set('ns_session', 'temporary')
+    assert client.get('/api/trends/issues?period=all&project=US&limit=1').status_code == 200
+    assert client.get('/api/trends/issues?period=all&project=US&limit=1').json()['has_more']
+    for query in ('period=bad', 'limit=0', 'limit=201', 'offset=-1'):
+        assert client.get('/api/trends/issues?' + query).status_code == 400
+    assert client.get('/api/trends/issues?project=MISSING').status_code == 404
+    assert client.get('/api/trends/issues?limit=abc').status_code == 422
+    client.cookies.clear()
+    key = auth.create_agent('trend-issues-test')[1]
+    assert client.get('/api/trends/issues', headers={'Authorization': 'Bearer ' + key}).status_code == 200
+    with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
+        assert client.get('/api/trends/issues', cookies={'ns_session': 'temporary'}).status_code == 403
+print('OK trend issues')
