@@ -1277,14 +1277,19 @@ function runsHtml(runs){
 }
 // ---- 대기열(DEV-43): 바쁠 때 누른 것은 줄에 서고 하나씩 차례로 ----
 const QUEUE_LINE = '다른 일이 돌고 있으면 끝난 뒤 차례로 시작해요.';
-function jobHtml(j){   // 이 이슈가 줄에 있으면 버튼 자리에 "대기 n번째 · 취소"
+function jobHtml(j, edges){   // 이 이슈가 줄에 있으면 버튼 자리에 "대기 n번째 · 취소"
   return `<div class="queued"><span class="status" style="--sc:var(--s-waiting)">Waiting · ${PROVIDER_NAME[j.provider] || 'Claude'} 대기 ${j.position}번째</span>
-    ${moveJobHtml(j)}<button class="ghost cancel-job" data-job="${j.id}">취소</button></div>${j.note ? `<div class="dim hint">${esc(j.note)}</div>` : ''}`;
+    ${moveJobHtml(j, edges)}<button class="ghost cancel-job" data-job="${j.id}">취소</button></div>${j.note ? `<div class="dim hint">${esc(j.note)}</div>` : ''}`;
 }
-// 취소 옆 위·아래(DEV-85) — 화면에서 본 이웃을 같이 보내 그 사이 줄이 바뀌었으면 서버가 409로 거절한다
-function moveJobHtml(j){
-  return [['up', j.prev_id, 'arrow-up', '앞으로'], ['down', j.next_id, 'arrow-down', '뒤로']].map(([dir, nb, ic, word]) =>
-    `<button class="ghost move-job" data-job="${j.id}" data-dir="${dir}" data-neighbor="${nb ?? ''}"${nb == null ? ' disabled' : ''} title="${esc(j.ref)} ${word} 한 칸" aria-label="${esc(j.ref)} 대기 순서 ${word} 한 칸"><svg class="ico" aria-hidden="true"><use href="#i-${ic}"/></svg></button>`).join('');
+// 화면에서 본 이웃과 양 끝을 함께 보내 그 사이 줄이 바뀌었으면 서버가 409로 거절한다.
+function moveJobHtml(j, edges){
+  const first = edges?.first ?? (j.prev_id == null ? j.id : null);
+  const last = edges?.last ?? (j.next_id == null ? j.id : null);
+  return [['top', first, 'arrow-up-to-line', '맨 위로', j.prev_id != null],
+    ['up', j.prev_id, 'arrow-up', '앞으로 한 칸', j.prev_id != null],
+    ['down', j.next_id, 'arrow-down', '뒤로 한 칸', j.next_id != null],
+    ['bottom', last, 'arrow-down-to-line', '맨 아래로', j.next_id != null]].map(([dir, nb, ic, word, enabled]) =>
+    `<button class="ghost move-job" data-job="${j.id}" data-dir="${dir}" data-neighbor="${nb ?? ''}"${!enabled || nb == null ? ' disabled' : ''} title="${esc(j.ref)} ${word}" aria-label="${esc(j.ref)} 대기 순서 ${word}"><svg class="ico" aria-hidden="true"><use href="#i-${ic}"/></svg></button>`).join('');
 }
 let movingJob = false;
 async function moveJob(b){
@@ -1297,7 +1302,7 @@ async function moveJob(b){
   finally{ movingJob = false; }
   await (inList ? loadJobs() : route()).catch(() => {});
   const q = d => view.querySelector(`.move-job[data-job="${job}"][data-dir="${d}"]:not([disabled])`);
-  (q(dir) || q(dir === 'up' ? 'down' : 'up'))?.focus();
+  (q(dir) || q(dir === 'top' || dir === 'up' ? 'down' : 'up'))?.focus();
 }
 function queuedMsg(r, started){ return r && r.queued ? `대기열에 넣었어요 — ${r.position}번째` : started; }
 async function loadJobs(){   // 목록·Board 위의 대기열(DEV-91) — 늘 펼친 상자: 위는 In Progress, 아래는 대기 항목. 항목 수를 돌려준다
@@ -1305,10 +1310,11 @@ async function loadJobs(){   // 목록·Board 위의 대기열(DEV-91) — 늘 �
   if(!box) return 0;
   const { jobs, in_progress: prog = [] } = await restartJobsSnapshot();
   if(box !== view.querySelector('#jobs-box')) return 0;
+  const edges = {first: jobs[0]?.id, last: jobs.at(-1)?.id};
   const progHtml = prog.map(p => `<li><span class="status" style="--sc:var(--s-in_progress)">In Progress</span> <a href="#/issue/${esc(p.ref)}">${esc(p.ref)}</a> <span class="job-title">${esc(p.title)}</span>
     <span class="dim">${p.started_at ? `${PROVIDER_NAME[p.provider] || 'Claude'} ${RUN_MODE[p.mode] || esc(p.mode)} 중 · ${fmtTime(p.started_at)}` : ''}</span></li>`).join('');
   const waitHtml = jobs.map(j => `<li><span class="ref">${j.position}</span> <a href="#/issue/${esc(j.ref)}">${esc(j.ref)}</a> ${PROVIDER_NAME[j.provider] || 'Claude'} ${RUN_MODE[j.mode] || esc(j.mode)}
-      ${j.note ? `<span class="dim">${esc(j.note)}</span>` : ''}<span class="job-btns">${moveJobHtml(j)}<button class="ghost cancel-job" data-job="${j.id}">취소</button></span></li>`).join('');
+      ${j.note ? `<span class="dim">${esc(j.note)}</span>` : ''}<span class="job-btns">${moveJobHtml(j, edges)}<button class="ghost cancel-job" data-job="${j.id}">취소</button></span></li>`).join('');
   box.innerHTML = `<section class="jobs" aria-label="대기열"><div class="jobs-head">대기열 · In Progress ${prog.length} · Waiting ${jobs.length}</div>
     ${prog.length || jobs.length ? `<div class="jobs-list">${prog.length ? `<ul class="jobs-prog">${progHtml}</ul>` : ''}${jobs.length ? `<ul class="jobs-wait">${waitHtml}</ul>` : ''}</div>` : '<div class="dim jobs-empty">대기 중인 일이 없어요.</div>'}</section>`;
   return prog.length + jobs.length;
@@ -1349,7 +1355,7 @@ function reproductionHtml(it){
     ${result.ended_at ? `<a href="/api/issues/${encodeURIComponent(it.ref)}/reproduce-checks/log" target="_blank" rel="noopener">전체 재현 로그 보기</a>` : ''}</div>` : ''}</section>`;
 }
 
-function executeHtml(it, liveMode, liveProvider){
+function executeHtml(it, liveMode, liveProvider, edges){
   const x = it.execute, running = it.review_running && liveMode === 'execute';
   const job = it.job && it.job.mode === 'execute' ? it.job : null;
   const provider = pendingExecutions.get(it.ref) || (running ? liveProvider || 'claude' : null);
@@ -1362,7 +1368,7 @@ function executeHtml(it, liveMode, liveProvider){
     <button id="ask-codex-execute" title="Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>Codex에게 실행 맡기기</button></div>`;
   const merge = (b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
       ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}</div>` : '') + checks + reproductionHtml(it);
-  return `<div class="exec"><div class="agent-sub">실행</div>${job ? jobHtml(job) : provider ? busyLine(provider, '실행') : `${stopped ? '' : buttons}${hint ? `<div class="dim hint">${hint}</div>` : ''}`}
+  return `<div class="exec"><div class="agent-sub">실행</div>${job ? jobHtml(job, edges) : provider ? busyLine(provider, '실행') : `${stopped ? '' : buttons}${hint ? `<div class="dim hint">${hint}</div>` : ''}`}
     ${merge ? `<div class="agent-sub">병합</div>${merge}` : ''}</div>`;
 }
 // 검토·실행이 도는 동안 버튼 자리에 보이는 상태 줄(DEV-113) — 누를 수 없는 버튼은 그리지 않는다
@@ -1462,6 +1468,9 @@ async function renderIssue(ref, background = false){
   const seq = ++issueRenderSeq, hash = location.hash;
   const [it, { runs }, catalog] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), api('GET', '/api/issue-types?include_inactive=true'), agentsById.size ? null : loadAgents()]);
   if(seq !== issueRenderSeq || hash !== location.hash) return;
+  const queue = it.job ? (await restartJobsSnapshot().catch(() => ({jobs: []}))).jobs : [];
+  if(seq !== issueRenderSeq || hash !== location.hash) return;
+  const edges = {first: queue[0]?.id, last: queue.at(-1)?.id};
   if(background && (pendingActions.size || pendingTasks.size || pendingExecutions.size || pendingReviews.size || view.querySelector('#dep-editor[open]') || document.activeElement?.matches('input, select'))) return;
   if(background && [...view.querySelectorAll('textarea, .edit-title')].some(el => el.id !== 'comment' && el.id !== 'rating-review' && el.offsetParent)) return;
   if(background && [...view.querySelectorAll('#labels, #issue-type-editor input, #rating-editor input, #rating-review')].some(el => ['checkbox', 'radio'].includes(el.type) ? el.checked !== el.defaultChecked : el.value !== el.defaultValue)) return;
@@ -1478,7 +1487,7 @@ async function renderIssue(ref, background = false){
   const reviewBusy = it.review_running || pendingReviews.has(ref);
   const reviewButton = (provider, id) => `<button id="${id}" title="홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음)."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${PROVIDER_NAME[provider]}에게 검토 맡기기</button>`;
   // 검토 절은 Task가 아닐 때만 — 도는 중이면 버튼 대신 상태 줄
-  const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job) : reviewBusy ? busyLine(reviewProvider, '검토')
+  const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job, edges) : reviewBusy ? busyLine(reviewProvider, '검토')
     : `<div class="agent-btns" id="review-btns">${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}</div>${it.review_busy ? `<div class="dim hint">다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}</div>` : ''}`}`;
   closeProgress();
   view.innerHTML = `
@@ -1533,7 +1542,7 @@ async function renderIssue(ref, background = false){
         <div class="field"><span>Commits</span>${it.events.filter(e => e.kind === 'commit').map(e => `<div><code>${esc(e.data.sha.slice(0, 7))}</code> <span class="dim">${esc(e.data.repo)}</span></div>`).join('') || '<span class="dim">없음</span>'}</div>
         <div class="field"><span>Agent</span>
           ${reviewSection}
-          ${it.execute ? executeHtml(it, liveMode, liveRun.provider) : ''}</div>
+          ${it.execute ? executeHtml(it, liveMode, liveRun.provider, edges) : ''}</div>
         <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
       </aside>
