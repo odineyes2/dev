@@ -115,6 +115,65 @@ def check_composer_images(page, shots):
                                data={'confirmation_token': token}).ok
 
 
+def check_composer_chain(page, shots):
+    """빠른 입력창의 발행+검토+맨 위 토글·Ctrl+Enter·부분 실패 안내·localStorage 유지를 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers, data={'key': 'CMPCHN', 'name': '빠른 연계 검사'}).ok
+    calls, state = [], {'review_fail': False}
+    def review(route):
+        calls.append('review')
+        if state['review_fail']: return route.fulfill(status=500, json={'detail': '검토 실패'})
+        route.fulfill(json={'queued': True, 'ref': 'X-1', 'job_id': 22, 'position': 2, 'note': ''})
+    def jobs(route):
+        route.fulfill(json={'jobs': [dict(id=21, ref='DEV-21', provider='claude', mode='review', position=1, prev_id=None, next_id=22, note=''),
+                                     dict(id=22, ref='DEV-22', provider='claude', mode='review', position=2, prev_id=21, next_id=None, note='')],
+                            'in_progress': []})
+    def move(route):
+        calls.append(('move', route.request.post_data_json))
+        route.fulfill(json={'moved': True})
+    page.route('**/api/issues/*/review', review); page.route('**/api/jobs', jobs); page.route('**/api/jobs/*/move', move)
+    page.goto(BASE + '/#/'); page.reload(); page.wait_for_selector('#project-filter')
+    page.keyboard.press('Backquote'); page.wait_for_selector('#composer', state='visible')
+    page.select_option('#cmp-project', 'CMPCHN')
+    chain = page.locator('#cmp-chain')
+    assert chain.get_attribute('aria-pressed') == 'false'
+    def send(text, key='Enter'):
+        page.fill('#cmp-body', text); page.press('#cmp-body', key)
+        page.wait_for_function("document.querySelector('#cmp-body').value === '' && !document.querySelector('#cmp-send').getAttribute('aria-busy')")
+    send('토글 꺼짐 발행만')
+    assert 'review' not in calls
+    chain.click()
+    assert chain.get_attribute('aria-pressed') == 'true' and page.evaluate("localStorage.getItem('dev.cmpChain')") == '1'
+    send('토글 켜짐 연계 발행')
+    page.wait_for_function("document.querySelector('#toast, .toast')?.textContent.includes('대기열 맨 위')")
+    assert calls == ['review', ('move', {'direction': 'top', 'neighbor_id': 21})], calls
+    page.reload(); page.wait_for_selector('#project-filter')
+    assert page.locator('#cmp-chain').get_attribute('aria-pressed') == 'true'
+    page.keyboard.press('Backquote'); page.wait_for_selector('#composer', state='visible')
+    page.locator('#cmp-chain').click()   # 끈다
+    calls.clear()
+    page.select_option('#cmp-project', 'CMPCHN')
+    send('Ctrl+Enter 한 번만', 'Control+Enter')
+    page.wait_for_function("document.querySelector('#toast, .toast')?.textContent.includes('대기열 맨 위')")
+    assert calls[0] == 'review' and calls[-1][0] == 'move', calls
+    calls.clear(); state['review_fail'] = True
+    send('검토 실패 안내', 'Control+Enter')
+    page.wait_for_function("document.querySelector('#toast, .toast')?.textContent.includes('검토 맡기기는 실패')")
+    assert calls == ['review'], calls
+    for theme in ('light', 'dark'):
+        page.evaluate('t => {localStorage.setItem("dev.theme",t);document.documentElement.dataset.theme=t}', theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'composer-chain-{theme}-{width}.png'), full_page=True)
+    page.unroute('**/api/issues/*/review', review); page.unroute('**/api/jobs', jobs); page.unroute('**/api/jobs/*/move', move)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate('localStorage.removeItem("dev.cmpChain");localStorage.removeItem("dev.project");localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
+    token = page.request.get(BASE + '/api/projects/CMPCHN/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/CMPCHN', headers=headers, data={'confirmation_token': token}).ok
+
+
 def check_progress_note(page, shots):
     """상태 메모의 축약·전체 사유와 클릭 팝오버의 닫기를 확인한다."""
     long = 'DEV-157 작업이 끝날 때까지 기다려요 — 겹치는 파일: static/app.css, static/app.js, tests/test_ui.py'
@@ -4904,6 +4963,10 @@ try:
             check_regression_numbers(page, shots)
             assert not errs, errs
             print('OK: regression numbers'); sys.exit(0)
+        if '--composer-chain-only' in sys.argv:
+            check_composer_chain(page, shots)
+            assert not errs, errs
+            print('OK: composer chain'); sys.exit(0)
         if '--attachments-only' in sys.argv:
             check_attachments(page, shots)
             assert not errs, errs
@@ -4983,6 +5046,7 @@ try:
         check_attachments(page, shots)
         check_new_attachment_images(page, shots)
         check_composer_images(page, shots)
+        check_composer_chain(page, shots)
         check_queue_edges(page, shots)
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)

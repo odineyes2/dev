@@ -48,6 +48,7 @@
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
   <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol>
   <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></symbol>
   <symbol id="i-arrow-up-to-line" viewBox="0 0 24 24"><path d="M5 3h14"/><path d="m5 14 7-7 7 7"/><path d="M12 7v14"/></symbol>
   <symbol id="i-arrow-down-to-line" viewBox="0 0 24 24"><path d="M5 21h14"/><path d="M12 3v14"/><path d="m19 10-7 7-7-7"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
@@ -107,6 +108,7 @@
       <input id="cmp-file" type="file" multiple hidden accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mp3,.wav,.ogg,.m4a,.md,.json">
       <select id="cmp-project" title="Project" aria-label="Project"></select>
       <select id="cmp-agent" title="Assignee Agent" aria-label="Assignee Agent"></select>
+      <button type="button" class="cmp-icon cmp-chain" id="cmp-chain" aria-pressed="false" title="발행하고 바로 검토 · 대기열 맨 위 (Ctrl+Enter는 이번 한 번만)" aria-label="발행하고 바로 검토 · 대기열 맨 위"><svg class="ico" aria-hidden="true"><use href="#i-zap"/></svg></button>
       <button type="submit" class="primary cmp-send" id="cmp-send" title="보내기(Enter) · 줄바꿈은 Shift+Enter" aria-label="보내기" disabled><svg class="ico" aria-hidden="true"><use href="#i-arrow-up"/></svg></button>
     </div>
   </form>
