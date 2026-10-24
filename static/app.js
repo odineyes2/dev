@@ -676,7 +676,7 @@ function placeRow(tbody, i){
   orderKids(tbody, parentTr || row);
 }
 let issueSummaryPeriod = 'today', issueSummaryRequest = 0;
-const ISSUE_SUMMARY_PERIODS = { today: '오늘', month: '이번 달', year: '올해', all: '전체' };
+const ISSUE_SUMMARY_PERIODS = { today: '오늘', yesterday: '어제', week: '이번 주', last_week: '저번 주', month: '이번 달', last_month: '저번 달', year: '올해', all: '전체' };
 function summaryNumber(n){ return Number(n || 0).toLocaleString('ko-KR'); }
 function summaryDuration(seconds){
   const minutes = Math.floor(Number(seconds || 0) / 60);

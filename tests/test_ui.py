@@ -4452,7 +4452,9 @@ def check_issue_summary(page):
     assert '1,234' in page.inner_text('#issue-summary') and '부분 집계' not in page.inner_text('#issue-summary')
     assert page.locator('.issue-summary-note').count() == 0
     assert '현재 보존된 기록' not in page.inner_text('#issue-summary')
-    for key in ('month', 'year', 'all', 'today'):
+    assert page.locator('[data-summary-period]').evaluate_all('els => els.map(e => e.dataset.summaryPeriod)') == [
+        'today', 'yesterday', 'week', 'last_week', 'month', 'last_month', 'year', 'all']
+    for key in ('yesterday', 'week', 'last_week', 'month', 'last_month', 'year', 'all', 'today'):
         page.locator(f'[data-summary-period="{key}"]').focus()
         page.keyboard.press('Enter')
         page.wait_for_function("key => document.querySelector(`[data-summary-period=${key}]`).getAttribute('aria-pressed') === 'true' && document.querySelector('.issue-summary-content').getAttribute('aria-busy') === 'false'", arg=key)
