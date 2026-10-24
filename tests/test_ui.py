@@ -9,6 +9,61 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_queue_edges(page, shots):
+    """대기열의 양 끝 이동 아이콘·순서·포커스·좁은 화면을 확인한다."""
+    original_theme = page.evaluate("localStorage.getItem('dev.theme')")
+    ids = [11, 12, 13]
+    moves = []
+    def respond(route):
+        if route.request.method == 'POST':
+            import re
+            job_id = int(re.search(r'/jobs/(\d+)/move', route.request.url).group(1))
+            body = route.request.post_data_json
+            moves.append((job_id, body['direction'], body['neighbor_id']))
+            ids.remove(job_id)
+            ids.insert(0 if body['direction'] == 'top' else len(ids), job_id)
+            route.fulfill(json={'moved': True})
+            return
+        jobs = [dict(id=job_id, ref=f'DEV-{job_id}', provider='claude', mode='review',
+                     position=n + 1, prev_id=ids[n - 1] if n else None,
+                     next_id=ids[n + 1] if n + 1 < len(ids) else None, note='')
+                for n, job_id in enumerate(ids)]
+        route.fulfill(json={'jobs': jobs, 'in_progress': []})
+    page.route('**/api/jobs', respond)
+    page.route('**/api/jobs/*/move', respond)
+    page.goto(BASE + '/#/'); page.wait_for_selector('.jobs-wait li')
+    controls = page.locator('.jobs-wait li:first-child button')
+    assert controls.evaluate_all('bs => bs.map(b => b.dataset.dir || "cancel")') == ['top', 'up', 'down', 'bottom', 'cancel']
+    assert page.locator('.jobs-wait li:first-child [data-dir="top"]').is_disabled()
+    assert page.locator('.jobs-wait li:first-child [data-dir="up"]').is_disabled()
+    assert page.locator('.jobs-wait li:last-child [data-dir="down"]').is_disabled()
+    assert page.locator('.jobs-wait li:last-child [data-dir="bottom"]').is_disabled()
+    assert page.locator('.jobs-wait li:last-child [data-dir="top"]').get_attribute('aria-label') == 'DEV-13 대기 순서 맨 위로'
+    assert page.locator('.jobs-wait li:first-child [data-dir="bottom"]').get_attribute('aria-label') == 'DEV-11 대기 순서 맨 아래로'
+    assert page.locator('.jobs-wait li:last-child [data-dir="top"]').get_attribute('title') == 'DEV-13 맨 위로'
+    page.locator('.jobs-wait li:last-child [data-dir="top"]').click()
+    page.wait_for_function("document.querySelector('.jobs-wait li:first-child a')?.textContent === 'DEV-13'")
+    assert ids == [13, 11, 12] and moves[-1] == (13, 'top', 11)
+    page.locator('.jobs-wait li:first-child [data-dir="bottom"]').click()
+    page.wait_for_function("document.querySelector('.jobs-wait li:last-child a')?.textContent === 'DEV-13'")
+    assert ids == [11, 12, 13] and moves[-1] == (13, 'bottom', 12)
+    page.goto(BASE + '/#/board'); page.wait_for_selector('.jobs-wait li')
+    assert page.locator('.jobs-wait li:first-child button').evaluate_all('bs => bs.map(b => b.dataset.dir || "cancel")') == ['top', 'up', 'down', 'bottom', 'cancel']
+    page.goto(BASE + '/#/'); page.wait_for_selector('.jobs-wait li')
+    for theme in ('light', 'dark'):
+        page.evaluate('t => {localStorage.setItem("dev.theme",t);document.documentElement.dataset.theme=t}', theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            assert page.locator('.jobs-wait li:last-child [data-dir="top"]').evaluate('b => b.getBoundingClientRect().width >= (innerWidth <= 800 ? 40 : 20)')
+            page.screenshot(path=str(shots / f'queue-edges-{theme}-{width}.png'), full_page=True)
+    page.unroute('**/api/jobs', respond)
+    page.unroute('**/api/jobs/*/move', respond)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("t => {if(t === null) localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme', t); document.documentElement.dataset.theme=t || 'light'}", original_theme)
+
+
 def check_composer_images(page, shots):
     """빠른 입력창의 이미지 미리보기·라이트박스·정리와 네 화면을 확인한다."""
     import base64
@@ -4638,6 +4693,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--queue-edges-only' in sys.argv:
+            check_queue_edges(page, shots)
+            assert not errs, errs
+            print('OK: queue edges'); sys.exit(0)
         if '--self-restart-banner-only' in sys.argv:
             check_self_restart_banner(page, shots)
             assert not errs, errs
@@ -4924,6 +4983,7 @@ try:
         check_attachments(page, shots)
         check_new_attachment_images(page, shots)
         check_composer_images(page, shots)
+        check_queue_edges(page, shots)
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)
         check_harness(page, shots)
@@ -5458,7 +5518,7 @@ try:
         assert b1.is_enabled() and "Claude" in b1.inner_text() and b2.is_disabled() and "실행 대기 중" in b2.inner_text()
         page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
         assert "대기 1번째" in page.inner_text(".exec")
-        assert page.locator(".exec .move-job:disabled").count() == 2   # 하나뿐이면 둘 다 꺼짐
+        assert page.locator(".exec .move-job:disabled").count() == 4   # 하나뿐이면 네 이동 버튼 모두 꺼짐
         page.click(".exec .cancel-job"); page.wait_for_selector("#ask-execute")
         assert page.request.get(f"{BASE}/api/jobs").json()["jobs"] == []
         page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
