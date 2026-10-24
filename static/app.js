@@ -1872,6 +1872,12 @@ async function renderNew(params){
       <label hidden>Priority<select id="n-priority">${PRIORITIES.map(p => `<option${p === 'none' ? ' selected' : ''}>${p}</option>`).join('')}</select></label>
       <label>Status<select id="n-status"><option>backlog</option><option>triage</option></select></label></div>
     <label>Title<input id="n-title" maxlength="300" placeholder="비워 두면 이슈를 맡은 에이전트가 본문을 보고 지어요"></label>
+    <fieldset class="attachment-input"><legend>Attachments</legend>
+      <p class="dim" id="attachment-help">이미지·영상·오디오·Markdown·JSON 파일과 http(s) URL을 함께 첨부해요. 기본 제한은 파일당 25MiB, 총 10개·100MiB예요.</p>
+      <label>파일 선택<input id="n-files" type="file" multiple accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mp3,.wav,.ogg,.m4a,.md,.json" aria-describedby="attachment-help"></label>
+      <div class="line"><label>URL<input id="n-url" type="url" placeholder="https://example.com/reference"></label><button type="button" id="add-url">URL 추가</button></div>
+      <div id="n-attachments" aria-live="polite"></div><p id="attachment-status" role="status"></p>
+    </fieldset>
     <label>Description (마크다운)<textarea id="n-body" style="min-height:260px"></textarea></label>
     <fieldset class="dep-picker"><legend>연관 이슈 (선행)</legend>
       <p class="dim">선택한 이슈가 Done이 된 뒤 이 이슈의 작업을 시작해요. 최대 10개까지 선택할 수 있어요.</p>
@@ -1880,17 +1886,11 @@ async function renderNew(params){
       <div id="n-dep-list" class="dep-list" aria-label="연관 이슈 후보"></div>
       <p id="n-dep-status" class="dim" role="status"></p>
     </fieldset>
-    <fieldset class="attachment-input"><legend>Attachments</legend>
-      <p class="dim" id="attachment-help">이미지·영상·오디오·Markdown·JSON 파일과 http(s) URL을 함께 첨부해요. 기본 제한은 파일당 25MiB, 총 10개·100MiB예요.</p>
-      <label>파일 선택<input id="n-files" type="file" multiple accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mp3,.wav,.ogg,.m4a,.md,.json" aria-describedby="attachment-help"></label>
-      <div class="line"><label>URL<input id="n-url" type="url" placeholder="https://example.com/reference"></label><button type="button" id="add-url">URL 추가</button></div>
-      <div id="n-attachments" aria-live="polite"></div><p id="attachment-status" role="status"></p>
-    </fieldset>
     ${typePicker(types)}<label>Labels (쉼표로)<input id="n-labels"></label>
     <div class="row-end"><a class="button" id="cancel-new" href="#/">취소</a><button class="primary" type="submit">발행</button></div>
   </form>`;
   const form = view.querySelector('#new-form'), entries = [];
-  let departed = false, published = false, saving = false;
+  let departed = false, published = false, saving = false, nextImage = 0;
   const selectedDeps = new Set(), depSearch = form.querySelector('#n-dep-search');
   const depList = form.querySelector('#n-dep-list'), depSelected = form.querySelector('#n-dep-selected');
   const depStatus = form.querySelector('#n-dep-status');
@@ -1926,22 +1926,58 @@ async function renderNew(params){
   depSearch.oninput = drawDeps;
   void loadDeps();
   const status = form.querySelector('#attachment-status'), list = form.querySelector('#n-attachments');
+  const lightbox = document.createElement('div');
+  lightbox.className = 'attachment-lightbox';
+  lightbox.setAttribute('role', 'dialog'); lightbox.setAttribute('aria-modal', 'true');
+  lightbox.setAttribute('aria-label', '첨부 이미지 크게 보기'); lightbox.hidden = true;
+  lightbox.innerHTML = '<div class="attachment-lightbox-content"><button type="button" class="attachment-lightbox-close" aria-label="닫기" title="닫기"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button><img alt=""><p></p></div>';
+  document.body.append(lightbox);
+  let lightboxReturn = null;
+  const closeLightbox = () => {
+    if(lightbox.hidden) return;
+    lightbox.hidden = true;
+    if(lightboxReturn?.isConnected) lightboxReturn.focus();
+    lightboxReturn = null;
+  };
+  lightbox.querySelector('button').onclick = closeLightbox;
+  lightbox.onclick = e => { if(e.target === lightbox) closeLightbox(); };
+  const lightboxKey = e => {
+    if(lightbox.hidden) return;
+    if(e.key === 'Escape'){ e.preventDefault(); closeLightbox(); }
+    if(e.key === 'Tab'){ e.preventDefault(); lightbox.querySelector('button').focus(); }
+  };
+  document.addEventListener('keydown', lightboxKey);
+  const releasePreview = e => { if(e.preview){ URL.revokeObjectURL(e.preview); e.preview = null; } };
   const remove = a => api('DELETE', `/api/attachments/${encodeURIComponent(a.id)}`, undefined, () => !departed).catch(() => {});
   const leave = () => {
     departed = true; window.removeEventListener('hashchange', leave);
+    document.removeEventListener('keydown', lightboxKey);
+    lightbox.remove(); entries.forEach(releasePreview);
     if(!published && !saving) entries.forEach(e => { if(e.data) void remove(e.data); });
   };
   window.addEventListener('hashchange', leave);
   const draw = () => {
-    list.innerHTML = entries.map((e,i) => `<div class="attachment-heading"><span>${esc(e.name)} — ${esc(e.busy ? '업로드 중…' : e.error || '첨부 준비됐어요')}</span><span>${e.error ? `<button type="button" data-retry="${i}">재시도</button>` : ''}<button type="button" data-remove="${i}" ${e.busy || saving ? 'disabled' : ''}>제거</button></span></div>`).join('');
+    list.innerHTML = entries.map((e,i) => `<div class="attachment-heading">${e.imageNum ? `<button type="button" class="attachment-thumb" data-preview="${i}" aria-label="[이미지 ${e.imageNum}] 크게 보기"><img src="${e.preview}" alt=""></button>` : ''}<span class="attachment-name">${e.imageNum ? `[이미지 ${e.imageNum}] ` : ''}${esc(e.name)} — ${esc(e.busy ? '업로드 중…' : e.error || '첨부 준비됐어요')}</span><span class="attachment-actions">${e.imageNum ? `<button type="button" data-insert="${i}">본문에 넣기</button>` : ''}${e.error ? `<button type="button" data-retry="${i}">재시도</button>` : ''}<button type="button" data-remove="${i}" ${e.busy || saving ? 'disabled' : ''}>제거</button></span></div>`).join('');
     form.querySelector('[type=submit]').disabled = saving || entries.some(e => e.busy || e.error);
+    list.querySelectorAll('[data-preview]').forEach(b => b.onclick = () => {
+      const e = entries[+b.dataset.preview];
+      lightbox.querySelector('img').src = e.preview;
+      lightbox.querySelector('img').alt = `[이미지 ${e.imageNum}] ${e.name}`;
+      lightbox.querySelector('p').textContent = `[이미지 ${e.imageNum}] ${e.name}`;
+      lightboxReturn = b; lightbox.hidden = false; lightbox.querySelector('button').focus();
+    });
+    list.querySelectorAll('[data-insert]').forEach(b => b.onclick = () => {
+      const body = form.querySelector('#n-body'), tag = `[이미지 ${entries[+b.dataset.insert].imageNum}]`;
+      const start = body.selectionStart, end = body.selectionEnd;
+      body.setRangeText(tag, start, end, 'end'); body.focus();
+    });
     list.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
       if(saving) return;
       const e = entries[+b.dataset.remove];
       if(e.busy) return;
       e.busy = true; draw();
       if(e.data){ try{ await api('DELETE', `/api/attachments/${encodeURIComponent(e.data.id)}`); }catch{ e.busy = false; draw(); return; } }
-      entries.splice(entries.indexOf(e),1); draw();
+      releasePreview(e); entries.splice(entries.indexOf(e),1); draw();
     });
     list.querySelectorAll('[data-retry]').forEach(b => b.onclick = () => upload(entries[+b.dataset.retry]));
   };
@@ -1958,7 +1994,9 @@ async function renderNew(params){
   };
   const add = (name,file) => {
     if(saving || entries.some(e => e.file ? file && e.name === name && e.file.size === file.size && e.file.lastModified === file.lastModified : !file && e.name === name)) return;
-    const e = {name,file}; entries.push(e); void upload(e);
+    const e = {name,file};
+    if(file?.type.startsWith('image/')){ e.imageNum = ++nextImage; e.preview = URL.createObjectURL(file); }
+    entries.push(e); void upload(e);
   };
   form.querySelector('#n-files').onchange = e => { [...e.target.files].forEach(f => add(f.name,f)); e.target.value = ''; };
   form.querySelector('#add-url').onclick = () => {
@@ -1973,8 +2011,11 @@ async function renderNew(params){
     form.querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = true);
     form.querySelector('#cancel-new').onclick = ev => ev.preventDefault();
     try{
+    const imageMap = entries.filter(e => e.imageNum).map(e => `[이미지 ${e.imageNum}] = ${e.name.replace(/\s+/g, ' ')}`);
+    const writtenBody = view.querySelector('#n-body').value;
     const it = await api('POST', '/api/issues', {
-      project: view.querySelector('#n-project').value, title: view.querySelector('#n-title').value, body: view.querySelector('#n-body').value,
+      project: view.querySelector('#n-project').value, title: view.querySelector('#n-title').value,
+      body: imageMap.length ? `${writtenBody.trimEnd()}\n\n---\n첨부 이미지:\n${imageMap.join('\n')}` : writtenBody,
       priority: view.querySelector('#n-priority').value, status: view.querySelector('#n-status').value,
       attachment_ids: entries.map(e => e.data.id),
       blocked_by: [...selectedDeps],
