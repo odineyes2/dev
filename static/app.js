@@ -2139,8 +2139,27 @@ composer.addEventListener('keydown', (e) => { if(e.key === 'Escape'){ e.preventD
 cmpBody.addEventListener('keydown', (e) => {
   if(e.key !== 'Enter' || e.shiftKey) return;   // Shift+Enter는 줄바꿈
   if(e.isComposing || e.keyCode === 229) return;   // 한글 조합 중 Enter는 글자 확정만 — 보내면 마지막 글자가 두 번 들어간다
-  e.preventDefault(); composer.requestSubmit();
+  e.preventDefault();
+  cmpChainOnce = e.ctrlKey || e.metaKey;   // Ctrl+Enter는 토글과 무관하게 이번 한 번만 발행+검토+맨 위
+  composer.requestSubmit();
 });
+// "발행+검토+맨 위" 토글 — 초안이 아니라 취향이라 localStorage에 기억한다(DEV-172-3)
+let cmpChainOnce = false;
+const cmpChainBtn = document.getElementById('cmp-chain');
+const cmpChainOn = () => { try{ return localStorage.getItem('dev.cmpChain') === '1'; }catch(_){ return false; } };
+const cmpChainDraw = () => cmpChainBtn.setAttribute('aria-pressed', String(cmpChainOn()));
+cmpChainBtn.onclick = () => { try{ localStorage.setItem('dev.cmpChain', cmpChainOn() ? '0' : '1'); }catch(_){ /* 저장 불가면 이번 화면만 */ } cmpChainDraw(); };
+cmpChainDraw();
+// 발행한 이슈를 검토에 맡기고, 줄에 섰으면 맨 위로 보낸다. 실패해도 이슈는 backlog로 남는다.
+async function cmpReviewTop(it){
+  try{
+    const r = await api('POST', `/api/issues/${it.ref}/review`, {});
+    if(!r?.queued) return toast(`${it.ref} 발행 · 검토를 맡겼어요(바로 시작)`);
+    const { jobs } = await api('GET', '/api/jobs'), first = jobs[0]?.id;
+    if(first != null && first !== r.job_id) await api('POST', `/api/jobs/${r.job_id}/move`, { direction: 'top', neighbor_id: first });
+    toast(`${it.ref} 발행 · 검토 맡김 · 대기열 맨 위`);
+  }catch(ex){ toast(`${it.ref} 발행은 됐고 검토 맡기기는 실패했어요 — 이슈 화면에서 다시 맡겨 주세요`); }
+}
 cmpBody.addEventListener('input', () => { cmpBody.style.height = 'auto'; cmpBody.style.height = cmpBody.scrollHeight + 'px'; cmpDraw(); });
 document.getElementById('cmp-attach').onclick = () => document.getElementById('cmp-file').click();
 document.getElementById('cmp-file').onchange = (e) => {
@@ -2173,6 +2192,7 @@ composer.addEventListener('submit', async (e) => {
   e.preventDefault();
   const err = document.getElementById('cmp-error');
   if(cmpSaving || !cmpBody.value.trim() || cmpFiles.some(f => f.busy || f.error)) return;
+  const chain = cmpChainOnce || cmpChainOn(); cmpChainOnce = false;
   cmpSaving = true; cmpDraw(); err.textContent = '';
   try{
     const agent = document.getElementById('cmp-agent').value;
@@ -2182,6 +2202,7 @@ composer.addEventListener('submit', async (e) => {
     sharedLightbox?.close(); cmpFiles.splice(0).forEach(f => { if(f.preview) URL.revokeObjectURL(f.preview); });
     toast(`${it.ref} 이슈를 발행했어요.`);
     void showPublishedNotice(it, {hash: location.hash, initial: `${it.ref} 이슈를 발행했어요.`, prefix: `${it.ref} 이슈를 발행했어요`});
+    if(chain) await cmpReviewTop(it);
     if(composerAllowed()) void route();   // 페이지는 그대로, 목록·Board만 다시 읽는다
   }catch(ex){ err.textContent = `${ex.message} 입력과 첨부를 유지했어요. 다시 보내 주세요.`; }
   finally{ cmpSaving = false; cmpDraw(); if(!composer.hidden) cmpBody.focus(); }
