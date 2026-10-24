@@ -3,7 +3,7 @@
 import os, socket, subprocess, sys, tempfile, time
 from pathlib import Path
 import json
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
@@ -3691,6 +3691,48 @@ def check_rollback_waiting(page, shots):
             page.unroute(url, pending)
 
 
+def check_result_attach(page, shots):
+    """수정 요청 폼의 참조 이미지 — 첨부·칩·전송 연결, 취소 시 삭제, 거절 폼에는 없음(DEV-174-1)."""
+    import base64
+    H = {'X-Requested-With': 'dev'}
+    png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=')
+    page.request.post(BASE + '/api/projects', headers=H, data={'key': 'RATT', 'name': '수정 요청 첨부'})   # 이미 있으면 거절돼도 무방
+    def fresh():
+        ref = page.request.post(BASE + '/api/issues', data={'project': 'RATT', 'title': '수정 요청 첨부'}, headers=H).json()['ref']
+        page.request.post(f'{BASE}/api/issues/{ref}/status', data={'status': 'in_review'}, headers=H)
+        page.goto(BASE + f'/#/issue/{ref}'); page.wait_for_selector('#request-changes')
+        return ref
+    # 취소 → 올라간 첨부가 삭제된다
+    fresh(); page.click('#request-changes'); expect(page.locator('#result-attach')).to_be_visible()
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/api/attachments')):
+        page.set_input_files('#result-file', files=[{'name': 'ref.png', 'mimeType': 'image/png', 'buffer': png}])
+    expect(page.locator('#result-files .cmp-chip')).to_have_count(1)
+    expect(page.locator('#result-send')).to_be_enabled()
+    with page.expect_request(lambda r: r.method == 'DELETE' and '/api/attachments/' in r.url):
+        page.click('#result-cancel')
+    expect(page.locator('#result-files .cmp-chip')).to_have_count(0)
+    # 거절 폼에는 첨부가 보이지 않는다
+    page.click('#result-actions [data-to=closed]'); expect(page.locator('#result-attach')).to_be_hidden()
+    page.click('#result-cancel')
+    # 전송 → 이슈 Attachments에 연결
+    for scheme in ('light', 'dark'):
+        for width, height, tag in ((1300, 850, 'desktop'), (390, 800, 'mobile')):
+            page.emulate_media(color_scheme=scheme); page.set_viewport_size({'width': width, 'height': height})
+            page.evaluate("scheme => {localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme}", scheme)
+            ref = fresh(); page.click('#request-changes')
+            with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/api/attachments')):
+                page.set_input_files('#result-file', files=[{'name': 'ref.png', 'mimeType': 'image/png', 'buffer': png}])
+            expect(page.locator('#result-files .cmp-chip')).to_have_count(1)
+            page.fill('#result-note', '이 화면처럼 고쳐 주세요')
+            page.screenshot(path=str(shots / f'result_attach_{scheme}_{tag}.png'), full_page=True)
+            with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith(f'/api/issues/{ref}/status')) as sent:
+                page.click('#result-send')
+            assert sent.value.ok and len(sent.value.request.post_data_json['attachment_ids']) == 1
+            expect(page.locator('#status')).to_have_value('changes_requested')
+            got = page.request.get(f'{BASE}/api/issues/{ref}', headers=H).json()
+            assert [a['name'] for a in got['attachments']] == ['ref.png'], got['attachments']
+
+
 def check_sticky_tabbar(page, shots):
     """긴 이슈를 끝까지 내려도 전역 탭 줄이 맨 위에 붙어 있고 오른쪽 칸·사용자 메뉴와 겹치지 않는다(DEV-88)."""
     body = '\n\n'.join(f'{i}번째 문단 — 긴 본문을 만들기 위한 줄이에요.' for i in range(120))
@@ -4766,6 +4808,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--result-attach-only' in sys.argv:
+            check_result_attach(page, shots)
+            assert not errs, errs
+            print('OK: result attach'); sys.exit(0)
         if '--queue-edges-only' in sys.argv:
             check_queue_edges(page, shots)
             assert not errs, errs
@@ -5619,6 +5665,7 @@ try:
         check_review_buttons(page, fresh, shots)
         check_edit_saving(page, shots)
         check_rollback_waiting(page, shots)
+        check_result_attach(page, shots)
         check_sticky_tabbar(page, shots)
         page.goto(BASE + f'/#/issue/{fresh}'); page.wait_for_selector('#ask-codex-review')
         for scheme in ("light", "dark"):

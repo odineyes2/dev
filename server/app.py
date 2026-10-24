@@ -804,7 +804,7 @@ def api_delete_issue(ref: str, request: Request):
 @app.post("/api/issues/{ref}/status")
 async def api_set_status(ref: str, request: Request):
     b = await json_body(request)
-    return await run_in_threadpool(issues.set_status, actor(request), ref, b.get("status"), b.get("note", ""), bool(b.get("confirm_checks")))
+    return await run_in_threadpool(issues.set_status, actor(request), ref, b.get("status"), b.get("note", ""), bool(b.get("confirm_checks")), b.get("attachment_ids"))
 
 
 @app.post("/api/issues/{ref}/complete-tree")
