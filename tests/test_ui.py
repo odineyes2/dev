@@ -3202,6 +3202,45 @@ def check_account_menu(page, shots):
     assert link.get_attribute('hidden') is None
 
 
+def check_task_action_alignment(page, shots):
+    """대기 버튼 하나와 실행 버튼 둘의 양 끝 정렬을 실제 Issue 표에서 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers,
+                             data={'key': 'ALIGN', 'name': 'Task 버튼 정렬 검사'}).ok
+    parent = page.request.post(BASE + '/api/issues', headers=headers,
+                               data={'project': 'ALIGN', 'title': 'Task 버튼 정렬 검사', 'status': 'triage'}).json()['ref']
+    assert page.request.post(BASE + f'/api/issues/{parent}/plans', headers=headers,
+                             data={'body': '## Tasks\n1. 대기 중 Task\n2. 실행 가능 Task'}).ok
+    assert page.request.post(BASE + f'/api/issues/{parent}/decision', headers=headers,
+                             data={'verdict': 'approve', 'plan_version': 1}).ok
+    issue_url = f'**/api/issues/{parent}'
+    def queued_first(route):
+        issue = route.fetch().json()
+        assert len(issue['children']) == 2
+        issue['children'][0]['job'] = {'provider': 'codex', 'position': 1, 'note': ''}
+        route.fulfill(json=issue)
+    page.route(issue_url, queued_first)
+    page.goto(BASE + f'/#/issue/{parent}')
+    page.wait_for_selector('.issues.tasks .task-actions', state='visible')
+    assert page.locator('.issues.tasks .task-actions').count() == 2
+    assert page.locator('.issues.tasks .task-actions button').count() == 3
+    for theme in ('light', 'dark'):
+        page.evaluate('t => { localStorage.setItem("dev.theme", t); document.documentElement.dataset.theme = t; }', theme)
+        page.emulate_media(color_scheme=theme)
+        for width, kind in ((1300, 'desktop'), (390, 'mobile')):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            rows = page.locator('.issues.tasks .task-actions')
+            queued = rows.nth(0).locator('button').bounding_box()
+            available = rows.nth(1).locator('button')
+            first, last = available.first.bounding_box(), available.last.bounding_box()
+            if kind == 'desktop':
+                assert abs(queued['x'] - first['x']) <= 1, (queued, first)
+                assert abs(queued['x'] + queued['width'] - last['x'] - last['width']) <= 1, (queued, last)
+            page.screenshot(path=str(shots / f'task_alignment_{theme}_{kind}.png'), full_page=True)
+    page.unroute(issue_url, queued_first)
+
+
 def check_task_actions(page, ref, shots, answers, asked):
     """실행 요청을 가로채 계정 호출 없이 provider·경합·복구를 확인한다."""
     url = '**/api/issues/DEV-4-1/execute'
@@ -4852,6 +4891,10 @@ try:
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--task-alignment-only' in sys.argv:
+            check_task_action_alignment(page, shots)
+            assert not errs, errs
+            print('OK: Task button alignment'); sys.exit(0)
         if '--result-attach-only' in sys.argv:
             check_result_attach(page, shots)
             assert not errs, errs
@@ -5788,6 +5831,7 @@ try:
         check_self_restart_banner(page, shots)
         check_issue_table(page, shots)
         check_new_issue_dependencies(page, shots)
+        check_task_action_alignment(page, shots)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
         assert page.locator('#open-jupyter').get_attribute('hidden') is not None
         assert not errs, errs
