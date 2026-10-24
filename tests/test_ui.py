@@ -261,7 +261,8 @@ def check_issue_table(page, shots):
             return {sumRight: r('#issue-summary').right, bodyRight: r('#list-body').right,
                 sumTop: r('#issue-summary').top, jobsTop: r('#jobs-box').top, jobsBottom: r('#jobs-box').bottom,
                 sumBottom: r('#issue-summary').bottom, bodyTop: r('#list-body').top,
-                tabLeft: r('.tab-bar-inner .tab, .tab-bar-inner a, .tab-bar-inner button').left, bodyLeft: r('#list-body').left,
+                // 탭은 버튼 테두리가 아니라 첫 아이콘(안쪽 여백 뒤)이 본문 왼쪽 끝과 맞는다(DEV-166, check_page_gutter와 같은 기준).
+                tabLeft: r('.tab-btn').left + parseFloat(getComputedStyle(document.querySelector('.tab-btn')).paddingLeft), bodyLeft: r('#list-body').left,
                 padLeft: parseFloat(main.paddingLeft)};
         }""")
         if width > 1450:
@@ -270,8 +271,8 @@ def check_issue_table(page, shots):
             assert abs(layout['tabLeft'] - layout['bodyLeft']) <= 1, (width, layout)
         else:
             assert layout['sumBottom'] <= layout['jobsTop'] + 1 and layout['jobsBottom'] <= layout['bodyTop'] + 1, (width, layout)
-        if width == 1600:
-            assert abs(layout['padLeft'] - 148) <= 1, (width, layout)
+        if width == 1600:   # 공통 중간 여백(DEV-166): 1600px에서 한쪽 80px
+            assert abs(layout['padLeft'] - 80) <= 1, (width, layout)
         assert page.locator(f'#list-body tr[data-ref="{ref}"] .title-cell').evaluate(
             'e => getComputedStyle(e).overflowWrap === "anywhere"')
         assert page.locator(f'#list-body tr[data-ref="{action_issue["ref"]}"] .action-cell button').count() >= 1
