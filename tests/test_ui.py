@@ -471,25 +471,44 @@ def check_trend_issues(page, shots):
         from urllib.parse import parse_qs, urlsplit
         query = parse_qs(urlsplit(route.request.url).query)
         calls.append(query)
-        offset = int(query.get('offset', ['0'])[0])
+        agent = query.get('agent', ['all'])[0]
         empty = query.get('project') == ['EMPTY']
-        rows = [] if empty else [dict(ref=f'TRND-{offset + 1}', title='표시할 Issue', status='in_progress',
-            project='TRND', created_at='2026-10-24T00:00:00+00:00', last_activity_at='2026-10-24T00:00:00+00:00',
-            total_tokens=12, agent_seconds=60, run_count=1, unmeasured_duration_run_count=0, partial=False)]
-        route.fulfill(json=dict(as_of='2026-10-24T00:00:00+00:00', period=query.get('period', ['7'])[0],
-            project=query.get('project', [None])[0], total=0 if empty else 2, limit=50, offset=offset,
-            has_more=not empty and offset == 0, issues=rows))
-    page.route('**/api/trends/issues?*', respond)
+        def values(scale): return {key: {'seconds': scale * 60 * (i + 1), 'tokens': scale * 1000} for i, key in enumerate(('queue', 'review', 'execute', 'qa', 'completion'))}
+        def issue(ref, title, scale, with_task=False):
+            task = dict(ref=f'{ref}-1', title='구현 Task', execute_runs=2, stages=values(1), total_machine_seconds=900, total_tokens=5000, partial=False)
+            return dict(ref=ref, title=title, project='TRND', done_at='2026-10-23T01:00:00+00:00', task_count=int(with_task),
+                        execute_runs=1, stages=values(scale), tasks=[task] if with_task else [],
+                        total_machine_seconds=scale * 900, total_tokens=scale * 5000, partial=False)
+        # 공동작업(TRND-3)은 Claude·Codex 양쪽 필터에 모두 나온다
+        pool = dict(all=[issue('TRND-1', 'Claude 작업', 2, True), issue('TRND-2', 'Codex 작업', 1), issue('TRND-3', '공동작업', 3)],
+                    claude=[issue('TRND-1', 'Claude 작업', 2, True), issue('TRND-3', '공동작업', 3)],
+                    codex=[issue('TRND-2', 'Codex 작업', 1), issue('TRND-3', '공동작업', 3)])
+        route.fulfill(json=dict(from_date='2026-10-17', to_date='2026-10-23', previous={'from_date': '2026-10-10', 'to_date': '2026-10-16'},
+            project=query.get('project', [None])[0], agent=agent, stages=[], issues=[] if empty else pool[agent],
+            partial_count=0, note='임시 기록 기준이에요.'))
+    page.route('**/api/trends/stages?*', respond)
     page.goto(BASE + '/#/trends/issues')
-    page.wait_for_selector('.trend-issues-table tbody tr')
+    page.wait_for_selector('.trend-stage-table tbody tr')
     assert page.locator('.trend-subtabs [aria-current="page"]').inner_text() == '이슈별 소요'
-    assert page.locator('[data-issues-period="7"]').get_attribute('aria-pressed') == 'true'
-    page.locator('#trend-issues-more').click()
-    page.wait_for_function("document.querySelectorAll('.trend-issues-table tbody tr').length === 2")
-    page.locator('[data-issues-period="all"]').click()
-    page.wait_for_function("document.querySelector('[data-issues-period=all]').getAttribute('aria-pressed') === 'true'")
-    page.wait_for_selector('#trend-issues-results[aria-busy="false"] .trend-issues-table tbody tr')
-    assert calls[-1]['period'] == ['all']
+    assert page.locator('#trend-agent option').all_inner_texts() == ['All Agents', 'Claude', 'Codex']
+    assert page.locator('.trend-donut').count() == 0
+    assert page.locator('.trend-issue-row .ref').all_inner_texts() == ['TRND-3', 'TRND-1', 'TRND-2']
+    assert page.locator('.trend-issue-row .trend-stage-bar').count() == 3
+    assert not page.locator('.trend-task-row').first.is_visible()
+    page.click('[data-stage-expand="TRND-1"]')
+    assert page.locator('.trend-task-row').first.is_visible() and '2회' in page.inner_text('.trend-task-row')
+    for agent, refs in (('claude', ['TRND-3', 'TRND-1']), ('codex', ['TRND-3', 'TRND-2'])):
+        page.select_option('#trend-agent', agent)
+        page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+        assert calls[-1]['agent'] == [agent]
+        assert page.locator('.trend-issue-row .ref').all_inner_texts() == refs
+    page.select_option('#trend-agent', 'all')
+    page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+    page.click('[data-trend-days="30"]')
+    page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
+    page.check('#trend-human')
+    assert '계획 결정 대기' in page.inner_text('.trend-stage-table thead')
+    page.uncheck('#trend-human')
     for scheme in ('light', 'dark'):
         page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}', scheme)
         page.emulate_media(color_scheme=scheme)
@@ -497,10 +516,10 @@ def check_trend_issues(page, shots):
             page.set_viewport_size({'width': width, 'height': 850})
             assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
             page.screenshot(path=str(shots / f'trend-issues-{scheme}-{width}.png'), full_page=True)
-    page.locator('#trend-issues-project').select_option('EMPTY')
-    page.wait_for_selector('#trend-issues-results .empty')
+    page.locator('#trend-project').select_option('EMPTY')
+    page.wait_for_selector('#trend-results .empty')
     assert calls[-1]['project'] == ['EMPTY']
-    page.unroute('**/api/trends/issues?*', respond)
+    page.unroute('**/api/trends/stages?*', respond)
     token = page.request.get(BASE + '/api/projects/EMPTY/delete-check').json()['confirmation_token']
     assert page.request.delete(BASE + '/api/projects/EMPTY', headers={'X-Requested-With': 'dev'},
                                data={'confirmation_token': token}).ok
@@ -660,7 +679,7 @@ def check_trend_stages(page, shots):
                                               'tokens': {'unit':'tokens', 'n':0, 'bins': []}},
                                 partial_count=1, note='임시 기록 기준이에요.'))
     page.route('**/api/trends/stages?*', respond)
-    page.goto(BASE + '/#/trends/stages'); page.wait_for_selector('.trend-stage-table')
+    page.goto(BASE + '/#/trends/stages'); page.wait_for_selector('.trend-donut')
     assert page.locator('.trend-subtabs [aria-current="page"]').inner_text() == '단계별 소요'
     assert page.locator('.trend-donut').count() == 2
     assert page.locator('.trend-donut circle[aria-label]').count() == 8
@@ -695,20 +714,14 @@ def check_trend_stages(page, shots):
     page.locator('.trend-dev-changes summary').click()
     assert page.locator('.trend-dev-changes a').get_attribute('href') == '#/issue/DEV-153-1'
     assert page.locator('.trend-dev-changes time').inner_text() == '2026-10-22 12:00'
-    assert page.locator('.trend-issue-row .ref').all_inner_texts() == ['STGE-1', 'STGE-2']
-    assert not page.locator('.trend-task-row').is_visible()
-    page.click('[data-stage-expand="STGE-1"]')
-    assert page.locator('.trend-task-row').is_visible()
-    assert '2회' in page.inner_text('.trend-task-row')
-    page.click('[data-stage-sort="total_machine_seconds"]')
-    assert page.locator('.trend-issue-row .ref').all_inner_texts() == ['STGE-2', 'STGE-1']
+    # Issue별 표는 이슈별 소요 탭으로 옮겼다(DEV-173-1)
+    assert page.locator('.trend-stage-table').count() == 0 and 'Issue별 소요' not in page.inner_text('#trend-results')
     page.check('#trend-human')
     assert page.locator('.trend-stage-labels li').count() == 7
     assert page.locator('.trend-donut-legend li').count() == 10
     human_colors = page.locator('.trend-stage-card').first.locator('.trend-donut circle[aria-label]').evaluate_all(
         '(nodes) => nodes.map(node => getComputedStyle(node).stroke)')
     assert len(human_colors) == len(set(human_colors))
-    assert '계획 결정 대기' in page.inner_text('.trend-stage-table thead')
     page.select_option('#trend-project', 'STGE')
     page.wait_for_function("document.querySelector('#trend-results')?.getAttribute('aria-busy') === 'false'")
     assert calls[-1]['project'] == ['STGE'] and calls[-1]['human'] == ['1']
@@ -731,7 +744,7 @@ def check_trend_stages(page, shots):
     assert page.locator('#trend-project').input_value() == 'STGE'
     assert page.locator('[data-trend-days="30"]').get_attribute('aria-pressed') == 'true'
     page.click('.trend-subtabs a[href="#/trends/stages"]')
-    page.wait_for_selector('.trend-stage-table')
+    page.wait_for_selector('.trend-donut')
     assert page.locator('#trend-project').input_value() == 'STGE'
     for theme in ('light', 'dark'):
         page.evaluate('t => {localStorage.setItem("dev.theme", t); paintTheme()}', theme)
