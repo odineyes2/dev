@@ -3511,6 +3511,30 @@ def check_edit_saving(page, shots):
     page.emulate_media(color_scheme='light')
 
 
+def check_page_gutter(page, shots):
+    """DEV-166: 모든 화면에서 로고·탭 첫 글자·본문 왼쪽 끝과 칩·본문 오른쪽 끝이 같은 x에 놓인다."""
+    probe = """() => {
+      const r = s => document.querySelector(s).getBoundingClientRect();
+      const cs = s => getComputedStyle(document.querySelector(s));
+      const tab = r('.tab-btn'), main = r('main'), m = cs('main'), t = cs('.tab-btn');
+      return {brand: r('.top .brand').left, tab: tab.left + parseFloat(t.paddingLeft),
+              mainL: main.left + parseFloat(m.paddingLeft), mainR: main.right - parseFloat(m.paddingRight),
+              chip: r('.header-right').right, scroll: document.documentElement.scrollWidth - innerWidth};
+    }"""
+    for route in ('', 'trends', 'agents', 'settings'):
+        for width in (1000, 1300, 1600, 1920, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.goto(BASE + '/#/' + route); page.wait_for_selector('main > *'); page.wait_for_timeout(300)
+            p = page.evaluate(probe)
+            where = (route or 'issues', width, p)
+            assert abs(p['brand'] - p['mainL']) < 1.5 and abs(p['tab'] - p['mainL']) < 1.5, where
+            assert abs(p['chip'] - p['mainR']) < 1.5, where
+            assert p['scroll'] <= 0, where
+            if width == 390:
+                assert abs(p['mainL'] - 16) < 1.5, where
+    page.set_viewport_size({'width': 1300, 'height': 850})
+
+
 def check_board_pan(page, shots):
     """빈 영역 이동과 포인터 정리, 기본 스크롤 및 카드 클릭을 검사한다."""
     board = page.locator('.kanban')
@@ -4644,6 +4668,10 @@ try:
             assert page.url.endswith('#/issue/NS-1')
             assert not errs, errs
             print('OK: project audits'); sys.exit(0)
+        if '--page-gutter-only' in sys.argv:
+            check_page_gutter(page, shots)
+            assert not errs, errs
+            print('OK: page gutter'); sys.exit(0)
         if '--regression-numbers-only' in sys.argv:
             check_regression_numbers(page, shots)
             assert not errs, errs
@@ -4720,6 +4748,7 @@ try:
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)
         check_harness(page, shots)
+        check_page_gutter(page, shots)
         if '--project-flows-only' in sys.argv:
             assert not errs, errs
             print('OK: project flows')
