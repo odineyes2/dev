@@ -2218,6 +2218,7 @@ composer.addEventListener('submit', async (e) => {
       status: 'backlog', attachment_ids: cmpFiles.map(f => f.data.id), assignee_agent_id: agent ? Number(agent) : undefined });
     cmpBody.value = ''; cmpBody.style.height = '';
     sharedLightbox?.close(); cmpFiles.splice(0).forEach(f => { if(f.preview) URL.revokeObjectURL(f.preview); });
+    closeComposer();
     toast(`${it.ref} 이슈를 발행했어요.`);
     void showPublishedNotice(it, {hash: location.hash, initial: `${it.ref} 이슈를 발행했어요.`, prefix: `${it.ref} 이슈를 발행했어요`});
     if(chain) await cmpReviewTop(it);
