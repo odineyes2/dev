@@ -159,11 +159,55 @@ assert usage.issue_summary('all', 'SUM', as_of=fixed_now)['summary']['created_is
 assert usage.issue_summary('today', 'EMPTY', as_of=fixed_now)['summary']['total_tokens'] == 0
 assert usage.issue_summary('all', as_of=fixed_now)['summary']['created_issue_count'] >= 3
 
+# 서울 시간의 월요일·월초·연초 경계와 과거 구간의 배타적 끝을 확인한다.
+monday = '2026-03-01T16:00:00+00:00'  # 3월 2일 월요일 01:00 KST
+for period, since, until in [
+    ('yesterday', '2026-02-28T15:00:00+00:00', '2026-03-01T15:00:00+00:00'),
+    ('week', '2026-03-01T15:00:00+00:00', monday),
+    ('last_week', '2026-02-22T15:00:00+00:00', '2026-03-01T15:00:00+00:00'),
+    ('last_month', '2026-01-31T15:00:00+00:00', '2026-02-28T15:00:00+00:00'),
+]:
+    window = usage.issue_summary(period, 'EMPTY', as_of=monday)
+    assert (window['since'], window['until']) == (since, until), window
+assert usage.issue_summary('last_month', 'EMPTY', as_of='2026-01-15T00:00:00+00:00')['since'] == '2025-11-30T15:00:00+00:00'
+assert usage.issue_summary('today', 'EMPTY', as_of=monday)['until'] == monday
+
+issues.create_project(human, 'BOUND', 'boundary')
+before = issues.create_issue(human, 'BOUND', 'before')
+at_end = issues.create_issue(human, 'BOUND', 'at end')
+crossing = issues.create_issue(human, 'BOUND', 'crossing')
+with db.connect() as c:
+    c.execute("UPDATE issues SET created_at=?,last_done_at=?,status='done' WHERE id=?",
+              ('2026-02-28T15:00:00+00:00', '2026-03-01T15:00:00+00:00', before['id']))
+    c.execute("UPDATE issues SET created_at=?,last_done_at=?,status='done' WHERE id=?",
+              ('2026-03-01T15:00:00+00:00', '2026-03-01T15:00:00+00:00', at_end['id']))
+    c.execute("UPDATE issues SET created_at=?,last_done_at=?,status='done' WHERE id=?",
+              ('2026-02-28T15:30:00+00:00', '2026-02-28T16:00:00+00:00', crossing['id']))
+    for started, ended, status, tokens in [
+        ('2026-02-28T14:00:00+00:00', '2026-03-01T16:00:00+00:00', 'ok', 3),
+        ('2026-02-28T16:00:00+00:00', '2026-03-01T16:00:00+00:00', 'ok', 5),
+        ('2026-02-28T17:00:00+00:00', None, 'running', 7),
+        ('2026-03-01T15:00:00+00:00', None, 'running', 11),
+    ]:
+        c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,input_tokens,output_tokens) "
+                  "VALUES(?,'review',?,'human:admin',?,?,?,0)",
+                  (crossing['id'], status, started, ended, tokens))
+    for request_id, started in [('audit-inside', '2026-02-28T16:00:00+00:00'),
+                                ('audit-at-end', '2026-03-01T15:00:00+00:00')]:
+        c.execute("""INSERT INTO project_audits(project_id,request_id,input_fingerprint,provider,actor,status,
+                  usage_json,created_at,updated_at,started_at,ended_at)
+                  VALUES(?,?,'test','codex','human:admin','complete','{"input_tokens":2,"output_tokens":0}',?,?,?,?)""",
+                  (crossing['project_id'], request_id, started, started, started, monday))
+past = usage.issue_summary('yesterday', 'BOUND', as_of=monday)['summary']
+assert (past['created_issue_count'], past['completed_issue_count']) == (2, 1), past
+assert (past['run_count'], past['running_run_count'], past['input_tokens']) == (4, 0, 14), past
+assert past['agent_seconds'] == 86400 + 82800 + 79200 + 82800, past
+
 # TestClient 시작 시 db.init()는 합성 running 실행을 orphaned로 바꾸므로 보존한다.
 with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
     assert client.get('/api/issue-summary?period=today&project=SUM').status_code == 401
     client.cookies.set('ns_session', 'temporary')
-    for period in ('today', 'month', 'year', 'all'):
+    for period in ('today', 'yesterday', 'week', 'last_week', 'month', 'last_month', 'year', 'all'):
         response = client.get(f'/api/issue-summary?period={period}&project=SUM')
         assert response.status_code == 200, response.text
         assert response.json()['period'] == period
