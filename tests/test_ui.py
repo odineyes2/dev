@@ -31,8 +31,9 @@ def check_queue_edges(page, shots):
         route.fulfill(json={'jobs': jobs, 'in_progress': []})
     page.route('**/api/jobs', respond)
     page.route('**/api/jobs/*/move', respond)
-    page.goto(BASE + '/#/'); page.wait_for_selector('.jobs-wait li')
-    controls = page.locator('.jobs-wait li:first-child button')
+    page.goto(BASE + '/#/'); page.reload(); page.wait_for_selector('.jobs-wait li:nth-child(3)')   # 같은 해시면 다시 불러오지 않아 모의 응답이 안 닿는다
+    page.wait_for_function("document.querySelector('.jobs-wait li:last-child a')?.textContent === 'DEV-13'")
+    controls =page.locator('.jobs-wait li:first-child button')
     assert controls.evaluate_all('bs => bs.map(b => b.dataset.dir || "cancel")') == ['top', 'up', 'down', 'bottom', 'cancel']
     assert page.locator('.jobs-wait li:first-child [data-dir="top"]').is_disabled()
     assert page.locator('.jobs-wait li:first-child [data-dir="up"]').is_disabled()
