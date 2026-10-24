@@ -87,7 +87,7 @@ main{ max-width:none; margin:0; padding-left:var(--page-gutter); padding-right:v
 .issue-summary-error{ color:var(--danger); font-size:13px; }
 .issue-summary-retry{ min-height:40px; margin-left:var(--sp-2); }
 /* 전역 Trend */
-.trend-page{ max-width:1180px; margin:0; min-width:0; }
+.trend-page{ min-width:0; }
 .trend-heading{ display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:var(--sp-3); margin-bottom:var(--sp-5); }
 .trend-scroll{ overflow-x:auto; max-width:100%; }
 .trend-chart text{ fill:currentColor; font:11px var(--mono); }
