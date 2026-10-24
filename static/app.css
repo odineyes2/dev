@@ -654,8 +654,11 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .auto-settings .auto-master-row h3{ margin:0; }
 .auto-master-row .switch-state{ white-space:nowrap; }
 .setting-row p{ margin:var(--sp-1) 0 0; font-size:13px; }
-.queue-limit{ display:flex; align-items:center; gap:var(--sp-2); flex-shrink:0; }
-.queue-limit input{ width:72px; }
+.queue-limit{ display:flex; align-items:center; flex-wrap:wrap; gap:var(--sp-2); flex-shrink:0; }
+.queue-limit input[type=number]{ width:72px; }
+.queue-field, .queue-unlimited{ display:inline-flex; align-items:center; gap:var(--sp-1); }
+.queue-unlimited{ margin-right:var(--sp-2); }
+@media (max-width:800px){ .queue-limit{ flex-shrink:1; } }
 .auto-switch{ flex:none; min-height:40px; border:none; background:transparent; padding:var(--sp-2); font-size:12px; }
 .switch-track{ display:block; width:40px; height:24px; border-radius:999px; background:var(--dim); padding:4px; }
 .switch-track::before{ content:''; display:block; width:16px; height:16px; border-radius:999px; background:var(--panel); transition:transform 150ms ease; }

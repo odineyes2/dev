@@ -3323,17 +3323,40 @@ async function renderQueueSettings(box, current){
   try { s = await api('GET', '/api/settings/queue', undefined, current); }
   catch(e){ if(current()) box.innerHTML = `<p class="error" role="alert">${esc(e.message)}</p>`; return; }
   if(!current()) return;
-  box.innerHTML = `<div class="setting-row"><div><b id="queue-limit-label">동시 실행 상한</b><p class="dim" id="queue-limit-help">대기열은 프로젝트마다 검토·실행 줄이 하나씩이에요. 모든 프로젝트를 합쳐 동시에 도는 작업을 이 수까지로 막아요(1~${s.max}). 늘리면 홈서버 부하와 사용량 소모가 빨라져요.</p></div>
-    <form class="queue-limit"><input type="number" id="queue-limit" min="1" max="${s.max}" step="1" value="${s.queue_concurrency}" required aria-labelledby="queue-limit-label" aria-describedby="queue-limit-help"><button type="submit">저장</button></form></div>
+  const field = (kind, label, value) => `<label class="queue-field">${label}<input type="number" class="queue-${kind}" min="1" max="${s.max}" step="1" value="${value ?? ''}" ${kind === 'total' ? 'id="queue-limit" required' : (value == null ? 'disabled' : '')} aria-describedby="queue-limit-help"></label>`
+    + (kind === 'total' ? '' : `<label class="queue-unlimited"><input type="checkbox" class="queue-${kind}-free" ${value == null ? 'checked' : ''}>무제한</label>`);
+  box.innerHTML = `<div class="setting-row"><div><b id="queue-limit-label">동시 실행 상한</b><p class="dim" id="queue-limit-help">대기열은 프로젝트마다 검토·실행 줄이 하나씩이에요. 전체·실행·검토 상한을 함께 지켜요(1~${s.max}). 낮춰도 이미 도는 작업은 끊지 않아요. 늘리면 홈서버 부하와 사용량 소모가 빨라져요.</p></div>
+    <form class="queue-limit" aria-labelledby="queue-limit-label">${field('total', '전체', s.queue_concurrency)}${field('execute', '실행', s.execute)}${field('review', '검토', s.review)}<button type="submit">저장</button></form></div>
+    <p id="queue-limit-busy" class="dim"></p>
+    <p id="queue-limit-hint" class="dim"></p>
     <p id="queue-limit-status" class="dim" role="status" aria-live="polite"></p>`;
-  const form = box.querySelector('form'), input = form.querySelector('input'), status = box.querySelector('#queue-limit-status');
+  const form = box.querySelector('form'), status = box.querySelector('#queue-limit-status');
+  const q = sel => form.querySelector(sel);
+  const readLimit = kind => q(`.queue-${kind}-free`).checked ? null : Number(q(`.queue-${kind}`).value);
+  const hint = () => {
+    const total = Number(q('.queue-total').value), ex = readLimit('execute'), rv = readLimit('review'), notes = [];
+    if(Number.isInteger(total)){
+      if((ex != null && ex > total) || (rv != null && rv > total)) notes.push(`전체 상한 ${total}개를 넘을 수 없어요.`);
+      if(ex != null && rv != null && ex + rv < total) notes.push('전체 상한이 실제로는 검토+실행 합계로 묶여요.');
+    }
+    box.querySelector('#queue-limit-hint').textContent = notes.join(' ');
+  };
+  const paint = () => {
+    for(const kind of ['execute', 'review']){ const free = q(`.queue-${kind}-free`), inp = q(`.queue-${kind}`); inp.disabled = free.checked; if(!free.checked && !inp.value) inp.value = s.queue_concurrency; }
+    box.querySelector('#queue-limit-busy').textContent = `지금 바쁨: 실행 ${s.busy.execute}·검토 ${s.busy.review} / 전체 ${s.queue_concurrency}`;
+    hint();
+  };
+  form.addEventListener('input', hint); form.addEventListener('change', paint);
+  paint();
+  const restore = () => { q('.queue-total').value = s.queue_concurrency; for(const kind of ['execute', 'review']){ q(`.queue-${kind}`).value = s[kind] ?? ''; q(`.queue-${kind}-free`).checked = s[kind] == null; } paint(); };
   form.onsubmit = async e => {
     e.preventDefault();
-    const value = Number(input.value), button = form.querySelector('button');
-    if(!Number.isInteger(value) || value < 1 || value > s.max){ status.textContent = `1~${s.max} 사이의 정수로 입력해 주세요.`; return; }
+    const total = Number(q('.queue-total').value), execute = readLimit('execute'), review = readLimit('review'), button = form.querySelector('button');
+    const bad = v => !Number.isInteger(v) || v < 1 || v > s.max;
+    if(bad(total) || (execute != null && bad(execute)) || (review != null && bad(review))){ status.textContent = `1~${s.max} 사이의 정수로 입력해 주세요.`; return; }
     button.disabled = true; button.textContent = '저장 중…'; status.textContent = '';
-    try{ s = await api('PUT', '/api/settings/queue', { queue_concurrency: value }, current); if(current()) status.textContent = `저장했어요 — 동시에 ${s.queue_concurrency}개까지 돌아요.`; }
-    catch(err){ if(current()){ input.value = s.queue_concurrency; status.textContent = `${err.message} 이전 값으로 되돌렸어요.`; } }
+    try{ s = await api('PUT', '/api/settings/queue', { queue_concurrency: total, execute, review }, current); if(current()){ paint(); status.textContent = `저장했어요 — 전체 ${s.queue_concurrency}개, 실행 ${s.execute ?? '무제한'}, 검토 ${s.review ?? '무제한'}.`; } }
+    catch(err){ if(current()){ restore(); status.textContent = `${err.message} 이전 값으로 되돌렸어요.`; } }
     finally{ if(current()){ button.disabled = false; button.textContent = '저장'; } }
   };
 }
