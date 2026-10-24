@@ -9,6 +9,57 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_composer_images(page, shots):
+    """빠른 입력창의 이미지 미리보기·라이트박스·정리와 네 화면을 확인한다."""
+    import base64
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers,
+                             data={'key': 'CMPIMG', 'name': '빠른 이미지 검사'}).ok
+    page.goto(BASE + '/#/'); page.reload(); page.wait_for_selector('#project-filter')
+    page.keyboard.press('Backquote')
+    page.wait_for_selector('#composer', state='visible')
+    png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=')
+    page.set_input_files('#cmp-file', {'name': 'preview.png', 'mimeType': 'image/png', 'buffer': png})
+    page.wait_for_selector('#cmp-files .cmp-thumb')
+    page.wait_for_function("!document.querySelector('#cmp-files .cmp-chip').textContent.includes('업로드 중')")
+    assert page.locator('#cmp-files .cmp-thumb').count() == 1
+    page.locator('.cmp-thumb').click()
+    assert page.locator('.attachment-lightbox').is_visible()
+    assert page.locator('.attachment-lightbox img').get_attribute('alt') == 'preview.png'
+    page.keyboard.press('Backquote')
+    assert page.locator('#composer').is_visible() and page.locator('.attachment-lightbox').is_visible()
+    page.keyboard.press('Escape')
+    assert page.locator('.attachment-lightbox').is_hidden() and page.locator('#composer').is_visible()
+    assert page.evaluate('document.activeElement?.classList.contains("cmp-thumb")')
+    for theme in ('light', 'dark'):
+        page.evaluate('t => {localStorage.setItem("dev.theme",t);document.documentElement.dataset.theme=t}', theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+            page.screenshot(path=str(shots / f'composer-image-{theme}-{width}.png'), full_page=True)
+    page.locator('[data-cmp-remove="0"]').click()
+    assert page.locator('.cmp-thumb').count() == 0
+    def fail_upload(route): route.fulfill(status=500, json={'detail': '업로드 검사 실패'})
+    page.route('**/api/attachments', fail_upload)
+    page.set_input_files('#cmp-file', {'name': 'failed.png', 'mimeType': 'image/png', 'buffer': png})
+    page.wait_for_selector('#cmp-files .cmp-chip.bad .cmp-thumb')
+    assert page.locator('.cmp-thumb').count() == 1
+    page.locator('[data-cmp-remove="0"]').click()
+    page.unroute('**/api/attachments', fail_upload)
+    assert page.locator('.cmp-thumb').count() == 0
+    page.set_input_files('#cmp-file', {'name': 'note.txt', 'mimeType': 'text/plain', 'buffer': b'note'})
+    page.wait_for_selector('#cmp-files .cmp-chip')
+    assert page.locator('.cmp-thumb').count() == 0
+    page.evaluate('closeComposer(true)')
+    assert page.locator('#cmp-files .cmp-chip').count() == 0
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate('localStorage.removeItem("dev.project");localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
+    token = page.request.get(BASE + '/api/projects/CMPIMG/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/CMPIMG', headers=headers,
+                               data={'confirmation_token': token}).ok
+
+
 def check_progress_note(page, shots):
     """상태 메모의 축약·전체 사유와 클릭 팝오버의 닫기를 확인한다."""
     long = 'DEV-157 작업이 끝날 때까지 기다려요 — 겹치는 파일: static/app.css, static/app.js, tests/test_ui.py'
@@ -4800,6 +4851,10 @@ try:
             check_new_attachment_images(page, shots)
             assert not errs, errs
             print('OK: new attachment images'); sys.exit(0)
+        if '--composer-images-only' in sys.argv:
+            check_composer_images(page, shots)
+            assert not errs, errs
+            print('OK: composer images'); sys.exit(0)
         if '--progress-only' in sys.argv:
             check_progress_refresh(page, shots)
             assert not errs, errs
@@ -4866,6 +4921,7 @@ try:
         check_regression_numbers(page, shots)
         check_attachments(page, shots)
         check_new_attachment_images(page, shots)
+        check_composer_images(page, shots)
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)
         check_harness(page, shots)

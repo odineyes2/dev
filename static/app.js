@@ -1965,33 +1965,12 @@ async function renderNew(params){
   depSearch.oninput = drawDeps;
   void loadDeps();
   const status = form.querySelector('#attachment-status'), list = form.querySelector('#n-attachments');
-  const lightbox = document.createElement('div');
-  lightbox.className = 'attachment-lightbox';
-  lightbox.setAttribute('role', 'dialog'); lightbox.setAttribute('aria-modal', 'true');
-  lightbox.setAttribute('aria-label', '첨부 이미지 크게 보기'); lightbox.hidden = true;
-  lightbox.innerHTML = '<div class="attachment-lightbox-content"><button type="button" class="attachment-lightbox-close" aria-label="닫기" title="닫기"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button><img alt=""><p></p></div>';
-  document.body.append(lightbox);
-  let lightboxReturn = null;
-  const closeLightbox = () => {
-    if(lightbox.hidden) return;
-    lightbox.hidden = true;
-    if(lightboxReturn?.isConnected) lightboxReturn.focus();
-    lightboxReturn = null;
-  };
-  lightbox.querySelector('button').onclick = closeLightbox;
-  lightbox.onclick = e => { if(e.target === lightbox) closeLightbox(); };
-  const lightboxKey = e => {
-    if(lightbox.hidden) return;
-    if(e.key === 'Escape'){ e.preventDefault(); closeLightbox(); }
-    if(e.key === 'Tab'){ e.preventDefault(); lightbox.querySelector('button').focus(); }
-  };
-  document.addEventListener('keydown', lightboxKey);
+  const lightbox = makeLightbox();
   const releasePreview = e => { if(e.preview){ URL.revokeObjectURL(e.preview); e.preview = null; } };
   const remove = a => api('DELETE', `/api/attachments/${encodeURIComponent(a.id)}`, undefined, () => !departed).catch(() => {});
   const leave = () => {
     departed = true; window.removeEventListener('hashchange', leave);
-    document.removeEventListener('keydown', lightboxKey);
-    lightbox.remove(); entries.forEach(releasePreview);
+    lightbox.destroy(); entries.forEach(releasePreview);
     if(!published && !saving) entries.forEach(e => { if(e.data) void remove(e.data); });
   };
   window.addEventListener('hashchange', leave);
@@ -2000,10 +1979,7 @@ async function renderNew(params){
     form.querySelector('[type=submit]').disabled = saving || entries.some(e => e.busy || e.error);
     list.querySelectorAll('[data-preview]').forEach(b => b.onclick = () => {
       const e = entries[+b.dataset.preview];
-      lightbox.querySelector('img').src = e.preview;
-      lightbox.querySelector('img').alt = `[이미지 ${e.imageNum}] ${e.name}`;
-      lightbox.querySelector('p').textContent = `[이미지 ${e.imageNum}] ${e.name}`;
-      lightboxReturn = b; lightbox.hidden = false; lightbox.querySelector('button').focus();
+      lightbox.open(e.preview, `[이미지 ${e.imageNum}] ${e.name}`, b);
     });
     list.querySelectorAll('[data-insert]').forEach(b => b.onclick = () => {
       const body = form.querySelector('#n-body'), tag = `[이미지 ${entries[+b.dataset.insert].imageNum}]`;
@@ -2071,19 +2047,62 @@ async function renderNew(params){
   }); });
 }
 
+let sharedLightbox = null;
+function makeLightbox(){
+  if(sharedLightbox) return sharedLightbox;
+  const box = document.createElement('div');
+  box.className = 'attachment-lightbox';
+  box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
+  box.setAttribute('aria-label', '첨부 이미지 크게 보기'); box.hidden = true;
+  box.innerHTML = '<div class="attachment-lightbox-content"><button type="button" class="attachment-lightbox-close" aria-label="닫기" title="닫기"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button><img alt=""><p></p></div>';
+  document.body.append(box);
+  const closeButton = box.querySelector('button');
+  let returnEl = null;
+  const close = () => {
+    if(box.hidden) return;
+    box.hidden = true;
+    box.querySelector('img').removeAttribute('src');
+    if(returnEl?.isConnected) returnEl.focus();
+    returnEl = null;
+  };
+  closeButton.onclick = close;
+  box.onclick = e => { if(e.target === box) close(); };
+  const onKey = e => {
+    if(box.hidden) return;
+    if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); close(); }
+    if(e.key === 'Tab'){ e.preventDefault(); closeButton.focus(); }
+  };
+  document.addEventListener('keydown', onKey);
+  sharedLightbox = {
+    get isOpen(){ return !box.hidden; },
+    open(src, label, trigger){
+      box.querySelector('img').src = src;
+      box.querySelector('img').alt = label;
+      box.querySelector('p').textContent = label;
+      returnEl = trigger; box.hidden = false; closeButton.focus();
+    },
+    close,
+    destroy(){ close(); document.removeEventListener('keydown', onKey); box.remove(); sharedLightbox = null; },
+  };
+  return sharedLightbox;
+}
+
 // ---- 빠른 발행 입력창(DEV-93) — 목록·Board에서 백틱으로 열고(우하단 FAB는 정식 발행 페이지 #/new 링크), Enter로 #/new를 거치지 않고 바로 발행한다 ----
 const composer = document.getElementById('composer'), cmpBody = document.getElementById('cmp-body');
 // 입력창이 커져도 발행 알림이 입력창과 겹치지 않도록 높이를 공유한다.
 new ResizeObserver(() => document.documentElement.style.setProperty('--composer-height', `${composer.offsetHeight}px`)).observe(composer);
-const cmpFiles = [];   // {name, file, busy, error, data}
+const cmpFiles = [];   // {name, file, busy, error, data, preview}
 let cmpSaving = false;
 function composerAllowed(){ const n = location.hash.replace(/^#\/?/, '').split(/[/?]/)[0]; return !n || n === 'board'; }
 function cmpDraw(){
-  document.getElementById('cmp-files').innerHTML = cmpFiles.map((f, i) => `<span class="cmp-chip${f.error ? ' bad' : ''}">${esc(f.name)}${f.busy ? ' · 업로드 중…' : f.error ? ' · 실패' : ''}
+  document.getElementById('cmp-files').innerHTML = cmpFiles.map((f, i) => `<span class="cmp-chip${f.error ? ' bad' : ''}">${f.preview ? `<button type="button" class="cmp-thumb" data-cmp-preview="${i}" aria-label="${esc(f.name)} 크게 보기"><img src="${f.preview}" alt=""></button>` : ''}${esc(f.name)}${f.busy ? ' · 업로드 중…' : f.error ? ' · 실패' : ''}
     <button type="button" data-cmp-remove="${i}" title="첨부 제거" aria-label="${esc(f.name)} 첨부 제거"${f.busy || cmpSaving ? ' disabled' : ''}><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button></span>`).join('');
   document.getElementById('cmp-send').disabled = cmpSaving || !cmpBody.value.trim() || cmpFiles.some(f => f.busy || f.error);
 }
-const cmpDelete = f => { if(f.data) void api('DELETE', `/api/attachments/${encodeURIComponent(f.data.id)}`).catch(() => {}); };
+const cmpDelete = f => {
+  if(f.preview){ URL.revokeObjectURL(f.preview); f.preview = null; }
+  if(f.data) void api('DELETE', `/api/attachments/${encodeURIComponent(f.data.id)}`).catch(() => {});
+};
 async function openComposer(){
   composer.hidden = false; cmpBody.focus(); cmpDraw();
   const active = projects.filter(p => !p.archived), proj = document.getElementById('cmp-project'), agent = document.getElementById('cmp-agent');
@@ -2096,11 +2115,12 @@ async function openComposer(){
 }
 // 닫아도 초안은 남긴다. 목록·Board를 떠날 때(discard)만 발행 안 된 첨부를 지운다.
 function closeComposer(discard){
+  sharedLightbox?.close();
   composer.hidden = true;
   if(discard && !cmpSaving){ cmpFiles.splice(0).forEach(cmpDelete); cmpDraw(); }
 }
 document.addEventListener('keydown', (e) => {
-  if(e.key !== '`' || e.ctrlKey || e.altKey || e.metaKey || e.isComposing || !composerAllowed() || document.getElementById('shell').hidden) return;
+  if(e.key !== '`' || e.ctrlKey || e.altKey || e.metaKey || e.isComposing || sharedLightbox?.isOpen || !composerAllowed() || document.getElementById('shell').hidden) return;
   const t = e.target;
   if(t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) return;   // 검색칸 등에서는 글자 그대로
   e.preventDefault();
@@ -2116,7 +2136,7 @@ cmpBody.addEventListener('input', () => { cmpBody.style.height = 'auto'; cmpBody
 document.getElementById('cmp-attach').onclick = () => document.getElementById('cmp-file').click();
 document.getElementById('cmp-file').onchange = (e) => {
   [...e.target.files].forEach(async file => {
-    const f = { name: file.name, file, busy: true, error: '' };
+    const f = { name: file.name, file, busy: true, error: '', preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : null };
     cmpFiles.push(f); cmpDraw();
     try{
       const body = new FormData(); body.append('file', file);
@@ -2128,10 +2148,16 @@ document.getElementById('cmp-file').onchange = (e) => {
   e.target.value = '';
 };
 document.getElementById('cmp-files').onclick = (e) => {
+  const preview = e.target.closest('[data-cmp-preview]');
+  if(preview){
+    const f = cmpFiles[+preview.dataset.cmpPreview];
+    if(f?.preview) makeLightbox().open(f.preview, f.name, preview);
+    return;
+  }
   const b = e.target.closest('[data-cmp-remove]');
   if(!b || cmpSaving) return;
   const [f] = cmpFiles.splice(+b.dataset.cmpRemove, 1);
-  if(f && !f.busy) cmpDelete(f);
+  if(f){ sharedLightbox?.close(); cmpDelete(f); }
   document.getElementById('cmp-error').textContent = ''; cmpDraw();
 };
 composer.addEventListener('submit', async (e) => {
@@ -2143,7 +2169,8 @@ composer.addEventListener('submit', async (e) => {
     const agent = document.getElementById('cmp-agent').value;
     const it = await api('POST', '/api/issues', { project: document.getElementById('cmp-project').value, title: '', body: cmpBody.value,
       status: 'backlog', attachment_ids: cmpFiles.map(f => f.data.id), assignee_agent_id: agent ? Number(agent) : undefined });
-    cmpBody.value = ''; cmpBody.style.height = ''; cmpFiles.length = 0;
+    cmpBody.value = ''; cmpBody.style.height = '';
+    sharedLightbox?.close(); cmpFiles.splice(0).forEach(f => { if(f.preview) URL.revokeObjectURL(f.preview); });
     toast(`${it.ref} 이슈를 발행했어요.`);
     void showPublishedNotice(it, {hash: location.hash, initial: `${it.ref} 이슈를 발행했어요.`, prefix: `${it.ref} 이슈를 발행했어요`});
     if(composerAllowed()) void route();   // 페이지는 그대로, 목록·Board만 다시 읽는다
