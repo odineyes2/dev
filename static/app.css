@@ -247,7 +247,8 @@ table.issues tr[hidden]{ display:none; }
 #list-body table.issues tr.child td.ref{ padding-left:calc(var(--sp-4) + var(--sp-5)); }
 table.issues tr.child td:first-child{ box-shadow:inset 2px 0 0 var(--border); }
 table.issues.tasks td:nth-child(2){ overflow-wrap:anywhere; }
-.task-actions{ display:flex; gap:var(--sp-1); }
+.task-actions{ display:flex; justify-content:space-between; gap:var(--sp-1); }
+.task-actions > button:only-child{ flex:1 1 auto; justify-content:center; }
 .task-actions button{ white-space:nowrap; }
 .tog{ all:unset; cursor:pointer; box-sizing:border-box; width:20px; height:20px; margin:0 4px 0 -6px; display:inline-flex; align-items:center; justify-content:center; color:var(--dim); vertical-align:middle; }
 .tog:hover{ color:var(--text); }
@@ -430,6 +431,7 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
   table.issues .hide-m, .tab-bar .hide-m{ display:none; }
   .issue-history-mobile{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim); }
   .task-actions{ flex-direction:column; padding:var(--sp-1) 0; }
+  .task-actions > button:only-child{ flex:none; }
   .task-actions button{ min-width:40px; min-height:40px; padding:var(--sp-2); }
   table.issues.tasks{ table-layout:fixed; }
   table.issues.tasks td:first-child{ width:72px; }
