@@ -710,6 +710,7 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 /* Action은 행 이동과 분리된 최소 40px 터치 영역을 제공한다. */
 .issue-actions{ display:flex; flex-wrap:nowrap; justify-content:flex-end; gap:var(--sp-1); }
 .issue-actions button{ min-width:40px; min-height:40px; padding:0 var(--sp-3); font-size:13px; justify-content:center; white-space:nowrap; }
+.issue-actions button:not([data-provider]), .issue-actions button[data-provider=""]{ min-width:calc(40px * 2 + var(--sp-1)); }
 .issue-actions button[data-provider]:not([data-provider=""]){ width:40px; padding:0; flex:none; }
 .issue-actions button[aria-disabled="true"]{ color:var(--dim); background:var(--panel-2); cursor:help; }
 .issue-actions button:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
