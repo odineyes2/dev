@@ -947,10 +947,14 @@ def _sync_terminal_status(c, actor, row, status, note):
                          **({'rollback_id': pending['id'], 'rollback_sha': pending['head']} if pending else {})})
 
 
-def set_status(actor, ref, status, note="", confirm_checks=False) -> dict:
+def set_status(actor, ref, status, note="", confirm_checks=False, attachment_ids=None) -> dict:
     status = str(status or "")
     if status not in db.STATUSES:
         raise StoreError(f"status는 {'/'.join(db.STATUSES)} 중 하나예요.")
+    if attachment_ids is not None and not isinstance(attachment_ids, list):
+        raise StoreError("첨부 ID 목록이 필요해요.")
+    if attachment_ids and status != "changes_requested":
+        raise StoreError("첨부는 수정 요청(changes_requested)에만 붙일 수 있어요.")
     if status in HUMAN_ONLY_STATUSES and not _is_human(actor):
         raise _forbidden("done/closed는 사람이 확인하고 바꿔요 — 끝냈으면 in_review로 올려 주세요.")
     note = _text(note, "메모", 20_000)
@@ -964,8 +968,14 @@ def set_status(actor, ref, status, note="", confirm_checks=False) -> dict:
             if status == "done":
                 _checks_gate(c, [row], confirm_checks)
             _sync_terminal_status(c, actor, row, status, note)
-        elif row["status"] != status:
-            _set_status(c, actor, row, status, note)
+        elif row["status"] != status or attachment_ids:
+            data = None
+            if attachment_ids:   # 같은 트랜잭션에서 연결 — 실패하면 상태도 바뀌지 않는다
+                import attachments
+                attachments.link(c, actor, row["id"], attachment_ids)
+                data = {"attachment_ids": list(attachment_ids)}
+            if row["status"] != status or data:
+                _set_status(c, actor, row, status, note, data)
         # 에이전트가 사람을 부를 때 폰 알림 — 헤드리스 실행 중의 in_review는 실행이 끝날 때 한 번만 보낸다
         if row['status'] != status and not _is_human(actor) and status == "on_hold":
             notify.send(row["ref"], "❓ 사람의 답이 필요해요", note)

@@ -777,3 +777,35 @@ with TestClient(A.app) as c:
         with db.connect() as cx:
             assert cx.execute('SELECT COUNT(*) FROM issues').fetchone()[0] == before
 print('OK Issue dependency creation and candidates REST')
+
+# 수정 요청의 참조 이미지(DEV-174-1) — status API의 attachment_ids 연결·거절·롤백.
+with TestClient(A.app) as c:
+    c.cookies.set('ns_session', 'adm')
+    png = b'\x89PNG\r\n\x1a\n' + b'0' * 16
+    up = lambda: ok(c.post('/api/attachments', headers=H, files={'file': ('ref.png', png, 'image/png')}))['id']
+    def review_issue(title):
+        it = ok(c.post('/api/issues', headers=H, json={'project': 'DEP', 'title': title}))
+        with db.connect() as cx:
+            cx.execute("UPDATE issues SET status='in_review' WHERE id=?", (it['id'],))
+        return it['ref']
+    attached = lambda ref: [a['id'] for a in ok(c.get('/api/issues/' + ref, headers=H))['attachments']]
+    st = lambda ref, **b: c.post(f'/api/issues/{ref}/status', headers=H, json=b)
+    # ① 연결 + 이벤트 기록
+    ref, aid = review_issue('첨부 수정 요청'), up()
+    r = st(ref, status='changes_requested', note='이 화면처럼요', attachment_ids=[aid])
+    assert r.status_code == 200 and r.json()['status'] == 'changes_requested', r.text
+    assert attached(ref) == [aid]
+    ev = [e for e in ok(c.get('/api/issues/' + ref, headers=H))['events'] if e['data'].get('attachment_ids')]
+    assert ev and ev[-1]['data']['attachment_ids'] == [aid]
+    # ② 다른 상태에는 첨부 불가
+    ref2, aid2 = review_issue('첨부 완료 시도'), up()
+    assert st(ref2, status='done', attachment_ids=[aid2]).status_code == 400
+    assert attached(ref2) == [] and ok(c.get('/api/issues/' + ref2, headers=H))['status'] == 'in_review'
+    # ③ 없는 첨부 → 실패하고 상태 불변
+    r = st(ref2, status='changes_requested', note='x', attachment_ids=[aid2, 'nope'])
+    assert r.status_code == 404, r.text
+    assert attached(ref2) == [] and ok(c.get('/api/issues/' + ref2, headers=H))['status'] == 'in_review'
+    assert st(ref2, status='changes_requested', note='x', attachment_ids='bad').status_code == 400
+    # ④ 첨부 없는 기존 호출은 그대로
+    assert st(ref2, status='changes_requested', note='첨부 없음').status_code == 200 and attached(ref2) == []
+print('OK Changes-requested reference attachments REST')

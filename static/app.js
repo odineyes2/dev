@@ -1382,6 +1382,9 @@ function resultHtml(it){
   if(it.status !== 'in_review') return '';
   return `<div class="panel"><h2>Result <span class="meta">결과를 확인해 주세요</span></h2>
     <div class="decision" id="result"><div id="result-form" hidden><textarea id="result-note"></textarea>
+      <div id="result-attach" hidden><div class="cmp-files" id="result-files"></div>
+        <button type="button" id="result-attach-btn">이미지 첨부</button>
+        <input type="file" id="result-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden></div>
       <div class="row-end"><button id="result-cancel">취소</button><button id="result-send"></button></div></div>
     <div class="review-actions" id="result-actions"><button id="approve" class="primary" ${it.execute?.result_approval_blocked ? 'disabled title="후속 검사·병합·운영 반영 확인이 끝나야 승인할 수 있어요."' : ''}>결과 승인 → 완료</button>
       ${it.children.length || it.parent_ref ? '<button class="complete-tree">전체 완료</button>' : ''}
@@ -1597,14 +1600,14 @@ async function renderIssue(ref, background = false){
   $('rating-clear').onclick = () => saveRating(null, '');
   view.querySelectorAll('tr.row').forEach(r => r.addEventListener('click', (e) => { if(!e.target.closest('a')) location.hash = `#/issue/${r.dataset.ref}`; }));
   // done/closed로 끝내면 목록으로 돌아간다(DEV-5) — 끝난 이슈 화면에 머물 일은 없다.
-  const setStatus = async (status, note) => {
+  const setStatus = async (status, note, attachmentIds) => {
     let updated;
     if(status === 'done' && it.merge_state === '병합 대기'
       && !confirm(`${it.ref}은(는) 아직 병합 대기 중이에요. Done으로 바꾸면 코드가 반영되지 않은 채 완료됩니다. 계속할까요?`)){
       $('status').value = it.status; return;
     }
     if(status === 'done' && !confirmChecks(it.human_checks)){ reload(); return; }
-    try{ updated = await api('POST', `/api/issues/${R}/status`, { status, ...(note === undefined ? {} : { note }), ...(status === 'done' ? { confirm_checks: true } : {}) }); }
+    try{ updated = await api('POST', `/api/issues/${R}/status`, { status, ...(note === undefined ? {} : { note }), ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}), ...(status === 'done' ? { confirm_checks: true } : {}) }); }
     catch(e){ reload(); return; }
     if(status === 'closed' && updated.status !== 'closed'){
       toast('롤백 후 운영 반영을 확인 중이에요 — 보류 상태로 남겨요.'); await reload(); return;
@@ -1649,17 +1652,53 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
   if($('approve')){
     $('approve').addEventListener('click', () => setStatus('done'));
     let to = null;
+    // 수정 요청 참조 이미지 — 빠른 발행과 같은 방식으로 먼저 올리고, 보낼 때 attachment_ids로 연결한다
+    const rFiles = [];   // {name, busy, error, data, preview}
+    const rDelete = f => { if(f.preview){ URL.revokeObjectURL(f.preview); f.preview = null; } if(f.data) void api('DELETE', `/api/attachments/${encodeURIComponent(f.data.id)}`).catch(() => {}); };
+    const rClear = () => rFiles.splice(0).forEach(rDelete);
+    window.addEventListener('hashchange', rClear, { once: true });   // 화면을 떠나면 연결 안 된 첨부를 지운다
+    const rDraw = () => {
+      $('result-files').innerHTML = rFiles.map((f, i) => `<span class="cmp-chip${f.error ? ' bad' : ''}">${f.preview ? `<span class="cmp-thumb"><img src="${f.preview}" alt=""></span>` : ''}${esc(f.name)}${f.busy ? ' · 업로드 중…' : f.error ? ' · 실패' : ''}
+        <button type="button" data-r-remove="${i}" title="첨부 제거" aria-label="${esc(f.name)} 첨부 제거"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button></span>`).join('');
+      $('result-send').disabled = rFiles.some(f => f.busy || f.error);
+    };
+    const rAdd = files => files.forEach(async file => {
+      if(!file.type.startsWith('image/')) return;
+      const f = { name: file.name || 'image.png', busy: true, error: '', preview: URL.createObjectURL(file) };
+      rFiles.push(f); rDraw();
+      try{
+        const body = new FormData(); body.append('file', file, f.name);
+        f.data = await api('POST', '/api/attachments', body);
+        if(!rFiles.includes(f)) rDelete(f);
+      }catch(err){ f.error = err.message; toast(`${f.name}: ${err.message} 제거하고 다시 첨부해 주세요.`); }
+      finally{ f.busy = false; rDraw(); }
+    });
     $('result-actions').querySelectorAll('[data-to]').forEach(b => b.addEventListener('click', () => {
       to = b.dataset.to; const f = RESULT_FORM[to];
       $('result-form').hidden = false; $('result-actions').hidden = true;
+      $('result-attach').hidden = to !== 'changes_requested';
       $('result-note').value = ''; $('result-note').placeholder = f.placeholder;
       $('result-send').textContent = f.send; $('result-send').className = f.cls; $('result-note').focus();
     }));
-    $('result-cancel').addEventListener('click', () => { $('result-form').hidden = true; $('result-actions').hidden = false; });
+    $('result-attach-btn').addEventListener('click', () => $('result-file').click());
+    $('result-file').addEventListener('change', (e) => { rAdd([...e.target.files]); e.target.value = ''; });
+    $('result-note').addEventListener('paste', (e) => {
+      if(to !== 'changes_requested') return;
+      const imgs = [...(e.clipboardData?.files || [])].filter(x => x.type.startsWith('image/'));
+      if(imgs.length){ e.preventDefault(); rAdd(imgs); }
+    });
+    $('result-files').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-r-remove]'); if(!b) return;
+      const [f] = rFiles.splice(+b.dataset.rRemove, 1); if(f) rDelete(f); rDraw();
+    });
+    $('result-cancel').addEventListener('click', () => { rClear(); rDraw(); $('result-form').hidden = true; $('result-actions').hidden = false; });
     $('result-send').addEventListener('click', (e) => {
       const note = $('result-note').value.trim();
       if(!note){ toast('메모를 적어 주세요'); return; }
-      whileBusy(e.currentTarget, () => setStatus(to, note));
+      const ids = to === 'changes_requested' ? rFiles.map(f => f.data.id) : [];
+      // 보낸 뒤에는 화면을 새로 그리므로 이 목록은 비운다(떠날 때 연결된 첨부를 지우지 않게). 실패하면 임시 첨부는 만료로 정리된다.
+      rFiles.splice(0).forEach(f => { if(f.preview) URL.revokeObjectURL(f.preview); });
+      whileBusy(e.currentTarget, () => setStatus(to, note, ids));
     });
   }
   if($('decision-actions')){
