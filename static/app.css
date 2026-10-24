@@ -148,6 +148,8 @@ main{ max-width:none; margin:0; padding-left:var(--page-gutter); padding-right:v
 .trend-stage-completion{ --stage-color:var(--s-done); }
 .trend-stage-plan_wait{ --stage-color:var(--s-changes_requested); }
 .trend-stage-done_wait{ --stage-color:var(--text); }
+.trend-stage-bar{ display:flex; width:120px; height:10px; border-radius:999px; overflow:hidden; background:var(--border); }
+.trend-stage-bar i{ display:block; height:100%; background:var(--stage-color); }
 .trend-stage-details{ margin:0 0 var(--sp-4); }
 .trend-stage-details summary{ min-height:40px; cursor:pointer; color:var(--accent); font-size:13px; }
 .trend-stage-labels{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-2) var(--sp-4); padding:0; margin:0 0 var(--sp-4); list-style:none; }
