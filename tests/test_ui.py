@@ -141,6 +141,8 @@ def check_composer_chain(page, shots):
     def send(text, key='Enter'):
         page.fill('#cmp-body', text); page.press('#cmp-body', key)
         page.wait_for_function("document.querySelector('#cmp-body').value === '' && !document.querySelector('#cmp-send').getAttribute('aria-busy')")
+        assert page.locator('#composer').is_hidden()
+        page.evaluate('openComposer()'); page.wait_for_selector('#composer', state='visible')
     send('토글 꺼짐 발행만')
     assert 'review' not in calls
     chain.click()
@@ -173,6 +175,48 @@ def check_composer_chain(page, shots):
     page.evaluate('localStorage.removeItem("dev.cmpChain");localStorage.removeItem("dev.project");localStorage.setItem("dev.theme","light");document.documentElement.dataset.theme="light"')
     token = page.request.get(BASE + '/api/projects/CMPCHN/delete-check').json()['confirmation_token']
     assert page.request.delete(BASE + '/api/projects/CMPCHN', headers=headers, data={'confirmation_token': token}).ok
+
+
+def check_composer_close(page, shots):
+    """빠른 발행의 버튼·Enter 성공 후 닫힘과 요청 실패 시 초안 유지를 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers,
+                             data={'key': 'CMPCLO', 'name': '빠른 발행 닫힘 검사'}).ok
+    page.goto(BASE + '/#/'); page.reload(); page.wait_for_selector('#project-filter')
+    for theme in ('light', 'dark'):
+        page.evaluate('t => {localStorage.setItem("dev.theme", t);document.documentElement.dataset.theme = t}', theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.evaluate('openComposer()'); page.wait_for_selector('#composer', state='visible')
+            page.select_option('#cmp-project', 'CMPCLO')
+            page.fill('#cmp-body', f'{theme} {width} 빠른 발행')
+            with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/api/issues')) as sent:
+                if width == 1300: page.click('#cmp-send')
+                else: page.press('#cmp-body', 'Enter')
+            assert sent.value.ok
+            expect(page.locator('#composer')).to_be_hidden()
+            assert page.input_value('#cmp-body') == ''
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.screenshot(path=str(shots / f'composer-close-{theme}-{width}.png'), full_page=True)
+    def fail_issue(route): route.fulfill(status=500, json={'detail': '발행 실패 검사'})
+    page.route('**/api/issues', fail_issue)
+    page.evaluate('openComposer()'); page.wait_for_selector('#composer', state='visible')
+    page.fill('#cmp-body', '실패하면 남길 초안')
+    with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/api/issues')) as failed:
+        page.press('#cmp-body', 'Enter')
+    assert failed.value.status == 500
+    expect(page.locator('#composer')).to_be_visible()
+    expect(page.locator('#cmp-error')).to_contain_text('입력과 첨부를 유지했어요')
+    assert page.input_value('#cmp-body') == '실패하면 남길 초안'
+    page.unroute('**/api/issues', fail_issue)
+    page.evaluate('closeComposer(true)')
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate('localStorage.setItem("dev.theme", "light");document.documentElement.dataset.theme = "light"')
+    page.emulate_media(color_scheme='light')
+    token = page.request.get(BASE + '/api/projects/CMPCLO/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/CMPCLO', headers=headers,
+                               data={'confirmation_token': token}).ok
 
 
 def check_progress_note(page, shots):
@@ -1908,13 +1952,13 @@ def check_published_notice(page, shots):
             page.click('#cmp-send')
             page.wait_for_function("document.querySelector('#cmp-body').value === '' && !document.querySelector('#cmp-send').getAttribute('aria-busy')")
             page.wait_for_function('s => document.querySelector("#toast").textContent.includes(s)', arg=expected)
-            assert page.url.endswith('/#/') and page.locator('#composer').is_visible()
+            assert page.url.endswith('/#/') and page.locator('#composer').is_hidden()
             if shot:
                 page.evaluate('window.scrollTo(0, 0)')
                 page.wait_for_timeout(250)
                 assert page.evaluate('document.documentElement.scrollWidth') <= page.viewport_size['width'] + 1
                 assert page.locator('#toast').evaluate('e => e.scrollWidth <= e.clientWidth && e.scrollHeight <= e.clientHeight')
-                assert page.locator('#toast').evaluate("e => e.getBoundingClientRect().bottom <= document.querySelector('#composer').getBoundingClientRect().top - 8")
+                assert page.locator('#toast').evaluate('e => e.getBoundingClientRect().bottom <= innerHeight && e.getBoundingClientRect().top >= 0')
                 page.screenshot(path=str(shot), full_page=True)
             page.evaluate('closeComposer()')
         mode = 'off'; quick('Manual 빠른 발행', '검토를 맡길 수 있어요')
@@ -5027,6 +5071,10 @@ try:
             check_composer_chain(page, shots)
             assert not errs, errs
             print('OK: composer chain'); sys.exit(0)
+        if '--composer-close-only' in sys.argv:
+            check_composer_close(page, shots)
+            assert not errs, errs
+            print('OK: composer close'); sys.exit(0)
         if '--attachments-only' in sys.argv:
             check_attachments(page, shots)
             assert not errs, errs
@@ -5107,6 +5155,7 @@ try:
         check_new_attachment_images(page, shots)
         check_composer_images(page, shots)
         check_composer_chain(page, shots)
+        check_composer_close(page, shots)
         check_queue_edges(page, shots)
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)
