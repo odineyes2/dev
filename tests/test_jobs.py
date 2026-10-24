@@ -405,6 +405,21 @@ with TestClient(A.app) as c:
     c.cookies.clear()
     assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'down', 'neighbor_id': ids[0]}, headers={'Authorization': f'Bearer {key}'}).status_code == 403
     assert order() == [ids[1], ids[0]]
+    # 맨 아래/맨 위: neighbor_id는 화면에서 본 마지막/첫 항목
+    c.cookies.set('ns_session', 'adm')
+    assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'bottom', 'neighbor_id': ids[0]}, headers=H).json()['moved']
+    assert order() == [ids[0], ids[1]]
+    assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'bottom', 'neighbor_id': ids[1]}, headers=H).json()['moved'] is False
+    assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'bottom', 'neighbor_id': ids[0]}, headers=H).status_code == 409
+    assert order() == [ids[0], ids[1]]
+    assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'top', 'neighbor_id': ids[0]}, headers=H).json()['moved']
+    assert order() == [ids[1], ids[0]]
+    assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'top', 'neighbor_id': ids[1]}, headers=H).json()['moved'] is False
+    assert c.post(f'/api/jobs/{ids[0]}/move', json={'direction': 'top', 'neighbor_id': ids[0]}, headers=H).status_code == 409
+    assert order() == [ids[1], ids[0]]
+    c.cookies.clear()
+    assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'bottom', 'neighbor_id': ids[0]}, headers={'Authorization': f'Bearer {key}'}).status_code == 403
+    assert order() == [ids[1], ids[0]]
     for i in ids:
         jobs.cancel(me, i)
 print('OK move')
