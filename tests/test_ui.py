@@ -4324,11 +4324,12 @@ def check_project_initialization(page, shots):
 
 
 def check_new_issue_fields(page):
-    """숨긴 Priority의 기본값을 유지하며 보이는 입력으로 발행한다."""
+    """새 Issue의 Project 포커스와 숨긴 Priority의 기본값을 확인한다."""
     r = page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
                           data={'key': 'FIELDS', 'name': '발행 필드 검사'})
     assert r.ok, r.text()
     page.goto(BASE + '/#/new'); page.reload(); page.wait_for_selector('#new-form')
+    expect(page.locator('#n-project')).to_be_focused()
     page.select_option('#n-project', 'FIELDS')
     assert page.locator('#n-priority').is_hidden()
     assert page.input_value('#n-priority') == 'none'
@@ -4340,6 +4341,9 @@ def check_new_issue_fields(page):
     issue = page.request.get(BASE + '/api/issues/FIELDS-1').json()
     assert issue['priority'] == 'none' and issue['labels'] == ['board', 'ui']
     assert '<h2>요구</h2>' in page.inner_html('#body')
+    page.goto(BASE + '/#/new?parent=FIELDS-1'); page.wait_for_selector('#new-form')
+    assert page.is_disabled('#n-project')
+    expect(page.locator('#n-body')).to_be_focused()
 
 
 def check_new_issue_dependencies(page, shots):
@@ -5549,8 +5553,8 @@ try:
 
         # 제목 없이 본문만(DEV-8) — 만들어지고 "(제목 없음…)"으로 보인다
         page.goto(BASE + "/#/new"); page.wait_for_selector("#n-body")
-        # 첫 커서는 Description, 제출 버튼은 [발행](DEV-87)
-        page.wait_for_function("document.activeElement && document.activeElement.id === 'n-body'")
+        # 첫 커서는 Project, 제출 버튼은 [발행](DEV-87)
+        expect(page.locator('#n-project')).to_be_focused()
         assert page.inner_text("#new-form button[type=submit]").strip() == "발행"
         page.fill("#n-body", "제목 없이 쓴 요구")
         page.click("#new-form button[type=submit]")

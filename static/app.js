@@ -2047,7 +2047,7 @@ async function renderNew(params){
     add(input.value.trim()); input.value = ''; status.textContent = '';
   };
   bindTypePicker(form);
-  view.querySelector('#n-body').focus();
+  form.querySelector(parent ? '#n-body' : '#n-project').focus();
   view.querySelector('#new-form').addEventListener('submit', (e) => { e.preventDefault(); if(saving || entries.some(e => e.busy || e.error)) return; whileBusy(submitBtn(e), async () => {
     saving = true; draw(); status.textContent = '발행 중…';
     form.querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = true);
