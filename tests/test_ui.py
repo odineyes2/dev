@@ -4355,14 +4355,14 @@ def check_new_issue_dependencies(page, shots):
         return result.json()
     for key in ('DEPA', 'DEPB'):
         post('/api/projects', {'key': key, 'name': key})
-    first = post('/api/issues', {'project': 'DEPA', 'title': '먼저 할 작업'})
+    first = post('/api/issues', {'project': 'DEPA', 'title': '선행후보 고유작업'})
     second = post('/api/issues', {'project': 'DEPA', 'title': '나중 작업'})
     other = post('/api/issues', {'project': 'DEPB', 'title': '다른 프로젝트 작업'})
     page.goto(BASE + '/#/new'); page.reload(); page.wait_for_selector('#new-form')
     page.select_option('#n-project', 'DEPA')
     page.wait_for_selector(f'[data-dep="{first["ref"]}"]')
     assert page.locator(f'[data-dep="{other["ref"]}"]').count() == 1
-    page.fill('#n-dep-search', '먼저')
+    page.fill('#n-dep-search', '선행후보 고유')
     assert page.locator('.dep-option').count() == 1
     page.locator(f'[data-dep="{first["ref"]}"]').click()
     assert page.locator(f'[data-dep-remove="{first["ref"]}"]').count() == 1
