@@ -21,7 +21,7 @@ def git(*a):
 def branch(ref, files):
     git("checkout", "-q", "-b", f"relay/{ref}", "main")
     for name, text in files.items():
-        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_text(text)
     git("add", "."); git("commit", "-qm", ref); git("checkout", "-q", "main")
 
@@ -238,6 +238,29 @@ status, note = orchestrate.deploy(str(repo), {**cfg, "busy_url": url + "/busy", 
 assert status == "on_hold" and restarts() == 2, note
 state["busy"] = 0
 
+# 마이그레이션이 미적용이면 주 앱과 워커를 재시작하지 않는다.
+migration = merged("T-10a", {"backend/migrations/025_new.sql": "SELECT 1;\n"})
+guarded = {**cfg, "migrations": {"glob": "backend/migrations/*.sql",
+           "applied_cmd": f'"{sys.executable}" -c "pass"'},
+           "workers": [{"app": "research-worker", "when": ["backend/*"]}],
+           "worker_busy_cmd": f'"{sys.executable}" -c "print(0)"'}
+status, note = orchestrate.deploy(str(repo), guarded, migration)
+assert status == "on_hold" and "마이그레이션 적용 필요" in note and restarts() == 2, note
+
+# 적용 뒤에는 주 앱과 해당 워커만 재시작한다.
+applied = {**guarded, "migrations": {**guarded["migrations"],
+           "applied_cmd": f'"{sys.executable}" -c "print(\'025_new\')"'}}
+status, note = orchestrate.deploy(str(repo), applied, migration)
+assert status == "merged" and restarts() == 2 and "워커 변경" in note, note
+assert log.read_text().splitlines()[-1] == "research-worker"
+
+# 워커 작업이 계속 실행 중이면 제한 뒤 보류한다.
+worker_sha = merged("T-10b", {"backend/worker.py": "pass\n"})
+with patch.object(orchestrate.restart_guard, 'check_worker_busy',
+                  return_value=orchestrate.restart_guard.WorkerBusyCheck('busy', 1)):
+    status, note = orchestrate.deploy(str(repo), {**guarded, "wait_minutes": 0}, worker_sha)
+assert status == 'on_hold' and '워커 실행 중 작업 대기 시간 초과' in note and restarts() == 2, note
+
 # health 실패 → revert 커밋, 다시 재시작해 복구 시도
 state["health"] = 500
 before = git("rev-parse", "HEAD")
@@ -319,6 +342,30 @@ with patch.object(orchestrate, 'run_tests', return_value=None), patch.object(not
                 assert sent.call_count == before_sent + 1
             else:
                 assert orchestrate.handle(me, ref) is None
+
+    # 실제 후처리 경로에서도 미적용 마이그레이션을 부모와 Task에 남기고 멈춘다.
+    ref, rid = ready(restart=True)
+    with db.connect() as c:
+        record_cfg = json.loads(orchestrate.completion(ref)['cfg_json'])
+        record_cfg['migrations'] = {'glob': 'feature-*.py', 'applied_cmd': f'"{sys.executable}" -c "pass"'}
+        c.execute('UPDATE execution_completion SET cfg_json=? WHERE run_id=?', (json.dumps(record_cfg), rid))
+    with patch.object(orchestrate, '_restart') as restarted:
+        assert orchestrate.handle(me, ref) == 'on_hold'
+        restarted.assert_not_called()
+    assert '마이그레이션 적용 필요' in str(issues.get_issue(ref)['events'])
+    assert '마이그레이션 적용 필요' in str(issues.get_issue(parent['ref'])['events'])
+
+    # 주 앱의 health 확인 뒤 변경된 워커도 재시작한다.
+    ref, rid = ready(restart=True)
+    with db.connect() as c:
+        record_cfg = json.loads(orchestrate.completion(ref)['cfg_json'])
+        record_cfg['workers'] = [{'app': 'research-worker', 'when': ['feature-*']}]
+        record_cfg['worker_busy_cmd'] = f'"{sys.executable}" -c "print(0)"'
+        c.execute('UPDATE execution_completion SET cfg_json=? WHERE run_id=?', (json.dumps(record_cfg), rid))
+    with patch.object(orchestrate, '_restart', return_value=None) as restarted, \
+            patch.object(orchestrate, '_verified_health', return_value=True):
+        assert orchestrate.handle(me, ref) == 'merged'
+        assert [call.args[1]['pm2_app'] for call in restarted.call_args_list] == ['dev', 'research-worker']
 
     # 검사 실패·커밋 변경·사람의 상태 변경을 구분한다.
     ref, _ = ready()

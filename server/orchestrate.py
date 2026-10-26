@@ -18,7 +18,10 @@
     {"DEV": {"auto_merge": true, "pm2_app": "dev", "health_url": "http://127.0.0.1:8300/api/health",
              "restart_when": ["server/*", "ecosystem.config.js"]},
      "NS":  {"auto_merge": false, "pm2_app": "nightshift", "health_url": "http://127.0.0.1:8000/api/health",
-             "restart_when": ["server/*", "ecosystem.config.js"], "busy_url": "http://127.0.0.1:8000/api/jobs/busy"}}
+             "restart_when": ["server/*", "ecosystem.config.js"], "busy_url": "http://127.0.0.1:8000/api/jobs/busy"},
+     "MO": {"migrations": {"glob": "backend/migrations/*.sql", "applied_cmd": "<읽기 전용 조회 명령>"},
+            "workers": [{"app": "moai-research-worker", "when": ["backend/research/*"]}],
+            "worker_busy_cmd": "<실행 중 작업 수 조회 명령>"}}
 """
 import fnmatch
 import hashlib
@@ -39,6 +42,7 @@ from pathlib import Path
 import config
 import issues
 import project_build
+import restart_guard
 from execute import BASE_BRANCH, SECRET_ENV, _run_git, branch_name
 
 SETTINGS = config.DATA_DIR / "orchestrate.json"
@@ -151,6 +155,49 @@ def _restart(repo, cfg) -> str | None:
     return ((r.stdout + r.stderr).strip()[-800:] or f"종료 코드 {r.returncode}") if r.returncode else None
 
 
+def _restart_guard(repo, cfg, sha, files):
+    """재시작 전에 스키마를 확인하고 변경된 워커의 안전한 재시작 대상을 정한다."""
+    migration = restart_guard.check_migrations(repo, cfg, sha)
+    if migration.status != 'clear':
+        return migration.message, ()
+    return '', restart_guard.worker_apps(files, cfg)
+
+
+def _wait_workers(repo, cfg, apps, say):
+    """워커 작업이 끝날 때까지 기다린다. 조회할 수 없으면 자동 재시작을 막는다."""
+    if not apps:
+        return True, ''
+    if not cfg.get('worker_busy_cmd'):
+        return True, f"워커 재시작 필요: {', '.join(apps)} — 작업 조회 설정이 없어 직접 확인해 주세요."
+    deadline = time.monotonic() + cfg['wait_minutes'] * 60
+    announced = False
+    while True:
+        busy = restart_guard.check_worker_busy(repo, cfg)
+        if busy.status == 'failed':
+            return False, '워커 실행 중 작업 확인 실패 — 재시작하지 않았어요.'
+        if busy.status == 'idle':
+            return True, ''
+        if not announced:
+            say(f"⏳ 실행 중인 워커 작업이 있어 {', '.join(apps)} 재시작을 기다려요(최대 {cfg['wait_minutes']}분).")
+            announced = True
+        if time.monotonic() >= deadline:
+            return False, f"워커 실행 중 작업 대기 시간 초과 — {', '.join(apps)} 재시작하지 않았어요."
+        time.sleep(min(cfg['poll_seconds'], max(0, deadline - time.monotonic())))
+
+
+def _restart_workers(repo, cfg, apps):
+    """주 앱 health와 독립적으로 워커 재시작 결과를 경고로 돌려준다."""
+    failures = [app for app in apps if _restart(repo, {**cfg, 'pm2_app': app})]
+    return f"⚠️ 워커 재시작 실패: {', '.join(failures)} — 직접 확인해 주세요." if failures else ''
+
+
+def _parent_guard_comment(actor, ref, note):
+    """마이그레이션 보류를 부모 Issue에도 알린다."""
+    parent = issues.get_issue(ref).get('parent_ref')
+    if parent:
+        issues.add_comment(actor, parent, note)
+
+
 OVERDUE_REPEAT_MINUTES = 60   # dev 재시작이 밀릴 때 알림을 다시 남기는 간격
 
 
@@ -250,15 +297,22 @@ def deploy(repo: str, cfg: dict, sha: str, say=lambda msg: None) -> tuple[str, s
     cfg = {**DEFAULTS, **cfg}
     files = _git(repo, "diff", "--name-only", f"{sha}^1", sha).stdout.split()
     hits = [f for f in files if any(fnmatch.fnmatch(f, p) for p in cfg["restart_when"])]
-    if not hits or not cfg.get("pm2_app"):
-        return "merged", _no_restart_note(hits)
+    blocked, workers = _restart_guard(repo, cfg, sha, files)
+    if blocked:
+        return 'on_hold', blocked
+    if not hits and not workers or not cfg.get('pm2_app'):
+        return 'merged', _no_restart_note(hits)
+    ready, worker_note = _wait_workers(repo, cfg, workers, say)
+    if not ready:
+        return 'on_hold', worker_note
     if _busy(cfg):
         say(f"⏳ 실행 중인 작업이 있어 끝나면 `{cfg['pm2_app']}`를 재시작할 예정이에요(최대 {cfg['wait_minutes']}분).")
         if not _wait_idle(cfg, None, say):
             return "on_hold", f"실행 중인 작업이 {cfg['wait_minutes']}분 안에 안 끝나 `{cfg['pm2_app']}`를 재시작하지 않았어요 — 병합은 됐으니 작업이 끝난 뒤 직접 재시작해 주세요."
-    err = _restart(repo, cfg)
-    if not err and _healthy(cfg):
-        return "merged", f"`{cfg['pm2_app']}`를 재시작했고 health 확인을 통과했어요({', '.join(hits[:5])} 변경)."
+    err = _restart(repo, cfg) if hits else None
+    if not err and (not hits or _healthy(cfg)):
+        warning = _restart_workers(repo, cfg, workers) if not worker_note else worker_note
+        return "merged", (f"`{cfg['pm2_app']}`를 재시작했고 health 확인을 통과했어요({', '.join(hits[:5])} 변경)." if hits else '워커 변경을 반영했어요.') + (' ' + warning if warning else '')
     why = f"재시작 명령이 실패했어요: {err}" if err else f"재시작 뒤 {cfg['health_seconds']}초 안에 health가 200이 아니었어요"
     r = _git(repo, "revert", "-m", "1", "--no-edit", sha)
     if r.returncode:
@@ -830,13 +884,19 @@ def _post_deploy(actor, repo, cfg, record):
     files = _git(repo, 'diff', '--name-only', f'{sha}^1', sha).stdout.split()
     hits = [f for f in files if any(fnmatch.fnmatch(f, p) for p in cfg['restart_when'])]
     built = bool(record.get('build_dir'))
+    blocked, workers = _restart_guard(repo, cfg, sha, files) if record['phase'] == 'deployed' else ('', restart_guard.worker_apps(files, cfg))
+    if blocked:
+        result = _finish(actor, record, 'on_hold', blocked)
+        if result:
+            _parent_guard_comment(actor, record['ref'], blocked)
+        return result
     if record['phase'] == 'deployed':
         if built:
             try:
                 project_build.deploy(repo, record['build_dir'])
             except project_build.BuildError as error:
                 _save(record, 'rollback_requested', note=record['note'] + '\n' + build_failure(error))
-        if record['phase'] == 'deployed' and (not hits and not built or not cfg.get('pm2_app')):
+        if record['phase'] == 'deployed' and (not hits and not built and not workers or not cfg.get('pm2_app')):
             if built:
                 good, warning = release_health(repo, cfg, sha, record['build_dir'])
                 if not good:
@@ -846,8 +906,12 @@ def _post_deploy(actor, repo, cfg, record):
             else:
                 return _finish(actor, record, 'merged', _no_restart_note(hits))
     if record['phase'] == 'deployed':
+        say = lambda body: issues.add_comment(actor, record['ref'], body)
+        workers_ready, worker_note = _wait_workers(repo, cfg, workers, say)
+        if not workers_ready:
+            return _finish(actor, record, 'on_hold', worker_note)
         while True:
-            decision = _wait_idle(cfg, record['run_id'], lambda body: issues.add_comment(actor, record['ref'], body), record['ref'])
+            decision = _wait_idle(cfg, record['run_id'], say, record['ref'])
             if decision == 'now':
                 try:
                     _interrupt_running(record['run_id'])
@@ -859,6 +923,9 @@ def _post_deploy(actor, repo, cfg, record):
             return _finish(actor, record, 'on_hold', '병합은 유지하고 새 작업 막기를 풀었어요. dev는 재시작 전까지 이전 코드로 실행돼요 — 나중에 직접 재시작해 주세요.')
         if not decision:
             return _finish(actor, record, 'on_hold', '작업 종료 대기 시간 제한을 넘었어요. 병합은 반영됐으며 재시작 확인이 필요해요.')
+        if not hits and not built:
+            warning = _restart_workers(repo, cfg, workers) if not worker_note else worker_note
+            return _finish(actor, record, 'merged', '워커 변경을 반영했어요.' + (' ' + warning if warning else ''))
         _save(record, 'restart_requested', process_id=PROCESS_ID)
         err = _restart(repo, cfg) if cfg.get('pm2_app') else None
         if err:
@@ -869,7 +936,16 @@ def _post_deploy(actor, repo, cfg, record):
         if good and built:
             good, warning = release_health(repo, cfg, sha, record['build_dir'])
         if good:
-            return _finish(actor, record, 'merged', warning or '재시작과 반영 health 확인을 통과했어요.')
+            worker_note = ''
+            if workers:
+                if cfg.get('worker_busy_cmd'):
+                    ready, worker_note = _wait_workers(repo, cfg, workers, lambda body: issues.add_comment(actor, record['ref'], body))
+                    if not ready:
+                        return _finish(actor, record, 'on_hold', worker_note)
+                    worker_note = _restart_workers(repo, cfg, workers)
+                else:
+                    worker_note = f"워커 재시작 필요: {', '.join(workers)} — 작업 조회 설정이 없어 직접 확인해 주세요."
+            return _finish(actor, record, 'merged', (warning or '재시작과 반영 health 확인을 통과했어요.') + (' ' + worker_note if worker_note else ''))
         _save(record, 'rollback_requested')
     if record['phase'] == 'rollback_requested':
         # revert 직후 종료됐으면 이미 생긴 복구 커밋을 다시 만들지 않는다.
