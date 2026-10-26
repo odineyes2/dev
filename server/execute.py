@@ -661,7 +661,7 @@ def _eligibility_reason(issue: dict, parent: dict | None, wait: bool = True) -> 
             children = previous["children"]  # 대체된 이전 판 Task는 get_issue가 제외한다.
             if not children or any(child["status"] != "done" for child in children):
                 return f"선행 이슈({blocker['ref']})가 끝나야 해요."
-            merge = predecessor_merge_reason({"project_key": issue["project_key"], "blocked_by": children})
+            merge = predecessor_merge_reason({"project_key": previous["project_key"], "blocked_by": children})
             if merge:
                 return f"선행 이슈({blocker['ref']})의 Task 병합을 기다려요 — {merge}"
     return None

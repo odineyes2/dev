@@ -490,17 +490,17 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
     return out
 
 
-def dep_candidates(project, include_review=False) -> list[dict]:
-    """발행 시 선행으로 고를 수 있는 같은 프로젝트의 이슈만 간단히 반환한다."""
+def dep_candidates(project, include_review=False, all_projects=False) -> list[dict]:
+    """발행 시 선행으로 고를 수 있는 이슈를 간단히 반환한다."""
     with db.connect() as c:
         proj = c.execute("SELECT id FROM projects WHERE key=?", (str(project or "").upper(),)).fetchone()
         if proj is None:
             raise _not_found("프로젝트")
         return [{"ref": r["ref"], "title": r["title"], "status": r["status"]} for r in c.execute(
             f"SELECT {ref_sql('i', 'p')} AS ref, i.title, i.status FROM issues i "
-            "JOIN projects p ON p.id=i.project_id WHERE i.project_id=? "
+            "JOIN projects p ON p.id=i.project_id WHERE " + ("1=1 " if all_projects else "i.project_id=? ") +
              "AND i.status NOT IN ('done','closed') " + ("" if include_review else "AND i.status!='in_review' ") +
-             "ORDER BY i.id DESC", (proj["id"],))]
+             "ORDER BY i.id DESC", () if all_projects else (proj["id"],))]
 
 
 def plan_revision_note(c, issue_id, version):
@@ -714,8 +714,8 @@ def _create_issue(c, actor, project, title, body="", priority="none", labels=Non
         if ref.strip().upper() == own_ref:
             raise StoreError("자기 자신을 선행 이슈로 지정할 수 없어요.")
         blocker = _find(c, ref)
-        if blocker["project_id"] != proj["id"] or blocker["status"] in ("done", "closed", "in_review"):
-            raise StoreError("선행 이슈는 같은 프로젝트의 진행 가능한 이슈여야 해요.")
+        if blocker["status"] in ("done", "closed", "in_review"):
+            raise StoreError("선행 이슈는 진행 가능한 이슈여야 해요.")
         if blocker["id"] not in [b["id"] for b in blockers]:
             blockers.append(blocker)
     iid = c.execute("INSERT INTO issues(project_id, number, sub_of, sub_number, parent_id, title, body, status, priority, labels_json, reporter, "
@@ -782,8 +782,8 @@ def update_issue(actor, ref, fields: dict) -> dict:
                 dep = _find(c, dep_ref)
                 if dep["id"] == row["id"]:
                     raise StoreError("자기 자신을 선행 이슈로 지정할 수 없어요.")
-                if dep["project_id"] != row["project_id"] or (dep["status"] in ("done", "closed") and dep["id"] not in old):
-                    raise StoreError("선행 이슈는 같은 프로젝트의 진행 가능한 이슈여야 해요.")
+                if dep["status"] in ("done", "closed") and dep["id"] not in old:
+                    raise StoreError("선행 이슈는 진행 가능한 이슈여야 해요.")
                 if dep["id"] not in [b["id"] for b in blockers]:
                     blockers.append(dep)
             new = {b["id"] for b in blockers}

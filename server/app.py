@@ -410,8 +410,8 @@ def api_projects():
 
 
 @app.get("/api/projects/{key}/dep-candidates")
-def api_dep_candidates(key: str, include_review: bool = False):
-    return {"issues": issues.dep_candidates(key, include_review)}
+def api_dep_candidates(key: str, include_review: bool = False, all_projects: bool = False):
+    return {"issues": issues.dep_candidates(key, include_review, all_projects)}
 
 
 @app.post("/api/projects")
