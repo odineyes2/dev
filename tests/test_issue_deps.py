@@ -49,8 +49,14 @@ with TestClient(A.app) as client:
     owned = issues.create_issue({"kind": "agent", "id": 1}, "NS", "owned")
     assert agent_patch(task, [b]).status_code == 403
     assert agent_patch(owned["ref"], [b]).status_code == 200
-    for bad in ([a], [other], refs[3:14], "bad", None):
+    for bad in ([a], refs[3:14], "bad", None):
         assert request("PATCH", f"/api/issues/{a}", json={"blocked_by": bad}).status_code == 400
+    cross = good("POST", "/api/issues", json={"project": "NS", "title": "cross", "blocked_by": [other]})["ref"]
+    assert good("GET", f"/api/issues/{cross}")["blocked_by"] == [{"ref": other, "status": "backlog"}]
+    assert request("PATCH", f"/api/issues/{other}", json={"blocked_by": [cross]}).status_code == 400
+    assert other not in [d["ref"] for d in good("GET", "/api/projects/NS/dep-candidates")["issues"]]
+    assert other in [d["ref"] for d in good("GET", "/api/projects/NS/dep-candidates?all_projects=true")["issues"]]
+    assert request("GET", "/api/projects/UNKNOWN/dep-candidates?all_projects=true").status_code == 404
     with db.connect() as conn:
         conn.execute("UPDATE issues SET status='in_review' WHERE id=?", (issues.get_issue(refs[13])["id"],))
         conn.execute("UPDATE issues SET status='done' WHERE id=?", (issues.get_issue(refs[14])["id"],))
@@ -68,15 +74,33 @@ with TestClient(A.app) as client:
     assert any("제거" in e["body"] for e in good("GET", f"/api/issues/{a}")["events"])
     assert not good("GET", f"/api/issues/{a}")["blocked_by"]
     assert issues.set_blocked_by(human_actor, a, [b])["blocked_by"][0]["ref"] == b
-    assert request("PATCH", f"/api/issues/{a}", json={"blocked_by": [other]}).status_code == 400
+    good("PATCH", f"/api/issues/{a}", json={"blocked_by": [other]})
+    assert [d["ref"] for d in good("GET", f"/api/issues/{a}")["blocked_by"]] == [other]
+    assert request("PATCH", f"/api/issues/{other}", json={"blocked_by": [a]}).status_code == 400
+    assert agent_patch(owned["ref"], [other]).status_code == 200
+    assert other in [d["ref"] for d in good("GET", f"/api/issues/{owned['ref']}")["blocked_by"]]
+    good("POST", f"/api/issues/{other}/status", json={"status": "closed"})
+    assert good("GET", f"/api/issues/{a}")["blocked_by"] == [{"ref": other, "status": "closed"}]
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM issue_deps d JOIN issues b ON b.id=d.blocked_by_id WHERE d.issue_id=? AND b.status<>'done'", (issues.get_issue(a)["id"],)).fetchone()[0] == 1
+    assert other not in [d["ref"] for d in good("GET", "/api/projects/NS/dep-candidates?all_projects=true")["issues"]]
+    assert request("PATCH", f"/api/issues/{b}", json={"blocked_by": [other]}).status_code == 400
+    assert request("DELETE", f"/api/issues/{other}").status_code == 204
+    assert not good("GET", f"/api/issues/{a}")["blocked_by"]
+    assert not good("GET", f"/api/issues/{cross}")["blocked_by"]
 
     # MCP 도구도 같은 저장소 검사를 사용한다.
     original_actor = mcp_tools._actor
     mcp_tools._actor = lambda: human_actor
     try:
-        result = mcp_tools.update_issue.fn(ref=a, blocked_by=[b]) if hasattr(mcp_tools.update_issue, "fn") else mcp_tools.update_issue(ref=a, blocked_by=[b])
+        mcp_create = mcp_tools.create_issue.fn if hasattr(mcp_tools.create_issue, "fn") else mcp_tools.create_issue
+        mcp_update = mcp_tools.update_issue.fn if hasattr(mcp_tools.update_issue, "fn") else mcp_tools.update_issue
+        new_other = good("POST", "/api/issues", json={"project": "DEV", "title": "MCP predecessor"})["ref"]
+        created = mcp_create(project="NS", title="MCP dependent", blocked_by=[new_other])
+        assert created["blocked_by"] == [{"ref": new_other, "status": "backlog"}]
+        result = mcp_update(ref=a, blocked_by=[new_other])
         assert result
-        assert [d["ref"] for d in good("GET", f"/api/issues/{a}")["blocked_by"]] == [b]
+        assert [d["ref"] for d in good("GET", f"/api/issues/{a}")["blocked_by"]] == [new_other]
     finally:
         mcp_tools._actor = original_actor
 
@@ -100,10 +124,25 @@ after = issues.create_issue(human_actor, "PD", "after", blocked_by=[before["ref"
 issues.post_plan(human_actor, after["ref"], "approved plan")
 issues.decide(human_actor, after["ref"], "approve", plan_version=1)
 task = issues.create_issue(human_actor, "PD", "later task", parent=after["ref"])
+other_repo = Path(tempfile.mkdtemp())
+subprocess.run(["git", "init", "-q", "-b", "main", str(other_repo)], check=True)
+(other_repo / "file.txt").write_text("other base", encoding="utf-8")
+subprocess.run(["git", "-C", str(other_repo), "add", "file.txt"], check=True)
+subprocess.run(["git", "-C", str(other_repo), "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], check=True)
+issues.create_project(human_actor, "PX", "cross-project dependency", "", str(other_repo))
+cross_after = issues.create_issue(human_actor, "PX", "after PD", blocked_by=[before["ref"]])
+issues.post_plan(human_actor, cross_after["ref"], "approved plan")
+issues.decide(human_actor, cross_after["ref"], "approve", plan_version=1)
+cross_task = issues.create_issue(human_actor, "PX", "later task", parent=cross_after["ref"])
 def reason(wait=True):
     return execute.blocked_reason(issues.get_issue(task["ref"]), issues.get_issue(after["ref"]), wait=wait)
+def cross_reason():
+    return execute.blocked_reason(issues.get_issue(cross_task["ref"]), issues.get_issue(cross_after["ref"]))
 
 assert before["ref"] in reason() and reason(wait=False) is None
+assert before["ref"] in cross_reason()
+with db.connect() as conn:
+    assert conn.execute("SELECT COUNT(*) FROM issues i WHERE i.id=? AND NOT EXISTS(SELECT 1 FROM issue_deps d JOIN issues b ON b.id=d.blocked_by_id WHERE d.issue_id=i.id AND b.status<>'done')", (cross_after["id"],)).fetchone()[0] == 0
 git("checkout", "-qb", execute.branch_name(prior_task["ref"]))
 (repo / "file.txt").write_text("changed", encoding="utf-8")
 git("commit", "-qam", "prior task")
@@ -111,12 +150,19 @@ git("checkout", "-q", "main")
 issues.set_status(human_actor, prior_task["ref"], "done")
 issues.set_status(human_actor, before["ref"], "in_review")
 assert "병합을 기다려요" in reason()
+assert "병합을 기다려요" in cross_reason()
 git("merge", "--ff-only", execute.branch_name(prior_task["ref"]))
 assert reason() is None
+assert cross_reason() is None
 issues.set_status(human_actor, prior_task["ref"], "backlog")
 assert before["ref"] in reason()
+assert before["ref"] in cross_reason()
 issues.set_status(human_actor, before["ref"], "done")
 assert reason() is None
+assert cross_reason() is None
+with db.connect() as conn:
+    assert conn.execute("SELECT COUNT(*) FROM issues i WHERE i.id=? AND NOT EXISTS(SELECT 1 FROM issue_deps d JOIN issues b ON b.id=d.blocked_by_id WHERE d.issue_id=i.id AND b.status<>'done')", (cross_after["id"],)).fetchone()[0] == 1
 issues.set_status(human_actor, before["ref"], "closed")
 assert reason() is None
+assert cross_reason() is None
 print("parent dependency eligibility: ok")
