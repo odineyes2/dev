@@ -85,10 +85,10 @@ function approvalHtml(a){   // 계획서 결정 배지 — 새 판이 올라와 
   if(a.stale) return `<span class="status dim" style="--sc:var(--s-in_progress)" title="새 계획서가 올라와 결정이 무효예요">결정 무효</span>`;
   return `<span class="status" style="--sc:var(--s-${VERDICT_COLOR[a.verdict]})">${VERDICT_LABEL[a.verdict]}</span>`;
 }
-function blockedHtml(bs){   // 선행 Task — 끝난 것은 흐리게, 아직인 것이 있으면 "대기"
+function blockedHtml(bs){   // 선행 이슈 — Done만 완료로 표시하고 상태를 함께 보여준다.
   if(!bs || !bs.length) return '';
-  const open = bs.some(b => !['done', 'closed'].includes(b.status));
-  return `<div class="sub">${open ? '대기 · ' : ''}선행: ${bs.map(b => `<a href="#/issue/${esc(b.ref)}" class="${['done', 'closed'].includes(b.status) ? 'dim' : ''}">${esc(b.ref)}</a>`).join(', ')}</div>`;
+  const open = bs.some(b => b.status !== 'done');
+  return `<div class="sub">${open ? '대기 · ' : ''}선행: ${bs.map(b => `<a href="#/issue/${esc(b.ref)}" class="${b.status === 'done' ? 'dim' : ''}">${esc(b.ref)}</a> ${statusHtml(b.status)}`).join(', ')}</div>`;
 }
 function labelsHtml(ls){ return (ls || []).map(l => `<span class="label">${esc(l)}</span>`).join(''); }
 function actorName(a){
@@ -1556,7 +1556,7 @@ async function renderIssue(ref, background = false){
   $('edit-deps').onclick = async () => {
     depSelected.clear(); (it.blocked_by || []).forEach(b => depSelected.add(b.ref));
     depDialog.showModal(); $('dep-status').textContent = '연관 이슈를 불러오는 중…';
-    try{ const result = await api('GET', `/api/projects/${encodeURIComponent(it.ref.split('-')[0])}/dep-candidates?include_review=true`);
+    try{ const result = await api('GET', `/api/projects/${encodeURIComponent(it.ref.split('-')[0])}/dep-candidates?include_review=true&all_projects=true`);
       if(!depDialog.isConnected || !depDialog.open) return;
       depCandidates = result.issues; $('dep-status').textContent = ''; drawDepEditor(); $('dep-search').focus();
     }catch(e){ if(depDialog.isConnected) $('dep-status').textContent = e.message; }
@@ -1976,10 +1976,10 @@ async function renderNew(params){
   };
   const loadDeps = async () => {
     const request = ++depRequest, project = form.querySelector('#n-project').value;
-    selectedDeps.clear(); depCandidates = []; depSearch.value = '';
+    depCandidates = [];
     depList.innerHTML = ''; depStatus.textContent = '연관 이슈를 불러오는 중…';
     try{
-      const result = await api('GET', `/api/projects/${encodeURIComponent(project)}/dep-candidates`, undefined, () => !departed && request === depRequest);
+      const result = await api('GET', `/api/projects/${encodeURIComponent(project)}/dep-candidates?all_projects=true`, undefined, () => !departed && request === depRequest);
       if(departed || request !== depRequest) return;
       depCandidates = result.issues; depStatus.textContent = ''; drawDeps();
     }catch(err){

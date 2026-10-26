@@ -4347,7 +4347,7 @@ def check_new_issue_fields(page):
 
 
 def check_new_issue_dependencies(page, shots):
-    """연관 이슈의 검색·복수 선택·프로젝트 전환·발행 저장을 확인한다."""
+    """프로젝트 간 선행 이슈의 선택·저장·상태 링크를 확인한다."""
     headers = {'X-Requested-With': 'dev'}
     def post(path, body):
         result = page.request.post(BASE + path, headers=headers, data=body)
@@ -4361,7 +4361,7 @@ def check_new_issue_dependencies(page, shots):
     page.goto(BASE + '/#/new'); page.reload(); page.wait_for_selector('#new-form')
     page.select_option('#n-project', 'DEPA')
     page.wait_for_selector(f'[data-dep="{first["ref"]}"]')
-    assert page.locator(f'[data-dep="{other["ref"]}"]').count() == 0
+    assert page.locator(f'[data-dep="{other["ref"]}"]').count() == 1
     page.fill('#n-dep-search', '먼저')
     assert page.locator('.dep-option').count() == 1
     page.locator(f'[data-dep="{first["ref"]}"]').click()
@@ -4370,12 +4370,14 @@ def check_new_issue_dependencies(page, shots):
     page.locator(f'[data-dep="{second["ref"]}"]').click()
     page.select_option('#n-project', 'DEPB')
     page.wait_for_selector(f'[data-dep="{other["ref"]}"]')
-    assert page.locator('.dep-tag').count() == 0
-    assert page.locator(f'[data-dep="{first["ref"]}"]').count() == 0
+    assert page.locator('.dep-tag').count() == 2
+    assert page.locator(f'[data-dep="{first["ref"]}"]').count() == 1
     page.select_option('#n-project', 'DEPA')
-    page.wait_for_selector(f'[data-dep="{first["ref"]}"]')
-    page.locator(f'[data-dep="{first["ref"]}"]').click()
-    page.locator(f'[data-dep="{second["ref"]}"]').click()
+    page.wait_for_selector(f'[data-dep="{other["ref"]}"]')
+    page.fill('#n-dep-search', other['ref'])
+    assert page.locator('.dep-option').count() == 1
+    page.locator(f'[data-dep="{other["ref"]}"]').click()
+    page.fill('#n-dep-search', '')
     for theme in ('light', 'dark'):
         page.emulate_media(color_scheme=theme)
         for width in (1300, 390):
@@ -4388,8 +4390,31 @@ def check_new_issue_dependencies(page, shots):
     page.click('#new-form button[type=submit]')
     page.wait_for_selector('h1#title')
     created = page.request.get(BASE + '/api/issues/' + page.url.rsplit('/', 1)[-1]).json()
-    assert {item['ref'] for item in created['blocked_by']} == {first['ref'], second['ref']}
+    assert {item['ref'] for item in created['blocked_by']} == {first['ref'], second['ref'], other['ref']}
     assert page.locator('.detail .sub').get_by_text('선행:').count() == 1
+    other_link = page.locator(f'.issue-deps a[href="#/issue/{other["ref"]}"]')
+    assert other_link.count() == 1
+    assert page.locator('.issue-deps .status').count() == 3
+    assert page.locator('.issue-deps').get_by_text('Backlog').count() >= 1
+    page.click('#edit-deps')
+    page.wait_for_selector(f'#dep-list [data-dep="{other["ref"]}"]')
+    assert page.locator(f'#dep-list [data-dep="{other["ref"]}"]').get_attribute('aria-pressed') == 'true'
+    page.locator(f'#dep-list [data-dep="{first["ref"]}"]').click()
+    page.click('#dep-save')
+    page.wait_for_selector('.issue-deps a')
+    updated = page.request.get(BASE + '/api/issues/' + created['ref']).json()
+    assert {item['ref'] for item in updated['blocked_by']} == {second['ref'], other['ref']}
+    assert page.locator(f'.issue-deps a[href="#/issue/{other["ref"]}"]').count() == 1
+    for theme in ('light', 'dark'):
+        page.emulate_media(color_scheme=theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.evaluate('t => document.documentElement.dataset.theme=t', theme)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), (theme, width)
+            page.screenshot(path=str(shots / f'issue-dependencies-{theme}-{width}.png'), full_page=True)
+    page.locator(f'.issue-deps a[href="#/issue/{other["ref"]}"]').click()
+    page.wait_for_url(BASE + '/#/issue/' + other['ref'])
+    expect(page.locator('h1#title')).to_have_text('다른 프로젝트 작업')
 
 
 def check_chat_connections(page, shots):
