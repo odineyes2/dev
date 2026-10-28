@@ -48,13 +48,25 @@ button.save[aria-busy="true"]{ justify-content:center; }
 [data-edit] + [data-delete-project]{ margin-left:6px; }
 
 /* 로그인 */
-.login{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:var(--sp-4); }
-.login-box{ width:100%; max-width:340px; display:flex; flex-direction:column; gap:var(--sp-3); background:var(--panel);
-  padding:var(--sp-6) 28px; border:1px solid var(--border); border-radius:var(--r-lg); box-shadow:var(--shadow-pop); }
-.login-box .brand{ justify-content:center; margin:0 0 var(--sp-1); }
-.login-box .brand-word{ font-size:15px; }
-.login-box p.dim{ text-align:center; margin:0 0 var(--sp-2); font-size:13px; }
-.login-box .primary{ justify-content:center; padding:10px; border-radius:999px; margin-top:var(--sp-1); }
+.login{ min-height:100vh; min-height:100dvh; display:flex; align-items:center; justify-content:center; position:relative;
+  padding:var(--sp-5) var(--sp-4); background-color:var(--bg);
+  background-image:radial-gradient(var(--border) 1px, transparent 1px); background-size:32px 32px; }
+.login-box{ width:min(100%, 320px); display:flex; flex-direction:column; align-items:stretch; gap:var(--sp-3); margin:0;
+  text-align:center; }
+.login-box .brand{ flex-direction:column; justify-content:center; gap:var(--sp-3); margin-bottom:var(--sp-2); }
+.login-box .brand svg{ width:20px; height:20px; }
+.login-box .brand-word{ font:600 12px/1.4 var(--mono); letter-spacing:var(--track-brand); }
+.login-intro{ color:var(--dim); font-size:13px; margin:0 0 var(--sp-4); }
+.login-tabs{ display:flex; justify-content:center; margin:0 0 var(--sp-2); }
+.login-tabs span{ min-height:40px; display:inline-flex; align-items:center; border-bottom:2px solid var(--accent);
+  color:var(--text); font:600 11px/1.4 var(--mono); letter-spacing:var(--track-nav); }
+.login-box input{ width:100%; height:46px; padding:var(--sp-3) var(--sp-4); border-radius:999px; text-align:center; font-size:13px;
+  background:var(--panel); color:var(--text); }
+.login-box input::placeholder{ color:var(--faint); }
+.login-box .primary{ width:100%; min-height:40px; justify-content:center; border-radius:999px; margin-top:0; }
+.login-box .error{ min-height:1.6em; margin-top:var(--sp-1); text-align:center; }
+.login-watermark{ position:absolute; bottom:var(--sp-2); left:50%; transform:translateX(-50%); color:var(--faint);
+  font:600 11px/1.4 var(--mono); letter-spacing:var(--track-brand); }
 
 /* DEV-166: 모든 화면의 헤더·탭줄·본문·재시작 배너가 같은 좌우 여백(--page-gutter)을 쓴다. 최대 폭 1440px은 여백 공식이 만든다. */
 body{ --page-max:1440px; --tab-pad:10px; --page-gutter:max(clamp(24px, calc((100vw - 900px) / 8), 74px), calc((100vw - var(--page-max)) / 2)); }

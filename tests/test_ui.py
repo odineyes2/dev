@@ -9,6 +9,31 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_login_screen(page, shots):
+    """로그인 전 화면의 구조와 낮·밤·화면 너비별 배치를 확인한다."""
+    assert page.locator('#login').is_visible()
+    assert page.locator('#shell').is_hidden()
+    assert page.locator('#login-form .brand-word').text_content() == 'Dev'
+    assert page.locator('.login-tabs [aria-current="page"]').inner_text() == 'LOG IN'
+    assert page.locator('.login-watermark').inner_text() == 'DEV'
+    assert page.locator('#login-form input').count() == 2
+    for theme in ('light', 'dark'):
+        page.evaluate('t => { localStorage.setItem("dev.theme", t); document.documentElement.dataset.theme = t; }', theme)
+        page.emulate_media(color_scheme=theme)
+        for width, height in ((1300, 850), (390, 800)):
+            page.set_viewport_size({'width': width, 'height': height})
+            assert page.evaluate('document.documentElement.scrollWidth') <= width
+            assert page.locator('#login-form').evaluate('e => getComputedStyle(e).backgroundColor') == 'rgba(0, 0, 0, 0)'
+            bounds = page.locator('#login-form').bounding_box()
+            assert bounds['x'] >= 0 and bounds['x'] + bounds['width'] <= width
+            assert abs(bounds['x'] + bounds['width'] / 2 - width / 2) <= 1
+            assert page.locator('.login-watermark').bounding_box()['y'] < height
+            page.screenshot(path=str(shots / f'login_{theme}_{width}.png'), full_page=True, animations='disabled')
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate('''() => { localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'; }''')
+    page.emulate_media(color_scheme='light')
+
+
 def check_queue_edges(page, shots):
     """대기열의 양 끝 이동 아이콘·순서·포커스·좁은 화면을 확인한다."""
     original_theme = page.evaluate("localStorage.getItem('dev.theme')")
@@ -2126,8 +2151,11 @@ def check_issue_types(page, shots):
     row = page.locator(f'.type-row[data-id="{added["id"]}"]')
     row.locator('input').fill('긴 종류 이름 ' + '테스트 ' * 12); row.locator('[type=submit]').click()
     page.wait_for_selector('#type-status:text("저장했어요")')
-    row = page.locator(f'.type-row[data-id="{a["id"]}"]'); row.locator('input').fill('이름 수정 확인'); row.locator('[type=submit]').click()
-    page.wait_for_function("document.querySelector('.type-row input').value === '이름 수정 확인' && document.querySelector('.type-row').getAttribute('aria-busy') !== 'true'")
+    row = page.locator(f'.type-row[data-id="{a["id"]}"]'); row.locator('input').fill('이름 수정 확인')
+    with page.expect_response(lambda response: response.request.method == 'PATCH' and response.url.endswith(f'/api/issue-types/{a["id"]}') and response.ok):
+        row.locator('[type=submit]').click()
+    expect(page.locator('#type-status')).to_have_text('저장했어요.')
+    expect(row.locator('input')).to_have_value('이름 수정 확인')
     row = page.locator(f'.type-row[data-id="{a["id"]}"]'); row.locator('[role=switch]').focus(); page.keyboard.press('Space')
     page.wait_for_selector(f'.type-row[data-id="{a["id"]}"] [aria-checked=false]')
     assert get()['type_ids'] == [a['id'], b['id']] and get()['types'][0]['active'] is False
@@ -4959,11 +4987,18 @@ try:
         page.on("dialog", on_dialog)
         page.goto(BASE)
         page.wait_for_selector("#login-form")
+        check_login_screen(page, shots)
         assert page.locator('#open-jupyter').get_attribute('hidden') is not None
         page.fill("#login-username", "admin"); page.fill("#login-password", "nope"); page.click("#login-form button")
         page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
+        assert page.locator('#login-error').is_visible()
+        assert page.locator('#login-error').bounding_box()['y'] > page.locator('#login-form button').bounding_box()['y']
+        page.screenshot(path=str(shots / 'login_error_light_1300.png'), full_page=True)
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        if '--login-only' in sys.argv:
+            assert not errs, errs
+            print('OK: login screen and authentication'); sys.exit(0)
         if '--task-alignment-only' in sys.argv:
             check_task_action_alignment(page, shots)
             assert not errs, errs
