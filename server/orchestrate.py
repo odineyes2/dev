@@ -357,7 +357,20 @@ def slowest_line(durations: dict, top=5) -> str:
 
 
 def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
-    """발견한 검사를 한 번씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다."""
+    """발견한 검사를 한 번씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다.
+    프로젝트가 이 단계에 격리 PostgreSQL을 켰으면 검사 동안만 띄워 넘긴다(DEV-183)."""
+    import isolated_pg
+    project = ref.split('-')[0] if ref else None
+    if not project:
+        return _run_tests(repo, stage, ref, changed, None)
+    with isolated_pg.cluster(project, stage, ref) as (extra, note):
+        if note:
+            issues.add_comment({'kind': 'human', 'name': 'system/isolated-pg'}, ref, f'⚠️ {stage}: {note}')
+        env = {**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, **extra} if extra else None
+        return _run_tests(repo, stage, ref, changed, env)
+
+
+def _run_tests(repo, stage, ref, changed, env) -> str | None:
     import regression
     selection = regression.resolve(ref, repo if ref or changed is not None else None, changed)
     policy = selection['checks']
@@ -386,7 +399,8 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
         if not policy.get('file:' + t.name, {'enabled': True})['enabled']:
             results[t.name] = 'skipped'
             continue
-        stamp = regression.fingerprint(t, identity) if ref else None
+        # 격리 PG가 있는 실행과 없는 실행(PG 검사 건너뜀)의 결과를 섞어 재사용하지 않는다.
+        stamp = regression.fingerprint(t, identity + (':isolated-pg' if env else '') if identity else identity) if ref else None
         if ref:
             meta['files'][t.name] = hashlib.sha256(t.read_bytes()).hexdigest()
         if stamp and cached.get(t.name) == stamp:
@@ -406,12 +420,12 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
             else:
                 miss[t.name] = '실행 환경(Python)이 다름'
         started = time.monotonic()
-        r = run_test(repo, t)
+        r = run_test(repo, t, env=env)
         # 불안정 검사 대책(DEV-160-3): 바뀐 검사는 완료 때 3번, 병합에서 실패한 검사는 2번 더 돌려 섞임을 가린다.
         runs, bad = [r], ([r] if r.returncode else [])
         if (stage == 'server_completion' and t.name in changed_tests) or (stage == 'server_merge' and r.returncode):
             for _ in range(2):
-                again = run_test(repo, t)
+                again = run_test(repo, t, env=env)
                 runs.append(again)
                 if again.returncode:
                     bad.append(again)
