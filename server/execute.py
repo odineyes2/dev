@@ -764,10 +764,18 @@ def collect_execution_captures(actor, ref, run_id, cwd, baseline):
     return ''
 
 
-def _run_then_merge(actor, ref, *args):
-    """실행 스레드 — 검증된 완료 기록부터 운영 반영까지 오케스트레이터가 처리한다."""
-    import orchestrate, review
-    if review.run_headless(actor, ref, *args) != "ok":
+def _run_then_merge(actor, ref, log_path, run_id, cmd, worktree, env, timeout, label, provider="claude"):
+    """실행 스레드 — 검증된 완료 기록부터 운영 반영까지 오케스트레이터가 처리한다.
+    프로젝트가 켠 경우 실행 동안만 격리 PostgreSQL을 띄워 에이전트 검사에 넘긴다(DEV-183)."""
+    import isolated_pg, orchestrate, review
+    project = ref.split("-")[0]
+    with isolated_pg.cluster(project, "agent", ref) as (extra, note):
+        cmd = with_notice(cmd, provider, isolated_pg.agent_notice(extra, note, project))
+        if note:
+            issues.add_comment(actor, ref, f"⚠️ {note}")
+        result = review.run_headless(actor, ref, log_path, run_id, cmd, worktree,
+                                     {**env, **extra} if extra else env, timeout, label, provider)
+    if result != "ok":
         return
     try:
         orchestrate.handle(actor, ref)
