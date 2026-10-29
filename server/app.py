@@ -886,7 +886,7 @@ async def api_manual_merge(ref: str, request: Request):
 
 @app.post('/api/issues/{ref}/register-repair', status_code=202)
 async def api_register_repair(ref: str, request: Request):
-    return await run_in_threadpool(execute.register_repair, human_only(request), ref)
+    return await run_in_threadpool(execute.register_repair, actor(request), ref)
 
 
 @app.post('/api/issues/{ref}/reproduce-checks', status_code=202)

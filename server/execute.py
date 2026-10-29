@@ -438,14 +438,26 @@ def repair_available(issue):
                         for e in issue.get('events', [])))
 
 
+def _repair_actor(c, actor, row, sha=None):
+    """담당 에이전트는 활성 점유와 직접 연결한 수정 커밋만 재제출한다."""
+    if actor['kind'] == 'human':
+        return
+    who = issues.actor_label(actor)
+    if actor['kind'] != 'agent' or row['claimed_by'] != who or not issues._lease_active(row):
+        raise issues.StoreError('현재 Task를 잡은 담당 에이전트만 수정 결과를 등록할 수 있어요.', 403)
+    if sha and not any(e['actor'] == who and sha.startswith(json.loads(e['data_json']).get('sha', '!'))
+                       for e in c.execute("SELECT actor,data_json FROM events WHERE issue_id=? AND kind='commit'", (row['id'],))):
+        raise issues.StoreError('담당 에이전트가 직접 연결한 수정 커밋이 필요해요.', 403)
+
+
 def register_repair(actor, ref):
-    """관리자가 연결한 수동 수정 커밋을 모델 재호출 없이 완료 검사에 넘긴다."""
+    """사람 또는 담당 에이전트의 수정 커밋을 모델 재호출 없이 완료 검사에 넘긴다."""
     import jobs
     import review
-    if actor['kind'] != 'human':
-        raise issues.StoreError('수정 결과 등록은 관리자만 할 수 있어요.', 403)
     issue = issues.get_issue(ref)
     ref = issue['ref']
+    with db.connect() as c:
+        _repair_actor(c, actor, issues._find(c, ref))
     if not repair_available(issue):
         raise issues.StoreError('완료 기록이 없는 보류·검토 Task만 수정 결과를 등록할 수 있어요.', 409)
     parent = issues.get_issue(issue['parent_ref'])
@@ -462,6 +474,8 @@ def register_repair(actor, ref):
     if not cwd.is_dir():
         raise issues.StoreError('Task 작업 경로가 폴더가 아니에요. 작업 폴더를 확인해 주세요.', 409)
     sha = _git(cwd, 'rev-parse', 'HEAD')
+    with db.connect() as c:
+        _repair_actor(c, actor, issues._find(c, ref), sha)
     work = None if commit_linked(issue, sha) else base_merge_over_linked(cwd, issue, sha)
     if work:
         issues.link_commit(actor, ref, sha, message=f'서버가 최신 {BASE_BRANCH}를 합친 병합 커밋 — 작업 커밋 {work[:7]}을 이어받음')
@@ -476,6 +490,7 @@ def register_repair(actor, ref):
         if why:
             raise issues.StoreError(why, 409)
         row = issues._find(c, ref)
+        _repair_actor(c, actor, row, sha)
         run = c.execute('SELECT * FROM runs WHERE issue_id=? ORDER BY id DESC LIMIT 1', (row['id'],)).fetchone()
         result = c.execute('SELECT * FROM task_execution_results WHERE run_id=?', (run['id'],)).fetchone()
         if (row['status'] != issue['status'] or run['status'] == 'running' or not result or result['state'] != 'processing' or

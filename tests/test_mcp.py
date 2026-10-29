@@ -64,6 +64,12 @@ async def main():
 
     async with client(key) as c:
         names = {t.name for t in await c.list_tools()}
+        assert 'register_repair' in names
+        try:
+            await c.call_tool('register_repair', {'ref': 'NS-1'})
+            raise AssertionError('unclaimed repair allowed')
+        except ToolError as error:
+            assert '담당 에이전트' in str(error)
         assert {"whoami", "list_issues", "get_issue", "claim_issue", "post_plan", "set_status", "add_comment",
                 "link_commit", "create_issue", "update_issue", "release_issue", "list_projects", "list_project_documents", "read_project_document"} <= names, names
         call = lambda tool_name, **kw: c.call_tool(tool_name, kw)
