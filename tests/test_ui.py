@@ -5150,17 +5150,17 @@ try:
                 page.evaluate('t => {document.documentElement.dataset.theme=t;localStorage.setItem("dev.theme",t)}', theme)
                 for width in (1300, 390):
                     page.set_viewport_size({'width':width, 'height':850})
-                    for kind in ('complete', 'delete', 'plain'):
+                    for kind in ('complete', 'delete', 'plain', 'default'):
                         page.evaluate("""kind => {
                           const options = kind === 'complete' ? {description:'하위 Task까지 모두 Done이 되고, 되돌릴 수 없어요.', items:Array.from({length:5}, (_,n)=>({ref:'DEV-193-'+n,title:'긴 이슈 제목이 한 줄을 넘으면 말줄임으로 표시되는지 확인해요 '.repeat(4)})),okText:'완료로 바꾸기',focusCancel:true} : kind === 'delete' ? {description:'계획서·활동 기록도 같이 지워져요.',okText:'지우기',danger:true,focusCancel:true} : {okText:'실행 맡기기'};
-                          window.confirmResult = confirmDialog(kind === 'complete' ? 'DEV-193을 완료할까요?' : kind === 'delete' ? 'DEV-193을 지울까요?' : '실행을 맡길까요?', options);
+                          window.confirmResult = confirmDialog(kind === 'complete' ? 'DEV-193을 완료할까요?' : kind === 'delete' ? 'DEV-193을 지울까요?' : '실행을 맡길까요?', kind === 'default' ? {} : options);
                         }""", kind)
                         dialog = page.locator('.confirm-dialog')
                         expect(dialog).to_be_visible()
                         assert dialog.evaluate('e => e.offsetWidth <= 400 && e.scrollWidth <= e.clientWidth')
                         assert dialog.locator('h2').evaluate("e => getComputedStyle(e).wordBreak") == 'keep-all'
                         assert dialog.locator('.confirm-ok.danger').count() == (1 if kind == 'delete' else 0)
-                        if kind != 'plain':
+                        if kind in ('complete', 'delete'):
                             assert dialog.locator('.confirm-cancel').evaluate('e => e === document.activeElement')
                         if kind == 'complete':
                             assert dialog.locator('.confirm-item').count() == 3
@@ -5168,6 +5168,19 @@ try:
                             assert dialog.locator('.confirm-item-title').first.evaluate("e => e.scrollWidth > e.clientWidth && getComputedStyle(e).textOverflow === 'ellipsis'")
                             assert dialog.locator('.confirm-ok').inner_text() == '완료로 바꾸기'
                         dialog.evaluate('e => Promise.all(e.getAnimations().map(a => a.finished))')
+                        # 버튼 외곽뿐 아니라 실제 라벨 영역의 가로·세로 중심을 확인한다.
+                        for button in dialog.locator('.confirm-actions button').all():
+                            metrics = button.evaluate("""e => {
+                              const style = getComputedStyle(e), box = e.getBoundingClientRect();
+                              const range = document.createRange(); range.selectNodeContents(e);
+                              const label = range.getBoundingClientRect();
+                              return {justify:style.justifyContent, align:style.alignItems,
+                                dx:Math.abs(label.x + label.width/2 - box.x - box.width/2),
+                                dy:Math.abs(label.y + label.height/2 - box.y - box.height/2),
+                                fits:label.left >= box.left && label.right <= box.right};
+                            }""")
+                            assert metrics['justify'] == metrics['align'] == 'center', metrics
+                            assert metrics['dx'] < 2 and metrics['dy'] < 2 and metrics['fits'], metrics
                         page.screenshot(path=str(shots / f'confirm-{kind}-{theme}-{width}.png'))
                         page.click('.confirm-cancel')
                         expect(dialog).to_have_count(0)
