@@ -6,6 +6,7 @@ import math
 import re
 
 import db
+import api_pricing
 import issues
 from review import token_count
 
@@ -221,12 +222,22 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
         parsed = _time(value)
         return parsed.astimezone(seoul).date() if parsed and parsed <= now else None
 
-    def collect(run, counts, active, issue_id=None):
+    api_cost = dict(estimated_api_cost_usd=0.0, cost_estimated_run_count=0,
+                    cost_approx_run_count=0, unpriced_tokens=0)
+
+    def collect(run, counts, active, issue_id=None, estimate=None):
         started = _time(run['started_at'])
         if started is None or started > now or started >= finish:
             return
         day = started.astimezone(seoul).date()
         if day in rows:
+            if estimate is not None:
+                if estimate['cost_usd'] is None:
+                    api_cost['unpriced_tokens'] += estimate['unpriced_tokens']
+                else:
+                    api_cost['estimated_api_cost_usd'] += estimate['cost_usd']
+                    api_cost['cost_estimated_run_count'] += 1
+                    api_cost['cost_approx_run_count'] += bool(estimate['approximate'])
             bucket = rows[day]
             bucket['run_count'] += 1
             bucket['unmeasured_run_count'] += any(value is None for value in counts)
@@ -284,17 +295,26 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
         run_overlap = (' AND julianday(r.started_at)<julianday(?) AND '
                        '(julianday(r.started_at)>=julianday(?) OR julianday(r.ended_at)>julianday(?) OR r.status=?)')
         bounds = (finish.isoformat(), begin.isoformat(), begin.isoformat())
-        for run in c.execute('SELECT r.issue_id,r.started_at,r.ended_at,r.status,r.input_tokens,r.output_tokens '
+        for run in c.execute('SELECT r.issue_id,r.started_at,r.ended_at,r.status,r.input_tokens,r.output_tokens,'
+                             'r.cost_usd,r.model,r.cache_write_tokens,r.cache_read_tokens '
                              'FROM runs r JOIN issues i ON i.id=r.issue_id WHERE 1=1' +
                              (' AND i.project_id=?' if project_id is not None else '') + run_overlap,
                              args + bounds + ('running',)):
             collect(run, [token_count(run[k]) for k in ('input_tokens', 'output_tokens')],
-                    run['status'] == 'running', run['issue_id'])
+                    run['status'] == 'running', run['issue_id'],
+                    api_pricing.estimate_cost(
+                        model=run['model'], input_tokens=token_count(run['input_tokens']),
+                        output_tokens=token_count(run['output_tokens']),
+                        cache_write_tokens=run['cache_write_tokens'],
+                        cache_read_tokens=run['cache_read_tokens'], cost_usd=run['cost_usd']))
         for run in c.execute('SELECT started_at,ended_at,status,usage_json FROM project_audits WHERE 1=1' +
                              scope + overlap, args + bounds):
             usage = json.loads(run['usage_json'])
-            collect(run, [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')],
-                    run['status'] in ('preparing', 'running', 'cancelling'))
+            audit_counts = [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')]
+            collect(run, audit_counts, run['status'] in ('preparing', 'running', 'cancelling'),
+                    estimate=api_pricing.estimate_cost(
+                        input_tokens=audit_counts[0], output_tokens=audit_counts[1],
+                        cost_usd=usage.get('cost_usd')))
         top = []
         if ranking:
             for start in range(0, len(ranking), 900):
@@ -314,6 +334,7 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
     summary = {key: sum(row[key] for row in daily) for key in
                ('created_issue_count', 'completed_issue_count', *_empty())}
     summary['partial'] = any(row['partial'] for row in daily)
+    summary.update(api_cost)
     return dict(project=project.upper() if project else None, from_date=start_day.isoformat(),
                 to_date=end_day.isoformat(), as_of=now.isoformat(), days=daily, summary=summary,
                 top_issues=top[:10], note='현재 보존된 기록 기준이에요. 토큰과 실행 수는 시작일, 시간은 서울 날짜별로 나눠요. 프로젝트 점검은 일별 합계에만 포함하고 작업 순위에서 제외해요. 병렬 실행 시간은 각각 합산해요.')
