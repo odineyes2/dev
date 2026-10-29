@@ -555,7 +555,7 @@ function actionKind(i){
     if(i.status==='in_review' && actionSession?.parentStatuses.get(i.parent_ref)==='triage') return 'task-approve';
     return i.status==='backlog' && valid(c.parent) ? 'execute' : '';
   }
-  if(i.status==='in_review' && c.has_children) return 'complete-tree';
+  if(i.status==='in_review') return 'complete-tree';
   if(['triage','backlog'].includes(i.status) && c.plan_version && !valid(c) && !c.approval?.revision_requested) return 'decision';
   return i.status==='backlog' && !c.plan_version && !c.has_children ? 'review' : '';
 }
