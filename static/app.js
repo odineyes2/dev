@@ -1559,7 +1559,7 @@ async function renderIssue(ref, background = false){
           ${it.children.length || it.parent_ref ? '<button class="complete-tree" title="최상위 이슈와 모든 Task를 한 번에 Done으로">전체 완료</button>' : ''}</div>
         <div class="field" hidden><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
         <div class="field"><span>Assignee</span><select id="assignee">${agentOpts}</select></div>
-        <div class="field" id="issue-type-editor">${typePicker(catalog.types, it.type_ids || [])}<p class="dim">${(it.types || []).some(t => t.source === 'agent') ? '자동 분류 결과예요.' : ''}</p><button id="save-types" type="button">종류 저장</button><p id="types-status" role="status"></p></div><div class="field"><span>Labels (쉼표로)</span><input id="labels" value="${esc(it.labels.join(', '))}"></div>
+        <div class="field" id="issue-type-editor">${typePicker(catalog.types, it.type_ids || [], {hint:false, legend:'종류', automatic:(it.types || []).some(t => t.source === 'agent')})}<button id="save-types" type="button">종류 저장</button><p id="types-status" role="status"></p></div><div class="field"><span>Labels</span><input id="labels" placeholder="쉼표로 구분" value="${esc(it.labels.join(', '))}"></div>
         <div class="field" id="rating-editor"><span>평가</span>
           <div class="stars" role="radiogroup" aria-label="평점">${[1, 2, 3, 4, 5].map(n => `<label title="${n}점"><input type="radio" name="rating" value="${n}"${it.rating === n ? ' checked' : ''} aria-label="${n}점"><span aria-hidden="true">${n <= (it.rating || 0) ? '★' : '☆'}</span></label>`).join('')}</div>
           <textarea id="rating-review" rows="3" maxlength="2000" aria-label="리뷰" placeholder="에이전트가 얼마나 잘 처리했나요?">${esc(it.review || '')}</textarea>
@@ -3543,8 +3543,8 @@ function typesHtml(it, showUnclassified = true){
   if(!(it.types || []).length) return showUnclassified ? '<span class="dim">미분류</span>' : '';
   return `<span class="issue-types">${it.types.map(t => `<span class="type-badge" title="${t.source === 'agent' ? '자동 분류' : t.source === 'human' ? '사람 선택' : '문서 생성 요청'}${t.active ? '' : ' · 비활성'}">#${esc(t.name).replace(/\s+/g, '')}</span>`).join('')}</span>`;
 }
-function typePicker(types, selected = []){
-  return `<fieldset class="type-picker"><legend>종류 (복수 선택)</legend><div>${types.filter(t => t.active || selected.includes(t.id)).map(t => `<button type="button" data-type="${t.id}" aria-pressed="${selected.includes(t.id)}">${esc(t.name)}${t.active ? '' : ' · 비활성'}</button>`).join('')}</div><p class="dim">비워 두면 검토를 맡길 때 Agent가 자동 분류해요.</p></fieldset>`;
+function typePicker(types, selected = [], opts = {}){
+  return `<fieldset class="type-picker"><legend>${esc(opts.legend || '종류 (복수 선택)')}${opts.automatic ? ' <span class="chip dim">자동</span>' : ''}</legend><div>${types.filter(t => t.active || selected.includes(t.id)).map(t => `<button type="button" data-type="${t.id}" aria-pressed="${selected.includes(t.id)}">${esc(t.name)}${t.active ? '' : ' · 비활성'}</button>`).join('')}</div>${opts.hint === false ? '' : '<p class="dim">비워 두면 검토를 맡길 때 Agent가 자동 분류해요.</p>'}</fieldset>`;
 }
 function bindTypePicker(root){
   root.querySelectorAll('[data-type]').forEach(b => b.onclick = () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')));
