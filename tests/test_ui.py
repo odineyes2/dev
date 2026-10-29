@@ -4119,7 +4119,8 @@ def check_board_actions(page, shots, answers, asked):
             {**item(4, parent={'plan_version':2,'approval':valid}), 'parent_id':100,'parent_ref':'ACT-100'},
             item(5,'in_review',plan_version=2), item(6,'triage',plan_version=2,approval=valid),
             {**item(7,has_execution=True,parent={'plan_version':2,'approval':valid}),'parent_id':100},
-            item(8,has_active_job=True), {**item(9),'parent_id':101},
+            {**item(8,has_active_job=True,has_execution=True,parent={'plan_version':2,'approval':valid}),'parent_id':100},
+            {**item(9),'parent_id':101},
             *[item(n,status,plan_version=2) for n,status in enumerate(
                 ('waiting','in_progress','done','closed','on_hold','changes_requested'),10)],
             {**item(20,parent={'plan_version':3,'approval':{**valid,'stale':True}}),'parent_id':102},
@@ -4163,8 +4164,11 @@ def check_board_actions(page, shots, answers, asked):
     try:
         for board in (False,True):
             ready(board)
-            assert page.locator('[data-action]').count() == 7
-            for kind, ref in [('review',1),('execute',4)]:
+            assert page.locator('[data-action]').count() == 9
+            for provider in ('claude','codex'):
+                assert btn(7,'execute',provider).count() == 1
+                assert btn(8,'execute',provider).count() == 0
+            for kind, ref in [('review',1),('execute',4),('execute',7)]:
                 for provider in ('claude','codex'):
                     btn(ref,kind,provider).click()
                     page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
@@ -4203,6 +4207,9 @@ def check_board_actions(page, shots, answers, asked):
                     btn(ref,kind,'claude').focus(); page.keyboard.press(key)
                     assert page.inner_text('#toast') == 'Auto 모드에서는 해당 버튼이 비활성화됩니다.'
                 btn(ref,kind,'codex').click(force=True)
+            for provider in ('claude','codex'):
+                assert btn(7,'execute',provider).get_attribute('aria-disabled') == 'true'
+                btn(7,'execute',provider).click(force=True)
             assert len(posts) == before and not asked
             settings.update(auto_review=False,auto_execute=False)
             ready(board)
@@ -4260,7 +4267,7 @@ def check_board_actions(page, shots, answers, asked):
         page.wait_for_selector('[data-action]')
         pending_settings.pop().fulfill(status=500,json={'detail':'오래된 오류'})
         page.wait_for_timeout(100)
-        assert page.locator('[data-action]').count() == 7
+        assert page.locator('[data-action]').count() == 9
         assert page.inner_text('#toast') != '오래된 오류'
         page.evaluate('localStorage.removeItem("dev.project")')
     finally:
