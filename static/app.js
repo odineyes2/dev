@@ -3482,12 +3482,41 @@ async function renderRegressionSettings(){
   };
 }
 
+// 서버 검사(완료 전·병합)를 프로젝트마다 몇 개씩 동시에 돌릴지(DEV-201). 비우면 기본값(dev 4·다른 프로젝트 1)을 쓴다.
+async function renderTestJobsSettings(box, current){
+  let s;
+  try { s = await api('GET', '/api/settings/test-jobs', undefined, current); }
+  catch(e){ if(current()) box.innerHTML = `<p class="error" role="alert">${esc(e.message)}</p>`; return; }
+  if(!current()) return;
+  const paint = () => {
+    box.innerHTML = `<div class="setting-row"><div><b id="test-jobs-label">동시 검사 수</b><p class="dim" id="test-jobs-help">Task 완료 전·병합 때 서버가 검사 파일을 프로젝트마다 몇 개씩 동시에 돌릴지예요(1~${s.max}). 비우면 기본값을 써요. 브라우저 검사는 늘 하나씩 돌아요. 늘리면 빨라지지만 홈서버 메모리를 더 써요.</p></div>
+      <form class="queue-limit test-jobs" aria-labelledby="test-jobs-label" novalidate>${s.projects.map(p => `<label class="queue-field">${esc(p.project)}<input type="number" class="test-jobs-${esc(p.project)}" data-project="${esc(p.project)}" min="1" max="${s.max}" step="1" value="${p.saved ?? ''}" placeholder="기본 ${p.default}" aria-describedby="test-jobs-help"></label>`).join('')}<button type="submit">저장</button></form></div>
+      <p id="test-jobs-status" class="dim" role="status" aria-live="polite"></p>`;
+    const form = box.querySelector('form'), status = box.querySelector('#test-jobs-status');
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const changes = [...form.querySelectorAll('input[data-project]')].map(input => ({ project: input.dataset.project, value: input.value === '' ? null : Number(input.value) }))
+        .filter(c => c.value !== (s.projects.find(p => p.project === c.project).saved ?? null));
+      if(changes.some(c => c.value != null && (!Number.isInteger(c.value) || c.value < 1 || c.value > s.max))){ status.textContent = `1~${s.max} 사이의 정수로 입력하거나 비워 주세요.`; return; }
+      if(!changes.length){ status.textContent = '바뀐 값이 없어요.'; return; }
+      const button = form.querySelector('button');
+      button.disabled = true; button.textContent = '저장 중…'; status.textContent = '';
+      try{
+        for(const change of changes) s = await api('PUT', '/api/settings/test-jobs', change, current);
+        if(current()){ paint(); box.querySelector('#test-jobs-status').textContent = '저장했어요 — ' + s.projects.map(p => `${p.project} ${p.value}개${p.saved == null ? '(기본)' : ''}`).join(', ') + '. 다음 검사부터 적용돼요.'; }
+      }catch(err){ if(current()){ const message = err.message; try{ s = await api('GET', '/api/settings/test-jobs', undefined, current); }catch(_){} paint(); box.querySelector('#test-jobs-status').textContent = `${message} 저장된 값을 다시 불러왔어요.`; } }
+    };
+  };
+  paint();
+}
+
 async function renderSettings(){
   const session = {};
   settingsSession = session;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><h3>Auto 위임 설정</h3><p class="dim">모든 프로젝트에 같은 위임 설정을 적용해요. 프로젝트를 바꿔도 설정은 같아요.</p><div id="settings-body"></div></section>`;
+  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><div id="test-jobs-settings"></div><h3>Auto 위임 설정</h3><p class="dim">모든 프로젝트에 같은 위임 설정을 적용해요. 프로젝트를 바꿔도 설정은 같아요.</p><div id="settings-body"></div></section>`;
   void renderQueueSettings(view.querySelector('#queue-settings'), current);
+  void renderTestJobsSettings(view.querySelector('#test-jobs-settings'), current);
   const body = view.querySelector('#settings-body');
   body.innerHTML = '<div class="settings-skeleton" aria-label="설정을 불러오는 중" aria-busy="true"></div>';
   let settings;

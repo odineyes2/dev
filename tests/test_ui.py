@@ -187,6 +187,51 @@ def check_queue_edges(page, shots):
     page.evaluate("t => {if(t === null) localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme', t); document.documentElement.dataset.theme=t || 'light'}", original_theme)
 
 
+def check_test_jobs(page, shots):
+    """Settings의 프로젝트별 동시 검사 수(DEV-201) — 기본값 자리표시, 바뀐 프로젝트만 저장, 비우면 기본값, 범위 밖 거절, 네 화면."""
+    original_theme = page.evaluate("localStorage.getItem('dev.theme')")
+    state = {'max': 12, 'projects': [
+        {'project': 'DEV', 'name': 'dev', 'value': 4, 'default': 4, 'saved': None, 'source': '기본값'},
+        {'project': 'NS', 'name': 'nightshift', 'value': 2, 'default': 1, 'saved': 2, 'source': 'Settings'}]}
+    puts = []
+    def respond(route):
+        if route.request.method == 'PUT':
+            body = route.request.post_data_json
+            puts.append(body)
+            row = next(p for p in state['projects'] if p['project'] == body['project'])
+            row.update(saved=body['value'], value=body['value'] or row['default'], source='Settings' if body['value'] else '기본값')
+        route.fulfill(json=state)
+    page.route('**/api/settings/test-jobs', respond)
+    page.goto(BASE + '/#/settings/auto'); page.reload()
+    box = page.locator('#test-jobs-settings')
+    expect(box.locator('.test-jobs-DEV')).to_have_attribute('placeholder', '기본 4')
+    expect(box.locator('.test-jobs-DEV')).to_have_value('')
+    expect(box.locator('.test-jobs-NS')).to_have_value('2')
+    box.locator('button[type=submit]').click()
+    expect(box.locator('#test-jobs-status')).to_have_text('바뀐 값이 없어요.')
+    box.locator('.test-jobs-DEV').fill('13')
+    box.locator('button[type=submit]').click()
+    expect(box.locator('#test-jobs-status')).to_contain_text('1~12 사이의 정수')
+    assert not puts
+    box.locator('.test-jobs-DEV').fill('6')
+    box.locator('.test-jobs-NS').fill('')
+    box.locator('button[type=submit]').click()
+    expect(box.locator('#test-jobs-status')).to_contain_text('DEV 6개, NS 1개(기본)')
+    assert puts == [{'project': 'DEV', 'value': 6}, {'project': 'NS', 'value': None}], puts
+    expect(box.locator('.test-jobs-NS')).to_have_attribute('placeholder', '기본 1')
+    for theme in ('light', 'dark'):
+        page.evaluate('t => {localStorage.setItem("dev.theme",t);document.documentElement.dataset.theme=t}', theme)
+        page.emulate_media(color_scheme=theme)
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            box.scroll_into_view_if_needed()
+            page.screenshot(path=str(shots / f'test-jobs-{theme}-{width}.png'), full_page=True)
+    page.unroute('**/api/settings/test-jobs', respond)
+    page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("t => {if(t === null) localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme', t); document.documentElement.dataset.theme=t || 'light'}", original_theme)
+
+
 def check_queue_limit(page, shots):
     """Settings 대기열 칸의 전체·실행·검토 입력 셋, 무제한 체크, 바쁜 수, 경고 문구, 네 화면을 확인한다."""
     original_theme = page.evaluate("localStorage.getItem('dev.theme')")
@@ -5303,6 +5348,10 @@ try:
             check_queue_limit(page, shots)
             assert not errs, errs
             print('OK: queue limit'); sys.exit(0)
+        if '--test-jobs-only' in sys.argv:
+            check_test_jobs(page, shots)
+            assert not errs, errs
+            print('OK: test jobs'); sys.exit(0)
         if '--queue-edges-only' in sys.argv:
             check_queue_edges(page, shots)
             assert not errs, errs
@@ -5621,6 +5670,7 @@ try:
         check_composer_chain(page, shots)
         check_composer_close(page, shots)
         check_queue_edges(page, shots)
+        check_test_jobs(page, shots)
         check_published_notice(page, shots)
         check_board_actions(page, shots, answers, asked)
         check_harness(page, shots)

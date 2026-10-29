@@ -998,6 +998,19 @@ async def api_update_queue_settings(request: Request):
     return await run_in_threadpool(lambda: jobs.set_concurrency(me, **fields))
 
 
+@app.get("/api/settings/test-jobs")
+def api_test_jobs_settings(request: Request):
+    human_only(request)
+    return orchestrate.test_jobs_settings()
+
+
+@app.put("/api/settings/test-jobs")
+async def api_update_test_jobs(request: Request):
+    me = human_only(request)
+    b = await json_body(request)
+    return await run_in_threadpool(orchestrate.set_test_jobs, me, b.get("project"), b.get("value"))
+
+
 @app.post("/api/issues/{ref}/decision")
 async def api_decision(ref: str, request: Request):
     b = await json_body(request)

@@ -335,13 +335,56 @@ def run_test(repo, t, args=(), env=None):
     return test_runner.run(repo, t, args, {k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env)
 
 
+TEST_JOBS_KEY = 'test_jobs:'   # app_settings 키 접두 — 프로젝트별 동시 검사 수(DEV-201)
+
+
 def test_jobs(project_key) -> int:
-    """서버 검사를 동시에 돌릴 파일 수(DEV-200). orchestrate.json의 `test_jobs`, 없으면 dev만 4·다른 프로젝트는 1(순차)."""
+    """서버 검사를 동시에 돌릴 파일 수(DEV-200). Settings 저장값 > orchestrate.json `test_jobs` > 기본(DEV 4·다른 프로젝트 1, 순차)."""
+    return test_jobs_info(project_key)['value']
+
+
+def test_jobs_info(project_key) -> dict:
+    """프로젝트의 동시 검사 수와 그 출처. 범위(1~CPU 수)를 벗어난 값은 잘라 쓴다."""
+    limit = os.cpu_count() or 1
+    clamp = lambda v: max(1, min(int(v), limit))  # noqa: E731
+    cfg = settings(project_key)
     try:
-        value = int(settings(project_key).get('test_jobs', 4 if project_key == 'DEV' else 1))
+        default = clamp(cfg.get('test_jobs', 4 if project_key == 'DEV' else 1))
     except (TypeError, ValueError):
-        value = 1
-    return max(1, min(value, os.cpu_count() or 1))
+        default = 1
+    with db.connect() as c:
+        row = c.execute('SELECT value FROM app_settings WHERE key=?', (TEST_JOBS_KEY + project_key,)).fetchone()
+    try:
+        saved = clamp(row['value']) if row else None
+    except (TypeError, ValueError):
+        saved = None
+    return {'project': project_key, 'value': saved or default, 'default': default, 'saved': saved,
+            'source': 'Settings' if saved else ('orchestrate.json' if 'test_jobs' in cfg else '기본값')}
+
+
+def test_jobs_settings() -> dict:
+    """Settings 화면용 — 보관하지 않은 프로젝트마다 동시 검사 수."""
+    return {'max': os.cpu_count() or 1,
+            'projects': [{**test_jobs_info(p['key']), 'name': p['name']} for p in issues.list_projects() if not p.get('archived')]}
+
+
+def set_test_jobs(actor, project_key, value) -> dict:
+    """사람만 바꾼다. None이면 저장값을 지워 기본값으로 돌아간다."""
+    if actor['kind'] != 'human':
+        raise issues.StoreError('동시 검사 수는 사람만 바꿀 수 있어요.', 403)
+    if project_key not in {p['key'] for p in issues.list_projects()}:
+        raise issues.StoreError('없는 프로젝트예요.', 404)
+    limit = os.cpu_count() or 1
+    if value is not None and (type(value) is not int or not 1 <= value <= limit):
+        raise issues.StoreError(f'동시 검사 수는 1~{limit} 사이의 정수예요.', 400)
+    with db.connect() as c:
+        if value is None:
+            c.execute('DELETE FROM app_settings WHERE key=?', (TEST_JOBS_KEY + project_key,))
+        else:
+            c.execute('INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES(?,?,?,?) '
+                      'ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by',
+                      (TEST_JOBS_KEY + project_key, str(value), db.now_iso(), issues.actor_label(actor)))
+    return test_jobs_settings()
 
 
 FLAKY_MARK = '불안정한 검사 —'   # 같은 코드에서 통과·실패가 섞인 검사(troubleshoot가 이 글자로 flaky를 가른다)
