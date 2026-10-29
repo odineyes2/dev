@@ -460,7 +460,7 @@ function followProgress(refresh, current){
 }
 const LIVE_MERGE = new Set(['병합 검사 중', '운영 반영 중', '재시작 확인 중', '복구 중', '복구 확인 중']);
 function activeProgress(i){ return i.review_running || i.job || i.execute?.reproduction?.result?.status === 'running' || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
-function splitProgress(text){
+function splitProgress(text, mode){
   if(text.length <= 20 && !text.includes('—')) return {short:text, long:''};
   const ref = '[A-Z][A-Z0-9]*-\\d+(?:-\\d+)?';
   let short = '';
@@ -475,14 +475,19 @@ function splitProgress(text){
     if(refs) short = `선행: ${refs}`;
   }
   if(!short && text.startsWith('동시 실행 상한')) short = '동시 실행 상한 대기';
-  if(!short) short = text.split('—')[0].trim();
+  if(!short){
+    const first = text.split('—')[0].trim();
+    short = Array.from(first).length > 20 ? (mode === 'review' ? '검토 대기' : '실행 대기') : first;
+  }
   if(Array.from(short).length > 28) short = Array.from(short).slice(0, 27).join('') + '…';
   return {short, long:text};
 }
 function progressHtml(i){
   const text = i.job?.note || i.merge_state || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
   if(!text) return '';
-  const {short, long} = splitProgress(text);
+  const {short, long} = i.job?.note_short
+    ? {short:i.job.note_short, long:i.job.note_short === text ? '' : text}
+    : splitProgress(text, i.job?.mode);
   return `<div class="progress-note"><span class="progress-short">${esc(short)}</span>${long ? `<button type="button" class="progress-more" aria-label="자세히 보기" title="자세히 보기" aria-expanded="false" data-progress="${esc(long)}">ⓘ</button>` : ''}</div>`;
 }
 let progressButton = null;
@@ -501,11 +506,8 @@ function positionProgress(){
   pop.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8))}px`;
   pop.style.top = `${anchor.bottom + box.height <= innerHeight - 8 ? anchor.bottom : Math.max(8, anchor.top - box.height)}px`;
 }
-document.addEventListener('click', e => {
-  const button = e.target.closest('.progress-more');
-  if(!button){ if(progressButton && !e.target.closest('#progress-pop')) closeProgress(); return; }
-  e.preventDefault(); e.stopPropagation();
-  if(progressButton === button){ closeProgress(); return; }
+function showProgress(button){
+  if(progressButton === button) return;
   closeProgress();
   progressButton = button;
   button.setAttribute('aria-expanded', 'true');
@@ -515,6 +517,21 @@ document.addEventListener('click', e => {
   pop.textContent = button.dataset.progress;
   document.body.append(pop);
   positionProgress();
+}
+document.addEventListener('mouseover', e => {
+  const button = e.target.closest('.progress-more');
+  if(button) showProgress(button);
+});
+document.addEventListener('mouseout', e => {
+  if(!progressButton || !e.target.closest('.progress-more, #progress-pop')) return;
+  if(e.relatedTarget?.closest?.('.progress-more, #progress-pop')) return;
+  closeProgress();
+});
+document.addEventListener('click', e => {
+  const button = e.target.closest('.progress-more');
+  if(!button){ if(progressButton && !e.target.closest('#progress-pop')) closeProgress(); return; }
+  e.preventDefault(); e.stopPropagation();
+  showProgress(button);
 }, true);
 document.addEventListener('keydown', e => { if(e.key === 'Escape') closeProgress(); });
 window.addEventListener('scroll', positionProgress, true);

@@ -295,7 +295,8 @@ def check_progress_note(page, shots):
     assert page.evaluate("splitProgress('구현 중')") == {'short': '구현 중', 'long': ''}
     assert page.evaluate('(s) => splitProgress(s)', long) == {'short': '대기: DEV-157', 'long': long}
     other = page.evaluate('(s) => splitProgress(s)', fallback)
-    assert other['long'] == fallback and other['short'].endswith('…') and len(other['short']) <= 28
+    assert other == {'short': '실행 대기', 'long': fallback}
+    assert page.evaluate('(s) => splitProgress(s, "review")', fallback) == {'short': '검토 대기', 'long': fallback}
     assert page.evaluate("splitProgress('선행 Task(DEV-42-1)가 done이 되어야 해요.')")['short'] == '선행: DEV-42-1'
     assert page.evaluate("splitProgress('DEV-79-3의 병합·운영 반영 완료를 기다려요')")['short'] == '병합 대기: DEV-79-3'
     assert page.evaluate("splitProgress('선행 이슈(DEV-79)의 Task 병합을 기다려요 — 검사 중')")['short'] == '병합 대기: DEV-79'
@@ -303,9 +304,11 @@ def check_progress_note(page, shots):
     assert page.request.post(BASE + '/api/projects', headers=h, data={'key': 'PN', 'name': '진행 메모 검사'}).ok
     parent = page.request.post(BASE + '/api/issues', headers=h, data={'project': 'PN', 'title': '진행 메모 부모'}).json()['ref']
     child = page.request.post(BASE + '/api/issues', headers=h, data={'project': 'PN', 'parent': parent, 'title': '진행 메모 Task'}).json()['ref']
+    assert page.request.post(BASE + f'/api/issues/{child}/status', headers=h, data={'status': 'waiting'}).ok
     page.goto(BASE + '/#/'); page.reload(); page.wait_for_selector('#list-project option[value="PN"]', state='attached')
     page.select_option('#list-project', 'PN')
     page.wait_for_selector(f'#list-body tr[data-ref="{child}"]')
+    assert 'Waiting' in page.locator(f'#list-body tr[data-ref="{child}"] td:nth-child(3)').inner_text()
     for theme in ('light', 'dark'):
         for width in (1300, 390):
             page.set_viewport_size({'width': width, 'height': 850})
@@ -324,6 +327,24 @@ def check_progress_note(page, shots):
             assert button.get_attribute('aria-expanded') == 'false' and page.locator('#progress-pop').count() == 0
             button.click(); page.locator('#list-body').click(position={'x': 2, 'y': 2})
             assert page.locator('#progress-pop').count() == 0
+            page.evaluate('ref => document.querySelector(\'#list-body tr[data-ref="\'+ref+\'"] .progress-note\').remove()', child)
+            page.evaluate("({ref,note}) => document.querySelector('#list-body tr[data-ref=\"'+ref+'\"] td:nth-child(3)').insertAdjacentHTML('beforeend', progressHtml({status:'waiting',job:{mode:'review',note,note_short:'검토 대기'}}))", {'ref': child, 'note': fallback})
+            short = page.locator(f'#list-body tr[data-ref="{child}"] .progress-short')
+            assert short.inner_text() == '검토 대기'
+            assert short.evaluate('e => e.getBoundingClientRect().height <= parseFloat(getComputedStyle(e).lineHeight) + 1')
+            button = page.locator(f'#list-body tr[data-ref="{child}"] .progress-more')
+            button.evaluate("e => e.scrollIntoView({block:'center'})")
+            button.hover()
+            assert page.locator('#progress-pop').inner_text() == fallback
+            page.locator('#list-body th').first.hover()
+            assert page.locator('#progress-pop').count() == 0
+            button.hover()
+            page.screenshot(path=str(shots / f'progress-short-list-{theme}-{width}.png'))
+            page.keyboard.press('Escape')
+            page.evaluate('ref => document.querySelector(\'#list-body tr[data-ref="\'+ref+\'"] .progress-note\').remove()', child)
+            page.evaluate("ref => document.querySelector('#list-body tr[data-ref=\"'+ref+'\"] td:nth-child(3)').insertAdjacentHTML('beforeend', progressHtml({job:{mode:'review',note:'검토 대기',note_short:'검토 대기'}}))", child)
+            assert page.locator(f'#list-body tr[data-ref="{child}"] .progress-short').inner_text() == '검토 대기'
+            assert page.locator(f'#list-body tr[data-ref="{child}"] .progress-more').count() == 0
             page.evaluate('ref => document.querySelector(\'#list-body tr[data-ref="\'+ref+\'"] .progress-note\').remove()', child)
             page.goto(BASE + f'/#/issue/{parent}'); page.wait_for_selector('.tasks tr.row')
             page.evaluate("note => document.querySelector('.tasks tr.row td:nth-child(3)').insertAdjacentHTML('beforeend', progressHtml({job:{note}}))", long)
