@@ -157,6 +157,24 @@ async def api_manual_usage_ingest(request: Request):
     return await run_in_threadpool(manual_usage.ingest, await json_body(request))
 
 
+@app.get('/api/manual-usage/connection')
+async def api_manual_usage_connection(request: Request):
+    human_only(request)
+    return await run_in_threadpool(manual_usage.connection_status)
+
+
+@app.post('/api/manual-usage/connection')
+async def api_manual_usage_connect(request: Request):
+    human_only(request)
+    return await run_in_threadpool(manual_usage.set_connection, True)
+
+
+@app.delete('/api/manual-usage/connection')
+async def api_manual_usage_disconnect(request: Request):
+    human_only(request)
+    return await run_in_threadpool(manual_usage.set_connection, False)
+
+
 @app.get("/api/health")
 def health(execution_identity: bool = False):
     import orchestrate

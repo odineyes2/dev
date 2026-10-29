@@ -83,3 +83,69 @@ with TestClient(A.app) as client:
     assert send(headers=new_headers).json() == {'inserted': 0}
 
 print('manual usage API OK')
+
+
+# 실제 홈 대신 임시 홈에만 연결 설정을 쓴다.
+import json
+from unittest.mock import patch
+home = Path(tempfile.mkdtemp())
+os.environ['DEV_MANUAL_USAGE_HOME'] = str(home)
+settings = home / '.claude' / 'settings.json'
+settings.parent.mkdir()
+other = {'type': 'command', 'command': 'echo other'}
+original = {'theme': 'dark', 'hooks': {'Stop': [{'matcher': '', 'hooks': [other]}],
+                                     'SessionStart': [{'hooks': [other]}]}}
+settings.write_text(json.dumps(original), encoding='utf-8')
+
+async def fake_user(cookie):
+    return {'id': 1, 'username': 'admin', 'role': 'admin'} if cookie == 'admin-test' else (
+        {'id': 2, 'role': 'user'} if cookie == 'user-test' else None)
+
+connection = '/api/manual-usage/connection'
+with patch.object(auth, 'nightshift_user', fake_user), TestClient(A.app, headers={'X-Requested-With': 'dev'}) as client:
+    for method in ('get', 'post', 'delete'):
+        request = getattr(client, method)
+        assert request(connection).status_code == 401
+        assert request(connection, headers={'Authorization': 'Bearer ' + agent_key}).status_code == 403
+        assert request(connection, headers=new_headers).status_code == 401
+        client.cookies.set('ns_session', 'user-test')
+        assert request(connection).status_code == 403
+        client.cookies.clear()
+    client.cookies.set('ns_session', 'admin-test')
+    assert client.get(connection).json()['connected'] is False
+    assert client.post(connection).json()['connected'] is True
+    assert json.loads(settings.with_name('settings.json.bak').read_text(encoding='utf-8')) == original
+    first = json.loads(settings.read_text(encoding='utf-8'))
+    assert first['theme'] == 'dark'
+    assert first['hooks']['SessionStart'] == original['hooks']['SessionStart']
+    assert first['hooks']['Stop'][0] == original['hooks']['Stop'][0]
+    assert client.post(connection).status_code == 200
+    assert json.loads(settings.read_text(encoding='utf-8')) == first
+    for event in ('Stop', 'SessionEnd'):
+        owned = [h for g in first['hooks'][event] for h in g['hooks'] if M._ours(h)]
+        assert len(owned) == 1
+        assert '--url' in owned[0]['command'] and '--key-file' in owned[0]['command']
+        assert (config.DATA_DIR / 'manual_usage.key').read_text() not in owned[0]['command']
+    # 같은 묶음에 들어간 남의 훅도 끊을 때 남긴다.
+    first['hooks']['SessionEnd'][0]['hooks'].append(other)
+    settings.write_text(json.dumps(first), encoding='utf-8')
+    active_key = (config.DATA_DIR / 'manual_usage.key').read_text()
+    assert client.delete(connection).json()['connected'] is False
+    disconnected = json.loads(settings.read_text(encoding='utf-8'))
+    assert disconnected['theme'] == 'dark'
+    assert disconnected['hooks']['Stop'] == original['hooks']['Stop']
+    assert disconnected['hooks']['SessionEnd'][0]['hooks'] == [other]
+    assert not M.authorized('Bearer ' + active_key)
+    assert not (config.DATA_DIR / 'manual_usage.key').exists()
+    assert client.delete(connection).status_code == 200
+    for invalid in ('{broken', '[]', '{"hooks": []}', '{"hooks":{"Stop":{}}}'):
+        settings.write_text(invalid, encoding='utf-8')
+        backup = settings.with_name('settings.json.bak').read_bytes()
+        for method in ('get', 'post', 'delete'):
+            assert getattr(client, method)(connection).status_code == 409
+            assert settings.read_text(encoding='utf-8') == invalid
+            assert settings.with_name('settings.json.bak').read_bytes() == backup
+    settings.unlink()
+    assert client.post(connection).json()['connected'] is True
+    assert client.delete(connection).json()['connected'] is False
+print('manual usage connection API OK')
