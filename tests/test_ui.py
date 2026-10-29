@@ -4522,22 +4522,28 @@ def check_chat_connections(page, shots):
     page.set_viewport_size({'width': 1300, 'height': 850})
 
 
-def check_fab(page):
+def check_fab(page, alignment_only=False):
     """탭 바에는 새 이슈 버튼이 없고, 목록·Board 우하단 FAB는 #/new 링크, composer는 백틱 전용(DEV-125)."""
-    for size in ({'width': 1300, 'height': 850}, {'width': 390, 'height': 800}):
+    for size in ({'width': 1900, 'height': 850}, {'width': 1300, 'height': 850}, {'width': 390, 'height': 800}):
         page.set_viewport_size(size)
         page.goto(BASE + '/#/'); page.wait_for_selector('#project-filter')
         assert page.locator('.tab-bar a[href="#/new"]').count() == 0
         for route in ('/#/', '/#/board'):
             page.goto(BASE + route); page.wait_for_selector('#fab-new', state='visible')
             box = page.locator('#fab-new').bounding_box()
-            assert size['width'] - box['x'] - box['width'] <= 24 and size['height'] - box['y'] - box['height'] <= 24, box
+            gutter, header_gutter = page.evaluate("() => [parseFloat(getComputedStyle(document.querySelector('main')).paddingRight), parseFloat(getComputedStyle(document.querySelector('.top')).paddingRight)]")
+            assert abs(size['width'] - box['x'] - box['width'] - gutter) < 1 and abs(gutter - header_gutter) < 1, (box, gutter, header_gutter)
+            assert size['height'] - box['y'] - box['height'] <= 24, box
+        if alignment_only:
+            continue
         page.click('#fab-new'); page.wait_for_selector('#new-form', state='visible')
         assert page.evaluate('location.hash') == '#/new' and not page.locator('#fab-new').is_visible()
         page.goto(BASE + '/#/'); page.wait_for_selector('#fab-new', state='visible')
         page.evaluate('openComposer()'); page.wait_for_selector('#composer', state='visible')
         assert not page.locator('#fab-new').is_visible()
         page.keyboard.press('Escape'); page.wait_for_selector('#fab-new', state='visible')
+    if alignment_only:
+        return
     for route in ('/#/agents', '/#/settings'):
         page.goto(BASE + route); page.wait_for_function('document.getElementById("fab-new").hidden')
     page.set_viewport_size({'width': 1300, 'height': 850})
@@ -5214,6 +5220,10 @@ try:
             assert page.url.endswith('#/issue/NS-1')
             assert not errs, errs
             print('OK: project audits'); sys.exit(0)
+        if '--fab-only' in sys.argv:
+            check_fab(page, alignment_only=True)
+            assert not errs, errs
+            print('OK: fab'); sys.exit(0)
         if '--page-gutter-only' in sys.argv:
             check_page_gutter(page, shots)
             assert not errs, errs
