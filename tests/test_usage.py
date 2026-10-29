@@ -522,3 +522,54 @@ with patch.object(db, 'init'), TestClient(app.app) as client:
     with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
         assert client.get('/api/trends/issues', cookies={'ns_session': 'temporary'}).status_code == 403
 print('OK trend issues')
+
+# 수동 사용량은 캐시·실행 시간·횟수와 분리하고 실제 HTTP 응답까지 확인한다.
+issues.create_project(human, 'MAN', 'manual')
+mp = issues.create_issue(human, 'MAN', 'manual parent')
+mt = issues.create_issue(human, 'MAN', 'manual task', parent=mp['ref'])
+mt2 = issues.create_issue(human, 'MAN', 'second manual task', parent=mp['ref'])
+with db.connect() as c:
+    for message, session, iid, inp, out, ts in [
+        ('mp1', 'session-a', mp['id'], 10, 2, '2026-02-01T14:59:00+00:00'),
+        ('mp2', 'session-a', mp['id'], 20, 3, '2026-02-01T14:59:01+00:00'),
+        ('mt1', 'session-a', mt['id'], 30, 4, '2026-02-01T14:59:02+00:00'),
+        ('mt2', 'session-a', mt2['id'], 1, 1, '2026-02-01T14:59:02+00:00'),
+        ('mu1', 'session-u', None, 40, 5, '2026-02-01T14:59:03+00:00'),
+        ('future', 'session-a', mp['id'], 900, 9, '2026-02-02T15:00:00+00:00')]:
+        c.execute("""INSERT INTO manual_usage(message_id,session_id,issue_id,model,input_tokens,
+            output_tokens,cache_creation_tokens,cache_read_tokens,ts,created_at)
+            VALUES(?,?,?,'unknown-model',?,?,500,600,?,?)""", (message, session, iid, inp, out, ts, ts))
+manual_now = '2026-02-02T00:00:00+00:00'
+with TestClient(app.app) as client:
+    client.cookies.set('ns_session', 'temporary')
+    detail = client.get('/api/issues/' + mp['ref']).json()
+    assert detail['token_usage']['total_tokens'] == 944
+    assert detail['token_usage']['manual_session_count'] == 1
+    assert detail['token_usage']['run_count'] == 0
+    assert detail['task_token_usage']['total_tokens'] == 36
+    assert detail['task_token_usage']['manual_tokens'] == 36
+    assert detail['task_token_usage']['manual_session_count'] == 1
+    assert len(detail['manual_sessions']) == 1
+    assert detail['manual_sessions'][0]['input_tokens'] == 930
+    assert detail['manual_sessions'][0]['started_at'] == '2026-02-01T14:59:00.000Z'
+    assert 'cost_usd' not in detail['manual_sessions'][0]
+    rows = client.get('/api/issues?project=MAN').json()['issues']
+    assert next(r for r in rows if r['id'] == mt['id'])['token_usage']['total_tokens'] == 34
+    trend = client.get('/api/trends?from=2026-02-01&to=2026-02-01&project=MAN').json()
+    assert trend['summary']['total_tokens'] == 71
+with patch.object(usage, '_now', return_value=usage._time(manual_now)):
+    all_trends = usage.trends('2026-02-01', '2026-02-01')
+    scoped = usage.trends('2026-02-01', '2026-02-01', 'MAN')
+    assert all_trends['summary']['unlinked_manual_tokens'] == 45
+    assert scoped['summary']['manual_tokens'] == scoped['summary']['total_tokens'] == 71
+    assert scoped['summary']['unlinked_manual_tokens'] == 0
+    assert scoped['summary']['run_count'] == scoped['summary']['agent_seconds'] == 0
+    assert scoped['summary']['unpriced_tokens'] == 71
+    assert {r['ref']: r['total_tokens'] for r in scoped['top_issues']} == {mp['ref']:35, mt['ref']:34, mt2['ref']:2}
+    assert usage.issue_summary('yesterday', 'MAN')['summary']['total_tokens'] == 71
+# 직접 실행과 수동 사용량을 함께 저장해도 곱집계하지 않는다.
+with db.connect() as c:
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,input_tokens,output_tokens) VALUES(?,'review','ok','human:admin',?,?,7,8)", (mt['id'], start, end))
+assert issues.get_issue(mp['ref'])['task_token_usage']['total_tokens'] == 51
+assert usage.project_usage('MAN')['summary']['total_tokens'] == 995
+print('OK manual usage aggregation and HTTP')

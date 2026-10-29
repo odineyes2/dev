@@ -27,7 +27,7 @@ def normalize_route(route):
 def validate_route(route):
     """URL 대신 알려진 로컬 hash 경로만 받는다."""
     route = normalize_route(route)
-    if not re.fullmatch(r'#/(?:board|new|agents|harness|projects|trends(?:/(?:stages|issues))?|settings(?:/(?:auto|types|regression|fonts|tokens))?|types|issue/[A-Z][A-Z0-9]*-\d+(?:-\d+)*)?(?:\?[A-Za-z0-9_=&%.-]*)?', route):
+    if not re.fullmatch(r'#/(?:board|new|agents|harness|projects|trends(?:/(?:stages|issues))?|settings(?:/(?:auto|types|regression|fonts|tokens|claude-code))?|types|issue/[A-Z][A-Z0-9]*-\d+(?:-\d+)*)?(?:\?[A-Za-z0-9_=&%.-]*)?', route):
         raise ValueError('로컬 hash 경로만 지원한다: #/, #/issue/DEV-1 등')
     return route
 

@@ -444,6 +444,7 @@ async function route(){
     else if(name === 'settings' && settingsTab === 'types') await renderTypes();
     else if(name === 'settings' && settingsTab === 'regression') await renderRegressionSettings();
     else if(name === 'settings' && settingsTab === 'fonts') renderFontSettings();
+    else if(name === 'settings' && settingsTab === 'claude-code') await renderManualUsageSettings();
     else if(name === 'settings' && settingsTab === 'tokens') await renderTokenSettings();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
   }catch(e){ if(!view.innerHTML) view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
@@ -662,15 +663,15 @@ function issueTokensHtml(i, detail = false){
   const describe = usage => {
     if(!usage) return {text:'미측정', explanation:'토큰 집계 정보가 아직 없어요.'};
     const u = usage;
-    const measured = u.run_count > u.unmeasured_run_count;
+    const measured = u.run_count > u.unmeasured_run_count || u.manual_session_count > 0;
     const partial = u.partial || u.unmeasured_run_count > 0 || u.running_run_count > 0;
     const total = number(u.total_tokens);
-    let text = !u.run_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${formatTokens(u.total_tokens)}`;
+    let text = !u.run_count && !u.manual_session_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${formatTokens(u.total_tokens)}`;
     if(u.running_run_count) text += ' · 실행 중';
-    return {text, explanation:`입력 ${number(u.input_tokens)} · 출력 ${number(u.output_tokens)} · 합계 ${total} 토큰 · 미측정 ${number(u.unmeasured_run_count)}회 · 실행 중 ${number(u.running_run_count)}회`};
+    return {text, explanation:`입력 ${number(u.input_tokens)} · 출력 ${number(u.output_tokens)} · 합계 ${total} 토큰 · 미측정 ${number(u.unmeasured_run_count)}회 · 실행 중 ${number(u.running_run_count)}회${u.manual_session_count ? ` · 대화형 Claude Code ${number(u.manual_tokens)}토큰 포함 · ${number(u.manual_session_count)}세션` : ''}`};
   };
   const own = describe(u);
-  const explanation = own.explanation + ' · 이 Issue의 직접 실행분이에요. 수집되지 않은 외부 대화는 합산하지 않아요.';
+  const explanation = own.explanation + ' · 이 Issue의 직접 실행분이에요. 수집된 대화형 Claude Code 사용량을 포함해요.';
   const ownHtml = `<span class="issue-tokens" title="${esc(explanation)}" aria-label="${esc(own.text + ' · ' + explanation)}">${esc(own.text)}</span>`;
   const tasks = i.task_token_usage;
   if(!tasks || !tasks.task_count || tasks.running_run_count) return ownHtml + (detail ? `<p class="token-explanation">${esc(explanation)}</p>` : '');
@@ -992,9 +993,10 @@ async function loadTrend(){
     trendData = data;
     const s = data.summary, noActivity = !data.days.some(d => TREND_METRICS.some(([key]) => Number(d[key] || 0) > 0));
     results.innerHTML = `<p class="trend-context">${project ? esc(project) : '전체 프로젝트'} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · ${esc(new Date(data.as_of).toLocaleString('ko-KR', {timeZone:'Asia/Seoul'}))} 조회</p>
+      ${s.manual_tokens ? `<p class="trend-manual dim">대화형 Claude Code ${tokenHtml(s.manual_tokens)} 토큰 포함 · 이슈 미연결 ${tokenHtml(s.unlinked_manual_tokens || 0)} 토큰</p>` : ''}
       ${s.partial ? `<p class="trend-partial" role="status">부분 집계 · 토큰 미계측 실행 ${summaryNumber(s.unmeasured_run_count)}건, 시간 미계측 실행 ${summaryNumber(s.unmeasured_duration_run_count)}건, 진행 중 ${summaryNumber(s.running_run_count)}건</p>` : ''}
       ${noActivity ? '<div class="empty">이 기간에는 기록된 활동이 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>' : `<div class="trend-grid">${TREND_METRICS.map(([key,label,unit]) => `<section class="trend-card" aria-label="${label}"><h2>${label}</h2><strong>${trendValue(key, s[key])}</strong><span class="dim">${unit ? unit + ' · ' : ''}기간 합계</span>${key === 'total_tokens' ? trendCostNote(s) : ''}<div data-trend-chart="${key}">${trendChart(data.days, key, label)}</div></section>`).join('')}</div>`}
-      <section class="trend-ranking"><h2>토큰 상위 작업</h2><p class="dim">선택 기간에 시작한 Issue와 Task의 직접 실행 토큰만 순위에 포함해요.</p>
+      <section class="trend-ranking"><h2>토큰 상위 작업</h2><p class="dim">선택 기간의 Issue와 Task 직접 실행 토큰과 연결된 대화형 Claude Code 토큰을 순위에 포함해요.</p>
       ${data.top_issues.length ? `<ol>${data.top_issues.map(item => `<li><a href="#/issue/${encodeURIComponent(item.ref)}"><span class="ref">${esc(item.ref)}</span> ${esc(item.title)}</a><strong>${tokenHtml(item.total_tokens)}</strong></li>`).join('')}</ol>` : '<div class="empty">이 기간에 측정된 작업 토큰이 없어요.</div>'}</section>
       <details class="trend-daily"><summary>일별 값 표로 보기</summary><div class="trend-table-wrap"><table><thead><tr><th aria-sort="${trendSortAsc ? 'ascending' : 'descending'}"><button type="button" class="trend-sort" aria-label="날짜 정렬 바꾸기">날짜 <span class="trend-sort-mark" aria-hidden="true">${trendSortAsc ? '▲' : '▼'}</span></button></th>${TREND_METRICS.map(([,label]) => `<th>${label}</th>`).join('')}</tr></thead><tbody>${trendRows()}</tbody></table></div></details>
       <p class="dim trend-note">${esc(data.note)} 완료 Issue는 현재 Done 상태와 마지막 완료일을 기준으로 해요. 진행 중 실행은 조회 시각까지 포함해요. 미계측 값과 삭제된 기록은 합계에 포함되지 않아요.</p>`;
@@ -1293,6 +1295,10 @@ function decisionQuestions(body){   // 계획서의 "정해야 할 것" 절의 �
 const RUN_STATUS = { running: ['in_progress', '도는 중'], ok: ['done', '완료'], failed: ['changes_requested', '실패'], timeout: ['in_progress', '시간 초과'], orphaned: ['on_hold', '끊김'] };
 const PROVIDER_NAME = { claude: 'Claude', codex: 'Codex' };
 const RUN_MODE = { review: '검토', execute: '실행' };
+function manualSessionsHtml(sessions){
+  if(!sessions.length) return '';
+  return `<ul class="runs manual-sessions">${sessions.map(s => `<li><div>대화형 Claude Code <span class="model">${esc(s.model)}</span></div><div class="dim">${fmtTime(s.started_at)} ~ ${fmtTime(s.ended_at)} · ${tokenHtml(s.input_tokens + s.output_tokens)} 토큰</div></li>`).join('')}</ul>`;
+}
 function runsHtml(runs){
   if(!runs.length) return '<div class="dim hint">아직 실행 기록이 없어요.</div>';
   return `<ul class="runs">${runs.map(r => {
@@ -1576,7 +1582,7 @@ async function renderIssue(ref, background = false){
         <div class="field"><span>Agent</span>
           ${reviewSection}
           ${it.execute ? executeHtml(it, liveMode, liveRun.provider, edges) : ''}</div>
-        <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
+        <div class="field"><span>실행 기록</span>${runs.length || !it.manual_sessions?.length ? runsHtml(runs) : ''}${manualSessionsHtml(it.manual_sessions || [])}</div>
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
       </aside>
     </div>`;
@@ -3296,6 +3302,34 @@ let settingsSession = null;
 async function loadTokenSettings(){
   try{ tokenUnit = (await api('GET', '/api/settings/tokens', undefined, () => !!me, {notifyErrors:false})).unit; }
   catch(e){ tokenUnit = 'auto'; }
+}
+async function renderManualUsageSettings(){
+  const session = {};
+  settingsSession = session;
+  const current = () => settingsSession === session && location.hash.split('?')[0] === '#/settings/claude-code';
+  view.innerHTML = `<section class="panel management-card manual-usage-settings">${settingsHeader('claude-code')}<h3>대화형 Claude Code 사용량 기록</h3><p class="dim">연결하면 대화형 Claude Code의 토큰을 자동으로 기록해요. 대화 본문은 보내지 않아요. 이슈 연결은 마지막으로 다룬 Issue 기준의 대략값이에요.</p><p id="manual-connection" aria-live="polite" aria-busy="true">연결 상태를 불러와요…</p><p id="manual-received" class="dim"></p><button type="button" id="manual-toggle" disabled>연결</button><p id="manual-status" role="status"></p></section>`;
+  const button = view.querySelector('#manual-toggle'), status = view.querySelector('#manual-status');
+  let connected = false;
+  const paint = data => {
+    connected = data.connected;
+    view.querySelector('#manual-connection').textContent = connected ? '연결되어 있어요.' : '연결되어 있지 않아요.';
+    view.querySelector('#manual-received').textContent = `최근 수신: ${data.last_received_at ? fmtTime(data.last_received_at) : '아직 없어요'}`;
+    button.textContent = connected ? '연결 끊기' : '연결';
+  };
+  button.onclick = async () => {
+    button.disabled = true;
+    button.textContent = connected ? '연결 끊는 중…' : '연결 중…';
+    try{
+      const data = await api(connected ? 'DELETE' : 'POST', '/api/manual-usage/connection', undefined, current, {notifyErrors:false});
+      if(current()){ paint(data); status.textContent = connected ? '연결했어요.' : '연결을 끊었어요.'; }
+    }catch(e){ if(current()){ status.textContent = `${e.message} 다시 시도해 주세요.`; button.textContent = connected ? '연결 끊기' : '연결'; } }
+    finally{ if(current()) button.disabled = false; }
+  };
+  try{
+    const data = await api('GET', '/api/manual-usage/connection', undefined, current, {notifyErrors:false});
+    if(current()){ paint(data); button.disabled = false; }
+  }catch(e){ if(current()) status.textContent = `${e.message} 화면을 새로고침해 주세요.`; }
+  finally{ if(current()) view.querySelector('#manual-connection').setAttribute('aria-busy', 'false'); }
 }
 async function renderTokenSettings(){
   const session = {};
