@@ -4235,6 +4235,9 @@ def check_board_actions(page, shots, answers, asked):
             if delay: pending.append(route); return
             route.fulfill(status=409 if conflict else 200, json={'detail':'? 묶음을 끝냈어요.'} if conflict else {})
         else:
+            if route.request.url.endswith('/ACT-5'):
+                route.fulfill(json={**rows[4], 'children':[]})
+                return
             route.fulfill(json={**rows[2], 'children':[{'ref':'ACT-3-1','title':'?미완료 Task','status':'backlog','merge_state':'병합 대기'}],
                                 'execute':{'timeout_sec':1800,'budget_usd':2}})
     page.route('**/api/issues?*', issues)
@@ -4248,7 +4251,8 @@ def check_board_actions(page, shots, answers, asked):
     try:
         for board in (False,True):
             ready(board)
-            assert page.locator('[data-action]').count() == 11
+            assert page.locator('[data-action]').count() == 12
+            assert btn(5,'complete-tree').count() == 1
             for ref in (26,27,28):
                 assert btn(ref,'decision').count() == 0
             for ref in (25,29):
@@ -4322,6 +4326,13 @@ def check_board_actions(page, shots, answers, asked):
             assert len(posts) == before
             btn(3,'complete-tree').click(); page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
             assert posts[-1][0].endswith('/complete-tree') and '?미완료 Task' in asked[-1] and '병합 대기' in asked[-1]
+            before = len(posts); answers.append(None); btn(5,'complete-tree').click()
+            page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
+            assert len(posts) == before and 'ACT-5' in asked[-1]
+            btn(5,'complete-tree').click()
+            page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
+            assert len(posts) == before + 1 and posts[-1][0].endswith('/ACT-5/complete-tree')
+            assert posts[-1][1] == {'confirm_checks':True} and 'ACT-5' in asked[-1]
             for scheme in ('light','dark'):
                 page.evaluate('s => {localStorage.setItem("dev.theme",s);document.documentElement.dataset.theme=s}',scheme)
                 page.emulate_media(color_scheme=scheme)
@@ -4360,7 +4371,7 @@ def check_board_actions(page, shots, answers, asked):
         page.wait_for_selector('[data-action]')
         pending_settings.pop().fulfill(status=500,json={'detail':'오래된 오류'})
         page.wait_for_timeout(100)
-        assert page.locator('[data-action]').count() == 11
+        assert page.locator('[data-action]').count() == 12
         assert page.inner_text('#toast') != '오래된 오류'
         page.evaluate('localStorage.removeItem("dev.project")')
     finally:
