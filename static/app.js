@@ -918,8 +918,8 @@ async function renderTrends(tab = ''){
     localStorage.setItem('dev.project', '');
     paintProjectFilter();
   }
-  view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">${trendIssuesView ? '완료된 Issue별 단계 시간과 토큰을 표로 살펴봐요.' : tab === 'stages' ? '완료된 Issue의 단계별 시간과 토큰을 살펴봐요.' : '보존된 기록의 일별 사용 현황을 서울 날짜로 살펴봐요.'}</p></div></header>
-    <nav class="trend-subtabs" aria-label="Trend 하위 메뉴"><a href="#/trends" ${tab ? '' : 'aria-current="page"'}>일별 사용</a><a href="#/trends/stages" ${tab === 'stages' ? 'aria-current="page"' : ''}>단계별 소요</a><a href="#/trends/issues" ${trendIssuesView ? 'aria-current="page"' : ''}>이슈별 소요</a></nav>
+  view.innerHTML = `<div class="trend-page"><header class="trend-heading"><div><p class="eyebrow">OVERVIEW</p><h1>Trend</h1><p class="dim">${trendIssuesView ? '완료된 Issue별 단계 시간과 토큰을 표로 살펴봐요.' : tab === 'stages' ? '완료된 Issue의 단계별 시간과 토큰을 살펴봐요.' : '보존된 기록의 기간별 사용 현황을 서울 날짜로 살펴봐요.'}</p></div></header>
+    <nav class="trend-subtabs" aria-label="Trend 하위 메뉴"><a href="#/trends" ${tab ? '' : 'aria-current="page"'}>기간별 사용</a><a href="#/trends/stages" ${tab === 'stages' ? 'aria-current="page"' : ''}>단계별 소요</a><a href="#/trends/issues" ${trendIssuesView ? 'aria-current="page"' : ''}>이슈별 소요</a></nav>
     <form id="trend-filter" class="trend-filter"><label>프로젝트<select id="trend-project">${projectOptionsHtml()}</select></label>
       ${stageTab ? `<label>에이전트<select id="trend-agent">${Object.entries(TREND_AGENTS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>` : '<label>차트 표시<select id="trend-marks"><option value="line">추세선</option><option value="marks">마크</option><option value="values">마크 및 수치</option></select></label>'}
       <div class="trend-periods" role="group" aria-label="빠른 기간">${[7,30,90].map(n => `<button type="button" data-trend-days="${n}" aria-pressed="${trendRange === n}">최근 ${n}일</button>`).join('')}</div>
@@ -958,6 +958,14 @@ async function renderTrends(tab = ''){
   root.addEventListener('change', e => { if(e.target.id === 'trend-human'){ trendHuman = e.target.checked; root.querySelector('#trend-results').innerHTML = trendIssuesView ? stageIssuesResults(trendStageData) : stageResults(trendStageData); paintStageTable(root); } });
   await loadTrend();
 }
+// 토큰 카드 보조 줄 — 구독 사용분을 공개 API 단가로 어림한 값(요약에 키가 없으면 그리지 않는다)
+function trendCostNote(s){
+  if(s.estimated_api_cost_usd == null) return '';
+  const cost = Number(s.estimated_api_cost_usd) || 0, unpriced = Number(s.unpriced_tokens) || 0;
+  const tip = '구독 사용분을 공개 API 요금으로 어림한 값이에요. 실제 청구액이 아니에요.';
+  const money = cost >= 100 ? Math.round(cost) : cost.toFixed(2);
+  return `<small class="trend-cost dim" title="${tip}">API 환산 약 $${money}${s.cost_approx_run_count ? ' (어림)' : ''}${unpriced > 0 ? ` · 환산 못 한 토큰 ${unpriced.toLocaleString('ko-KR')}개` : ''}</small>`;
+}
 async function loadTrend(){
   const root = view.querySelector('.trend-page'); if(!root) return;
   const [from, to] = [root.querySelector('#trend-from').value, root.querySelector('#trend-to').value];
@@ -980,7 +988,7 @@ async function loadTrend(){
     const s = data.summary, noActivity = !data.days.some(d => TREND_METRICS.some(([key]) => Number(d[key] || 0) > 0));
     results.innerHTML = `<p class="trend-context">${project ? esc(project) : '전체 프로젝트'} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · ${esc(new Date(data.as_of).toLocaleString('ko-KR', {timeZone:'Asia/Seoul'}))} 조회</p>
       ${s.partial ? `<p class="trend-partial" role="status">부분 집계 · 토큰 미계측 실행 ${summaryNumber(s.unmeasured_run_count)}건, 시간 미계측 실행 ${summaryNumber(s.unmeasured_duration_run_count)}건, 진행 중 ${summaryNumber(s.running_run_count)}건</p>` : ''}
-      ${noActivity ? '<div class="empty">이 기간에는 기록된 활동이 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>' : `<div class="trend-grid">${TREND_METRICS.map(([key,label,unit]) => `<section class="trend-card" aria-label="${label}"><h2>${label}</h2><strong>${trendValue(key, s[key])}</strong><span class="dim">${unit ? unit + ' · ' : ''}기간 합계</span><div data-trend-chart="${key}">${trendChart(data.days, key, label)}</div></section>`).join('')}</div>`}
+      ${noActivity ? '<div class="empty">이 기간에는 기록된 활동이 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>' : `<div class="trend-grid">${TREND_METRICS.map(([key,label,unit]) => `<section class="trend-card" aria-label="${label}"><h2>${label}</h2><strong>${trendValue(key, s[key])}</strong><span class="dim">${unit ? unit + ' · ' : ''}기간 합계</span>${key === 'total_tokens' ? trendCostNote(s) : ''}<div data-trend-chart="${key}">${trendChart(data.days, key, label)}</div></section>`).join('')}</div>`}
       <section class="trend-ranking"><h2>토큰 상위 작업</h2><p class="dim">선택 기간에 시작한 Issue와 Task의 직접 실행 토큰만 순위에 포함해요.</p>
       ${data.top_issues.length ? `<ol>${data.top_issues.map(item => `<li><a href="#/issue/${encodeURIComponent(item.ref)}"><span class="ref">${esc(item.ref)}</span> ${esc(item.title)}</a><strong>${tokenHtml(item.total_tokens)}</strong></li>`).join('')}</ol>` : '<div class="empty">이 기간에 측정된 작업 토큰이 없어요.</div>'}</section>
       <details class="trend-daily"><summary>일별 값 표로 보기</summary><div class="trend-table-wrap"><table><thead><tr><th aria-sort="${trendSortAsc ? 'ascending' : 'descending'}"><button type="button" class="trend-sort" aria-label="날짜 정렬 바꾸기">날짜 <span class="trend-sort-mark" aria-hidden="true">${trendSortAsc ? '▲' : '▼'}</span></button></th>${TREND_METRICS.map(([,label]) => `<th>${label}</th>`).join('')}</tr></thead><tbody>${trendRows()}</tbody></table></div></details>
