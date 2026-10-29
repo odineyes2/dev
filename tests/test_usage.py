@@ -216,6 +216,30 @@ with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._t
     client.cookies.clear()
     with patch.object(auth, 'nightshift_user', return_value={'role': 'member'}):
         assert client.get('/api/issue-summary?period=today').status_code == 403
+# API 환산 금액: cost_usd 우선·캐시 구분·예전 합산(어림)·모르는 모델(환산 못 한 토큰).
+issues.create_project(human, 'PRC', 'pricing')
+priced = issues.create_issue(human, 'PRC', 'priced')
+with db.connect() as c:
+    for model, inp, out, write, read, cost in [
+        (None, 100, 50, None, None, 1.5),
+        ('claude-sonnet-4-6', 1_000_000, 100_000, 200_000, 300_000, None),
+        ('claude-sonnet-4-6', 1_000_000, 0, None, None, None),
+        ('mystery-model', 7, 3, None, None, None),
+    ]:
+        c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,input_tokens,output_tokens,"
+                  "model,cache_write_tokens,cache_read_tokens,cost_usd) "
+                  "VALUES(?,'execute','ok','human:admin','2026-01-10T03:00:00+00:00','2026-01-10T03:10:00+00:00',?,?,?,?,?,?)",
+                  (priced['id'], inp, out, model, write, read, cost))
+with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
+    client.cookies.set('ns_session', 'temporary')
+    api = client.get('/api/trends?from=2026-01-10&to=2026-01-10&project=prc')
+    assert api.status_code == 200, api.text
+    s = api.json()['summary']
+    assert abs(s['estimated_api_cost_usd'] - 8.34) < 1e-9, s
+    assert (s['cost_estimated_run_count'], s['cost_approx_run_count'], s['unpriced_tokens']) == (3, 1, 10), s
+    empty_cost = client.get('/api/trends?from=2026-01-10&to=2026-01-10&project=EMPTY').json()['summary']
+    assert (empty_cost['estimated_api_cost_usd'], empty_cost['cost_estimated_run_count'],
+            empty_cost['unpriced_tokens']) == (0, 0, 0), empty_cost
 # 새 API는 실제 라우트에서 서울 날짜 버킷, 권한, 필터와 직접 실행 순위를 확인한다.
 with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._time(fixed_now)), TestClient(app.app) as client:
     assert client.get('/api/trends').status_code == 401
