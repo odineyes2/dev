@@ -21,7 +21,7 @@ auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
     lambda req: httpx.Response(200, json={"user": {"id": 1, "username": "admin", "role": "admin"}})))
 H = {"X-Requested-With": "dev"}
 fake = Path(tempfile.mkdtemp()) / "fake_claude.py"
-fake.write_text("import json, sys, time\nprint(json.dumps({'result': 'args ' + str(sys.argv[1:]), 'total_cost_usd': 0.5, 'usage': {'input_tokens': 10, 'cache_read_input_tokens': 90, 'output_tokens': 7}}) if len(sys.argv) > 4 else 'args ' + str(sys.argv[1:]))\ntime.sleep(float(sys.argv[2]))\nsys.exit(int(sys.argv[3]))\n", "utf-8")
+fake.write_text("import json, sys, time\nprint(json.dumps({'result': 'args ' + str(sys.argv[1:]), 'total_cost_usd': 0.5, 'usage': {'input_tokens': 10, 'cache_creation_input_tokens': 4, 'cache_read_input_tokens': 90, 'output_tokens': 7}}) if len(sys.argv) > 4 else 'args ' + str(sys.argv[1:]))\ntime.sleep(float(sys.argv[2]))\nsys.exit(int(sys.argv[3]))\n", "utf-8")
 classification_script = "import sys\nsys.path.insert(0, " + repr(str(Path(review.__file__).parent)) + ")\nimport issues\nactor = {'kind': 'agent', 'id': 1, 'name': 'a'}\ncurrent = issues.get_issue(sys.argv[1])\nif not current['type_ids']:\n    catalog = issues.list_issue_types()\n    issues.classify_issue(actor, sys.argv[1], [t['id'] for t in catalog[:2]], current['type_revision'])\n"
 fake.write_text(classification_script + fake.read_text('utf-8'), 'utf-8')
 behave = {"sleep": "1", "code": "0"}
@@ -79,7 +79,8 @@ with TestClient(A.app) as c:
         time.sleep(0.2)
     time.sleep(0.3)
     r2 = review.list_runs("NS-1")[0]
-    assert r2["status"] == "ok" and (r2["input_tokens"], r2["output_tokens"], r2["cost_usd"]) == (100, 7, 0.5), r2
+    assert r2["status"] == "ok" and (r2["input_tokens"], r2["output_tokens"], r2["cost_usd"]) == (104, 7, 0.5), r2
+    assert r2['cache_write_tokens'] == 4 and r2['cache_read_tokens'] == 90, r2
     assert "{" not in (Path(os.environ["DEV_DATA_DIR"]) / "reviews" / r2["log_file"]).read_text("utf-8").splitlines()[0]
     behave["json"] = False
 

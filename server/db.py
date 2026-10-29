@@ -1061,6 +1061,12 @@ CREATE TABLE check_files (
 );
 """)
 
+# Claude CLI의 캐시 쓰기·읽기 토큰을 실행 기록에 따로 보존한다.
+MIGRATIONS.append("""
+ALTER TABLE runs ADD COLUMN cache_write_tokens INTEGER;
+ALTER TABLE runs ADD COLUMN cache_read_tokens INTEGER;
+""")
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

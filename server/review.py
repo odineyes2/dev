@@ -367,6 +367,9 @@ def token_count(value):
 def _add_usage(total, current):
     """턴·재시도 중 한 번이라도 누락된 항목은 전체 사용량을 알 수 없다."""
     keys = ["input_tokens", "output_tokens"]
+    for key in ("cache_write_tokens", "cache_read_tokens"):
+        if key in total or key in current:
+            keys.append(key)
     if "cost_usd" in total or "cost_usd" in current:
         keys.append("cost_usd")
     for key in keys:
@@ -406,7 +409,8 @@ def _parse(out: str, provider: str = "claude") -> tuple[str, dict]:
         u = d.get("usage") or {}
         inputs = [token_count(u.get("input_tokens"))] + [token_count(u.get(k, 0)) for k in ("cache_creation_input_tokens", "cache_read_input_tokens")]
         stats = {"input_tokens": token_count(sum(inputs)) if all(v is not None for v in inputs) else None,
-                 "output_tokens": token_count(u.get("output_tokens")), "cost_usd": d.get("total_cost_usd")}
+                 "output_tokens": token_count(u.get("output_tokens")), "cost_usd": d.get("total_cost_usd"),
+                 "cache_write_tokens": inputs[1], "cache_read_tokens": inputs[2]}
         return str(d.get("result") or ""), stats if u else {}
     except (ValueError, AttributeError, TypeError):
         return out, {}
@@ -604,8 +608,8 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         if c.execute('SELECT status FROM runs WHERE id=?', (run_id,)).fetchone()[0] not in ('running', 'ok'):
             return 'orphaned'
         finish_codex_status(c, actor, ref, run_id, status, label)
-        c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=? WHERE id=? AND status IN ('running','ok')",
-                  (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), run_id))
+        c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=?, cache_write_tokens=?, cache_read_tokens=? WHERE id=? AND status IN ('running','ok')",
+                  (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), stats.get("cache_write_tokens"), stats.get("cache_read_tokens"), run_id))
         if exhausted and status != "ok" and not recovery:   # 복구는 추가 유료 호출·이관 없이 끝낸다
             c.execute("INSERT OR IGNORE INTO provider_run_failures(run_id,failure_reason) VALUES(?,'token_exhausted')", (run_id,))
     if held:   # Claude는 on_hold 전환 때 이미 알림이 갔다
