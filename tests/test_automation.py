@@ -1021,6 +1021,30 @@ assert execute.resume_reason('TOK-99', rid) is None and (wt / 'wip.txt').exists(
 git('checkout', '-q', '--orphan', 'other'); git('commit', '-q', '--allow-empty', '-m', 'x')
 assert execute.resume_reason('TOK-99', rid)
 assert execute.resume_reason('TOK-77', rid)
+
+# DEV-199: 이관 실행의 프롬프트 앞에 앞 실행이 남긴 커밋·미커밋 변경을 알린다. 이관이 아니거나 그 뒤 실행이 있으면 붙이지 않는다.
+wt = execute.worktree_path(tok['ref'])
+wt.mkdir(parents=True)
+git = lambda *a: subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', *a], cwd=wt, capture_output=True, text=True).stdout.strip()
+git('init', '-q', '-b', execute.branch_name(tok['ref'])); (wt / 'a.txt').write_text('a'); git('add', 'a.txt'); git('commit', '-q', '-m', 'base')
+start_sha = git('rev-parse', 'HEAD')
+with db.connect() as c:
+    prev = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,provider,task_start_sha) VALUES(?,'execute','failed','human:admin',?,'codex',?)",
+                     (tok['id'], db.now_iso(), start_sha)).lastrowid
+assert execute.handoff_notice(tok['ref'], tok['id']) == ''   # 이관 기록이 없으면 붙이지 않는다
+with db.connect() as c:
+    chain = c.execute('SELECT chain_id FROM provider_migration_attempts WHERE previous_run_id=?', (first,)).fetchone()[0]
+    c.execute("INSERT INTO provider_migration_attempts(chain_id,provider,previous_run_id,created_at) VALUES(?,'claude',?,?)", (chain, prev, db.now_iso()))
+assert execute.handoff_notice(tok['ref'], tok['id']).startswith('먼저 알 것') and '커밋·변경은 없다' in execute.handoff_notice(tok['ref'], tok['id'])
+git('commit', '-q', '--allow-empty', '-m', 'partial-commit'); (wt / 'a.txt').write_text('changed'); (wt / 'wip.txt').write_text('new')
+(wt / '.ui-captures').mkdir(); (wt / '.ui-captures' / 'x.png').write_text('x')
+note = execute.handoff_notice(tok['ref'], tok['id'])
+assert '(Codex)' in note and 'partial-commit' in note and 'a.txt' in note and 'wip.txt' in note and '.ui-captures' not in note, note
+cmd = execute.with_notice(['claude', '-p', 'PROMPT', '--x'], 'claude', note)
+assert cmd[2].startswith('먼저 알 것') and cmd[2].endswith('PROMPT')
+with db.connect() as c:   # 이관 실행이 이미 시작됐으면(더 최근 실행) 다음 재실행에는 붙이지 않는다
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,provider) VALUES(?,'execute','failed','human:admin',?,'claude')", (tok['id'], db.now_iso()))
+assert execute.handoff_notice(tok['ref'], tok['id']) == ''
 automation.provider_available = real_available
 print('OK — 토큰 소진만 이관·도구별 1회·중복/OFF/수동 변경 차단·worktree 이어받기 검사')
 

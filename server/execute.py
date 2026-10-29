@@ -237,6 +237,31 @@ def resume_reason(ref: str, run_id: int) -> str | None:
     return None
 
 
+def handoff_notice(ref: str, issue_id: int) -> str:
+    """토큰 소진 이관으로 앞 실행의 worktree를 이어받는 실행이면 그 사실과 앞 실행이 남긴 커밋·미커밋 변경을 알린다(DEV-199).
+    서버의 보존 커밋(refresh_worktree) 전에 불러야 미커밋 변경이 그대로 보인다. 이관 실행이 아니면 빈 문자열."""
+    with db.connect() as c:
+        latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (issue_id,)).fetchone()[0]
+        if not latest or not c.execute('SELECT 1 FROM provider_migration_attempts WHERE previous_run_id=?', (latest,)).fetchone():
+            return ""
+        run = c.execute('SELECT provider, task_start_sha FROM runs WHERE id=?', (latest,)).fetchone()
+    path = worktree_path(ref)
+    if not path.exists():
+        return ""
+    commits = _run_git(path, "log", "--format=%h %s", f"{run['task_start_sha']}..HEAD").stdout.splitlines() if run["task_start_sha"] else []
+    changes = [line for line in _run_git(path, "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
+               if line and not line[3:].startswith(CAPTURE_PATHS)]
+    shown = lambda lines: "\n".join(f"- {line}" for line in lines[:30]) + ("\n- …" if len(lines) > 30 else "")
+    head = f"먼저 알 것: 이 Task의 앞 실행({(run['provider'] or '').title()})이 사용 한도 소진으로 중간에 멈췄고, 그 worktree를 그대로 이어받았다.\n"
+    if not commits and not changes:
+        return head + "앞 실행이 남긴 커밋·변경은 없다 — Task를 처음부터 구현한다.\n\n"
+    return (head + (f"앞 실행이 남긴 커밋:\n{shown(commits)}\n" if commits else "")
+            + (f"커밋하지 않은 변경(git status):\n{shown(changes)}\n" if changes else "")
+            + "이 변경은 미완성일 수 있다. `git diff`·`git log -p`로 먼저 읽고 Task 기준으로 남은 일을 판단한다 — "
+            "Task에 맞게 된 부분은 다시 짜지 않고 이어서 구현하고, 덜 됐거나 Task와 어긋난 부분만 고친다. "
+            "앞 실행의 변경도 이번 Task의 결과로 보고 검사·커밋에 포함한다.\n\n")
+
+
 def safe_env(repo: str) -> dict:
     """자식 프로세스 환경 — 모든 remote의 pushurl을 죽은 주소로, 자격증명 도우미·토큰은 없앤다."""
     pairs = [(f"remote.{r}.pushurl", "disabled://no-push") for r in _git(repo, "remote").split()] + [("credential.helper", "")]
@@ -856,10 +881,11 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
         raise issues.StoreError(busy, 409)
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
     worktree = prepare_worktree(repo, ref)
+    handoff = handoff_notice(ref, issue["id"])   # 보존 커밋 전에 — 앞 실행의 미커밋 변경을 그대로 보여 준다
     start_sha, conflicts = refresh_worktree(worktree, ref)
     prepare_checks(worktree, issue)
     stale = stale_commits(repo, issue, parent)
-    notice = (conflict_notice(conflicts) if conflicts else "") + (stale_notice(stale, parent["approval"]["plan_version"]) if stale else "")
+    notice = handoff + (conflict_notice(conflicts) if conflicts else "") + (stale_notice(stale, parent["approval"]["plan_version"]) if stale else "")
     timeout = TIMEOUT_SEC
     if recovery:
         notice = troubleshoot.notice(recovery) + notice
