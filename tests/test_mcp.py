@@ -33,6 +33,12 @@ agent, key = auth.create_agent("claude", "anthropic", "claude-opus-5-5")
 off, off_key = auth.create_agent("old", "", "")
 with db.connect() as c:
     c.execute("UPDATE agents SET enabled=0 WHERE id=?", (off["id"],))
+# DEV-198 재시작 예약용 — 다른 앱(가짜 PM2 설정)이라 예약·해제만 하고 완료(실제 재시작)는 부르지 않는다.
+other_agent, other_key = auth.create_agent("codex", "openai", "gpt-6.1")
+(tmp / "rs").mkdir()
+(tmp / "rs" / "ecosystem.config.js").write_text("module.exports={};")
+issues.create_project(HUMAN, "RS", "restart", local_path=str(tmp / "rs"), service_app="rsapp", service_port=8499)
+issues.create_issue(HUMAN, "RS", "서버 코드 수정")
 
 s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
 proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app", "--port", str(port)], cwd=ROOT / "server",
@@ -178,6 +184,34 @@ async def main():
     assert [e["kind"] for e in full["events"]] == ["claim", "plan", "status", "commit", "comment", "status"]
 
 
+async def reservation():
+    """DEV-198: MCP로 재시작 예약 — 담당 에이전트만, 소유자만 해제, 예약 동안 새 착수 차단."""
+    import jobs
+    async with client(key) as c, client(other_key) as o:
+        names = {t.name for t in await c.list_tools()}
+        assert {"reserve_server_restart", "server_restart_status", "finish_server_restart", "release_server_restart"} <= names, names
+        try:
+            await c.call_tool("reserve_server_restart", {"ref": "RS-1"}); raise AssertionError("unclaimed reserve")
+        except ToolError as e:
+            assert "담당 에이전트" in str(e)
+        await c.call_tool("claim_issue", {"ref": "RS-1", "minutes": 30})
+        r = (await c.call_tool("reserve_server_restart", {"ref": "RS-1", "minutes": 10})).data
+        assert r["status"] == "waiting" and r["reservation"]["ref"] == "RS-1" and r["reservation"]["ready"] is True, r
+        with db.connect() as conn:
+            assert jobs.start_block(conn, "RS", "execute")
+            assert jobs.start_block(conn, "NS", "execute") is None
+        assert (await o.call_tool("server_restart_status", {"project": "RS"})).data["reservation"]["owner"] == f"agent:{agent['id']}"
+        for tool in ("finish_server_restart", "release_server_restart"):
+            try:
+                await o.call_tool(tool, {"reservation_id": r["id"]}); raise AssertionError("non-owner " + tool)
+            except ToolError as e:
+                assert "소유자" in str(e)
+        done = (await c.call_tool("release_server_restart", {"reservation_id": r["id"]})).data
+        assert done["status"] == "complete" and done["phase"] == "에이전트 예약 해제", done
+        with db.connect() as conn:
+            assert jobs.start_block(conn, "RS", "execute") is None
+
+
 try:
     for _ in range(100):
         try:
@@ -185,6 +219,7 @@ try:
         except OSError:
             time.sleep(0.1)
     asyncio.run(main())
+    asyncio.run(reservation())
     print("OK")
 finally:
     proc.terminate()

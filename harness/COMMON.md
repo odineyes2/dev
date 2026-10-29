@@ -27,6 +27,7 @@ dev가 모든 검토·실행 에이전트의 프롬프트 앞에 붙이고, dev 
 - `git reset` / `checkout --` / `stash` / `rebase` / 강제 push로 남의 변경을 되돌리지 않는다.
 - pull 전에 `git status --short`를 확인하고, 변경이 있으면 먼저 커밋하거나 사용자에게 묻는다.
 - push·main 병합·운영 재시작은 사용자에게 먼저 묻는다(dev 오케스트레이터의 자동 병합·재시작은 예외).
+- 대화에서 직접(파이프라인 실행이 아니라) 운영 중인 앱의 서버 코드를 고쳐 재시작해야 하면 pm2를 직접 부르지 말고 dev MCP 재시작 예약을 쓴다: 담당 이슈를 잡고 `reserve_server_restart(ref, minutes)` → `server_restart_status`의 `reservation.ready`가 true(도는 작업이 끝남)일 때 main 반영 → `finish_server_restart(id)` → status가 complete인지 확인. 예약 동안 새 작업 착수가 막히고, 예약은 최대 120분이라 길어지면 같은 호출로 갱신한다(만료되면 차단이 풀린다). 재시작이 필요 없어지면 `release_server_restart(id)`. 파이프라인 실행 에이전트는 쓰지 않는다(서버가 병합·재시작한다).
 - 기능마다 커밋 하나 — 커밋 메시지가 버전 기록이다(무엇을 왜 바꿨는지). 프로젝트가 커밋 형식을 정했으면 그것을 따른다.
 - 의존성의 메이저 버전 변경은 사용자가 요청할 때만 한다.
 

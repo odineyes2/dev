@@ -187,7 +187,8 @@ def self_restart_state(c) -> dict | None:
     record = next((m for m in _pending_merges(c)
                    if json.loads(m['cfg_json']).get('pm2_app') == SELF_PM2_APP), None)
     if record is None:
-        return None
+        import project_restart
+        return project_restart.reservation_state(c)
     now = datetime.now(timezone.utc)
 
     def minutes(since):

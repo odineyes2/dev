@@ -187,6 +187,7 @@ function paintRestartBanner(){
   const busy = (s.busy || []).map(r => `${r.ref}(${r.minutes}분째)`).join(', ');
   const words = {
     merging: `${s.ref} 병합을 검사하고 있어요 — 끝나면 dev 서버가 재시작돼요.`,
+    reserved: `${s.ref} 작업 뒤 dev 재시작이 예약돼 있어요 — 재시작을 마칠 때까지 새 작업을 시작하지 않아요.`,
     waiting: `dev 재시작을 기다리고 있어요 — ${busy || '도는 작업'}이 끝나면 재시작해요.${s.overdue_minutes > 0 ? ' (60분 넘게 밀리고 있어요)' : ''}`,
     restarting: 'dev 서버를 재시작하고 있어요. 다시 연결되면 화면을 새로 고쳐요.',
     complete: '재시작을 마쳤어요. 대기열을 이어서 진행해요.'

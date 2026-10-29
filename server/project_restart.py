@@ -1,5 +1,5 @@
 """저장된 PM2 앱 재시작. 별도 프로세스가 Dev 자기 재시작 뒤 health까지 확인한다."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 import json
 import shutil
@@ -50,7 +50,12 @@ def _target(project):
 
 def _recover(c):
     cutoff = datetime.now(timezone.utc).timestamp() - 120
-    for row in c.execute("SELECT id,updated_at FROM project_app_restarts WHERE status IN ('waiting','restarting','checking')"):
+    for row in c.execute("SELECT * FROM project_app_restarts WHERE status IN ('waiting','restarting','checking')").fetchall():
+        if row['reservation_until']:
+            if row['reservation_until'] <= db.now_iso():
+                c.execute("UPDATE project_app_restarts SET status='failed',phase='에이전트 예약 만료',error='예약 시간이 지나 새 작업 차단을 해제했어요.',updated_at=? WHERE id=?", (db.now_iso(), row['id']))
+                _reservation_event(c, row, '서버 재시작 예약이 만료되어 새 작업 차단을 해제했어요.')
+            continue
         if datetime.fromisoformat(row['updated_at']).timestamp() < cutoff:
             c.execute("UPDATE project_app_restarts SET status='failed',phase='재시작 확인 중단',error='재시작 작업의 응답이 끊겼어요. 상태를 확인하고 다시 요청해 주세요.',updated_at=? WHERE id=? AND updated_at=? AND status IN ('waiting','restarting','checking')",
                       (db.now_iso(), row['id'], row['updated_at']))
@@ -95,9 +100,133 @@ def status(key):
         pass
     result.pop('build_json', None)
     result['project'] = project['key']
+    if row and row['reservation_ref']:
+        with db.connect() as c:
+            result['reservation'] = {'ref': row['reservation_ref'], 'owner': row['actor'],
+                'expires_at': row['reservation_until'],
+                'ready': bool(row['status'] == 'waiting' and row['reservation_until'] and not _busy(c, row))}
     result.pop('repo', None)
     result.pop('process_id', None)
     return result
+
+
+def _reservation_event(c, row, message):
+    """예약을 시작한 에이전트 명의와 재시작 기록 ID를 타임라인에 보존한다."""
+    issue = issues._find(c, row['reservation_ref'])
+    agent = {'kind': 'agent', 'id': int(row['actor'].split(':', 1)[1])}
+    issues._event(c, issue['id'], agent, 'comment', message, {'restart_id': row['id']})
+
+
+def reservation_state(c):
+    """기존 재시작 안내 띠에 보낼 상태를 읽는다. 만료 정리나 외부 요청은 하지 않는다."""
+    import jobs
+    import orchestrate
+    row = c.execute("""SELECT * FROM project_app_restarts WHERE self_restart=1 AND reservation_ref<>''
+        AND status IN ('waiting','restarting','checking')
+        AND (reservation_until='' OR reservation_until>?)""", (db.now_iso(),)).fetchone()
+    if not row:
+        return None
+    return {'phase': 'reserved' if row['reservation_until'] else 'restarting', 'ref': row['reservation_ref'],
+            'since': row['created_at'], 'busy': [], 'waiting': [j['ref'] for j in jobs._rows(c)],
+            'overdue_minutes': 0, 'process_id': orchestrate.PROCESS_ID, 'revision': orchestrate.BOOT_SHA,
+            'reservation_id': row['id'], 'owner': row['actor'], 'expires_at': row['reservation_until']}
+
+
+def reserve(actor, ref, minutes=30):
+    """활성 담당 에이전트가 재시작을 예약한다. 완료 요청 전에는 도우미를 띄우지 않는다."""
+    import jobs
+    if actor.get('kind') != 'agent':
+        raise issues.StoreError('에이전트 전용 재시작 예약이에요.', 403)
+    if type(minutes) is not int or not 1 <= minutes <= 120:
+        raise issues.StoreError('예약 시간은 1~120분이에요.', 400)
+    issue = issues.get_issue(ref)
+    project = project_service._project(issue['project_key'])
+    target = _target(project)
+    project_service.pm2_launcher()
+    created = False
+    with jobs._lock, db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        _recover(c)
+        current = issues._find(c, issue['ref'])
+        if (current['claimed_by'] != issues.actor_label(actor) or not issues._lease_active(current)
+                or current['status'] in ('done', 'closed')):
+            raise issues.StoreError('현재 이슈를 잡은 담당 에이전트만 예약할 수 있어요.', 403)
+        if dict(c.execute('SELECT * FROM projects WHERE id=?', (project['id'],)).fetchone()) != project:
+            raise issues.StoreError('프로젝트 정보가 바뀌었어요. 다시 예약해 주세요.', 409)
+        row = c.execute("SELECT * FROM project_app_restarts WHERE status IN ('waiting','restarting','checking')").fetchone()
+        until = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec='seconds')
+        if row:
+            if (row['actor'] != issues.actor_label(actor) or row['reservation_ref'] != issue['ref']
+                    or not row['reservation_until']):
+                raise issues.StoreError('다른 재시작 예약·작업이 진행 중이에요.', 409)
+            c.execute('UPDATE project_app_restarts SET reservation_until=?,updated_at=? WHERE id=?', (until, db.now_iso(), row['id']))
+        else:
+            now = db.now_iso()
+            aid = c.execute('''INSERT INTO project_app_restarts(project_id,actor,app,repo,health_url,self_restart,
+                process_id,status,phase,created_at,updated_at,reservation_ref,reservation_until)
+                VALUES(?,?,?,?,?,?,?,'waiting','에이전트 작업·재시작 예약',?,?,?,?)''',
+                (project['id'], issues.actor_label(actor), target['app'], target['repo'], target['health_url'],
+                 target['self_restart'], target['process_id'], now, now, issue['ref'], until)).lastrowid
+            row = c.execute('SELECT * FROM project_app_restarts WHERE id=?', (aid,)).fetchone()
+            _reservation_event(c, row, '서버 재시작을 예약했어요. 새 작업 착수를 막고 기존 작업이 끝나기를 기다려요.')
+            created = True
+    if created:
+        import notify
+        notify.send(issue['ref'], '⏳ 서버 재시작 예약', '에이전트 작업 후 재시작까지 새 작업 착수를 막아요.')
+    return status(project['key'])
+
+
+def reservation_action(actor, reservation_id, action):
+    """예약 소유자만 완료·해제한다. 재시작으로 연결이 끊긴 뒤의 완료 재요청도 멱등이다."""
+    import jobs
+    import orchestrate
+    if actor.get('kind') != 'agent' or action not in ('finish', 'release'):
+        raise issues.StoreError('에이전트 전용 예약 작업이에요.', 403)
+    launch_id = None
+    with jobs._lock, db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        _recover(c)
+        row = c.execute('SELECT * FROM project_app_restarts WHERE id=?', (reservation_id,)).fetchone()
+        if not row or not row['reservation_ref'] or row['actor'] != issues.actor_label(actor):
+            raise issues.StoreError('재시작 예약 소유자만 처리할 수 있어요.', 403)
+        key = c.execute('SELECT key FROM projects WHERE id=?', (row['project_id'],)).fetchone()['key']
+        if row['status'] == 'waiting' and row['reservation_until']:
+            if action == 'finish':
+                issue = issues._find(c, row['reservation_ref'])
+                if issues._lease_active(issue) and issue['claimed_by'] != row['actor']:
+                    raise issues.StoreError('이슈 담당자가 바뀌었어요. 예약을 해제하고 다시 확인해 주세요.', 409)
+                # 차단을 유지한 채 기존 도우미로 넘긴다. Dev의 현재 프로세스부터 바뀌는지 확인한다.
+                c.execute("UPDATE project_app_restarts SET reservation_until='',process_id=?,phase='진행 중인 작업 종료 대기',updated_at=? WHERE id=?",
+                          (orchestrate.PROCESS_ID if row['self_restart'] else '', db.now_iso(), row['id']))
+                launch_id = row['id']
+                _reservation_event(c, row, '에이전트 작업을 마쳤어요. 기존 작업 종료 후 서버 재시작·접속 확인을 진행해요.')
+            else:
+                c.execute("UPDATE project_app_restarts SET status='complete',phase='에이전트 예약 해제',reservation_until='',updated_at=? WHERE id=?", (db.now_iso(), row['id']))
+                _reservation_event(c, row, '서버 재시작 예약을 해제했어요. 새 작업을 다시 시작할 수 있어요.')
+        elif action == 'release' and row['status'] in ACTIVE:
+            raise issues.StoreError('재시작이 시작됐어요. 접속 확인이 끝날 때까지 기다려 주세요.', 409)
+        elif action == 'finish' and (row['status'] == 'failed' or row['phase'] == '에이전트 예약 해제'):
+            raise issues.StoreError('만료·해제·실패한 예약이에요. 상태를 확인하고 새로 예약해 주세요.', 409)
+    if launch_id:
+        try:
+            launch(launch_id)
+        except (OSError, subprocess.SubprocessError):
+            _save(launch_id, 'failed', '재시작 도우미 시작 실패', '재시작 도우미를 시작하지 못했어요.')
+            _reservation_notice(launch_id)
+    if action == 'release':
+        jobs.pump()
+    return status(key)
+
+
+def _reservation_notice(aid):
+    with db.connect() as c:
+        row = c.execute('SELECT * FROM project_app_restarts WHERE id=?', (aid,)).fetchone()
+        if not row or not row['reservation_ref'] or row['status'] not in ('complete', 'failed'):
+            return
+        message = '서버 재시작·접속 확인을 마쳤어요.' if row['status'] == 'complete' else '서버 재시작 확인에 실패했어요. 상태·오류를 확인해 주세요.'
+        _reservation_event(c, row, message)
+    import notify
+    notify.send(row['reservation_ref'], '✅ 서버 재시작 완료' if row['status'] == 'complete' else '⚠️ 서버 재시작 실패', message)
 
 
 def _current_release(project):
@@ -217,6 +346,9 @@ def _save(aid, state, phase, error=''):
 def _busy(c, row):
     import jobs
     import rollback
+    import reproduce
+    if row['self_restart'] and reproduce.running(c):
+        return True
     lanes = jobs._active_lanes(c)
     key = c.execute('SELECT key FROM projects WHERE id=?', (row['project_id'],)).fetchone()['key']
     if (lanes if row['self_restart'] else any(lane[0] == key for lane in lanes)):
@@ -229,7 +361,7 @@ def _busy(c, row):
 def run(aid):
     with db.connect() as c:
         row = c.execute('SELECT * FROM project_app_restarts WHERE id=?', (aid,)).fetchone()
-    if not row or row['status'] != 'waiting':
+    if not row or row['status'] != 'waiting' or row['reservation_until']:
         return
     row = dict(row)
     build_dir = None
@@ -318,6 +450,7 @@ def run(aid):
     finally:
         stopped.set()
         heartbeat.join(timeout=2)
+        _reservation_notice(aid)
 
 
 if __name__ == '__main__':

@@ -251,6 +251,89 @@ class RestartTests(unittest.TestCase):
             with patch.object(auth, 'agent_for_key', return_value={'id': 1, 'name': 'agent', 'model': ''}):
                 self.assertEqual(client.post('/api/projects/MO/deploy', headers={'Authorization': 'Bearer fake'}).status_code, 403)
 
+    def agent(self, name='claude'):
+        import auth
+        agent, _ = auth.create_agent(name, 'anthropic', 'claude-opus-5-5')
+        return {'kind': 'agent', 'id': agent['id'], 'name': name, 'model': agent['model']}
+
+    def timeline(self, ref):
+        return [e['body'] for e in issues.get_issue(ref)['events'] if e['kind'] == 'comment']
+
+    def test_agent_reservation_ownership_blocks_until_finish_and_health(self):
+        # DEV-198: 담당 에이전트만 예약하고, 완료 요청 전에는 도우미가 재시작하지 않으며 새 착수를 막는다.
+        self.own()
+        a, b = self.agent('a'), self.agent('b')
+        ref = issues.create_issue(H, 'MO', '서버 수정')['ref']
+        with self.assertRaises(issues.StoreError):
+            restart.reserve(H, ref)                                      # 사람은 예약 대신 기존 재시작을 쓴다
+        with self.assertRaises(issues.StoreError):
+            restart.reserve(a, ref)                                      # 잡지 않은 이슈
+        issues.claim(a, ref, 60)
+        for bad in (0, 121, '30'):
+            with self.assertRaises(issues.StoreError):
+                restart.reserve(a, ref, bad)
+        with patch.object(restart, '_busy', return_value=True):
+            first = restart.reserve(a, ref, 30)
+        self.assertFalse(first['reservation']['ready'])                  # 도는 작업이 끝나야 ready
+        rid = first['id']
+        with db.connect() as c:
+            self.assertIsNotNone(jobs.start_block(c, 'OTHER', 'execute'))  # dev 자신 예약은 모든 줄을 막는다
+            self.assertEqual(jobs.self_restart_state(c)['phase'], 'reserved')
+        with patch.object(restart, '_busy', return_value=False):
+            again = restart.reserve(a, ref, 60)                          # 갱신은 같은 기록
+        self.assertEqual(again['id'], rid)
+        self.assertTrue(again['reservation']['ready'])
+        self.assertGreater(again['reservation']['expires_at'], first['reservation']['expires_at'])
+        other = issues.create_issue(H, 'MO', '다른 일')['ref']
+        issues.claim(b, other, 60)
+        with self.assertRaises(issues.StoreError) as raised:
+            restart.reserve(b, other)
+        self.assertIn('다른 재시작', str(raised.exception))               # 다른 예약이 진행 중
+        for action in ('finish', 'release'):
+            with self.assertRaises(issues.StoreError):
+                restart.reservation_action(b, rid, action)               # 소유자만
+        restart.run(rid)                                                 # 완료 요청 전에는 도우미가 아무것도 안 한다
+        self.command.assert_not_called()
+        self.launch.assert_not_called()
+        restart.reservation_action(a, rid, 'finish')
+        self.launch.assert_called_once_with(rid)
+        with db.connect() as c:
+            self.assertIsNotNone(jobs.start_block(c, 'OTHER', 'execute'))  # 재시작·확인 동안 차단 유지
+        with self.assertRaises(issues.StoreError):
+            restart.reservation_action(a, rid, 'release')                # 시작된 재시작은 해제 못 함
+        restart.reservation_action(a, rid, 'finish')                     # 연결이 끊겨 다시 불러도 한 번만
+        self.launch.assert_called_once_with(rid)
+        with self.health([{'process_id': orchestrate.PROCESS_ID}, {'process_id': 'new-process'}]):
+            restart.run(rid)
+        self.assertEqual(restart.status('MO')['status'], 'complete')
+        with db.connect() as c:
+            self.assertIsNone(jobs.start_block(c, 'OTHER', 'execute'))
+        notes = self.timeline(ref)
+        self.assertTrue(any('예약했어요' in n for n in notes) and any('접속 확인을 마쳤어요' in n for n in notes), notes)
+
+    def test_agent_reservation_release_and_expiry_unblock(self):
+        a = self.agent()
+        ref = issues.create_issue(H, 'MO', '수정')['ref']
+        issues.claim(a, ref, 60)
+        rid = restart.reserve(a, ref, 10)['id']
+        with db.connect() as c:
+            self.assertIsNotNone(jobs.start_block(c, 'MO', 'execute'))
+            self.assertIsNone(restart.block(c, 'OTHER'))                 # 다른 앱 예약은 그 프로젝트만 막는다
+        restart.reservation_action(a, rid, 'release')
+        with db.connect() as c:
+            self.assertIsNone(jobs.start_block(c, 'MO', 'execute'))
+        with self.assertRaises(issues.StoreError):
+            restart.reservation_action(a, rid, 'finish')                 # 해제한 예약은 완료 못 함
+        rid = restart.reserve(a, ref, 10)['id']
+        with db.connect() as c:
+            c.execute("UPDATE project_app_restarts SET reservation_until='2000-01-01T00:00:00+00:00' WHERE id=?", (rid,))
+            self.assertIsNone(jobs.start_block(c, 'MO', 'execute'))      # 만료되면 차단을 풀고
+        self.assertEqual(restart.status('MO')['status'], 'failed')
+        self.assertTrue(any('만료' in n for n in self.timeline(ref)))
+        with self.assertRaises(issues.StoreError):
+            restart.reservation_action(a, rid, 'finish')
+        self.launch.assert_not_called()
+
     def test_admin_auth_and_csrf_routes(self):
         import app
         import auth

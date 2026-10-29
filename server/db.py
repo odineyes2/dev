@@ -1068,6 +1068,13 @@ ALTER TABLE runs ADD COLUMN cache_read_tokens INTEGER;
 """)
 
 
+# 에이전트가 코드 수정 중 재시작을 보류하는 예약. 기존 재시작 기록·차단 경로를 재사용한다.
+MIGRATIONS.append("""
+ALTER TABLE project_app_restarts ADD COLUMN reservation_ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE project_app_restarts ADD COLUMN reservation_until TEXT NOT NULL DEFAULT '';
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

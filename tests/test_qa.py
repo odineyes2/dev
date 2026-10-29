@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 
 # QA ?? DB? ??? ?? ?? ???????? ????? ????.
 with sqlite3.connect(db.config.DB_PATH) as c:
-    for version, sql in enumerate(db.MIGRATIONS[:-1], 1):
+    # runs에 캐시 토큰 열을 더하는 마이그레이션 직전까지 — 뒤에 마이그레이션이 더 붙어도 같은 지점을 쓴다.
+    cache = next(i for i, sql in enumerate(db.MIGRATIONS) if 'cache_write_tokens' in sql)
+    for version, sql in enumerate(db.MIGRATIONS[:cache], 1):
         c.executescript(sql + f'PRAGMA user_version={version};')
     now = db.now_iso()
     c.execute("INSERT INTO projects(key,name,created_at) VALUES('QA','QA',?)", (now,))

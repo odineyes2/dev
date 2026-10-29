@@ -239,4 +239,33 @@ def register_repair(ref: str) -> dict:
     return _call(execute.register_repair, _actor(), ref)
 
 
+@mcp.tool
+def reserve_server_restart(ref: str, minutes: int = 30) -> dict:
+    """코드 수정 전에 담당 이슈로 재시작을 예약·갱신한다(1~120분). 새 착수 차단 후 reservation.ready가 true일 때 작업한다."""
+    import project_restart
+    return _call(project_restart.reserve, _actor(), ref, minutes)
+
+
+@mcp.tool
+def server_restart_status(project: str = 'DEV') -> dict:
+    """재시작 예약·기존 작업 종료 여부·접속 확인 결과를 조회한다. 완료 요청 뒤 status=complete까지 확인한다."""
+    import project_restart
+    _actor()
+    return _call(project_restart.status, project)
+
+
+@mcp.tool
+def finish_server_restart(reservation_id: int) -> dict:
+    """예약 소유자가 코드 작업 후 호출한다. 기존 작업이 끝나면 재시작하고 새 프로세스·health까지 확인한다. 강제 중단 없음."""
+    import project_restart
+    return _call(project_restart.reservation_action, _actor(), reservation_id, 'finish')
+
+
+@mcp.tool
+def release_server_restart(reservation_id: int) -> dict:
+    """재시작이 필요 없어진 예약을 소유자가 해제한다. 재시작을 이미 시작한 예약은 취소하지 않는다."""
+    import project_restart
+    return _call(project_restart.reservation_action, _actor(), reservation_id, 'release')
+
+
 mcp_app = mcp.http_app(path="/", stateless_http=True, json_response=True)
