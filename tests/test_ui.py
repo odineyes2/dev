@@ -711,7 +711,8 @@ def check_trends(page):
                     days=[dict(date='2026-10-12', created_issue_count=1, completed_issue_count=0, agent_seconds=60, total_tokens=12),
                           dict(date='2026-10-13', created_issue_count=2, completed_issue_count=1, agent_seconds=120, total_tokens=25)],
                     summary=dict(created_issue_count=3, completed_issue_count=1, agent_seconds=180, total_tokens=37,
-                                 partial=True, unmeasured_run_count=1, unmeasured_duration_run_count=1, running_run_count=1),
+                                 partial=True, unmeasured_run_count=1, unmeasured_duration_run_count=1, running_run_count=1,
+                                 estimated_api_cost_usd=123.4, cost_estimated_run_count=2, cost_approx_run_count=1, unpriced_tokens=5000),
                     top_issues=[dict(ref='TRND-1', title='큰 작업', total_tokens=37)])
         if 'from=2026-01-01' in query:
             data['days'] = [dict(date='2026-01-01', created_issue_count=0, completed_issue_count=0, agent_seconds=0, total_tokens=0)]
@@ -732,6 +733,11 @@ def check_trends(page):
     assert page.locator('.trend-chart circle').count() == 8
     assert page.locator('.trend-chart text').count() == 8
     assert page.locator('.trend-card').count() == 4
+    assert page.locator('.trend-subtabs a').first.inner_text() == '기간별 사용'
+    cost = page.locator('.trend-card[aria-label="토큰"] .trend-cost')
+    assert cost.inner_text() == 'API 환산 약 $123 (어림) · 환산 못 한 토큰 5,000개'
+    assert '실제 청구액이 아니에요' in cost.get_attribute('title')
+    assert page.locator('.trend-cost').count() == 1
     assert '부분 집계' in page.inner_text('#trend-results')
     assert page.locator('.trend-chart').count() == 4
     assert page.locator('.trend-ranking a').get_attribute('href') == '#/issue/TRND-1'
