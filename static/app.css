@@ -959,3 +959,6 @@ table.harness-map td:nth-child(1){ width:22%; } table.harness-map td:nth-child(2
 @keyframes confirm-appear{ from{ opacity:0; transform:scale(.97); } to{ opacity:1; transform:scale(1); } }
 @media(prefers-reduced-motion:reduce){ .confirm-dialog[open]{ animation:none; } }
 @media(max-width:640px){ .confirm-actions{ flex-direction:column-reverse; } .confirm-actions button{ width:100%; } }
+
+/* 수동 사용량의 모델·설명은 좁은 화면에서도 카드 안에서 줄바꿈한다. */
+.manual-sessions li,.manual-usage-settings p{ overflow-wrap:anywhere; }

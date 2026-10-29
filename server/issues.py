@@ -577,6 +577,8 @@ def get_issue(ref) -> dict:
         for item in [d, *d['children']]:
             item['token_usage'] = tokens[item['id']]
             item['task_token_usage'] = task_tokens[item['id']]
+        from usage import manual_sessions
+        d['manual_sessions'] = manual_sessions(c, d['id'])
         d['superseded_children'] = [ch for ch in d['children'] if ch['superseded_by_plan']]
         d['children'] = [ch for ch in d['children'] if not ch['superseded_by_plan']]
         par = c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["parent_id"],)).fetchone() if row["parent_id"] else None

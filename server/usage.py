@@ -42,6 +42,44 @@ def _add_tokens(row, run):
     row['partial'] = bool(row['unmeasured_run_count'] or row['running_run_count'])
 
 
+def manual_token_usage(c, issue_ids):
+    """Issue별 수동 사용량을 세션 중복 없이 묶음 집계한다."""
+    result = {}
+    if not _has_manual_usage(c):
+        return result
+    ids = list(issue_ids)
+    for start in range(0, len(ids), 900):
+        batch = ids[start:start + 900]
+        for row in c.execute(f"""SELECT issue_id,SUM(input_tokens) AS input_tokens,
+                SUM(output_tokens) AS output_tokens,COUNT(DISTINCT session_id) AS manual_session_count
+                FROM manual_usage WHERE issue_id IN ({','.join('?' * len(batch))}) GROUP BY issue_id""", batch):
+            result[row['issue_id']] = dict(row)
+    return result
+
+
+def _has_manual_usage(c):
+    """마이그레이션 전 DB에서는 수동 사용량을 빈 값으로 취급한다."""
+    return c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='manual_usage'").fetchone() is not None
+
+
+def _add_manual(target, source):
+    """수동 토큰만 더한다. 실행 횟수·시간·실제 비용은 바꾸지 않는다."""
+    for key in ('input_tokens', 'output_tokens'):
+        target[key] += source[key]
+    target['total_tokens'] = target['input_tokens'] + target['output_tokens']
+    target['manual_tokens'] = target.get('manual_tokens', 0) + source['input_tokens'] + source['output_tokens']
+    target['manual_session_count'] = target.get('manual_session_count', 0) + (source['manual_session_count'] if 'manual_session_count' in source.keys() else 0)
+
+
+def manual_sessions(c, issue_id):
+    """상세 화면에 필요한 세션별 모델·시각·토큰만 반환한다."""
+    if not _has_manual_usage(c):
+        return []
+    return [dict(row) for row in c.execute("""SELECT session_id,GROUP_CONCAT(DISTINCT model) AS model,strftime('%Y-%m-%dT%H:%M:%fZ',MIN(julianday(ts))) AS started_at,
+        strftime('%Y-%m-%dT%H:%M:%fZ',MAX(julianday(ts))) AS ended_at,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens
+        FROM manual_usage WHERE issue_id=? GROUP BY session_id ORDER BY MAX(julianday(ts)) DESC,session_id""", (issue_id,))]
+
+
 def issue_token_usage(c, issue_ids):
     """호출자의 읽기 스냅샷에서 지정 Issue 직접 실행분을 묶음 조회한다."""
     result = {iid: dict(input_tokens=0, output_tokens=0, total_tokens=0,
@@ -55,6 +93,8 @@ def issue_token_usage(c, issue_ids):
                 f"SELECT issue_id,status,input_tokens,output_tokens FROM runs WHERE issue_id IN ({','.join('?' * len(batch))})",
                 batch):
             _add_tokens(result[run['issue_id']], run)
+    for iid, manual in manual_token_usage(c, ids).items():
+        _add_manual(result[iid], manual)
     return result
 
 
@@ -81,6 +121,18 @@ def task_token_usage(c, parent_ids):
                 seen.add(run['task_id'])
             if run['status'] is not None:
                 _add_tokens(result[parent_id], run)
+    if not _has_manual_usage(c):
+        return result
+    for start in range(0, len(ids), 900):
+        batch = ids[start:start + 900]
+        for manual in c.execute(f"""SELECT t.parent_id,SUM(m.input_tokens) AS input_tokens,
+            SUM(m.output_tokens) AS output_tokens,COUNT(DISTINCT m.session_id) AS manual_session_count
+            FROM issues t JOIN manual_usage m ON m.issue_id=t.id
+            WHERE t.parent_id IN ({','.join('?' * len(batch))}) AND NOT EXISTS
+            (SELECT 1 FROM events e WHERE e.issue_id=t.id
+             AND json_extract(e.data_json,'$.superseded_by_plan') IS NOT NULL)
+            GROUP BY t.parent_id""", batch):
+            _add_manual(result[manual['parent_id']], manual)
     return result
 
 
@@ -176,6 +228,11 @@ def issue_summary(period, project=None, *, as_of=None):
             usage = json.loads(run['usage_json'])
             collect(run, run['status'] in ('preparing', 'running', 'cancelling'),
                     [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')])
+        for manual in c.execute('SELECT m.* FROM manual_usage m LEFT JOIN issues i ON i.id=m.issue_id WHERE 1=1' +
+                                (' AND i.project_id=?' if project_id is not None else ''), args):
+            ts = _time(manual['ts'])
+            if ts and (since is None or ts >= since) and (ts < until if historical else ts <= until):
+                _add_manual(summary, manual)
     summary['total_tokens'] = summary['input_tokens'] + summary['output_tokens']
     summary['partial'] = bool(summary['unmeasured_run_count'] or summary['running_run_count'] or
                               summary['unmeasured_duration_run_count'])
@@ -315,6 +372,29 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
                     estimate=api_pricing.estimate_cost(
                         input_tokens=audit_counts[0], output_tokens=audit_counts[1],
                         cost_usd=usage.get('cost_usd')))
+        for manual in c.execute('SELECT m.* FROM manual_usage m LEFT JOIN issues i ON i.id=m.issue_id WHERE 1=1' +
+                                (' AND i.project_id=?' if project_id is not None else '') +
+                                ' AND julianday(m.ts)>=julianday(?) AND julianday(m.ts)<julianday(?)',
+                                args + (begin.isoformat(), finish.isoformat())):
+            day = day_of(manual['ts'])
+            if day not in rows:
+                continue
+            bucket = rows[day]
+            _add_manual(bucket, manual)
+            if manual['issue_id'] is None:
+                bucket['unlinked_manual_tokens'] = bucket.get('unlinked_manual_tokens', 0) + manual['input_tokens'] + manual['output_tokens']
+            else:
+                rank = ranking.setdefault(manual['issue_id'], [0, 0])
+                rank[0] += manual['input_tokens']
+                rank[1] += manual['output_tokens']
+            estimate = api_pricing.estimate_cost(model=manual['model'], input_tokens=manual['input_tokens'],
+                output_tokens=manual['output_tokens'], cache_write_tokens=manual['cache_creation_tokens'],
+                cache_read_tokens=manual['cache_read_tokens'])
+            if estimate['cost_usd'] is None:
+                api_cost['unpriced_tokens'] += estimate['unpriced_tokens']
+            else:
+                api_cost['estimated_api_cost_usd'] += estimate['cost_usd']
+                api_cost['cost_approx_run_count'] += bool(estimate['approximate'])
         top = []
         if ranking:
             for start in range(0, len(ranking), 900):
@@ -335,9 +415,11 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
                ('created_issue_count', 'completed_issue_count', *_empty())}
     summary['partial'] = any(row['partial'] for row in daily)
     summary.update(api_cost)
+    for key in ('manual_tokens', 'unlinked_manual_tokens'):
+        summary[key] = sum(row.get(key, 0) for row in daily)
     return dict(project=project.upper() if project else None, from_date=start_day.isoformat(),
                 to_date=end_day.isoformat(), as_of=now.isoformat(), days=daily, summary=summary,
-                top_issues=top[:10], note='현재 보존된 기록 기준이에요. 토큰과 실행 수는 시작일, 시간은 서울 날짜별로 나눠요. 프로젝트 점검은 일별 합계에만 포함하고 작업 순위에서 제외해요. 병렬 실행 시간은 각각 합산해요.')
+                top_issues=top[:10], note='현재 보존된 기록 기준이에요. 직접 실행 토큰과 실행 수는 시작일, 수동 토큰은 응답 시각 기준이에요. 시간은 서울 날짜별로 나눠요. 프로젝트 점검은 일별 합계에만 포함하고 작업 순위에서 제외해요. 병렬 실행 시간은 각각 합산해요.')
 
 
 _STAGES = (
@@ -781,6 +863,8 @@ def project_usage(key, limit=50, offset=0, *, as_of=None):
             duration = _seconds(run['started_at'], as_of if run['status'] == 'running' else run['ended_at'])
             row['unmeasured_duration_run_count'] += duration is None
             row['agent_seconds'] += duration if duration is not None else 0
+        for iid, manual in manual_token_usage(c, by_id).items():
+            _add_manual(by_id[iid], manual)
         summary = _empty()
         summary.update(issue_count=len(rows), completed_issue_count=0, completed_elapsed_seconds=0,
                        unmeasured_completed_issue_count=0)

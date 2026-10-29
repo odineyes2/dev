@@ -9,6 +9,103 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
 
 
+def check_manual_usage(page, shots):
+    """수동 토큰 표시와 연결 상태 변경을 임시 API와 모의 연결로 확인한다."""
+    previous = page.evaluate('({theme:localStorage.getItem("dev.theme"), project:localStorage.getItem("dev.project")})')
+    h = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=h, data={'key':'MUI','name':'수동 사용량'}).ok
+    issue = page.request.post(BASE + '/api/issues', headers=h, data={'project':'MUI','title':'대화형 사용량 확인'}).json()
+    ref = issue['ref']
+    tokens = dict(input_tokens=1200, output_tokens=300, total_tokens=1500, run_count=0,
+                  unmeasured_run_count=0, running_run_count=0, partial=False,
+                  manual_tokens=1500, manual_session_count=1)
+    def issue_response(route):
+        data = route.fetch().json()
+        data['token_usage'] = tokens
+        data['manual_sessions'] = [dict(session_id='fixture', model='claude-opus-4-6',
+            started_at='2026-10-29T00:00:00+00:00', ended_at='2026-10-29T00:01:00+00:00',
+            input_tokens=1200, output_tokens=300)]
+        route.fulfill(json=data)
+    def listing(route):
+        data = route.fetch().json()
+        for row in data['issues']:
+            if row['ref'] == ref:
+                row['token_usage'] = tokens
+                row['task_token_usage'] = dict(tokens,task_count=1)
+        route.fulfill(json=data)
+    state = {'connected':False,'last_received_at':None}
+    methods = []
+    def connection(route):
+        method = route.request.method
+        methods.append(method)
+        if method != 'GET': state['connected'] = method == 'POST'
+        route.fulfill(json=state)
+    def trends(route):
+        data = route.fetch().json()
+        data['summary'].update(manual_tokens=2000,unlinked_manual_tokens=500,total_tokens=2000)
+        data['days'][0]['total_tokens'] = 2000
+        route.fulfill(json=data)
+    page.route('**/api/issues?*', listing)
+    page.route('**/api/issues/' + ref, issue_response)
+    page.route('**/api/manual-usage/connection', connection)
+    page.route('**/api/trends?*', trends)
+    try:
+        page.goto(BASE + '/#/settings/claude-code')
+        button = page.locator('#manual-toggle')
+        expect(button).to_be_enabled()
+        button.click(); expect(button).to_have_text('연결 끊기')
+        button.click(); expect(button).to_have_text('연결')
+        assert methods == ['GET','POST','DELETE'], methods
+        for theme in ('light','dark'):
+            page.evaluate('t => {document.documentElement.dataset.theme=t;localStorage.setItem("dev.theme",t)}', theme)
+            for width in (1300,390):
+                page.emulate_media(color_scheme=theme)
+                page.set_viewport_size({'width':width,'height':850})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.screenshot(path=str(shots / f'manual-settings-{theme}-{width}.png'), animations='disabled')
+        page.set_viewport_size({'width':1300,'height':850})
+        page.goto(BASE + '/#/?project=MUI')
+        cell = page.locator(f'tr[data-ref="{ref}"] .issue-col-tokens')
+        expect(cell.locator('.issue-tokens').first).to_contain_text('1,500')
+        assert '대화형 Claude Code 1,500토큰 포함' in cell.locator('.issue-tokens-tasks').get_attribute('title')
+        for theme in ('light','dark'):
+            page.evaluate('t => {document.documentElement.dataset.theme=t;localStorage.setItem("dev.theme",t)}', theme)
+            page.emulate_media(color_scheme=theme)
+            for width in (1300,390):
+                page.set_viewport_size({'width':width,'height':850})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.screenshot(path=str(shots / f'manual-list-{theme}-{width}.png'), animations='disabled')
+        page.goto(BASE + '/#/issue/' + ref)
+        expect(page.locator('.manual-sessions')).to_contain_text('대화형 Claude Code')
+        assert '$' not in page.locator('.manual-sessions').inner_text()
+        assert '대화형 Claude Code 1,500토큰 포함' in page.locator('.issue-token-detail .issue-tokens').get_attribute('title')
+        for theme in ('light','dark'):
+            page.evaluate('t => {document.documentElement.dataset.theme=t;localStorage.setItem("dev.theme",t)}', theme)
+            for width in (1300,390):
+                page.emulate_media(color_scheme=theme)
+                page.set_viewport_size({'width':width,'height':850})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.locator('.manual-sessions').scroll_into_view_if_needed()
+                page.screenshot(path=str(shots / f'manual-detail-{theme}-{width}.png'), animations='disabled')
+        page.goto(BASE + '/#/trends')
+        expect(page.locator('.trend-manual')).to_contain_text('이슈 미연결')
+        for theme in ('light','dark'):
+            page.evaluate('t => {document.documentElement.dataset.theme=t;localStorage.setItem("dev.theme",t)}', theme)
+            for width in (1300,390):
+                page.emulate_media(color_scheme=theme)
+                page.set_viewport_size({'width':width,'height':850})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.screenshot(path=str(shots / f'manual-trends-{theme}-{width}.png'), animations='disabled')
+    finally:
+        page.unroute('**/api/issues?*', listing)
+        page.unroute('**/api/issues/' + ref, issue_response)
+        page.unroute('**/api/manual-usage/connection', connection)
+        page.unroute('**/api/trends?*', trends)
+        page.set_viewport_size({'width':1300,'height':850})
+        page.evaluate('p => {for(const key of ["theme","project"]){if(p[key] == null)localStorage.removeItem("dev."+key);else localStorage.setItem("dev."+key,p[key]);} document.documentElement.dataset.theme=p.theme || "light"}', previous)
+        page.emulate_media(color_scheme=previous['theme'] or 'light')
+
+
 def check_login_screen(page, shots):
     """로그인 전 화면의 구조와 낮·밤·화면 너비별 배치를 확인한다."""
     assert page.locator('#login').is_visible()
@@ -2673,7 +2770,7 @@ def check_settings_navigation(page, shots):
         page.wait_for_selector(selector)
         assert page.locator('[data-nav=settings]').get_attribute('class').endswith('active')
         assert page.locator('#settings-nav [aria-current=page]').get_attribute('data-settings') == tab
-        assert page.locator('#settings-nav a').count() == 5
+        assert page.locator('#settings-nav a').count() == 6
         assert page.locator('#view > .panel #settings-nav').is_visible()
         assert page.locator('#shell > #settings-nav').count() == 0
         assert page.locator('#view > .panel > .management-header > h2').text_content() == 'Settings'
@@ -5242,6 +5339,10 @@ try:
             check_rating(page, shots)
             assert not errs, errs
             print('OK: Rating'); sys.exit(0)
+        if '--manual-usage-only' in sys.argv:
+            check_manual_usage(page, shots)
+            assert not errs, errs
+            print('OK: Manual usage'); sys.exit(0)
         if '--issue-tokens-only' in sys.argv:
             check_issue_tokens(page, shots)
             assert not errs, errs
@@ -6136,6 +6237,7 @@ try:
 
         check_fab(page)
         check_issue_tokens(page, shots)
+        check_manual_usage(page, shots)
         check_issue_types(page, shots)
         check_rating(page, shots)
 
