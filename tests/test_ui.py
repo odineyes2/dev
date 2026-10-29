@@ -396,11 +396,11 @@ def check_self_restart_banner(page, shots):
     page.evaluate("me = {kind:'human'}; paintRestartBanner()")
     requests = []
     page.route('**/api/orchestrate/self-restart/*', lambda route: (requests.append(route.request.url), route.fulfill(json={'status':'requested'})))
-    page.evaluate("window.confirm = message => { window.restartConfirm = message; return false; }")
+    page.evaluate("window.confirmDialog = async message => { window.restartConfirm = message; return false; }")
     page.locator('.restart-now').click()
     assert 'orphaned' in page.evaluate('window.restartConfirm') and 'NS-98-2' in page.evaluate('window.restartConfirm')
     assert not requests
-    page.evaluate('window.confirm = message => { window.restartConfirm = message; return true; }')
+    page.evaluate('window.confirmDialog = async message => { window.restartConfirm = message; return true; }')
     page.locator('.restart-release').click()
     assert '옛 코드' in page.evaluate('window.restartConfirm')
     assert requests[-1].endswith('/release')
@@ -4984,7 +4984,7 @@ try:
         page = p.chromium.launch().new_page(viewport={"width": 1300, "height": 850})
         errs = []
         page.on("pageerror", lambda e: errs.append(str(e)))
-        answers = []   # 입력창(prompt)에 줄 답 — 비었으면 기본값. None이면 취소.
+        answers = []   # 확인창에 줄 답 — 비었으면 확인. None이면 취소.
         asked = []     # 띄운 확인 창 문구
         def on_dialog(d):
             asked.append(d.message)
@@ -5002,6 +5002,41 @@ try:
         page.screenshot(path=str(shots / 'login_error_light_1300.png'), full_page=True)
         page.fill("#login-password", "pw"); page.click("#login-form button")
         page.wait_for_selector("#shell:not([hidden])")
+        # 기존 화면 흐름 검사는 문구와 취소 응답을 기록한다. 모달 자체는 --confirm-only에서 검사한다.
+        def confirm_answer(message, options):
+            asked.append(message)
+            answer = answers.pop(0) if answers else "모바일도 확인해 주세요"
+            return answer if options.get('input') else answer is not None
+        page.expose_function('testConfirmAnswer', confirm_answer)
+        if '--confirm-only' not in sys.argv:
+            page.add_init_script("window.addEventListener('DOMContentLoaded', () => { window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); });")
+        page.evaluate("() => { window.realConfirmDialog = window.confirmDialog; window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); }")
+        if '--confirm-only' in sys.argv:
+            page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
+            page.goto(BASE + '/#/')
+            page.wait_for_selector('#project-filter')
+            page.evaluate("() => { window.confirmResult = confirmDialog('확인 제목\\n첫 줄\\n· 둘째 줄'); }")
+            page.wait_for_selector('.confirm-dialog[open]')
+            dialog = page.locator('.confirm-dialog')
+            assert dialog.get_attribute('role') == 'alertdialog' and dialog.get_attribute('aria-modal') == 'true'
+            assert dialog.locator('.confirm-message').inner_text() == '첫 줄\n· 둘째 줄'
+            assert dialog.locator('.confirm-ok').evaluate('e => e === document.activeElement')
+            box = dialog.bounding_box()
+            assert abs(box['x'] + box['width']/2 - 650) < 2 and abs(box['y'] + box['height']/2 - 425) < 2
+            page.keyboard.press('Escape'); page.wait_for_selector('.confirm-dialog', state='detached')
+            assert page.evaluate('window.confirmResult') is False
+            page.evaluate("() => { window.confirmResult = confirmDialog('삭제할까요?', {danger:true}); }")
+            page.click('.confirm-cancel'); page.wait_for_selector('.confirm-dialog', state='detached')
+            assert page.evaluate('window.confirmResult') is False
+            page.evaluate("() => { window.confirmResult = confirmDialog('확인할까요?'); }")
+            page.click('.confirm-ok'); page.wait_for_selector('.confirm-dialog', state='detached')
+            assert page.evaluate('window.confirmResult') is True
+            page.evaluate("() => { window.confirmResult = confirmDialog('닫는 이유를 적어 주세요', {input:true}); }")
+            page.fill('.confirm-input', '중복'); page.click('.confirm-ok')
+            page.wait_for_selector('.confirm-dialog', state='detached')
+            assert page.evaluate('window.confirmResult') == '중복'
+            assert not errs, errs
+            print('OK: confirm dialog'); sys.exit(0)
         if '--login-only' in sys.argv:
             assert not errs, errs
             print('OK: login screen and authentication'); sys.exit(0)

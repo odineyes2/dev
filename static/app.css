@@ -935,3 +935,14 @@ table.harness-map td:nth-child(1){ width:22%; } table.harness-map td:nth-child(2
 .harness-enf{ display:grid; grid-template-columns:max-content minmax(0,1fr); gap:var(--sp-2) var(--sp-4); margin:0; }
 .harness-enf dt{ color:var(--dim); } .harness-enf dd{ margin:0; min-width:0; } .harness-enf ul{ margin:0; padding-left:var(--sp-4); }
 @media (max-width:640px){ .harness-enf{ grid-template-columns:minmax(0,1fr); gap:0; } .harness-enf dd{ margin-bottom:var(--sp-2); } }
+
+/* 공용 확인창은 화면 중앙에서 확인·취소와 닫는 이유를 받는다. */
+.confirm-dialog{ width:min(100% - 32px, 440px); max-height:calc(100dvh - 32px); padding:var(--sp-4); border:1px solid var(--border); border-radius:var(--r-lg); background:var(--panel); color:var(--text); overflow:auto; }
+.confirm-dialog::backdrop{ background:rgba(16,24,40,.4); }
+.confirm-dialog h2{ margin:0 0 var(--sp-3); font-size:20px; }
+.confirm-message{ margin:0 0 var(--sp-4); font-size:14px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+.confirm-input{ width:100%; min-height:40px; margin-bottom:var(--sp-4); }
+.confirm-actions{ display:flex; justify-content:flex-end; gap:var(--sp-2); }
+.confirm-actions button{ min-height:40px; }
+.confirm-actions .danger{ background:var(--danger); border-color:var(--danger); color:#fff; }
+@media(max-width:640px){ .confirm-actions{ flex-direction:column-reverse; } .confirm-actions button{ width:100%; } }
