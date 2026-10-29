@@ -323,7 +323,7 @@ def run(row):
             report, second_usage = analyze(row,{'phase':'verdict','snapshot':value,'files':files,'checks':evidence,
                                                'capture':evidence.get('capture',{'output':'미실시: 캡처 요청 없음'})},folder,deadline)
             require_enabled()
-            for name in ('input_tokens','output_tokens','cost_usd'):
+            for name in ('input_tokens','output_tokens','cost_usd','cache_write_tokens','cache_read_tokens'):
                 a,b = first_usage.get(name),second_usage.get(name)
                 usage[name] = a+b if a is not None and b is not None else None
             if git(worktree,'status','--porcelain','--untracked-files=no') != baseline or git(worktree,'rev-parse','HEAD') != value['base_sha']:

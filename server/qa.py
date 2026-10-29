@@ -169,8 +169,8 @@ def finish(qid, status, note='', items=None, usage=None, run_status=None):
         c.execute('UPDATE qa_rounds SET status=?,note=?,ended_at=? WHERE id=?', (status,note,now,qid))
         if row['run_id']:
             usage = usage or {}
-            c.execute('UPDATE runs SET status=?,ended_at=?,note=?,input_tokens=?,output_tokens=?,cost_usd=? WHERE id=?',
-                      (run_status or ('ok' if status in ('passed','failed') else 'failed'),now,note,usage.get('input_tokens'),usage.get('output_tokens'),usage.get('cost_usd'),row['run_id']))
+            c.execute('UPDATE runs SET status=?,ended_at=?,note=?,input_tokens=?,output_tokens=?,cost_usd=?,cache_write_tokens=?,cache_read_tokens=? WHERE id=?',
+                      (run_status or ('ok' if status in ('passed','failed') else 'failed'),now,note,usage.get('input_tokens'),usage.get('output_tokens'),usage.get('cost_usd'),usage.get('cache_write_tokens'),usage.get('cache_read_tokens'),row['run_id']))
         issues._event(c,row['issue_id'],{'kind':'human','name':'system/qa'},'comment',
                       f"QA {row['round_number']}회: {status}. {note}", {'qa_id':qid,'qa_status':status})
     apply(qid)

@@ -22,7 +22,7 @@ with sqlite3.connect(db.config.DB_PATH) as c:
 assert db.init() == len(db.MIGRATIONS)
 assert db.init() == len(db.MIGRATIONS)
 with db.connect() as c:
-    assert [tuple(r) for r in c.execute('SELECT * FROM runs')] == before
+    assert [tuple(r) for r in c.execute('SELECT * FROM runs')] == [r + (None, None) for r in before]
     assert [tuple(r) for r in c.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name='runs' ORDER BY name")] == triggers
     assert c.execute('SELECT run_id FROM review_plan_runs').fetchone()[0] == rid
     assert not c.execute('PRAGMA foreign_key_check').fetchall()
