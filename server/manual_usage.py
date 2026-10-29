@@ -89,3 +89,96 @@ def ingest(body):
                  cache_read_tokens,ts,issue_id,ref_text,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
                 (message, session, model, *tokens, ts, issue_id, ref, db.now_iso())).rowcount
     return {'inserted': inserted}
+
+
+# 스크립트 경로를 소유 표식으로 써서 다른 명령 훅은 건드리지 않는다.
+def _settings_path(home=None):
+    from pathlib import Path
+    import os
+    return Path(home or os.environ.get('DEV_MANUAL_USAGE_HOME') or Path.home()) / '.claude' / 'settings.json'
+
+
+def _read_settings(path):
+    import json
+    try:
+        data = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        if not isinstance(data, dict) or not isinstance(data.get('hooks', {}), dict):
+            raise ValueError()
+        for event in ('Stop', 'SessionEnd'):
+            groups = data.get('hooks', {}).get(event, [])
+            if not isinstance(groups, list) or any(
+                not isinstance(g, dict) or not isinstance(g.get('hooks'), list)
+                or any(not isinstance(h, dict) for h in g['hooks']) for g in groups
+            ):
+                raise ValueError()
+        return data
+    except (ValueError, UnicodeError):
+        raise StoreError('Claude Code 설정 JSON을 확인해 주세요. 파일은 바꾸지 않았어요.', 409)
+
+
+def _ours(hook):
+    script = str(config.REPO_ROOT / 'scripts' / 'claude_usage_hook.py')
+    command = hook.get('command')
+    return hook.get('type') == 'command' and isinstance(command, str) and script in command
+
+
+def connection_status(home=None):
+    data = _read_settings(_settings_path(home))
+    connected = all(any(_ours(h) for g in data.get('hooks', {}).get(event, [])
+                        for h in g['hooks']) for event in ('Stop', 'SessionEnd'))
+    with db.connect() as c:
+        last = c.execute('SELECT MAX(created_at) FROM manual_usage').fetchone()[0]
+        key = c.execute('SELECT 1 FROM app_settings WHERE key=?', (KEY_SETTING,)).fetchone()
+    return {'connected': bool(connected and key and (config.DATA_DIR / 'manual_usage.key').exists()),
+            'last_received_at': last}
+
+
+def set_connection(enabled, home=None):
+    import json
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+    path = _settings_path(home)
+    data = _read_settings(path)
+    hooks = data.setdefault('hooks', {})
+    command = subprocess.list2cmdline([sys.executable, str(config.REPO_ROOT / 'scripts' / 'claude_usage_hook.py'),
+                                      '--url', f'http://127.0.0.1:{config.PORT}/api/manual-usage/ingest',
+                                      '--key-file', str(config.DATA_DIR.resolve() / 'manual_usage.key')])
+    if os.name != 'nt':
+        import shlex
+        command = shlex.join([sys.executable, str(config.REPO_ROOT / 'scripts' / 'claude_usage_hook.py'),
+                              '--url', f'http://127.0.0.1:{config.PORT}/api/manual-usage/ingest',
+                              '--key-file', str(config.DATA_DIR.resolve() / 'manual_usage.key')])
+    for event in ('Stop', 'SessionEnd'):
+        groups = []
+        for group in hooks.get(event, []):
+            remaining = [h for h in group['hooks'] if not _ours(h)]
+            if remaining or not group['hooks']:
+                groups.append({**group, 'hooks': remaining})
+        if enabled:
+            groups.append({'hooks': [{'type': 'command', 'command': command, 'timeout': 2}]})
+        if groups:
+            hooks[event] = groups
+        else:
+            hooks.pop(event, None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        shutil.copy2(path, path.with_name(path.name + '.bak'))
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix='.dev-usage-')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.write('\n')
+        if enabled:
+            rotate_key()
+        os.replace(temporary, path)
+        if not enabled:
+            with db.connect() as c:
+                c.execute('DELETE FROM app_settings WHERE key=?', (KEY_SETTING,))
+            (config.DATA_DIR / 'manual_usage.key').unlink(missing_ok=True)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return connection_status(home)

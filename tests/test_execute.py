@@ -6,6 +6,10 @@ os.environ["DEV_DATA_DIR"] = tempfile.mkdtemp()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 import execute, issues  # noqa: E402
 
+# 사용자 설정원의 훅을 헤드리스 실행에서 읽지 않는다.
+assert execute.USER_ISOLATION[execute.USER_ISOLATION.index('--setting-sources') + 1] == 'project'
+assert 'user' not in execute.USER_ISOLATION
+
 tmp = Path(tempfile.mkdtemp())
 repo, bare = tmp / "repo", tmp / "origin.git"
 
