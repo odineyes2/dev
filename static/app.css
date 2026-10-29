@@ -953,7 +953,7 @@ table.harness-map td:nth-child(1){ width:22%; } table.harness-map td:nth-child(2
 .confirm-note{ flex:none; }
 .confirm-input{ width:100%; min-height:40px; }
 .confirm-actions{ display:flex; justify-content:flex-end; gap:var(--sp-2); }
-.confirm-actions button{ min-height:40px; }
+.confirm-actions button{ min-height:40px; justify-content:center; }
 .confirm-actions .confirm-ok{ background:var(--grad-primary); border-color:var(--accent); color:#fff; }
 .confirm-actions .danger{ background:var(--danger); border-color:var(--danger); color:#fff; }
 @keyframes confirm-appear{ from{ opacity:0; transform:scale(.97); } to{ opacity:1; transform:scale(1); } }
