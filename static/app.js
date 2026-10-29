@@ -531,7 +531,7 @@ function actionKind(i){
   const valid=c => c?.plan_version && c.approval && !c.approval.stale && c.approval.plan_version===c.plan_version && ['approve','approve_notes'].includes(c.approval.verdict);
   if(i.parent_id!=null || i.parent_ref){
     if(i.status==='in_review' && actionSession?.parentStatuses.get(i.parent_ref)==='triage') return 'task-approve';
-    return i.status==='backlog' && !c.has_execution && valid(c.parent) ? 'execute' : '';
+    return i.status==='backlog' && valid(c.parent) ? 'execute' : '';
   }
   if(i.status==='in_review' && c.has_children) return 'complete-tree';
   if(i.status==='triage' && c.plan_version && !valid(c)) return 'decision';
