@@ -379,12 +379,16 @@ with patch.object(orchestrate, 'settings', return_value={'auto_merge':True}):
             c.execute("UPDATE task_execution_results SET state='merged' WHERE run_id=?", (wrapped_run,))
         return 'merged'
     with patch.object(review, 'run_headless', return_value='ok'), patch.object(orchestrate, 'handle', side_effect=finish_wrapped), patch.object(orchestrate, 'promote_parent'):
-        execute._run_then_merge(admin, wrapped, None, wrapped_run)
+        execute._run_then_merge(admin, wrapped, None, wrapped_run,
+                               cmd=['mock-agent'], worktree=Path(__file__).resolve().parent.parent,
+                               env={}, timeout=1, label='실행')
     automation.sync()
     assert issues.get_issue(wrapped)['status'] == 'done'
     _, failed_merge, _, failed_run = result_task(state='processing')
     with patch.object(review, 'run_headless', return_value='ok'), patch.object(orchestrate, 'handle', side_effect=RuntimeError('deploy failure')):
-        execute._run_then_merge(admin, failed_merge, None, failed_run)
+        execute._run_then_merge(admin, failed_merge, None, failed_run,
+                               cmd=['mock-agent'], worktree=Path(__file__).resolve().parent.parent,
+                               env={}, timeout=1, label='실행')
     automation.sync()
     assert issues.get_issue(failed_merge)['status'] == 'in_review'
 print('OK — 단일 Task 결과 승인·감사·순차 등록·실패/경합/병합/후손 차단·Plan 수동 승인 보존')
