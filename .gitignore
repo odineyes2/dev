@@ -5,3 +5,4 @@ __pycache__/
 graphify-out/
 tests/shots/
 .ui-captures/
+.test-cache/

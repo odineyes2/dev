@@ -44,6 +44,7 @@ import issues
 import project_build
 import restart_guard
 from execute import BASE_BRANCH, SECRET_ENV, _run_git, branch_name
+import test_runner
 
 SETTINGS = config.DATA_DIR / "orchestrate.json"
 GIT_ID = ["-c", "user.name=dev orchestrator", "-c", "user.email=orchestrator@dev.local"]
@@ -330,28 +331,26 @@ def _merged(repo, ref) -> bool:
 
 
 def run_test(repo, t, args=(), env=None):
-    """선택한 검사 하나를 기존 시간 제한과 출력 보존 규칙으로 실행한다."""
+    """선택한 검사 하나를 기존 시간 제한과 출력 보존 규칙으로 실행한다(명령·시간 제한은 test_runner와 같다)."""
+    return test_runner.run(repo, t, args, {k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env)
+
+
+def test_jobs(project_key) -> int:
+    """서버 검사를 동시에 돌릴 파일 수(DEV-200). orchestrate.json의 `test_jobs`, 없으면 dev만 4·다른 프로젝트는 1(순차)."""
     try:
-        relative = (t.relative_to(Path(repo)) if t.is_relative_to(Path(repo)) else t).as_posix()
-        command = (['node', '--test', str(t)] if relative.endswith('.js') else   # JS 검사(node:test, DEV-161)
-                   [sys.executable, '-m', 'unittest', relative[:-3].replace('/', '.')]
-                   if relative.startswith('backend/tests/') else [sys.executable, str(t)])
-        return subprocess.run(command + list(args), cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              env={**({k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env), "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"}, timeout=600,
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
-    except subprocess.TimeoutExpired as error:
-        def decoded(value):
-            return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
-        return subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')
+        value = int(settings(project_key).get('test_jobs', 4 if project_key == 'DEV' else 1))
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, min(value, os.cpu_count() or 1))
 
 
 FLAKY_MARK = '불안정한 검사 —'   # 같은 코드에서 통과·실패가 섞인 검사(troubleshoot가 이 글자로 flaky를 가른다)
 
 
-def slowest_line(durations: dict, top=5) -> str:
-    """가장 오래 걸린 검사 상위 N개와 전체 시간을 한 줄로 만든다(DEV-160-2)."""
+def slowest_line(durations: dict, top=5, wall=None) -> str:
+    """가장 오래 걸린 검사 상위 N개와 전체 시간을 한 줄로 만든다(DEV-160-2). 병렬이면 wall(벽시계 초)을 전체로 쓴다(DEV-200)."""
     ranked = sorted(durations.items(), key=lambda kv: -kv[1])[:top]
-    total = sum(durations.values())
+    total = sum(durations.values()) if wall is None else wall
     whole = f'{total / 60:.1f}분' if total >= 60 else f'{total:.0f}초'
     return '가장 오래 걸린 검사: ' + ' · '.join(f'{n} {s:.0f}초' for n, s in ranked) + f', 전체 {whole}'
 
@@ -395,7 +394,9 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
             'reg': hashlib.sha256(Path(regression.__file__).read_bytes()).hexdigest(), 'files': {}}
     miss = {}
     changed_tests = set(selection.get('changed_tests') or [])
-    for t in regression.test_files(repo):
+    files = regression.test_files(repo)
+    todo = []   # (검사, 지문) — 재사용·건너뜀이 아닌 것만 아래에서 한꺼번에 돌린다
+    for t in files:
         if not policy.get('file:' + t.name, {'enabled': True})['enabled']:
             results[t.name] = 'skipped'
             continue
@@ -419,7 +420,9 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
                 miss[t.name] = '트리가 다름 — main이 바뀌어 병합 결과가 달라짐'
             else:
                 miss[t.name] = '실행 환경(Python)이 다름'
-        started = time.monotonic()
+        todo.append((t, stamp))
+
+    def one(t):
         r = run_test(repo, t, env=env)
         # 불안정 검사 대책(DEV-160-3): 바뀐 검사는 완료 때 3번, 병합에서 실패한 검사는 2번 더 돌려 섞임을 가린다.
         runs, bad = [r], ([r] if r.returncode else [])
@@ -429,7 +432,15 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
                 runs.append(again)
                 if again.returncode:
                     bad.append(again)
-        durations[t.name] = round(time.monotonic() - started, 1)
+        return runs, bad
+    # 병렬(DEV-200): 격리 PG는 모든 검사가 한 클러스터를 같이 쓰므로 순차로 돌린다.
+    key = ref.split('-')[0] if ref else regression.project_key(repo)
+    timing = regression.load_record('regression-durations:' + key)
+    started = time.monotonic()
+    ran = test_runner.run_all([t for t, _ in todo], one, 1 if env else test_jobs(key), timing)
+    wall = round(time.monotonic() - started, 1)
+    for t, stamp in todo:   # 결과는 원래 순서대로 모은다
+        (runs, bad), durations[t.name] = ran[t]
         results[t.name] = 'failed' if bad else 'passed'
         if not bad and stamp:
             cached[t.name] = stamp
@@ -450,16 +461,19 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
                 flaky = f"{FLAKY_MARK} {t.name}가 같은 코드에서 {len(runs)}번 중 {len(bad)}번 실패했어요 — 검사 코드의 기다리기·순서 가정을 먼저 확인해 주세요\n"
             tag = f"{policy[stage].get('number', '')} {policy[stage]['name']} 실패 — {policy.get('file:' + t.name, {}).get('number', '')} "
             failures.append(f"{flaky}{tag}{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
+    results = {t.name: results[t.name] for t in files if t.name in results}
+    if durations:   # 다음 병렬 실행이 오래 걸리는 검사부터 시작하게 파일별 시간을 프로젝트마다 남긴다
+        regression.save_record('regression-durations:' + key, {**timing, **durations})
     if ref:
         cached['_meta'] = meta
         regression.save_record('regression-cache:' + ref, cached)
         reused = sum(1 for v in results.values() if v == 'reused')
         reason = next(iter(miss.values()), '') if not reused else ''
         regression.save_record('regression-selection:' + ref + ':' + stage,
-                               {**selection, 'results': results, 'durations': durations,
+                               {**selection, 'results': results, 'durations': durations, 'wall': wall,
                                 'cache': {'used': bool(reused), 'reused': reused, 'reason': reason}})
         if stage == 'server_merge' and durations:
-            issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref, '⏱️ 병합 ' + slowest_line(durations))
+            issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref, '⏱️ 병합 ' + slowest_line(durations, wall=wall))
         if stage == 'server_merge' and miss and not reused and not reason.startswith('트리가 다름'):
             done = regression.load_record('regression-selection:' + ref + ':server_completion').get('results')
             if done:

@@ -364,9 +364,9 @@ def resolve(ref=None, repo=None, changed=None):
 
 
 def test_files(repo):
-    """루트 검사와 Moai의 패키지 검사를 모두 찾는다."""
-    return sorted({path for folder in ('tests', 'backend/tests') for pattern in ('test_*.py', 'test_*.js')
-                   for path in Path(repo, folder).glob(pattern) if pattern.endswith('py') or folder == 'tests'})
+    """루트 검사와 Moai의 패키지 검사를 모두 찾는다(수동 명령과 같은 목록 — test_runner)."""
+    import test_runner
+    return test_runner.test_files(repo)
 
 
 def work_tree_hash(repo):
