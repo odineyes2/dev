@@ -417,11 +417,11 @@ def check_self_restart_banner(page, shots):
     page.evaluate("me = {kind:'human'}; paintRestartBanner()")
     requests = []
     page.route('**/api/orchestrate/self-restart/*', lambda route: (requests.append(route.request.url), route.fulfill(json={'status':'requested'})))
-    page.evaluate("window.confirmDialog = async message => { window.restartConfirm = message; return false; }")
+    page.evaluate("window.confirmDialog = async (message, options = {}) => { window.restartConfirm = message + (options.description ?? null); return false; }")
     page.locator('.restart-now').click()
     assert 'orphaned' in page.evaluate('window.restartConfirm') and 'NS-98-2' in page.evaluate('window.restartConfirm')
     assert not requests
-    page.evaluate('window.confirmDialog = async message => { window.restartConfirm = message; return true; }')
+    page.evaluate('window.confirmDialog = async (message, options = {}) => { window.restartConfirm = message + (options.description ?? null); return true; }')
     page.locator('.restart-release').click()
     assert '옛 코드' in page.evaluate('window.restartConfirm')
     assert requests[-1].endswith('/release')
@@ -1395,11 +1395,11 @@ def check_manual_merge(page, shots, answers, asked):
     page.set_viewport_size({'width':1300,'height':850})
     answers.append(None)
     page.select_option('#status', 'done')
-    assert '병합 대기' in asked[-1] and page.input_value('#status') == 'in_review'
+    assert '병합 전에 완료' in asked[-1] and page.input_value('#status') == 'in_review'
     assert state['posts'] == 0
     answers.append(None)
     page.click('#approve')
-    assert '병합 대기' in asked[-1] and page.locator('#approve').count() == 1
+    assert '병합 전에 완료' in asked[-1] and page.locator('#approve').count() == 1
     page.locator('#manual-merge').evaluate('b=>{b.click();b.click()}')
     page.wait_for_function("document.querySelector('#manual-merge')?.disabled")
     assert state['posts'] == 1 and '병합 시작 중' in page.inner_text('#manual-merge')
@@ -5090,7 +5090,7 @@ try:
         page.wait_for_selector("#shell:not([hidden])")
         # 기존 화면 흐름 검사는 문구와 취소 응답을 기록한다. 모달 자체는 --confirm-only에서 검사한다.
         def confirm_answer(message, options):
-            asked.append(message)
+            asked.append(message + '\n' + options.get('description', '') + '\n' + '\n'.join(x.get('ref', '') + ' ' + x.get('title', '') for x in options.get('items', [])))
             answer = answers.pop(0) if answers else "모바일도 확인해 주세요"
             return answer if options.get('input') else answer is not None
         page.expose_function('testConfirmAnswer', confirm_answer)
@@ -5121,6 +5121,36 @@ try:
             page.fill('.confirm-input', '중복'); page.click('.confirm-ok')
             page.wait_for_selector('.confirm-dialog', state='detached')
             assert page.evaluate('window.confirmResult') == '중복'
+            for theme in ('light', 'dark'):
+                page.evaluate('t => {document.documentElement.dataset.theme=t;localStorage.setItem("dev.theme",t)}', theme)
+                for width in (1300, 390):
+                    page.set_viewport_size({'width':width, 'height':850})
+                    for kind in ('complete', 'delete', 'plain'):
+                        page.evaluate("""kind => {
+                          const options = kind === 'complete' ? {description:'하위 Task까지 모두 Done이 되고, 되돌릴 수 없어요.', items:Array.from({length:5}, (_,n)=>({ref:'DEV-193-'+n,title:'긴 이슈 제목이 한 줄을 넘으면 말줄임으로 표시되는지 확인해요 '.repeat(4)})),okText:'완료로 바꾸기',focusCancel:true} : kind === 'delete' ? {description:'계획서·활동 기록도 같이 지워져요.',okText:'지우기',danger:true,focusCancel:true} : {okText:'실행 맡기기'};
+                          window.confirmResult = confirmDialog(kind === 'complete' ? 'DEV-193을 완료할까요?' : kind === 'delete' ? 'DEV-193을 지울까요?' : '실행을 맡길까요?', options);
+                        }""", kind)
+                        dialog = page.locator('.confirm-dialog')
+                        expect(dialog).to_be_visible()
+                        assert dialog.evaluate('e => e.offsetWidth <= 400 && e.scrollWidth <= e.clientWidth')
+                        assert dialog.locator('h2').evaluate("e => getComputedStyle(e).wordBreak") == 'keep-all'
+                        assert dialog.locator('.confirm-ok.danger').count() == (1 if kind == 'delete' else 0)
+                        if kind != 'plain':
+                            assert dialog.locator('.confirm-cancel').evaluate('e => e === document.activeElement')
+                        if kind == 'complete':
+                            assert dialog.locator('.confirm-item').count() == 3
+                            assert dialog.locator('.confirm-more').inner_text() == '외 2개'
+                            assert dialog.locator('.confirm-item-title').first.evaluate("e => e.scrollWidth > e.clientWidth && getComputedStyle(e).textOverflow === 'ellipsis'")
+                            assert dialog.locator('.confirm-ok').inner_text() == '완료로 바꾸기'
+                        dialog.evaluate('e => Promise.all(e.getAnimations().map(a => a.finished))')
+                        page.screenshot(path=str(shots / f'confirm-{kind}-{theme}-{width}.png'))
+                        page.click('.confirm-cancel')
+                        expect(dialog).to_have_count(0)
+                        assert page.evaluate('window.confirmResult') is False
+            page.evaluate("() => {window.confirmResult = confirmDialog('바깥 클릭 검사');}")
+            page.mouse.click(1, 1)
+            expect(page.locator('.confirm-dialog')).to_have_count(0)
+            assert page.evaluate('window.confirmResult') is False
             assert not errs, errs
             print('OK: confirm dialog'); sys.exit(0)
         if '--login-only' in sys.argv:
@@ -6063,7 +6093,7 @@ try:
         answers.append(None); page.click(".side .complete-tree"); page.wait_for_timeout(500)   # 취소하면 그대로
         assert page.request.get(f"{BASE}/api/issues/{top}").json()["status"] != "done"
         asked.clear(); page.click(".side .complete-tree"); page.wait_for_function("location.hash === '#/'")
-        assert top in asked[0] and ta in asked[0] and tb in asked[0] and "주의" in asked[0] and f"{tb} — Backlog" in asked[0], asked
+        assert top in asked[0] and ta in asked[0] and tb in asked[0] and "아직 끝나지 않은 Task" in asked[0], asked
         assert all(page.request.get(f"{BASE}/api/issues/{r}").json()["status"] == "done" for r in (top, ta, tb))
 
         check_fab(page)
