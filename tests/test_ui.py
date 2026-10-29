@@ -396,11 +396,11 @@ def check_self_restart_banner(page, shots):
     page.evaluate("me = {kind:'human'}; paintRestartBanner()")
     requests = []
     page.route('**/api/orchestrate/self-restart/*', lambda route: (requests.append(route.request.url), route.fulfill(json={'status':'requested'})))
-    page.evaluate("window.confirm = message => { window.restartConfirm = message; return false; }")
+    page.evaluate("window.confirmDialog = async message => { window.restartConfirm = message; return false; }")
     page.locator('.restart-now').click()
     assert 'orphaned' in page.evaluate('window.restartConfirm') and 'NS-98-2' in page.evaluate('window.restartConfirm')
     assert not requests
-    page.evaluate('window.confirm = message => { window.restartConfirm = message; return true; }')
+    page.evaluate('window.confirmDialog = async message => { window.restartConfirm = message; return true; }')
     page.locator('.restart-release').click()
     assert '옛 코드' in page.evaluate('window.restartConfirm')
     assert requests[-1].endswith('/release')
