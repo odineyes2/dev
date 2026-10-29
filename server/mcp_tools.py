@@ -232,4 +232,11 @@ def confirm_manual_merge(ref: str) -> dict:
     return _call(orchestrate.confirm_manual_merge, _actor(), ref)
 
 
+@mcp.tool
+def register_repair(ref: str) -> dict:
+    """담당 에이전트가 승인 Task의 연결된 수정 커밋을 서버 검사·자동 병합에 재제출한다. 모델 재호출 없음."""
+    import execute
+    return _call(execute.register_repair, _actor(), ref)
+
+
 mcp_app = mcp.http_app(path="/", stateless_http=True, json_response=True)

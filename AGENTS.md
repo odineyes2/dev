@@ -30,6 +30,7 @@
 - Moai(MO) — 모델 호출 전에 Python 검사 의존성·로컬 npm 캐시 설치·TypeScript 실행기를 확인하되 코드 타입 오류는 모델이 고치도록 준비 검사에서 컴파일하지 않는다. 완료 등록 전에 타입 검사·실제 웹 빌드가 실패하면 완료를 막고, 병합은 격리 빌드 산출물로 백엔드 검사를 한다. 운영 웹 교체·복원·릴리스 확인은 `project_build`(검사한 커밋 격리 빌드 → rename 교체, 실패 시 복원)와 orchestrate를 쓴다. MO 기본 빌드 선언은 프로젝트별 명시 설정을 덮지 않는다(지금 `MO.build=[]`).
 
 ### 실패 뒤 처리
+- 수정 커밋 재등록(DEV-197): REST·MCP `register_repair`는 사람 또는 활성 claim을 가진 담당 에이전트가 호출한다. 에이전트는 Task HEAD를 자기 actor로 연결해야 한다. 기존 부모 승인·실행 소유권·서버 검사·자동 병합을 그대로 검증하며 모델을 재호출하지 않는다.
 - `rollback.py` — 계획서 거절·Closed가 된 이슈의 병합을 검사 후 revert하고 재시작까지 확인한 뒤 닫는다(아직 적용된 병합은 first-parent 이력으로 계산).
 - 수동 반영 확인(DEV-148) — 자동 병합이 보류·실패로 남은 Task를 사람·Claude가 직접 main에 넣었으면 `orchestrate.confirm_manual_merge`(화면 "수동 반영 확인"·MCP `confirm_manual_merge`)로 병합 완료를 기록한다. 서버가 Task 커밋이 main에 있는지 git으로 확인해야만 바뀌고, 검사·재시작·알림은 하지 않는다. 이걸 안 하면 결과 승인이 계속 막힌다.
 - `troubleshoot.py` — 실패한 승인 Task를 같은 대기열에서 한 번 복구 실행한다(원 실행 기록 보존, 추가 호출 1회·짧은 시간 상한).
