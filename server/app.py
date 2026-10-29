@@ -17,6 +17,7 @@ import auth
 import config
 import db
 import timing
+import manual_usage
 from mcp_tools import mcp_app
 
 
@@ -75,6 +76,10 @@ async def _resolve_actor(request: Request) -> tuple[dict | None, str]:
 async def authenticate(request: Request, call_next):
     path = request.url.path
     request.state.actor = None
+    if path == "/api/manual-usage/ingest" and request.method == "POST":
+        if not await run_in_threadpool(manual_usage.authorized, request.headers.get("authorization", "")):
+            return JSONResponse({"detail": "수신 키가 필요해요."}, status_code=401)
+        return await call_next(request)
     bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
     if path == "/mcp" or path.startswith("/mcp/"):
         # MCP는 에이전트 키만 — 쿠키로는 받지 않는다(다른 사이트가 브라우저 쿠키로 도구를 부르지 못하게).
@@ -145,6 +150,11 @@ async def json_body(request: Request) -> dict:
     if not isinstance(body, dict):
         raise HTTPException(400, "JSON 객체가 필요해요.")
     return body
+
+
+@app.post("/api/manual-usage/ingest")
+async def api_manual_usage_ingest(request: Request):
+    return await run_in_threadpool(manual_usage.ingest, await json_body(request))
 
 
 @app.get("/api/health")

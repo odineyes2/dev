@@ -1075,6 +1075,26 @@ ALTER TABLE project_app_restarts ADD COLUMN reservation_until TEXT NOT NULL DEFA
 """)
 
 
+# 대화형 Claude Code 사용량은 미연결 이슈도 보존하고 메시지별로 한 번만 저장한다.
+MIGRATIONS.append("""
+CREATE TABLE manual_usage (
+ message_id TEXT PRIMARY KEY NOT NULL,
+ session_id TEXT NOT NULL,
+ model TEXT NOT NULL,
+ input_tokens INTEGER NOT NULL CHECK(input_tokens >= 0),
+ output_tokens INTEGER NOT NULL CHECK(output_tokens >= 0),
+ cache_creation_tokens INTEGER NOT NULL CHECK(cache_creation_tokens >= 0),
+ cache_read_tokens INTEGER NOT NULL CHECK(cache_read_tokens >= 0),
+ ts TEXT NOT NULL,
+ issue_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+ ref_text TEXT,
+ created_at TEXT NOT NULL
+);
+CREATE INDEX manual_usage_issue ON manual_usage(issue_id);
+CREATE INDEX manual_usage_ts ON manual_usage(ts);
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
