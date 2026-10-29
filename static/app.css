@@ -493,9 +493,11 @@ body:has(.composer:not([hidden])) .toast{ bottom:calc(16px + var(--composer-heig
 .ops-main{ min-width:0; }
 .ops-side{ order:-1; }
 .ops-split>.issue-summary{ order:-2; }
+/* 목록 화면은 필터↔처리현황↔(대기열)↔표 간격을 모두 16px로 맞춘다(DEV-188). 넓은 폭은 grid 행 간격을 없애고, 세로 배치는 대기열 아래 여백을 같은 단계로 */
+.ops-split:has(#list-body) .jobs{ margin-bottom:var(--sp-4); }
 @media (min-width: 1101px){
   .ops-split{ display:grid; grid-template-columns:minmax(0, 1fr) 300px; gap:var(--sp-5); align-items:start; }
-  .ops-split:has(#list-body){ grid-template-columns:minmax(0, 1fr) 300px; grid-template-areas:"summary side" "main side"; grid-template-rows:auto 1fr; }
+  .ops-split:has(#list-body){ grid-template-columns:minmax(0, 1fr) 300px; grid-template-areas:"summary side" "main side"; grid-template-rows:auto 1fr; row-gap:0; }
   .ops-split:has(#list-body) .issue-summary{ grid-area:summary; }
   .ops-split:has(#list-body) .ops-main{ grid-area:main; }
   .ops-split:has(#list-body) .ops-side{ grid-area:side; }

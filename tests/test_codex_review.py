@@ -65,8 +65,10 @@ H = {'X-Requested-With': 'dev'}
 
 def wait_idle():
     for _ in range(100):
-        if not jobs.busy() and not jobs.list_jobs():
-            return
+        # 두 조회 사이에 pump가 다음 작업을 시작하면 실행 중인데도 비었다고 오판한다.
+        with jobs._lock:
+            if not jobs.busy() and not jobs.list_jobs():
+                return
         time.sleep(.1)
     raise AssertionError('queue stuck')
 

@@ -489,6 +489,36 @@ def check_self_restart_banner(page, shots):
     page.wait_for_selector('#shell:not([hidden])')
 
 
+def check_list_spacing(page, shots):
+    """목록 화면에서 필터↔처리현황 간격과 처리현황↔표(세로 배치면 대기열을 사이에 둔 각 간격)가 같은지 폭별로 확인한다(DEV-188)."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers, data={'key': 'LSPC', 'name': '목록 간격 검사'}).ok
+    ref = page.request.post(BASE + '/api/issues', headers=headers, data={'project': 'LSPC', 'title': '간격 검사'}).json()['ref']
+    page.goto(BASE + '/#/?project=LSPC')
+    page.wait_for_selector(f'#list-body tr[data-ref="{ref}"]')
+    page.wait_for_selector('#jobs-box .jobs')
+    page.wait_for_function("document.querySelector('.issue-summary-content')?.getAttribute('aria-busy') === 'false'")
+    gaps = """() => {
+      const r = s => document.querySelector(s).getBoundingClientRect();
+      const bar = r('.toolbar'), sum = r('#issue-summary'), side = r('#jobs-box .jobs'), body = r('#list-body');
+      return {filter: sum.top - bar.bottom, summaryBody: body.top - sum.bottom, summarySide: side.top - sum.bottom,
+              sideBody: body.top - side.bottom, sideLeft: side.left, bodyRight: body.right};
+    }"""
+    try:
+        for width in (1600, 1300, 900, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.wait_for_timeout(50)
+            g = page.evaluate(gaps)
+            assert abs(g['filter'] - 16) < 1, (width, g)
+            if g['sideLeft'] >= g['bodyRight']:
+                assert abs(g['summaryBody'] - g['filter']) < 1, (width, g)
+            else:
+                assert abs(g['summarySide'] - g['filter']) < 1 and abs(g['sideBody'] - g['filter']) < 1, (width, g)
+            page.screenshot(path=str(shots / f'list-spacing-{width}.png'))
+    finally:
+        page.set_viewport_size({'width': 1300, 'height': 850})
+
+
 def check_issue_table(page, shots):
     """목록 표의 열 전환·카드 경계·제목과 Action 동작을 폭별로 확인한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -5067,6 +5097,10 @@ try:
             check_self_restart_banner(page, shots)
             assert not errs, errs
             print('OK: self restart banner'); sys.exit(0)
+        if '--list-spacing-only' in sys.argv:
+            check_list_spacing(page, shots)
+            assert not errs, errs
+            print('OK: List spacing'); sys.exit(0)
         if '--issue-table-only' in sys.argv:
             check_issue_table(page, shots)
             assert not errs, errs
@@ -5994,6 +6028,7 @@ try:
         check_global_agent_orders(page, shots)
         check_self_restart_banner(page, shots)
         check_issue_table(page, shots)
+        check_list_spacing(page, shots)
         check_new_issue_dependencies(page, shots)
         check_task_action_alignment(page, shots)
         page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")

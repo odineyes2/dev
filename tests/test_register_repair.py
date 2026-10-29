@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 import httpx
 from fastapi.testclient import TestClient
 import app as A
-import auth, db, execute, issues, orchestrate, review
+import auth, db, execute, issues, jobs, orchestrate, review
 
 db.init()
 me = {'kind': 'human', 'name': 'admin'}
@@ -86,7 +86,9 @@ url = '/api/issues/' + ref + '/register-repair'
 assert client.post(url, headers={'X-Requested-With': 'dev'}).status_code == 401
 client.cookies.set('ns_session', 'test')
 assert client.post(url).status_code == 403
-_, key = auth.create_agent('chat', 'openai', '')
+agent, key = auth.create_agent('chat', 'openai', '')
+agent = {'kind': 'agent', **agent}
+agent_headers = {'Authorization': 'Bearer ' + key}
 assert client.post(url, headers={'Authorization': 'Bearer ' + key}).status_code == 403
 with patch.object(execute, 'threading') as thread_module:
     response = client.post(url, headers={'X-Requested-With':'dev'})
@@ -99,16 +101,45 @@ with patch.object(orchestrate, 'run_tests', return_value='failed check'), patch.
     merge.assert_not_called()
 assert issues.get_issue(ref)['status'] == 'on_hold'
 assert execute.repair_available(issues.get_issue(ref))
+issues.claim(agent, ref)
+# 담당자라도 다른 사람이 연결한 커밋이나 만료된 점유는 받지 않는다.
+assert client.post(url, headers=agent_headers).status_code == 403
+issues.link_commit(agent, ref, sha)
+with db.connect() as c:
+    c.execute("UPDATE issues SET lease_until='2000-01-01T00:00:00+00:00' WHERE id=?", (task['id'],))
+assert client.post(url, headers=agent_headers).status_code == 403
+issues.claim(agent, ref)
+other, other_key = auth.create_agent('other')
+assert client.post(url, headers={'Authorization': 'Bearer ' + other_key}).status_code == 403
+with db.connect() as c:
+    c.execute('UPDATE task_execution_results SET plan_version=99 WHERE run_id=?', (rid,))
+assert client.post(url, headers=agent_headers).status_code == 409
+with db.connect() as c:
+    c.execute('UPDATE task_execution_results SET plan_version=1 WHERE run_id=?', (rid,))
+issues.post_plan(me, parent['ref'], 'new unapproved plan')
+assert client.post(url, headers=agent_headers).status_code == 409
+issues.decide(me, parent['ref'], 'approve', plan_version=2)
+with db.connect() as c:
+    c.execute('UPDATE task_execution_results SET plan_version=2 WHERE run_id=?', (rid,))
+def claim_changed(c, project, mode):
+    c.execute('UPDATE issues SET claimed_by=? WHERE id=?', ('agent:' + str(other['id']), task['id']))
+with patch.object(jobs, 'start_block', side_effect=claim_changed), patch.object(execute, 'threading') as threads:
+    assert client.post(url, headers=agent_headers).status_code == 403
+    threads.Thread.assert_not_called()
+assert issues.get_issue(ref)['claimed_by'] == issues.actor_label(agent)
 with patch.object(execute, 'threading'):
-    execute.register_repair(me, ref)
+    response = client.post(url, headers=agent_headers)
+    assert response.status_code == 202, response.text
+    assert client.post(url, headers=agent_headers).status_code == 409
 with patch.object(orchestrate, 'run_tests', return_value=None) as tests, patch.object(orchestrate, 'handle') as merge:
-    execute._register_repair(me, ref, rid, sha, original_end)
+    execute._register_repair(agent, ref, rid, sha, original_end)
     tests.assert_called_once()
-    merge.assert_called_once_with(me, ref)
+    merge.assert_called_once_with(agent, ref)
 assert orchestrate.completion(ref)['task_sha'] == sha
 assert not execute.repair_available(issues.get_issue(ref))
 with db.connect() as c:
     assert c.execute('SELECT COUNT(*) FROM runs WHERE issue_id=?', (task['id'],)).fetchone()[0] == 1
     assert c.execute('SELECT input_tokens FROM runs WHERE id=?', (rid,)).fetchone()[0] == 123
     assert c.execute('SELECT ended_at FROM runs WHERE id=?', (rid,)).fetchone()[0] == original_end
-print('register repair OK: admin, clean commit, original plan, failure retry, no agent')
+assert orchestrate.completion(ref)['actor'] == issues.actor_label(agent)
+print('register repair OK: admin/owner, auth, lease, own commit, approval, duplicate, no model call')
