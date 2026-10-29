@@ -556,16 +556,16 @@ function actionKind(i){
     return i.status==='backlog' && valid(c.parent) ? 'execute' : '';
   }
   if(i.status==='in_review' && c.has_children) return 'complete-tree';
-  if(i.status==='triage' && c.plan_version && !valid(c)) return 'decision';
+  if(['triage','backlog'].includes(i.status) && c.plan_version && !valid(c) && !c.approval?.revision_requested) return 'decision';
   return i.status==='backlog' && !c.plan_version && !c.has_children ? 'review' : '';
 }
-function actionOff(kind,s){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='task-approve' ? s.auto_approve===true : kind==='decision' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
+function actionOff(kind,s,i){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='task-approve' ? s.auto_approve===true : kind==='decision' && i.status==='triage' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
 function actionHtml(i){
   const kind=actionKind(i); if(!kind) return '';
   const settings=actionSession?.settings;
   return `<div class="issue-actions" aria-label="Action">${(['review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
     const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':kind==='task-approve'?'승인':'전체 완료';
-    return `<button type="button" draggable="false" data-action="${kind}" data-ref="${esc(i.ref)}" data-provider="${provider}" title="${label}" aria-label="${label}" aria-disabled="${!settings || !!actionOff(kind,settings)}">${provider?`<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider==='claude'?'claude':'openai'}"/></svg>`:label}</button>`;
+    return `<button type="button" draggable="false" data-action="${kind}" data-ref="${esc(i.ref)}" data-provider="${provider}" title="${label}" aria-label="${label}" aria-disabled="${!settings || !!actionOff(kind,settings,i)}">${provider?`<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider==='claude'?'claude':'openai'}"/></svg>`:label}</button>`;
   }).join('')}</div>`;
 }
 function beginActions(current){ return actionSession={settings:null,items:new Map(),parentStatuses:new Map(),current}; }
@@ -594,7 +594,7 @@ function bindActions(container,session,refresh){
       if(!current() || pendingActions.has(i.ref) || actionKind(i)!==kind) return;
       const settings=session.settings;
       if(!settings){toast('Auto 설정을 확인하지 못했어요. 새로고침해 다시 조회해 주세요.');return;}
-      if(actionOff(kind,settings)){toast('Auto 모드에서는 해당 버튼이 비활성화됩니다.');return;}
+      if(actionOff(kind,settings,i)){toast('Auto 모드에서는 해당 버튼이 비활성화됩니다.');return;}
       pendingActions.add(i.ref);
       container.querySelectorAll('[data-action]').forEach(x=>{if(x.dataset.ref===i.ref)x.disabled=true;});
       try{

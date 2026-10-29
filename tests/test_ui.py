@@ -4206,7 +4206,12 @@ def check_board_actions(page, shots, answers, asked):
             item(21,'triage',has_children=True,plan_version=2,approval=valid),
             {**item(22,'in_review'),'parent_id':100,'parent_ref':'ACT-100'},
             {**item(23,'in_review'),'parent_id':101,'parent_ref':'ACT-101'},
-            {**item(24,'done'),'parent_id':100,'parent_ref':'ACT-100'}]
+            {**item(24,'done'),'parent_id':100,'parent_ref':'ACT-100'},
+            item(25,plan_version=2),
+            item(26,plan_version=2,approval={**valid,'stale':True,'revision_requested':True}),
+            item(27,'triage',plan_version=2,approval={**valid,'stale':True,'revision_requested':True}),
+            item(28,plan_version=2,approval=valid),
+            item(29,plan_version=2,approval={**valid,'stale':True})]
     posts, pending = [], []
     delay = False
     conflict = False
@@ -4243,7 +4248,11 @@ def check_board_actions(page, shots, answers, asked):
     try:
         for board in (False,True):
             ready(board)
-            assert page.locator('[data-action]').count() == 9
+            assert page.locator('[data-action]').count() == 11
+            for ref in (26,27,28):
+                assert btn(ref,'decision').count() == 0
+            for ref in (25,29):
+                assert btn(ref,'decision').count() == 1
             for provider in ('claude','codex'):
                 assert btn(7,'execute',provider).count() == 1
                 assert btn(8,'execute',provider).count() == 0
@@ -4297,6 +4306,11 @@ def check_board_actions(page, shots, answers, asked):
             btn(2,'decision').click(force=True)
             assert len(posts) == before and not asked
             assert page.inner_text('#toast') == 'Auto 모드에서는 해당 버튼이 비활성화됩니다.'
+            assert btn(25,'decision').get_attribute('aria-disabled') == 'false'
+            btn(25,'decision').click()
+            page.wait_for_function('pendingActions.size === 0 && !!document.querySelector("[data-action]") && !document.querySelector("[data-action]").disabled')
+            assert len(posts) == before + 1 and posts[-1][0].endswith('/ACT-25/decision')
+            assert posts[-1][1] == {'verdict':'approve','note':'','plan_version':2}
             settings.update(auto_plan_approve=False)
             ready(board)
             conflict = True; btn(2,'decision').click()
@@ -4346,7 +4360,7 @@ def check_board_actions(page, shots, answers, asked):
         page.wait_for_selector('[data-action]')
         pending_settings.pop().fulfill(status=500,json={'detail':'오래된 오류'})
         page.wait_for_timeout(100)
-        assert page.locator('[data-action]').count() == 9
+        assert page.locator('[data-action]').count() == 11
         assert page.inner_text('#toast') != '오래된 오류'
         page.evaluate('localStorage.removeItem("dev.project")')
     finally:
