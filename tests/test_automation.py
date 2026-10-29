@@ -197,8 +197,9 @@ assert not jobs.list_jobs()
 print('OK — 착수 준비 중 OFF 경합 차단')
 
 from unittest.mock import patch
+from contextlib import nullcontext
 import threading
-import orchestrate
+import isolated_pg, orchestrate
 
 jobs._threads = {('_', 'execute'): 1, ('_', 'review'): 1}
 issues.create_project(admin, 'RESULT', '결과 승인', '', '/fake')
@@ -374,17 +375,29 @@ with patch.object(orchestrate, 'settings', return_value={'auto_merge':True}):
 # 실행→병합 처리 종료 기록을 실제 wrapper로 검사한다(mock만 사용한다).
 with patch.object(orchestrate, 'settings', return_value={'auto_merge':True}):
     _, wrapped, _, wrapped_run = result_task(state='processing')
+    cmd, worktree, env, timeout, label = ['claude', '-p', 'task prompt'], '/fake', {}, 30, '실행'
     def finish_wrapped(actor, ref):
         with db.connect() as c:
             c.execute("UPDATE task_execution_results SET state='merged' WHERE run_id=?", (wrapped_run,))
         return 'merged'
-    with patch.object(review, 'run_headless', return_value='ok'), patch.object(orchestrate, 'handle', side_effect=finish_wrapped), patch.object(orchestrate, 'promote_parent'):
-        execute._run_then_merge(admin, wrapped, None, wrapped_run)
+    with patch.object(isolated_pg, 'cluster', return_value=nullcontext((None, None))) as cluster, \
+         patch.object(review, 'run_headless', return_value='ok') as headless, \
+         patch.object(orchestrate, 'handle', side_effect=finish_wrapped) as handle, \
+         patch.object(orchestrate, 'promote_parent'):
+        execute._run_then_merge(admin, wrapped, None, wrapped_run, cmd, worktree, env, timeout, label)
+        cluster.assert_called_once_with('RESULT', 'agent', wrapped)
+        headless.assert_called_once_with(admin, wrapped, None, wrapped_run, cmd, worktree, env, timeout, label, 'claude')
+        handle.assert_called_once_with(admin, wrapped)
     automation.sync()
     assert issues.get_issue(wrapped)['status'] == 'done'
     _, failed_merge, _, failed_run = result_task(state='processing')
-    with patch.object(review, 'run_headless', return_value='ok'), patch.object(orchestrate, 'handle', side_effect=RuntimeError('deploy failure')):
-        execute._run_then_merge(admin, failed_merge, None, failed_run)
+    with patch.object(isolated_pg, 'cluster', return_value=nullcontext((None, None))) as cluster, \
+         patch.object(review, 'run_headless', return_value='ok') as headless, \
+         patch.object(orchestrate, 'handle', side_effect=RuntimeError('deploy failure')) as handle:
+        execute._run_then_merge(admin, failed_merge, None, failed_run, cmd, worktree, env, timeout, label)
+        cluster.assert_called_once_with('RESULT', 'agent', failed_merge)
+        headless.assert_called_once_with(admin, failed_merge, None, failed_run, cmd, worktree, env, timeout, label, 'claude')
+        handle.assert_called_once_with(admin, failed_merge)
     automation.sync()
     assert issues.get_issue(failed_merge)['status'] == 'in_review'
 print('OK — 단일 Task 결과 승인·감사·순차 등록·실패/경합/병합/후손 차단·Plan 수동 승인 보존')
