@@ -43,8 +43,29 @@ function toast(msg){
   clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, 3000);
 }
 // 계획서의 '사람이 할 일'(NS-60) — Done 전에 다 했는지 확인받는다. 없으면 바로 통과. 서버도 확인 없이는 Done을 거절한다.
-function confirmChecks(items){
-  return !(items || []).length || confirm(`계획서의 '사람이 할 일'을 모두 했나요?\n\n${items.map(x => `☐ ${x}`).join('\n')}\n\n했으면 확인을 눌러 주세요 — Done으로 바꿔요.`);
+function confirmDialog(message, {okText = '확인', danger = false, input = false} = {}){
+  return new Promise(resolve => {
+    const previous = document.activeElement;
+    const dialog = document.createElement('dialog');
+    dialog.className = 'confirm-dialog';
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('aria-modal', 'true');
+    const [title, ...body] = String(message).split('\n');
+    dialog.innerHTML = `<form method="dialog"><h2 id="confirm-title">${esc(title)}</h2><p class="confirm-message">${esc(body.join('\n'))}</p>${input ? '<input class="confirm-input" aria-label="닫는 이유" required>' : ''}<div class="confirm-actions"><button type="button" class="confirm-cancel">취소</button><button type="submit" class="confirm-ok${danger ? ' danger' : ''}">${esc(okText)}</button></div></form>`;
+    dialog.setAttribute('aria-labelledby', 'confirm-title');
+    if(!body.length) dialog.querySelector('.confirm-message').remove();
+    document.body.append(dialog);
+    let result = input ? null : false;
+    dialog.querySelector('.confirm-cancel').onclick = () => dialog.close();
+    dialog.onclick = e => { if(e.target === dialog) dialog.close(); };
+    dialog.querySelector('form').onsubmit = e => { e.preventDefault(); result = input ? dialog.querySelector('.confirm-input').value : true; dialog.close(); };
+    dialog.onclose = () => { dialog.remove(); if(previous?.isConnected) previous.focus({preventScroll:true}); resolve(result); };
+    dialog.showModal();
+    (input ? dialog.querySelector('.confirm-input') : dialog.querySelector('.confirm-ok')).focus();
+  });
+}
+async function confirmChecks(items){
+  return !(items || []).length || await confirmDialog(`계획서의 '사람이 할 일'을 모두 했나요?\n\n${items.map(x => `☐ ${x}`).join('\n')}\n\n했으면 확인을 눌러 주세요 — Done으로 바꿔요.`, {danger:true});
 }
 async function api(method, url, body, isCurrent = () => true, {notifyErrors = true} = {}){
   const opt = { method, headers: { 'X-Requested-With': 'dev' } };
@@ -192,7 +213,7 @@ async function chooseRestart(action){
   const message = action === 'now'
     ? `도는 작업 ${count}개(${refs})를 종료하고 재시작할까요? 끊긴 실행은 orphaned로 기록되고 기존 재시작 복구 흐름에 따라 정리돼요. 필요하면 다시 대기열에 넣어 주세요.`
     : '병합은 그대로 두고 새 작업 막기를 풀까요? dev는 재시작 전까지 옛 코드로 돌아요 — 나중에 직접 재시작해 주세요.';
-  if(restartChoicePending || !confirm(message)) return;
+  if(restartChoicePending || !await confirmDialog(message, {danger:action==='now'})) return;
   restartChoicePending = true; paintRestartBanner();
   try{ await api('POST', `/api/orchestrate/self-restart/${action}`); toast(action === 'now' ? '재시작을 요청했어요.' : '재시작 대기를 해제했어요.'); }
   catch(error){ restartChoicePending = false; paintRestartBanner(); }
@@ -561,15 +582,15 @@ function bindActions(container,session,refresh){
           const open=[root,...root.children].filter(x=>!['done','closed'].includes(x.status));
           const warn=root.children.filter(x=>!['done','closed'].includes(x.status) && (x.status!=='in_review' || ['병합 대기','재시작 대기','되돌림'].includes(x.merge_state)));
           if(!open.length){toast('이미 모두 끝났어요');return;}
-          if(!confirm(`${root.ref} 묶음 전체를 Done으로 바꿀까요? 되돌리기 기능은 없어요.\n\n닫힐 이슈:\n${open.map(x=>`· ${x.ref} ${x.title}`).join('\n')}`+(warn.length?`\n\n주의:\n${warn.map(x=>`· ${x.ref} — ${STATUS_LABEL[x.status]} ${x.merge_state||''}`).join('\n')}`:'')))return;
-          if(!confirmChecks(root.human_checks))return;
+          if(!await confirmDialog(`${root.ref} 묶음 전체를 Done으로 바꿀까요? 되돌리기 기능은 없어요.\n\n닫힐 이슈:\n${open.map(x=>`· ${x.ref} ${x.title}`).join('\n')}`+(warn.length?`\n\n주의:\n${warn.map(x=>`· ${x.ref} — ${STATUS_LABEL[x.status]} ${x.merge_state||''}`).join('\n')}`:''), {danger:true}))return;
+          if(!await confirmChecks(root.human_checks))return;
         }else if(!['decision','task-approve'].includes(kind)){
           const name=provider==='claude'?'Claude':'Codex';
           const task=kind==='execute'?await api('GET',`/api/issues/${encodeURIComponent(i.ref)}`,undefined,current):null;
           if(!current())return;
           const limit=task?(provider==='codex'?`시간 제한은 ${Math.floor(task.execute.timeout_sec/60)}분이고 비용 상한은 없어요.`:`비용 상한은 $${task.execute.budget_usd}이에요.`):'';
           const scope=task ? '홈서버의 격리된 worktree에서 구현해요. 실행 후 기존 자동 병합 정책이 적용돼요.' : '홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).';
-          if(!confirm(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?\n${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}`))return;
+          if(!await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?\n${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}`))return;
         }
         if(!current())return;
         await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:kind==='complete-tree'?{confirm_checks:true}:provider?{provider}:{},current);
@@ -1603,10 +1624,10 @@ async function renderIssue(ref, background = false){
   const setStatus = async (status, note, attachmentIds) => {
     let updated;
     if(status === 'done' && it.merge_state === '병합 대기'
-      && !confirm(`${it.ref}은(는) 아직 병합 대기 중이에요. Done으로 바꾸면 코드가 반영되지 않은 채 완료됩니다. 계속할까요?`)){
+      && !await confirmDialog(`${it.ref}은(는) 아직 병합 대기 중이에요. Done으로 바꾸면 코드가 반영되지 않은 채 완료됩니다. 계속할까요?`, {danger:true})){
       $('status').value = it.status; return;
     }
-    if(status === 'done' && !confirmChecks(it.human_checks)){ reload(); return; }
+    if(status === 'done' && !await confirmChecks(it.human_checks)){ reload(); return; }
     try{ updated = await api('POST', `/api/issues/${R}/status`, { status, ...(note === undefined ? {} : { note }), ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}), ...(status === 'done' ? { confirm_checks: true } : {}) }); }
     catch(e){ reload(); return; }
     if(status === 'closed' && updated.status !== 'closed'){
@@ -1615,10 +1636,10 @@ async function renderIssue(ref, background = false){
     if(status === 'done' || status === 'closed'){ toast(`${it.ref}을(를) 끝냈어요`); location.hash = '#/'; }
     else reload();
   };
-  $('status').addEventListener('change', (e) => {
+  $('status').addEventListener('change', async (e) => {
     if(e.target.value !== 'closed'){ setStatus(e.target.value); return; }
     // Closed는 "안 하기로 함" — 왜 닫는지 남긴다(DEV-6). 취소하거나 비우면 닫지 않는다.
-    const reason = (prompt('닫는 이유를 적어 주세요 (예: NS-3과 중복, 필요 없어짐)') || '').trim();
+    const reason = ((await confirmDialog('닫는 이유를 적어 주세요 (예: NS-3과 중복, 필요 없어짐)', {input:true, okText:'닫기', danger:true})) || '').trim();
     if(!reason){ e.target.value = it.status; toast('사유가 없어서 닫지 않았어요'); return; }
     setStatus('closed', reason);
   });
@@ -1637,12 +1658,12 @@ async function renderIssue(ref, background = false){
     if(!open.length){ toast('이미 모두 끝났어요'); return; }
     const warn = root.children.filter(c => !['done', 'closed'].includes(c.status)
       && (c.status !== 'in_review' || ['병합 대기', '재시작 대기', '되돌림'].includes(c.merge_state)));
-    if(!confirm(`${root.ref} 묶음 전체를 Done으로 바꿀까요? 되돌리기 기능은 없어요.
+    if(!await confirmDialog(`${root.ref} 묶음 전체를 Done으로 바꿀까요? 되돌리기 기능은 없어요.
 
 닫힐 이슈:
 ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
-      + (warn.length ? `\n\n주의:\n${warn.map(c => `· ${c.ref} — ${c.status !== 'in_review' ? STATUS_LABEL[c.status] : ''}${c.status !== 'in_review' && c.merge_state ? ' · ' : ''}${c.merge_state || ''}`).join('\n')}` : ''))) return;
-    if(!confirmChecks(root.human_checks)) return;
+      + (warn.length ? `\n\n주의:\n${warn.map(c => `· ${c.ref} — ${c.status !== 'in_review' ? STATUS_LABEL[c.status] : ''}${c.status !== 'in_review' && c.merge_state ? ' · ' : ''}${c.merge_state || ''}`).join('\n')}` : ''), {danger:true})) return;
+    if(!await confirmChecks(root.human_checks)) return;
     b.disabled = true; b.textContent = '완료하는 중…';
     try{ await api('POST', `/api/issues/${R}/complete-tree`, { confirm_checks: true }); }
     catch(e){ reload(); return; }
@@ -1738,7 +1759,7 @@ ${open.map(x => `· ${x.ref} ${x.title}`).join('\n')}`
       const task = await api('GET', `/api/issues/${encodeURIComponent(ref)}`);
       const name = PROVIDER_NAME[provider], x = task.execute;
       const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(x.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${x.budget_usd}이에요.`;
-      if(!confirm(`${ref}을(를) ${name}에게 실행 맡길까요?
+      if(!await confirmDialog(`${ref}을(를) ${name}에게 실행 맡길까요?
 홈서버에서 relay/${ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
@@ -1806,7 +1827,7 @@ ${QUEUE_LINE}`)) return;
     if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;
     const name = PROVIDER_NAME[provider];
     const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(it.execute.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${it.execute.budget_usd}이에요.`;
-    if(!confirm(`${it.ref}을(를) ${name}에게 실행 맡길까요?
+    if(!await confirmDialog(`${it.ref}을(를) ${name}에게 실행 맡길까요?
 홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
@@ -1826,7 +1847,7 @@ ${QUEUE_LINE}`)) return;
     if($(id)) $(id).addEventListener('click', async (e) => {
       if(e.currentTarget.disabled || pendingReviews.has(ref)) return;
       const name = PROVIDER_NAME[provider];
-      if(!confirm(`${it.ref}을(를) ${name}에게 검토 맡길까요?
+      if(!await confirmDialog(`${it.ref}을(를) ${name}에게 검토 맡길까요?
 홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`)) return;
@@ -1847,7 +1868,7 @@ ${QUEUE_LINE}`)) return;
   if(activeProgress(it) || it.children.some(activeProgress)) followProgress(() => renderIssue(ref, true), () => location.hash === hash);
   else stopLiveRefresh();
   $('delete').addEventListener('click', async () => {
-    if(!confirm(`${it.ref}을(를) 지울까요? 계획서·활동 기록도 같이 지워져요.`)) return;
+    if(!await confirmDialog(`${it.ref}을(를) 지울까요? 계획서·활동 기록도 같이 지워져요.`, {danger:true})) return;
     await api('DELETE', `/api/issues/${R}`); location.hash = '#/';
   });
   $('send-comment').addEventListener('click', (e) => whileBusy(e.currentTarget, async () => {
@@ -2409,7 +2430,7 @@ async function renderAgents(newKey, selectedTab){
   }));
   view.querySelectorAll('[data-rotate]').forEach(b => b.addEventListener('click', async () => {
     const a = agentsById.get(Number(b.dataset.rotate));
-    if(!confirm(`${a.name}의 키를 새로 만들까요? 지금 키는 바로 못 쓰게 돼요.`)) return;
+    if(!await confirmDialog(`${a.name}의 키를 새로 만들까요? 지금 키는 바로 못 쓰게 돼요.`, {danger:true})) return;
     const r = await api('POST', `/api/agents/${a.id}/rotate`);
     renderAgents({ name: a.name, key: r.key });
   }));
@@ -2765,9 +2786,9 @@ function renderProjects(editKey, projectTab = 'manage'){
     else closeCreation();
   });
   const descRequest = view.querySelector('#p-description-request');
-  if(descRequest) descRequest.addEventListener('click', () => {
+  if(descRequest) descRequest.addEventListener('click', async () => {
     // 저장하지 않은 설명은 에이전트가 쓴 값으로 덮어써질 수 있다.
-    if(val('#p-description') !== (ed.description || '') && !confirm('저장하지 않은 설명은 에이전트 결과로 바뀔 수 있어요. 계속할까요?')) return;
+    if(val('#p-description') !== (ed.description || '') && !await confirmDialog('저장하지 않은 설명은 에이전트 결과로 바뀔 수 있어요. 계속할까요?')) return;
     whileBusy(descRequest, async () => {
       const r = await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/description/request`);
       const status = view.querySelector('#p-description-status');
@@ -2787,7 +2808,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;
     const state = await api('GET', `${url}/delete-check`);
     if(!state.can_delete){ toast(state.blockers.join(' ')); return; }
-    if(state.confirmation_required && !confirm(`${state.project.name} (${state.project.key})를 삭제할까요?\nIssue·Task ${state.issue_count}개\n${state.warning}\n다른 프로젝트의 의존 연결 ${state.external_dependency_count}개도 제거돼요. 복구할 수 없어요.`)) return;
+    if(state.confirmation_required && !await confirmDialog(`${state.project.name} (${state.project.key})를 삭제할까요?\nIssue·Task ${state.issue_count}개\n${state.warning}\n다른 프로젝트의 의존 연결 ${state.external_dependency_count}개도 제거돼요. 복구할 수 없어요.`, {danger:true})) return;
     // 409 응답에서는 자동 재시도하지 않는다. 다시 눌러 새 내용을 확인한다.
     await api('DELETE', url, {confirmation_token: state.confirmation_required ? state.confirmation_token : null});
     if(currentProject() === b.dataset.deleteProject) localStorage.removeItem('dev.project');
@@ -3026,7 +3047,7 @@ function bindProjectAudits(project){
       const data = await loadPreflight();
       if(!current() || !data || !data.available || data.blocked_reason) return;
       if(!request){
-        if(!confirm(`${data.provider} · 적용 모델 ${data.applied_model}\n${limitsText(data.limits)}\n\n유료 점검을 시작할까요?`)) return;
+        if(!await confirmDialog(`${data.provider} · 적용 모델 ${data.applied_model}\n${limitsText(data.limits)}\n\n유료 점검을 시작할까요?`)) return;
         request = {request_id:crypto.randomUUID(), provider:data.provider, model:data.applied_model};
       }
       const result = await api('POST', url, request, current);
@@ -3156,7 +3177,7 @@ function bindProjectDocuments(project){
         if(deleting) return;
         const entry = data.documents.find(d => d.path === select.value);
         if(!entry?.deletable || !entry.blob) return;
-        if(!confirm(`${project.name} 프로젝트의 ${entry.path} 문서를 삭제할까요?`)) return;
+        if(!await confirmDialog(`${project.name} 프로젝트의 ${entry.path} 문서를 삭제할까요?`, {danger:true})) return;
         deleting = true; remove.disabled = true;
         ++selection;
         try {
@@ -3180,7 +3201,7 @@ function bindProjectDocuments(project){
     if(requesting) return;
     if(!project.description?.trim()) { message.textContent = '관리 탭에서 프로젝트 설명을 입력하고 저장해 주세요.'; return; }
     if(project.archived) { message.textContent = '보관을 해제한 뒤 다시 시도해 주세요.'; return; }
-    if(!confirm('생성 Issue를 등록하고 유료 검토 대기열에 연결할까요? 문서 작성은 Plan 승인 후 별도 실행해요.')) return;
+    if(!await confirmDialog('생성 Issue를 등록하고 유료 검토 대기열에 연결할까요? 문서 작성은 Plan 승인 후 별도 실행해요.')) return;
     requesting = true; buttons.forEach(b => b.disabled = true);
     const label = button.querySelector('span');
     const original = label.textContent; label.textContent = '등록 중…';
