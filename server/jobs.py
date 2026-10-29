@@ -12,6 +12,7 @@ Claude 맡기기 대기열(DEV-43) — 검토·실행을 여러 개 눌러 두�
 """
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -36,12 +37,47 @@ def _rows(c, where: str = "j.status='queued'", args=()) -> list[dict]:
         f"WHERE {where} ORDER BY j.sort_key, j.id", args)]
 
 
+_WAIT_REF = re.compile(r"[A-Z][A-Z0-9]*-\d+(?:-\d+)?")
+
+
+def wait_short(note: str, mode: str) -> str:
+    """저장된 대기 문장을 Status 칸에 쓸 짧은 이름으로 바꾼다."""
+    if not note:
+        return ""
+    ref = _WAIT_REF.search(note)
+    if '사람을 기다려요' in note or '작업이 끝날 때까지 기다려요' in note:
+        return f"대기: {ref.group()}" if ref else ('실행 대기' if mode == 'execute' else '검토 대기')
+    if '병합' in note and ('기다려요' in note or '끝나면' in note):
+        if '재시작' in note:
+            return '재시작 대기'
+        return f"병합 대기: {ref.group()}" if ref else '병합 대기'
+    if note.startswith('선행 ') and ref:
+        refs = list(dict.fromkeys(_WAIT_REF.findall(note.split('—', 1)[0])))
+        return '선행: ' + ', '.join(refs)
+    if '롤백·운영 반영' in note:
+        return '롤백 대기'
+    if '재시작' in note:
+        return '재시작 대기'
+    if '상한(' in note or '동시 실행 상한' in note:
+        return '상한 대기'
+    if '서비스 연결' in note:
+        return '연결 대기'
+    if '초기 생성' in note or '초기 프로젝트 생성' in note:
+        return '초기 생성 대기'
+    if '목표 대비 점검' in note:
+        return '점검 대기'
+    if '실패 검사 재현' in note:
+        return '재현 대기'
+    return '실행 대기' if mode == 'execute' else '검토 대기'
+
+
 def list_jobs() -> list[dict]:
     """대기 중인 항목, 사람이 정한 순서(기본은 넣은 순서). position은 1부터, prev_id/next_id는 이동 버튼용 이웃."""
     with db.connect() as c:
         rows = _rows(c)
     ids = [None] + [j["id"] for j in rows] + [None]
-    return [{**j, "position": n, "prev_id": ids[n - 1], "next_id": ids[n + 1]} for n, j in enumerate(rows, 1)]
+    return [{**j, "note_short": wait_short(j["note"], j["mode"]),
+             "position": n, "prev_id": ids[n - 1], "next_id": ids[n + 1]} for n, j in enumerate(rows, 1)]
 
 
 def list_in_progress() -> list[dict]:

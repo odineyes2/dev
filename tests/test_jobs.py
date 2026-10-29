@@ -553,3 +553,43 @@ with patch.object(execute, 'predecessor_merge_reason', return_value=None), patch
     jobs.pump()
 assert issues.get_issue(later_task['ref'])['status'] == 'in_progress' and not jobs.list_jobs()
 print('OK parent dependency queue')
+
+# 저장된 대기 사유는 실제 jobs 라우트에서 긴 문장과 짧은 표시를 함께 돌려준다.
+wait_cases = [
+    ('review', 'JQ 검토 줄의 앞 작업이 끝나면 시작해요.', '검토 대기'),
+    ('execute', 'JQ 실행 줄의 앞 작업이 끝나면 시작해요.', '실행 대기'),
+    ('review', '검토 상한(2개)이 차서 기다려요 — 도는 작업이 끝나면 시작해요.', '상한 대기'),
+    ('execute', '실행 상한(2개)이 차서 기다려요 — 도는 작업이 끝나면 시작해요.', '상한 대기'),
+    ('review', '전체 동시 실행 상한(2개)이 차서 기다려요 — 지금 실행 1·검토 1', '상한 대기'),
+    ('execute', 'DEV-187의 병합·운영 반영이 끝나면 시작해요.', '병합 대기: DEV-187'),
+    ('execute', '선행 이슈(DEV-187)의 Task 병합을 기다려요 — 확인 중', '병합 대기: DEV-187'),
+    ('review', '롤백·운영 반영이 끝나면 시작해요.', '롤백 대기'),
+    ('execute', 'DEV-187 병합 뒤 dev 재시작을 기다려요 — 새로 시작하지 않아요.', '재시작 대기'),
+    ('review', '앱 재시작이 끝나면 새 작업을 시작해요.', '재시작 대기'),
+    ('review', '공용 터널의 서비스 연결이 끝나면 시작해요.', '연결 대기'),
+    ('review', '프로젝트 초기 생성이 끝나면 시작해요.', '초기 생성 대기'),
+    ('review', '초기 프로젝트 생성 완료를 기다려요.', '초기 생성 대기'),
+    ('review', '초기 생성을 완료한 뒤 검토할 수 있어요. 생성 실패', '초기 생성 대기'),
+    ('review', '프로젝트 목표 대비 점검이 진행 중이에요. 끝난 뒤 시작해 주세요.', '점검 대기'),
+    ('review', '실패 검사 재현이 끝난 뒤 시작해요.', '재현 대기'),
+    ('execute', '선행 Task(DEV-1, DEV-2)가 done이 되어야 해요.', '선행: DEV-1, DEV-2'),
+    ('review', '선행 Issue(DEV-1)가 done이 되어야 해요.', '선행: DEV-1'),
+    ('execute', 'DEV-187이 사람을 기다려요 — 겹치는 파일: a.py', '대기: DEV-187'),
+    ('execute', 'DEV-187 작업이 끝날 때까지 기다려요 — 겹치는 파일: a.py', '대기: DEV-187'),
+    ('execute', '예상 밖 대기 문장', '실행 대기'),
+]
+with TestClient(A.app) as c:
+    c.cookies.set('ns_session', 'adm')
+    ids = []
+    wait_issues = [issues.create_issue(me, 'JQ', '대기 사유 확인') for _ in wait_cases]
+    with db.connect() as conn:
+        for issue, (mode, note, _) in zip(wait_issues, wait_cases):
+            job = conn.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, note) VALUES(?, ?, 'human:admin', 'queued', ?, ?)",
+                               (issue['id'], mode, db.now_iso(), note))
+            ids.append(job.lastrowid)
+    listed = {j['id']: j for j in c.get('/api/jobs').json()['jobs']}
+    for job_id, (mode, note, short) in zip(ids, wait_cases):
+        assert listed[job_id]['note'] == note and listed[job_id]['note_short'] == short, listed[job_id]
+    with db.connect() as conn:
+        conn.executemany("DELETE FROM jobs WHERE id=?", [(job_id,) for job_id in ids])
+print('OK wait short API')
