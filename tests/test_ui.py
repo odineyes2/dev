@@ -2193,9 +2193,16 @@ def check_issue_types(page, shots):
     automatic = get()
     for t in automatic['types']: t['source'] = 'agent'
     page.route('**/api/issues/' + ref, lambda route: route.fulfill(json=automatic))
-    page.reload(); page.wait_for_selector('text=자동 분류 결과예요.')
+    page.reload(); page.wait_for_selector('.side .type-picker legend .chip:text-is("자동")')
+    assert page.locator('.side .type-picker legend').inner_text() == '종류 자동'
+    assert '비워 두면' not in page.locator('.side').inner_text()
+    assert '자동 분류 결과예요.' not in page.locator('.side').inner_text()
+    assert page.locator('#labels').get_attribute('placeholder') == '쉼표로 구분'
+    assert page.locator('#labels').locator('..').locator('span').text_content() == 'Labels'
     page.unroute('**/api/issues/' + ref)
     page.goto(BASE + '/#/new'); page.reload(); page.wait_for_selector('#new-form')
+    assert '비워 두면 검토를 맡길 때 Agent가 자동 분류해요.' in page.locator('#new-form').inner_text()
+    assert page.locator('#new-form .type-picker legend').inner_text() == '종류 (복수 선택)'
     page.fill('#n-title', '빈 종류 검사'); page.click('#new-form [type=submit]'); page.wait_for_selector('#save-types')
     empty_ref = page.locator('.detail > div > .ref').inner_text().strip()
     empty = page.request.get(BASE + '/api/issues/' + empty_ref).json()
@@ -3947,8 +3954,11 @@ def check_result_attach(page, shots):
 
 def check_sticky_tabbar(page, shots):
     """긴 이슈를 끝까지 내려도 전역 탭 줄이 맨 위에 붙어 있고 오른쪽 칸·사용자 메뉴와 겹치지 않는다(DEV-88)."""
+    H = {'X-Requested-With': 'dev'}
+    page.request.post(BASE + '/api/projects', headers=H, data={'key':'NS', 'name':'스크롤 검사'})
     body = '\n\n'.join(f'{i}번째 문단 — 긴 본문을 만들기 위한 줄이에요.' for i in range(120))
     ref = page.request.post(BASE + '/api/issues', data={'project': 'NS', 'title': '긴 이슈', 'body': body}, headers=H).json()['ref']
+    short_ref = page.request.post(BASE + '/api/issues', data={'project':'NS', 'title':'짧은 이슈', 'body':'짧은 본문이에요.'}, headers=H).json()['ref']
     for scheme in ('light', 'dark'):
         page.emulate_media(color_scheme=scheme)
         page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
@@ -3962,20 +3972,32 @@ def check_sticky_tabbar(page, shots):
             assert page.evaluate("([x, y]) => !!document.elementFromPoint(x, y)?.closest('#user-menu')",
                                  [box['x'] + box['width'] / 2, box['y'] + box['height'] - 4])
             page.keyboard.press('Escape')
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.screenshot(path=str(shots / f'issue_side_long_{scheme}_{tag}.png'), full_page=True)
             if tag == 'desktop':
-                page.evaluate('window.scrollTo(0, 400)'); page.wait_for_timeout(100)
-                assert page.evaluate("document.querySelector('.side').getBoundingClientRect().top >= document.querySelector('.tab-bar').getBoundingClientRect().bottom")
+                top = page.locator('.side').bounding_box()['y']
+                page.evaluate('window.scrollTo(0, 400)')
+                page.wait_for_function("top => document.querySelector('.side').getBoundingClientRect().top < top - 300", arg=top)
+                assert page.locator('.side').evaluate("e => getComputedStyle(e).position !== 'sticky'")
             page.evaluate('window.scrollTo(0, document.body.scrollHeight)'); page.wait_for_timeout(100)
             assert page.evaluate('scrollY') > 500
             assert page.evaluate("document.querySelector('.tab-bar').getBoundingClientRect().top") == 0
             assert page.locator('[data-nav=issues]').is_visible()
             page.screenshot(path=str(shots / f'issue_sticky_{scheme}_{tag}.png'))
+            page.goto(BASE + f'/#/issue/{short_ref}')
+            page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim() === ref", arg=short_ref)
+            page.wait_for_selector('#save-types')
+            page.locator('.side .field').last.scroll_into_view_if_needed()
+            assert page.locator('.side').evaluate("e => getComputedStyle(e).position !== 'sticky'")
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.screenshot(path=str(shots / f'issue_side_short_{scheme}_{tag}.png'), full_page=True)
             page.click('[data-nav=issues]')
             page.wait_for_function("location.hash === '#/'")
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.emulate_media(color_scheme='light')
     page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
     page.request.delete(BASE + f'/api/issues/{ref}', headers=H)
+    page.request.delete(BASE + f'/api/issues/{short_ref}', headers=H)
 
 
 def check_edit_saving(page, shots):
@@ -5370,6 +5392,11 @@ try:
         check_account_menu(page, shots)
         check_settings_navigation(page, shots)
         page.goto(BASE + '/#/'); page.wait_for_selector('#list-body[aria-busy="false"]')
+        if '--detail-side-only' in sys.argv:
+            check_sticky_tabbar(page, shots)
+            check_new_issue_fields(page)
+            assert not errs, errs
+            print('OK: detail side'); sys.exit(0)
         if '--issue-types-only' in sys.argv:
             check_issue_types(page, shots)
             assert not errs, errs
