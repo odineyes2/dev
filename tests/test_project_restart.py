@@ -133,6 +133,50 @@ class RestartTests(unittest.TestCase):
         self.assertNotIn('DEV_CODEX_AGENT_KEY', options['env'])
         self.assertEqual(options['stdin'], restart.subprocess.DEVNULL)
         self.assertTrue(options['creationflags'] if os.name == 'nt' else options['start_new_session'])
+        # 바로 도우미가 아니라 중계(--detach)를 띄우고, 중계는 같은 환경으로 도우미를 띄운다(DEV-207).
+        self.assertEqual(args[-2:], ['--detach', '123'])
+        with patch.dict(os.environ, {'DEV_DB_PATH': 'from-relay'}), patch.object(restart.subprocess, 'Popen') as popen:
+            restart.detach(123)
+        args, options = popen.call_args.args[0], popen.call_args.kwargs
+        self.assertEqual(args, [sys.executable, str(Path(restart.__file__).resolve()), '123'])
+        self.assertEqual(options['env']['DEV_DB_PATH'], 'from-relay')
+        self.assertTrue((config.DATA_DIR / 'app-restarts' / '123.log').exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'pm2(Windows)는 taskkill /T로 프로세스 트리째 끈다')
+    def test_relay_helper_survives_tree_kill_of_parent(self):
+        """dev가 트리째 꺼져도 중계로 띄운 도우미는 살아남고, 바로 띄운 자식은 같이 죽는다(DEV-207 원인 재현)."""
+        import subprocess
+        import threading
+        import time
+        pause = threading.Event().wait   # setUp이 time.sleep을 가로채므로 진짜로 기다릴 때는 이것을 쓴다
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        def alive(pid):
+            return str(pid) in subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/NH'], capture_output=True, text=True).stdout
+        pids = {}
+        for mode in ('direct', 'relay'):
+            out = self.root / f'{mode}.pid'
+            sleeper = f"import os,time;open(r'{out}','w').write(str(os.getpid()));time.sleep(60)"
+            # 실제 도우미처럼 표준 입출력을 명시한다 — 콘솔 없는 검사 실행기 아래에서 물려받을 핸들이 없으면 분리된 자식이 뜨지 못한다.
+            quiet = 'stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL'
+            spawn = f"import subprocess,sys;subprocess.Popen([sys.executable,'-c',{sleeper!r}],creationflags={flags},{quiet})"
+            child = spawn if mode == 'direct' else f"import subprocess,sys;subprocess.Popen([sys.executable,'-c',{spawn!r}],creationflags={flags},{quiet})"
+            parent = subprocess.Popen([sys.executable, '-c', child + ';import time;time.sleep(60)'], creationflags=subprocess.CREATE_NO_WINDOW,
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + 20
+            while not out.exists() or not out.read_text():
+                self.assertLess(time.monotonic(), deadline, mode)
+                pause(0.2)
+            pause(0.5)   # 중계가 끝날 시간
+            pids[mode] = int(out.read_text())
+            subprocess.run(['taskkill', '/F', '/T', '/PID', str(parent.pid)], capture_output=True)
+            parent.wait(10)
+        pause(0.5)
+        try:
+            self.assertFalse(alive(pids['direct']), '바로 띄운 자식은 트리째 꺼진다')
+            self.assertTrue(alive(pids['relay']), '중계로 띄운 도우미는 살아남는다')
+        finally:
+            for pid in pids.values():
+                subprocess.run(['taskkill', '/F', '/PID', str(pid)], capture_output=True)
 
     def build_setup(self, command=None):
         import json

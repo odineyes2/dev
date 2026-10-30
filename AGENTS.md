@@ -40,7 +40,7 @@
 - `qa.py`·`qa_runner.py` — 최상위 In Review Issue의 QA. 판정 대상 스냅샷과 요구 항목(본문 줄·Plan 확인 항목)을 고정하고 서버가 명령을 검증·실행한다. Auto QA가 켜졌을 때만 결과를 상태에 반영한다(기본 OFF).
 
 ### 프로젝트 관리
-- `project_init`(기획서 → 새 저장소·개발 초안), `project_docs`(공식 문서 7종 요청, 실행 중엔 worktree에서 읽음), `project_description`(Description 자동 작성 Issue), `project_audit`·`_runner`(기준 SHA 고정·읽기 전용 점검), `project_service`·`service_prepare`(서비스 연결·공용 터널 변경은 한 번에 하나), `project_restart`(pm2 재시작 — dev 자기 재시작은 별도 프로세스가 health까지 확인. 에이전트 재시작 예약(DEV-198)은 같은 `project_app_restarts` 기록에 `reservation_ref·until`을 두어 waiting으로 착수를 막고, 소유자의 finish 뒤에야 도우미가 돈다 — 만료는 `_recover`가 failed로 풀고, 띠에는 phase `reserved`로 보인다).
+- `project_init`(기획서 → 새 저장소·개발 초안), `project_docs`(공식 문서 7종 요청, 실행 중엔 worktree에서 읽음), `project_description`(Description 자동 작성 Issue), `project_audit`·`_runner`(기준 SHA 고정·읽기 전용 점검), `project_service`·`service_prepare`(서비스 연결·공용 터널 변경은 한 번에 하나), `project_restart`(pm2 재시작 — dev 자기 재시작은 별도 프로세스가 health까지 확인. 도우미는 중계 프로세스(`--detach`)를 거쳐 띄워 pm2가 dev 트리를 끌 때 같이 죽지 않는다(DEV-207). 에이전트 재시작 예약(DEV-198)은 같은 `project_app_restarts` 기록에 `reservation_ref·until`을 두어 waiting으로 착수를 막고, 소유자의 finish 뒤에야 도우미가 돈다 — 만료는 `_recover`가 failed로 풀고, 띠에는 phase `reserved`로 보인다).
 
 ### 화면·검사·운영
 - `static/` 화면(빌드 없음, 정적 파일. Cloudflare가 CSS/JS를 4시간 캐시해 index.html이 `?v=내용해시`로 부른다).
