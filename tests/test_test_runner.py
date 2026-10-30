@@ -124,3 +124,41 @@ with patch.object(orchestrate, 'test_jobs', return_value=4), \
     orchestrate._run_tests(str(repo), 'server_merge', issues.create_issue(me, 'PX', 'pg')['ref'], ['tests/test_ok1.py'], {'PATH': os.environ['PATH']})
 assert seen_jobs == [1], seen_jobs
 print('OK — 서버 검사 병렬 결과가 순차와 같고 시간·벽시계가 남으며 격리 PG는 순차')
+
+
+# 8. 검사가 남긴 고아 자식이 출력 파이프를 붙잡아도 멈추지 않는다(DEV-205).
+def alive(pid):
+    if os.name == 'nt':
+        return str(pid) in subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/NH'], capture_output=True, text=True).stdout
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+spawn = 'import subprocess, sys\nchild = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])\nprint("child", child.pid, flush=True)\n'
+(repo / 'tests' / 'test_orphan.py').write_text(spawn, encoding='utf-8')                       # 자식을 남기고 바로 끝난다
+(repo / 'tests' / 'test_slow.py').write_text(spawn + 'import time; time.sleep(120)\n', encoding='utf-8')   # 자식과 함께 시간 제한을 넘긴다
+env = {k: v for k, v in os.environ.items()}
+with patch.object(test_runner, 'PIPE_GRACE_SEC', 2), patch.object(test_runner, 'TIMEOUT_SEC', 4):
+    start = time.monotonic()
+    r = test_runner.run(str(repo), repo / 'tests' / 'test_orphan.py', env=env)
+    took = time.monotonic() - start
+    orphan = int(r.stdout.split()[1])
+    assert r.returncode == 0 and took < 4 and '보조 서버' in r.stderr, (r.returncode, took, r.stderr)
+    start = time.monotonic()
+    r = test_runner.run(str(repo), repo / 'tests' / 'test_slow.py', env=env)
+    took = time.monotonic() - start
+    child = int(r.stdout.split()[1])
+    assert r.returncode == 124 and took < 10 and '시간 제한' in r.stderr, (r.returncode, took, r.stderr)
+time.sleep(0.5)
+assert not alive(child), '시간 초과 때 검사의 자식까지 끝내야 한다'
+if os.name == 'nt':
+    subprocess.run(['taskkill', '/F', '/PID', str(orphan)], capture_output=True)
+else:
+    os.kill(orphan, 9)
+(repo / 'tests' / 'test_env.py').write_text('import os\nprint(os.environ.get("DEV_TEST_RUN"), os.environ.get("PYTHONIOENCODING"))\n', encoding='utf-8')
+r = test_runner.run(str(repo), repo / 'tests' / 'test_env.py', env=env)
+assert r.returncode == 0 and r.stdout.split() == ['1', 'utf-8'], r   # 검사에는 DEV_TEST_RUN을 넘겨 진짜 알림을 막는다
+print('OK — 고아 자식이 파이프를 붙잡아도·시간 초과여도 정해진 시간 안에 돌아오고, 시간 초과는 자식까지 끝낸다')

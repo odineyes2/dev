@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 TIMEOUT_SEC = 600
+PIPE_GRACE_SEC = 30   # 검사가 끝난 뒤 출력 파이프가 닫히기를 기다리는 시간
 
 
 def test_files(repo):
@@ -24,16 +25,48 @@ def command(repo, t):
             if relative.startswith('backend/tests/') else [sys.executable, str(t)])
 
 
+def kill_tree(proc) -> None:
+    """검사 프로세스와 그 자식(보조 서버·브라우저)을 같이 끝낸다."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    else:
+        proc.kill()
+
+
+def _drain(stream, chunks):
+    for line in stream:
+        chunks.append(line)
+
+
 def run(repo, t, args=(), env=None):
-    """검사 하나를 시간 제한과 출력 보존 규칙으로 실행한다. env는 이미 비밀값을 뺀 환경이다."""
+    """검사 하나를 시간 제한과 출력 보존 규칙으로 실행한다. env는 이미 비밀값을 뺀 환경이다.
+    출력은 따로 읽어 모은다 — 검사가 남긴 고아 자식이 출력 파이프를 붙잡아도 시간 제한·검사 종료 뒤
+    PIPE_GRACE_SEC만 기다리고 돌아온다(subprocess.run은 Windows에서 이때 영원히 멈췄다, DEV-205)."""
+    proc = subprocess.Popen(command(repo, t) + list(args), cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace",
+                            env={**env, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"},   # 테스트가 진짜 ntfy로 알림을 보내지 않게
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    out, err = [], []
+    readers = [threading.Thread(target=_drain, args=pair, daemon=True) for pair in ((proc.stdout, out), (proc.stderr, err))]
+    for reader in readers:
+        reader.start()
+    note = ''
     try:
-        return subprocess.run(command(repo, t) + list(args), cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              env={**env, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"}, timeout=TIMEOUT_SEC,
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)   # 테스트가 진짜 ntfy로 알림을 보내지 않게
-    except subprocess.TimeoutExpired as error:
-        def decoded(value):
-            return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
-        return subprocess.CompletedProcess(error.cmd, 124, decoded(error.stdout), decoded(error.stderr) + f'\n검사 시간 제한 {TIMEOUT_SEC}초 초과(표시용 종료 코드 124)')
+        code = proc.wait(timeout=TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        try:
+            proc.wait(timeout=PIPE_GRACE_SEC)
+        except subprocess.TimeoutExpired:
+            pass
+        code, note = 124, f'\n검사 시간 제한 {TIMEOUT_SEC}초 초과(표시용 종료 코드 124)'
+    deadline = time.monotonic() + PIPE_GRACE_SEC
+    for reader in readers:
+        reader.join(max(0, deadline - time.monotonic()))
+    if any(reader.is_alive() for reader in readers):   # 읽기 스레드는 daemon이라 버려 둬도 서버 종료를 막지 않는다
+        note += (f'\n⚠️ 검사가 끝난 뒤에도 남은 자식 프로세스가 출력을 붙잡고 있어 {PIPE_GRACE_SEC}초만 기다리고 넘어갔어요'
+                 ' — 검사가 띄운 보조 서버를 정리하지 않았는지 확인해 주세요.')
+    return subprocess.CompletedProcess(proc.args, code, ''.join(list(out)), ''.join(list(err)) + note)
 
 
 def is_browser(t) -> bool:

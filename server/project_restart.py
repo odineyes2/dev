@@ -327,13 +327,24 @@ def launch(aid):
     env.update(DEV_DATA_DIR=str(config.DATA_DIR.resolve()), DEV_DB_PATH=str(config.DB_PATH.resolve()), PYTHONIOENCODING='utf-8')
     if os.environ.get('PM2_HOME'):
         env['PM2_HOME'] = os.environ['PM2_HOME']
+    # 도우미를 바로 띄우지 않고 중계 프로세스(--detach)를 거친다 — 중계가 곧 끝나 도우미의 부모가 사라지므로
+    # pm2가 dev를 재시작하며 프로세스 트리째 끌 때 도우미가 같이 죽지 않고 health까지 확인해 남긴다(DEV-207).
+    _spawn([sys.executable, str(Path(__file__).resolve()), '--detach', str(aid)], aid, env)
+
+
+def _spawn(args, aid, env):
     folder = config.DATA_DIR / 'app-restarts'
     folder.mkdir(parents=True, exist_ok=True)
     with (folder / f'{aid}.log').open('ab') as log:
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), str(aid)], cwd=config.REPO_ROOT / 'server', env=env,
+        return subprocess.Popen(args, cwd=config.REPO_ROOT / 'server', env=env,
             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else 0,
             start_new_session=os.name != 'nt')
+
+
+def detach(aid):
+    """중계 프로세스 — 같은 환경으로 실제 도우미를 띄우고 바로 끝난다."""
+    _spawn([sys.executable, str(Path(__file__).resolve()), str(aid)], aid, dict(os.environ))
 
 
 def _save(aid, state, phase, error=''):
@@ -454,4 +465,7 @@ def run(aid):
 
 
 if __name__ == '__main__':
-    run(int(sys.argv[1]))
+    if sys.argv[1] == '--detach':
+        detach(int(sys.argv[2]))
+    else:
+        run(int(sys.argv[1]))

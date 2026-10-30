@@ -489,9 +489,11 @@ function splitProgress(text, mode){
   return {short, long:text};
 }
 function progressHtml(i){
-  const text = i.job?.note || i.merge_state || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
+  const run = !i.job?.note && !i.merge_state ? i.run_progress : null;   // 실행 단계 — 구현·전체 검사·재작업·멈춤(DEV-206)
+  const text = i.job?.note || i.merge_state || run?.long || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
   if(!text) return '';
-  const {short, long} = i.job?.note_short
+  const {short, long} = run ? {short:run.short, long:run.long}
+    : i.job?.note_short
     ? {short:i.job.note_short, long:i.job.note_short === text ? '' : text}
     : splitProgress(text, i.job?.mode);
   return `<div class="progress-note"><span class="progress-short">${esc(short)}</span>${long ? `<button type="button" class="progress-more" aria-label="자세히 보기" title="자세히 보기" aria-expanded="false" data-progress="${esc(long)}">ⓘ</button>` : ''}</div>`;

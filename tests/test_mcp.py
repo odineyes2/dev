@@ -42,7 +42,7 @@ issues.create_issue(HUMAN, "RS", "서버 코드 수정")
 
 s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
 proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app", "--port", str(port)], cwd=ROOT / "server",
-                        env={**os.environ, "DEV_NIGHTSHIFT_URL": "http://127.0.0.1:9"}, stderr=subprocess.DEVNULL)
+                        env={**os.environ, "DEV_NIGHTSHIFT_URL": "http://127.0.0.1:9"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 URL = f"http://127.0.0.1:{port}/mcp/"
 
 
