@@ -1112,6 +1112,13 @@ CREATE TABLE project_audit_dismissals (
 """)
 
 
+# 초기 생성의 템플릿 선택과 옵션을 재시도에도 보존한다.
+MIGRATIONS.append("""
+ALTER TABLE project_initializations ADD COLUMN template TEXT NOT NULL DEFAULT 'blank';
+ALTER TABLE project_initializations ADD COLUMN options_json TEXT NOT NULL DEFAULT '{}';
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
