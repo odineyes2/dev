@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 TIMEOUT_SEC = 600
+BROWSER_TIMEOUT_SEC = 1200   # 브라우저 검사는 병렬 부하에서 600초를 넘는다(test_ui.py 혼자 419초, DEV-209)
 PIPE_GRACE_SEC = 30   # 검사가 끝난 뒤 출력 파이프가 닫히기를 기다리는 시간
 
 
@@ -50,16 +51,16 @@ def run(repo, t, args=(), env=None):
     readers = [threading.Thread(target=_drain, args=pair, daemon=True) for pair in ((proc.stdout, out), (proc.stderr, err))]
     for reader in readers:
         reader.start()
-    note = ''
+    note, limit = '', timeout_for(t)
     try:
-        code = proc.wait(timeout=TIMEOUT_SEC)
+        code = proc.wait(timeout=limit)
     except subprocess.TimeoutExpired:
         kill_tree(proc)
         try:
             proc.wait(timeout=PIPE_GRACE_SEC)
         except subprocess.TimeoutExpired:
             pass
-        code, note = 124, f'\n검사 시간 제한 {TIMEOUT_SEC}초 초과(표시용 종료 코드 124)'
+        code, note = 124, f'\n검사 시간 제한 {limit}초 초과(표시용 종료 코드 124)'
     deadline = time.monotonic() + PIPE_GRACE_SEC
     for reader in readers:
         reader.join(max(0, deadline - time.monotonic()))
@@ -67,6 +68,11 @@ def run(repo, t, args=(), env=None):
         note += (f'\n⚠️ 검사가 끝난 뒤에도 남은 자식 프로세스가 출력을 붙잡고 있어 {PIPE_GRACE_SEC}초만 기다리고 넘어갔어요'
                  ' — 검사가 띄운 보조 서버를 정리하지 않았는지 확인해 주세요.')
     return subprocess.CompletedProcess(proc.args, code, ''.join(list(out)), ''.join(list(err)) + note)
+
+
+def timeout_for(t) -> int:
+    """검사 하나의 시간 제한(초) — 브라우저 검사는 BROWSER_TIMEOUT_SEC, 나머지는 TIMEOUT_SEC."""
+    return BROWSER_TIMEOUT_SEC if is_browser(t) else TIMEOUT_SEC
 
 
 def is_browser(t) -> bool:

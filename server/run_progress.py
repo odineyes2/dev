@@ -37,10 +37,11 @@ def checks_begin(ref, total):
             _checks[ref] = {'total': total, 'done': 0, 'failed': 0, 'running': {}}
 
 
-def check_start(ref, name):
+def check_start(ref, name, limit=None):
+    """limit은 그 검사의 시간 제한(초) — 브라우저 검사는 더 길다(DEV-209)."""
     with _lock:
         if ref in _checks:
-            _checks[ref]['running'][name] = time.time()
+            _checks[ref]['running'][name] = (time.time(), limit or test_runner.TIMEOUT_SEC)
 
 
 def check_end(ref, name, ok):
@@ -90,11 +91,10 @@ def view(ref, now=None) -> dict | None:
         lines += [head, f"완료 등록 전에 서버가 Task worktree에서 전체 검사를 돌려요 · 시작 {_clock(run['since'])} · 경과 {_span(elapsed)}"]
         if checks:
             lines.append(f"{checks['done']}/{checks['total']}개 끝" + (f" (실패 {checks['failed']}개)" if checks['failed'] else ''))
-            per = test_runner.TIMEOUT_SEC + test_runner.PIPE_GRACE_SEC * 2 + 60
-            for name, since in sorted(checks['running'].items(), key=lambda kv: kv[1]):
-                lines.append(f"지금: {name} ({_span(now - since)}째)")
-                stalled = stalled or now - since > per
-            lines.append(f'검사 하나의 시간 제한은 {_span(test_runner.TIMEOUT_SEC)}이에요.')
+            for name, (since, limit) in sorted(checks['running'].items(), key=lambda kv: kv[1][0]):
+                lines.append(f"지금: {name} ({_span(now - since)}째 / 제한 {_span(limit)})")
+                stalled = stalled or now - since > limit + test_runner.PIPE_GRACE_SEC * 2 + 60
+            lines.append(f'검사 하나의 시간 제한은 {_span(test_runner.TIMEOUT_SEC)}, 브라우저 검사는 {_span(test_runner.BROWSER_TIMEOUT_SEC)}이에요.')
         else:
             stalled = elapsed > CHECKS_SILENT_SEC
     if phase in ('implement', 'rework', 'checks', 'recheck'):

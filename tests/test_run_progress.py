@@ -43,11 +43,16 @@ v = run_progress.view('X-1-1')
 assert v['short'] == '전체 검사 중' and not v['stalled'] and '개 끝' not in v['long'], v
 run_progress.checks_begin('X-1-1', 3)
 run_progress.check_start('X-1-1', 'test_a.py'); run_progress.check_end('X-1-1', 'test_a.py', False)
-run_progress.check_start('X-1-1', 'test_ui.py')
+run_progress.check_start('X-1-1', 'test_ui.py', test_runner.BROWSER_TIMEOUT_SEC)
 v = run_progress.view('X-1-1')
-assert '1/3개 끝 (실패 1개)' in v['long'] and '지금: test_ui.py' in v['long'] and not v['stalled'], v['long']
-v = run_progress.view('X-1-1', time.time() + test_runner.TIMEOUT_SEC + test_runner.PIPE_GRACE_SEC * 2 + 120)
+assert '1/3개 끝 (실패 1개)' in v['long'] and '지금: test_ui.py' in v['long'] and '제한 20분' in v['long'] and not v['stalled'], v['long']
+# 브라우저 검사는 일반 제한(10분)을 넘어도 멈춘 게 아니고, 자기 제한(20분)을 넘겨야 멈춘 것이다(DEV-209).
+assert not run_progress.view('X-1-1', time.time() + test_runner.TIMEOUT_SEC + test_runner.PIPE_GRACE_SEC * 2 + 120)['stalled']
+v = run_progress.view('X-1-1', time.time() + test_runner.BROWSER_TIMEOUT_SEC + test_runner.PIPE_GRACE_SEC * 2 + 120)
 assert v['stalled'] and v['short'] == '⚠️ 멈춘 것 같아요', v
+run_progress.check_end('X-1-1', 'test_ui.py', True)
+run_progress.check_start('X-1-1', 'test_b.py')   # 제한을 안 주면 일반 제한
+assert run_progress.view('X-1-1', time.time() + test_runner.TIMEOUT_SEC + test_runner.PIPE_GRACE_SEC * 2 + 120)['stalled']
 # 재작업으로 넘어가면 앞 검사 진행은 지운다.
 run_progress.set_phase('X-1-1', 'rework', attempt=2, limit=1800)
 run_progress.set_phase('X-1-1', 'recheck', limit=1800)
