@@ -74,11 +74,18 @@ class TemplatesTest(unittest.TestCase):
         self.assertEqual(templates._blocks('# [option:login]\n// [option:db]\nx\n// [/option:db]\n# [/option:login]\n', {'login': True, 'db': False}), '')
 
     def test_family_and_collection(self):
-        self.assertEqual(sync_family.check(ROOT / 'templates/admin-web/static'), [])
+        for template_id in ('admin-web', 'service-split'):
+            self.assertEqual(sync_family.check(ROOT / f'templates/{template_id}/static'), [])
+            self.assertEqual((ROOT / f'templates/{template_id}/docs/DESIGN.md').read_bytes(), (ROOT / 'docs/DESIGN.md').read_bytes())
         self.assertFalse(any('templates' in p.relative_to(ROOT).parts for p in test_runner.test_files(ROOT)))
-        self.assertEqual((ROOT / 'templates/admin-web/docs/DESIGN.md').read_bytes(), (ROOT / 'docs/DESIGN.md').read_bytes())
 
     def test_option_matrix(self):
+        self.check_option_matrix('admin-web')
+
+    def test_service_split(self):
+        self.check_option_matrix('service-split')
+
+    def check_option_matrix(self, template_id):
         fake = ThreadingHTTPServer(('127.0.0.1', 0), Nightshift)
         thread = threading.Thread(target=fake.serve_forever, daemon=True)
         thread.start()
@@ -87,13 +94,14 @@ class TemplatesTest(unittest.TestCase):
                 options = dict(zip(('login', 'db', 'dark_mode'), switches))
                 with self.subTest(options=options), tempfile.TemporaryDirectory() as folder:
                     path = Path(folder)
-                    files = templates.render('admin-web', options, VALUES)
-                    self.assertEqual('server/auth.py' in files, options['login'])
-                    self.assertEqual('server/db.py' in files, options['db'])
+                    files = templates.render(template_id, options, VALUES)
+                    package = 'server' if template_id == 'admin-web' else 'backend'
+                    self.assertEqual(f'{package}/auth.py' in files, options['login'])
+                    self.assertEqual(f'{package}/db.py' in files, options['db'])
                     self.assertEqual('id="theme"' in files['static/index.html'], options['dark_mode'])
                     self.assertFalse(any('[option:' in text or '{{PROJECT_' in text for text in files.values()))
                     # 기존 validate의 경로·확장자 규칙을 모든 산출물에 적용한다.
-                    validation = {'description': '검사용 앱', 'runtime': templates.get('admin-web')['runtime'],
+                    validation = {'description': '검사용 앱', 'runtime': templates.get(template_id)['runtime'],
                                   'files': [{'path': name, 'content': text} for name, text in files.items()], 'issues': []}
                     validation['files'] += [{'path': name, 'content': '# 문서\n'} for name in pi.REQUIRED - files.keys()]
                     with self.assertRaisesRegex(ValueError, 'Issue 개수'):
@@ -104,10 +112,13 @@ class TemplatesTest(unittest.TestCase):
                         pi.verify_runtime(row, validation, path)
                     env = {key: value for key, value in os.environ.items() if key.upper() in {'PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'}}
                     env.update(NIGHTSHIFT_URL=f'http://127.0.0.1:{fake.server_port}', PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
-                    result = subprocess.run([sys.executable, 'tests/test_app.py'], cwd=path, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
+                    result = subprocess.run([sys.executable, 'tests/test_app.py' if template_id == 'admin-web' else 'backend/tests/test_serve.py'], cwd=path, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     # 복사본 앱 모듈은 별도 프로세스에서 HTTP TestClient로 확인한다.
                     code = "import sys;sys.path.insert(0,'server');from app import app;from fastapi.testclient import TestClient;c=TestClient(app);"
+                    if template_id == 'service-split':
+                        code = "from backend.serve import app;from fastapi.testclient import TestClient;c=TestClient(app);"
+                        code += "assert c.get('/api/health').json()['db']==" + repr('not_configured' if options['db'] else 'disabled') + ";assert c.get('/api/ready').status_code==200;"
                     if options['login']:
                         code += "assert c.get('/api/me').status_code==401;assert c.get('/api/me',cookies={'ns_session':'invalid'}).status_code==401;assert c.get('/api/me',cookies={'ns_session':'member'}).status_code==403;r=c.get('/api/me',cookies={'ns_session':'admin'});assert r.status_code==200;assert r.json()['user']=={'username':'tester','role':'admin'}"
                     else:
@@ -122,19 +133,39 @@ class TemplatesTest(unittest.TestCase):
             fake.server_close()
             thread.join()
 
+    def test_service_split_postgres(self):
+        url = os.environ.get('DEV_TEST_DATABASE_URL') or os.environ.get('MOAI_TEST_DATABASE_URL')
+        if not url:
+            print('SKIP: 격리 PostgreSQL 주소가 없어 001_core.sql 적용 검사를 건너뛴다.')
+            self.skipTest('격리 PostgreSQL 없음')
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)
+            copy_files(path, templates.render('service-split', {}, VALUES))
+            env = {key: value for key, value in os.environ.items() if key.upper() in {'PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'}}
+            env.update(DATABASE_URL=url, PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
+            result = subprocess.run([sys.executable, 'backend/tests/test_serve.py'], cwd=path, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     @unittest.skipUnless(CAPTURE, 'R04는 --capture로 실행한다')
     def test_capture(self):
+        self.capture_template('admin-web')
+
+    @unittest.skipUnless(CAPTURE, 'R04는 --capture로 실행한다')
+    def test_service_split_capture(self):
+        self.capture_template('service-split')
+
+    def capture_template(self, template_id):
         from playwright.sync_api import sync_playwright, expect
         # Dev 전용 capture_ui는 생성 앱을 지원하지 않아 복사본을 로컬 서버로 캡처한다.
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)
-            copy_files(path, templates.render('admin-web', {}, VALUES))
+            copy_files(path, templates.render(template_id, {}, VALUES))
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', 0))
                 port = sock.getsockname()[1]
             env = {key: value for key, value in os.environ.items() if key.upper() in {'PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'}}
             env.update(HOST='127.0.0.1', PORT=str(port), PYTHONDONTWRITEBYTECODE='1')
-            process = subprocess.Popen([sys.executable, 'server/app.py'], cwd=path, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            process = subprocess.Popen([sys.executable, templates.get(template_id)['runtime']['entry']], cwd=path, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 import httpx, time
                 deadline = time.monotonic() + 20
@@ -157,7 +188,7 @@ class TemplatesTest(unittest.TestCase):
                             expect(page.locator('#session')).to_have_text('nightshift에서 로그인한 뒤 새로고침해 주세요.')
                             expect(page.locator('html')).to_have_attribute('data-theme', theme)
                             self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
-                            output = ROOT / '.ui-captures' / 'admin-web'
+                            output = ROOT / '.ui-captures' / template_id
                             output.mkdir(parents=True, exist_ok=True)
                             page.screenshot(path=str(output / f'{theme}-{width}.png'), full_page=True)
                             page.close()
