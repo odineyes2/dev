@@ -489,7 +489,7 @@ function splitProgress(text, mode){
   return {short, long:text};
 }
 function progressHtml(i){
-  const run = !i.job?.note && !i.merge_state ? i.run_progress : null;   // 실행 단계 — 구현·전체 검사·재작업·멈춤(DEV-206)
+  const run = !i.job?.note && (!i.merge_state || i.run_progress?.phase === 'merge') ? i.run_progress : null;   // 실행 단계 — 구현·전체 검사·재작업·멈춤(DEV-206), 병합 검사 n/N(DEV-211)
   const text = i.job?.note || i.merge_state || run?.long || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
   const clock = clockHtml(i);
   if(!text) return clock ? `<div class="progress-note">${clock}</div>` : '';

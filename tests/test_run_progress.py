@@ -1,4 +1,4 @@
-"""실행 진행 단계 표시(DEV-206) — 단계별 짧은 표시·ⓘ 상세, 멈춤 판단, 서버 검사 진행 n/N, 이슈 API에 실리는지."""
+"""실행 진행 단계 표시(DEV-206) — 단계별 짧은 표시·ⓘ 상세, 멈춤 판단, 서버 검사 진행 n/N, 병합 검사 진행(DEV-211), 이슈 API에 실리는지."""
 import os
 import subprocess
 import sys
@@ -46,6 +46,8 @@ run_progress.check_start('X-1-1', 'test_a.py'); run_progress.check_end('X-1-1', 
 run_progress.check_start('X-1-1', 'test_ui.py', test_runner.BROWSER_TIMEOUT_SEC)
 v = run_progress.view('X-1-1')
 assert '1/3개 끝 (실패 1개)' in v['long'] and '지금: test_ui.py' in v['long'] and '제한 20분' in v['long'] and not v['stalled'], v['long']
+# 짧은 표시에도 n/N과 실패 수가 붙고, ⓘ에 실패한 검사 이름이 나온다(DEV-211).
+assert v['short'] == '전체 검사 중 (1/3 · 실패 1)' and '실패: test_a.py' in v['long'], v
 # 브라우저 검사는 일반 제한(10분)을 넘어도 멈춘 게 아니고, 자기 제한(20분)을 넘겨야 멈춘 것이다(DEV-209).
 assert not run_progress.view('X-1-1', time.time() + test_runner.TIMEOUT_SEC + test_runner.PIPE_GRACE_SEC * 2 + 120)['stalled']
 v = run_progress.view('X-1-1', time.time() + test_runner.BROWSER_TIMEOUT_SEC + test_runner.PIPE_GRACE_SEC * 2 + 120)
@@ -61,8 +63,23 @@ run_progress.clear('X-1-1')
 assert run_progress.view('X-1-1') is None
 # 도는 실행이 없는 이슈의 검사(병합 등)는 진행을 남기지 않는다.
 run_progress.checks_begin('X-9-9', 2)
-assert run_progress.view('X-9-9') is None
+assert run_progress.view('X-9-9') is None and run_progress.merge_view('X-9-9') is None
 print('OK — 단계별 표시·상세, 멈춤 판단, 검사 n/N')
+
+# 3-1. 병합 검사(DEV-211) — 실행 단계가 없어도 n/N·재사용 수·지금 도는 검사를 보이고, 끝나면 지운다.
+run_progress.checks_begin('X-2-1', 4, reused=40, skipped=3, merge=True)
+run_progress.check_start('X-2-1', 'test_a.py'); run_progress.check_end('X-2-1', 'test_a.py', True)
+run_progress.check_start('X-2-1', 'test_b.py')
+v = run_progress.merge_view('X-2-1')
+assert v['phase'] == 'merge' and v['short'] == '병합 검사 중 (1/4)' and not v['stalled'], v
+assert '1/4개 끝 · 그 밖에 재사용 40개, 건너뜀 3개' in v['long'] and '지금: test_b.py' in v['long'], v['long']
+assert run_progress.view('X-2-1') is None   # 실행 단계는 없다
+assert run_progress.for_issue({'ref': 'X-2-1', 'status': 'in_review', 'merge_state': '병합 검사 중'})['phase'] == 'merge'
+assert run_progress.for_issue({'ref': 'X-2-1', 'status': 'in_review', 'merge_state': '운영 반영 중'}) is None
+assert run_progress.merge_view('X-2-1', time.time() + test_runner.TIMEOUT_SEC + test_runner.PIPE_GRACE_SEC * 2 + 120)['stalled']
+run_progress.merge_end('X-2-1')
+assert run_progress.merge_view('X-2-1') is None
+print('OK — 병합 검사 n/N·재사용 수·끝나면 지움')
 
 # 4. 서버 완료 전 검사가 파일마다 진행을 남긴다.
 repo = Path(tempfile.mkdtemp())
@@ -85,6 +102,16 @@ assert 'test_bad.py' in failed
 assert any('/2개 끝' in s and '지금: test_' in s for s in seen), seen
 assert '2/2개 끝 (실패 1개)' in run_progress.view(task)['long'], run_progress.view(task)['long']
 print('OK — 서버 검사가 파일마다 진행을 남긴다')
+
+# 4-1. 병합 검사(server_merge)도 파일마다 진행을 남기고, 끝나면 지운다(DEV-211).
+run_progress.clear(task)
+seen = []
+with patch.object(orchestrate, 'run_test', side_effect=lambda repo, t, args=(), env=None: (
+        seen.append(run_progress.merge_view(task)), test_runner.run(repo, t, args, dict(os.environ)))[1]):
+    orchestrate.run_tests(str(repo), 'server_merge', task)
+assert any(s and s['short'].startswith('병합 검사 중 (') and '지금: test_' in s['long'] for s in seen), seen
+assert run_progress.merge_view(task) is None
+print('OK — 병합 검사가 파일마다 진행을 남기고 끝나면 지운다')
 
 # 5. 이슈 API — in_progress Task에만 run_progress가 실리고, 목록·상세·부모의 하위 Task 모두에 보인다.
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(

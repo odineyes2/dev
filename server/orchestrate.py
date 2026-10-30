@@ -491,8 +491,14 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
     key = ref.split('-')[0] if ref else regression.project_key(repo)
     timing = regression.load_record('regression-durations:' + key)
     started = time.monotonic()
-    run_progress.checks_begin(ref, len(todo))   # 실행 중 화면의 ⓘ에 n/N과 지금 도는 검사를 보인다(DEV-206)
-    ran = test_runner.run_all([t for t, _ in todo], one, 1 if env else test_jobs(key), timing)
+    # 실행 중 화면의 ⓘ에 n/N과 지금 도는 검사를 보인다(DEV-206) — 병합 검사도 같이(DEV-211)
+    run_progress.checks_begin(ref, len(todo), sum(v == 'reused' for v in results.values()),
+                              sum(v == 'skipped' for v in results.values()), merge=stage == 'server_merge')
+    try:
+        ran = test_runner.run_all([t for t, _ in todo], one, 1 if env else test_jobs(key), timing)
+    finally:
+        if stage == 'server_merge':
+            run_progress.merge_end(ref)
     wall = round(time.monotonic() - started, 1)
     for t, stamp in todo:   # 결과는 원래 순서대로 모은다
         (runs, bad), durations[t.name] = ran[t]
