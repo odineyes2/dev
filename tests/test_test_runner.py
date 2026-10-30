@@ -158,4 +158,7 @@ if os.name == 'nt':
     subprocess.run(['taskkill', '/F', '/PID', str(orphan)], capture_output=True)
 else:
     os.kill(orphan, 9)
+(repo / 'tests' / 'test_env.py').write_text('import os\nprint(os.environ.get("DEV_TEST_RUN"), os.environ.get("PYTHONIOENCODING"))\n', encoding='utf-8')
+r = test_runner.run(str(repo), repo / 'tests' / 'test_env.py', env=env)
+assert r.returncode == 0 and r.stdout.split() == ['1', 'utf-8'], r   # 검사에는 DEV_TEST_RUN을 넘겨 진짜 알림을 막는다
 print('OK — 고아 자식이 파이프를 붙잡아도·시간 초과여도 정해진 시간 안에 돌아오고, 시간 초과는 자식까지 끝낸다')

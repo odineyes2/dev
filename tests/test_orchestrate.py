@@ -153,15 +153,15 @@ assert git('rev-parse', 'HEAD') == before and (repo / 'collision.txt').read_text
 (repo / 'collision.txt').unlink()
 
 # 첫 실패 뒤 나머지 검사도 실행하고, 시간 제한도 실패 로그로 남긴다.
-timeout = subprocess.TimeoutExpired(['python'], 600, output=b'partial')
+timeout = subprocess.CompletedProcess(['python'], 124, 'partial', '\n검사 시간 제한 600초 초과(표시용 종료 코드 124)')   # test_runner.run의 시간 초과 결과
 second = subprocess.CompletedProcess(['python'], 2, 'second failure', '')
-with patch.object(orchestrate.subprocess, 'run', side_effect=[timeout] * 3 + [second] * 3) as run:
+with patch.object(orchestrate.test_runner, 'run', side_effect=[timeout] * 3 + [second] * 3) as run:
     with patch.object(orchestrate.Path, 'glob', return_value=[Path('tests/test_one.py'), Path('tests/test_two.py')]):
         note = orchestrate.run_tests(str(repo))
 assert run.call_count == 6 and '600초' in note and 'partial' in note and 'second failure' in note   # 실패 검사는 2번 더 돌려 늘 실패하는지 본다
 
 # 병합 검사에서 실패했다가 다시 통과하면 불안정한 검사로 실패 로그를 남긴다(DEV-160-3).
-with patch.object(orchestrate.subprocess, 'run', side_effect=[
+with patch.object(orchestrate.test_runner, 'run', side_effect=[
         subprocess.CompletedProcess(['python'], 1, '', 'ECONNRESET'), subprocess.CompletedProcess(['python'], 0, 'ok', ''),
         subprocess.CompletedProcess(['python'], 0, 'ok', '')]) as run:
     with patch.object(orchestrate.Path, 'glob', return_value=[Path('tests/test_flaky.py')]):
