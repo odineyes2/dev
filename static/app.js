@@ -491,8 +491,7 @@ function splitProgress(text, mode){
 function progressHtml(i){
   const run = !i.job?.note && !i.merge_state ? i.run_progress : null;   // 실행 단계 — 구현·전체 검사·재작업·멈춤(DEV-206)
   const text = i.job?.note || i.merge_state || run?.long || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
-  const clock = i.status === 'in_progress' && i.in_progress_seconds != null   // In Progress 경과 시간(DEV-208) — 받은 뒤 흐른 시간은 tickClocks가 더한다
-    ? `<span class="progress-clock" title="In Progress 경과 시간" data-elapsed="${i.in_progress_seconds}" data-at="${performance.now()}">${hhmm(i.in_progress_seconds)}</span>` : '';
+  const clock = clockHtml(i);
   if(!text) return clock ? `<div class="progress-note">${clock}</div>` : '';
   const {short, long} = run ? {short:run.short, long:run.long}
     : i.job?.note_short
@@ -500,16 +499,22 @@ function progressHtml(i){
     : splitProgress(text, i.job?.mode);
   return `<div class="progress-note"><span class="progress-short">${esc(short)}</span>${clock}${long ? `<button type="button" class="progress-more" aria-label="자세히 보기" title="자세히 보기" aria-expanded="false" data-progress="${esc(long)}">ⓘ</button>` : ''}</div>`;
 }
-function hhmm(sec){
-  const m = Math.floor(Math.max(0, sec) / 60);
-  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+// In Progress 경과 시간(DEV-208) — 받은 뒤 흐른 시간은 tickClocks가 1초마다 더한다
+function clockHtml(i){
+  return i.status === 'in_progress' && i.in_progress_seconds != null
+    ? `<span class="progress-clock" title="In Progress 경과 시간" data-elapsed="${i.in_progress_seconds}" data-at="${performance.now()}">${fmtClock(i.in_progress_seconds)}</span>` : '';
+}
+function fmtClock(sec){
+  const s = Math.floor(Math.max(0, sec)), h = Math.floor(s / 3600), p = n => String(n).padStart(2, '0');
+  return h ? `${h}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}` : `${p(Math.floor(s / 60))}:${p(s % 60)}`;
 }
 function tickClocks(){
   for(const el of document.querySelectorAll('.progress-clock')){
-    el.textContent = hhmm(Number(el.dataset.elapsed) + (performance.now() - Number(el.dataset.at)) / 1000);
+    el.textContent = fmtClock(Number(el.dataset.elapsed) + (performance.now() - Number(el.dataset.at)) / 1000);
   }
 }
-setInterval(tickClocks, 30000);
+setInterval(tickClocks, 1000);
+document.addEventListener('visibilitychange', () => { if(!document.hidden) tickClocks(); });
 let progressButton = null;
 function closeProgress(){
   if(progressButton){ progressButton.setAttribute('aria-expanded', 'false'); progressButton.removeAttribute('aria-describedby'); }
@@ -1262,12 +1267,13 @@ async function renderBoard(){
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
         <div class="t">${titleHtml(i)}</div><div class="meta">${approvalHtml(i.approval)}${labelsHtml(i.labels)}${typesHtml(i)}
-        ${processingAgentsHtml(i)}${completionTimeHtml(i)}${issueTokensHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
+        ${processingAgentsHtml(i)}${completionTimeHtml(i)}${issueTokensHtml(i)}${clockHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
     </div></div>`;
   }).join('')}</div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
   loadJobs().catch(() => {});
   bindActions(view.querySelector('.kanban'), session, renderBoard);
   enableBoardPan(view.querySelector('.kanban'));
+  if(items.some(i => i.status === 'in_progress')) followProgress(renderBoard, () => location.hash === hash);
   view.querySelectorAll('.card').forEach(card => {
     card.addEventListener('click', () => { location.hash = `#/issue/${card.dataset.ref}`; });
     card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', card.dataset.ref); });
@@ -1608,7 +1614,7 @@ async function renderIssue(ref, background = false){
       <aside class="side panel">
         <div class="field issue-token-detail"><span>Tokens</span><div>${issueTokensHtml(it, true)}</div></div>
         <div class="field"><span>Status</span><select id="status">${STATUSES.map(s => `<option value="${s}"${s === it.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}</select>
-          ${it.children.length || it.parent_ref ? '<button class="complete-tree" title="최상위 이슈와 모든 Task를 한 번에 Done으로">전체 완료</button>' : ''}</div>
+          ${clockHtml(it)}${it.children.length || it.parent_ref ? '<button class="complete-tree" title="최상위 이슈와 모든 Task를 한 번에 Done으로">전체 완료</button>' : ''}</div>
         <div class="field" hidden><span>Priority</span><select id="priority">${PRIORITIES.map(p => `<option${p === it.priority ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
         <div class="field"><span>Assignee</span><select id="assignee">${agentOpts}</select></div>
         <div class="field" id="issue-type-editor">${typePicker(catalog.types, it.type_ids || [], {hint:false, legend:'종류', automatic:(it.types || []).some(t => t.source === 'agent')})}<button id="save-types" type="button">종류 저장</button><p id="types-status" role="status"></p></div><div class="field"><span>Labels</span><input id="labels" placeholder="쉼표로 구분" value="${esc(it.labels.join(', '))}"></div>

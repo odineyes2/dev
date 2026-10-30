@@ -1,6 +1,6 @@
 """화면 — 임시 데이터 폴더로 dev 서버와 가짜 nightshift를 띄우고 브라우저로 돈다.
 로그인 폼 → 프로젝트 만들기 → 새 이슈 → 상세(계획서·댓글·상태) → 목록·칸반(끌어서 상태) → 에이전트 키 발급 → 모바일 폭."""
-import os, socket, subprocess, sys, tempfile, time
+import os, re, socket,subprocess, sys, tempfile, time
 from pathlib import Path
 import json
 from playwright.sync_api import expect, sync_playwright
@@ -168,7 +168,7 @@ def check_manual_usage(page, shots):
 
 
 def check_progress_clock(page, shots):
-    """In Progress 경과 시간 hh:mm(DEV-208) — 단계 표시 옆·단독 표시, 받은 뒤 흐른 시간이 더해지는지, 낮·밤 × 너비 배치."""
+    """In Progress 경과 시간 mm:ss(DEV-208) — 단계 표시 옆·단독 표시, 받은 뒤 흐른 시간이 더해지는지, 낮·밤 × 너비 배치."""
     previous = page.evaluate('({theme:localStorage.getItem("dev.theme"), project:localStorage.getItem("dev.project")})')
     h = {'X-Requested-With': 'dev'}
     assert page.request.post(BASE + '/api/projects', headers=h, data={'key':'PCL','name':'경과 시간'}).ok
@@ -187,15 +187,22 @@ def check_progress_clock(page, shots):
     try:
         page.goto(BASE + '/#/?project=PCL')
         run_clock = page.locator(f'tr[data-ref="{running}"] .progress-clock')
-        expect(run_clock).to_have_text('03:25')
+        expect(run_clock).to_have_text(re.compile(r'^3:25:4\d$'))   # 60분이 넘으면 h:mm:ss
         expect(page.locator(f'tr[data-ref="{running}"] .progress-short')).to_have_text('재작업 중 (2차)')
         expect(page.locator(f'tr[data-ref="{running}"] .progress-more')).to_be_visible()
-        expect(page.locator(f'tr[data-ref="{manual}"] .progress-clock')).to_have_text('00:00')   # 실행 없는 In Progress는 시계만
+        manual_clock = page.locator(f'tr[data-ref="{manual}"] .progress-clock')
+        expect(manual_clock).to_have_text(re.compile(r'^(00:59|01:0\d)$'))   # 실행 없는 In Progress는 시계만
         assert page.locator(f'tr[data-ref="{manual}"] .progress-short').count() == 0
+        first = manual_clock.inner_text()
+        expect(manual_clock).not_to_have_text(first, timeout=3000)   # 1초 주기로 스스로 올라간다
         # 받은 뒤 61분이 흐른 것처럼 하면 서버 값에 그만큼 더해진다(목록 갱신을 기다리지 않는다).
         page.evaluate('''() => { for(const el of document.querySelectorAll('.progress-clock')) el.dataset.at = String(Number(el.dataset.at) - 61 * 60000); tickClocks(); }''')
-        expect(run_clock).to_have_text('04:26')
-        expect(page.locator(f'tr[data-ref="{manual}"] .progress-clock')).to_have_text('01:01')   # 59초 + 61분
+        expect(run_clock).to_have_text(re.compile(r'^4:26:\d\d$'))
+        expect(manual_clock).to_have_text(re.compile(r'^1:0[12]:\d\d$'))   # 59초 + 61분
+        page.goto(BASE + '/#/board?project=PCL')   # Board 카드에도 시계가 보인다
+        expect(page.locator(f'.card[data-ref="{running}"] .progress-clock')).to_have_text(re.compile(r'^3:25:\d\d$'))
+        page.goto(BASE + '/#/?project=PCL')
+        expect(run_clock).to_be_visible()
         for theme in ('light','dark'):
             page.evaluate('t => {document.documentElement.dataset.theme=t;localStorage.setItem("dev.theme",t)}', theme)
             for width in (1300,390):
