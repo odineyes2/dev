@@ -97,3 +97,40 @@ with TestClient(A.app) as client:
     assert child['run_progress']['phase'] == 'rework'
     assert client.get(f'/api/issues/{parent}').json()['run_progress'] is None   # in_progress가 아니면 싣지 않는다
 print('OK — 이슈 API 목록·상세·하위 Task에 실행 단계가 실린다')
+
+# 6. In Progress 경과 시간(DEV-208) — 도는 실행이 있으면 실행 시작부터, 없으면 마지막으로 In Progress가 된 때부터.
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+
+def ago(minutes):
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(timespec='seconds')
+
+
+manual = issues.create_issue(me, 'PX', '대화에서 작업')['ref']
+idle = issues.create_issue(me, 'PX', '대기')['ref']
+with db.connect() as c:
+    ids = {ref: issues.get_issue(ref)['id'] for ref in (task, manual, idle)}
+    c.execute("UPDATE issues SET status='in_progress' WHERE id=?", (ids[manual],))
+    c.execute("INSERT INTO events(issue_id,actor,kind,body,data_json,created_at) VALUES(?,?,?,?,?,?)",
+              (ids[manual], 'agent:1', 'status', '', '{"from":"backlog","to":"in_progress"}', ago(200)))
+    c.execute("INSERT INTO events(issue_id,actor,kind,body,data_json,created_at) VALUES(?,?,?,?,?,?)",
+              (ids[manual], 'agent:1', 'status', '', '{"from":"on_hold","to":"in_progress"}', ago(75)))   # 마지막 것부터
+    c.execute("INSERT INTO events(issue_id,actor,kind,body,data_json,created_at) VALUES(?,?,?,?,?,?)",
+              (ids[task], 'human:admin', 'status', '', '{"from":"waiting","to":"in_progress"}', ago(500)))
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,?,?,?,?)", (ids[task], 'execute', 'failed', 'human:admin', ago(300)))
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,?,?,?,?)", (ids[task], 'execute', 'running', 'human:admin', ago(72)))
+items = [issues.get_issue(ref) for ref in (task, manual, idle)]
+run_progress.elapsed(items)
+seconds = {it['ref']: it['in_progress_seconds'] for it in items}
+assert 72 * 60 - 5 <= seconds[task] <= 72 * 60 + 30, seconds            # 도는 실행 시작부터(끝난 실행·상태 이벤트가 아니라)
+assert 75 * 60 - 5 <= seconds[manual] <= 75 * 60 + 30, seconds          # 실행이 없으면 마지막으로 In Progress가 된 때부터
+assert seconds[idle] is None, seconds                                    # In Progress가 아니면 없다
+with TestClient(A.app) as client:
+    client.cookies.set('ns_session', 'adm')
+    listed = {i['ref']: i for i in client.get('/api/issues', params={'project': 'PX'}).json()['issues']}
+    assert listed[manual]['in_progress_seconds'] >= 75 * 60 - 5 and listed[idle]['in_progress_seconds'] is None
+    detail = client.get(f'/api/issues/{parent}').json()
+    child = next(ch for ch in detail['children'] if ch['ref'] == task)
+    assert child['in_progress_seconds'] >= 72 * 60 - 5 and detail['in_progress_seconds'] is None
+    assert client.get(f'/api/issues/{manual}').json()['in_progress_seconds'] >= 75 * 60 - 5
+print('OK — In Progress 경과 시간: 실행 시작·마지막 In Progress 기준, 목록·상세·하위 Task')

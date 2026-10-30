@@ -491,13 +491,25 @@ function splitProgress(text, mode){
 function progressHtml(i){
   const run = !i.job?.note && !i.merge_state ? i.run_progress : null;   // 실행 단계 — 구현·전체 검사·재작업·멈춤(DEV-206)
   const text = i.job?.note || i.merge_state || run?.long || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
-  if(!text) return '';
+  const clock = i.status === 'in_progress' && i.in_progress_seconds != null   // In Progress 경과 시간(DEV-208) — 받은 뒤 흐른 시간은 tickClocks가 더한다
+    ? `<span class="progress-clock" title="In Progress 경과 시간" data-elapsed="${i.in_progress_seconds}" data-at="${performance.now()}">${hhmm(i.in_progress_seconds)}</span>` : '';
+  if(!text) return clock ? `<div class="progress-note">${clock}</div>` : '';
   const {short, long} = run ? {short:run.short, long:run.long}
     : i.job?.note_short
     ? {short:i.job.note_short, long:i.job.note_short === text ? '' : text}
     : splitProgress(text, i.job?.mode);
-  return `<div class="progress-note"><span class="progress-short">${esc(short)}</span>${long ? `<button type="button" class="progress-more" aria-label="자세히 보기" title="자세히 보기" aria-expanded="false" data-progress="${esc(long)}">ⓘ</button>` : ''}</div>`;
+  return `<div class="progress-note"><span class="progress-short">${esc(short)}</span>${clock}${long ? `<button type="button" class="progress-more" aria-label="자세히 보기" title="자세히 보기" aria-expanded="false" data-progress="${esc(long)}">ⓘ</button>` : ''}</div>`;
 }
+function hhmm(sec){
+  const m = Math.floor(Math.max(0, sec) / 60);
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+function tickClocks(){
+  for(const el of document.querySelectorAll('.progress-clock')){
+    el.textContent = hhmm(Number(el.dataset.elapsed) + (performance.now() - Number(el.dataset.at)) / 1000);
+  }
+}
+setInterval(tickClocks, 30000);
 let progressButton = null;
 function closeProgress(){
   if(progressButton){ progressButton.setAttribute('aria-expanded', 'false'); progressButton.removeAttribute('aria-describedby'); }
