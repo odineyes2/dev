@@ -490,6 +490,13 @@ async def api_connect_project_service(key: str, request: Request):
     return await run_in_threadpool(project_service.request, human_only(request), key, body.get('action', 'connect'))
 
 
+@app.get('/api/projects/templates')
+def api_project_templates(request: Request):
+    import project_templates
+    human_only(request)
+    return project_templates.catalog()
+
+
 @app.post('/api/projects/initialize', status_code=202)
 async def api_initialize_project(request: Request):
     import project_init

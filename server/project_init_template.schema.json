@@ -1,0 +1,57 @@
+{
+  "description": "템플릿 기반 초기 생성의 문서와 후속 Issue 결과를 제한한다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "description",
+    "files",
+    "issues"
+  ],
+  "properties": {
+    "description": {
+      "type": "string"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "body",
+          "plan"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

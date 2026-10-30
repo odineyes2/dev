@@ -81,6 +81,100 @@ class InitializationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 202, r.text)
         return r.json()
 
+    def template_fixture(self):
+        result = fixture()
+        result.pop('runtime')
+        result['files'] = [f for f in result['files'] if f['path'] in pi.REQUIRED - {'ecosystem.config.js', 'docs/DESIGN.md'}]
+        return result
+
+    def test_templates_catalog_human_only(self):
+        response = self.client.get('/api/projects/templates')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('admin-web', {item['id'] for item in response.json()})
+        self.auth.return_value = ({'kind': 'agent', 'id': 1}, '')
+        self.assertEqual(self.client.get('/api/projects/templates').status_code, 403)
+
+    def test_template_request_and_generation(self):
+        self.body.update(template='admin-web', options={'db': False})
+        self.request()
+        row = pi.get('NEW')
+        self.assertEqual(row['template'], 'admin-web')
+        self.assertEqual(json.loads(row['options_json']), {'db': False})
+        with patch.object(pi, 'generate', return_value=self.template_fixture()):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'complete', pi.status('NEW'))
+        target = self.projects / 'new-product'
+        self.assertTrue((target / 'server/app.py').exists())
+        self.assertFalse((target / 'server/db.py').exists())
+        self.assertEqual(pi._git(target, 'rev-list', '--count', 'HEAD'), '1')
+        self.assertTrue(pi.status('NEW')['refs'])
+        report = config.DATA_DIR / 'project-initializations' / row['request_id'] / 'runtime-check.json'
+        self.assertTrue(json.loads(report.read_text())['passed'])
+
+    def test_template_overwrite_and_invalid_options(self):
+        for template, options in [('unknown', {}), ('blank', {'login': True}), ('admin-web', {'db': 'yes'})]:
+            self.body.update(template=template, options=options)
+            self.assertEqual(self.client.post('/api/projects/initialize', json=self.body, headers=HEADERS).status_code, 400)
+        self.body.update(template='admin-web', options={})
+        self.request()
+        row = pi.get('NEW')
+        result = self.template_fixture()
+        for path in ('server/app.py', 'SERVER/APP.PY', 'docs/DESIGN.md'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, '덮어쓰기'):
+                pi.validate({**result, 'files': result['files'] + [{'path': path, 'content': 'overwrite'}]}, self.projects, row)
+
+    def test_template_retry_preserves_selection_and_result(self):
+        self.body.update(template='admin-web', options={})
+        self.request()
+        with patch.object(pi, 'generate', return_value=self.template_fixture()), patch.object(pi, 'publish', side_effect=OSError('interrupted')):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'failed')
+        self.assertFalse((self.projects / 'new-product' / 'data').exists())
+        pi.retry(H, 'NEW')
+        with patch.object(pi, 'generate') as generate:
+            pi._run('NEW')
+        generate.assert_not_called()
+        self.assertEqual(pi.status('NEW')['status'], 'complete', pi.status('NEW'))
+        self.assertEqual(pi.get('NEW')['template'], 'admin-web')
+        self.assertTrue((self.projects / 'new-product' / 'server/db.py').exists())
+
+    def test_blank_prompt_and_schema_unchanged(self):
+        self.request()
+        pi._update('NEW', status='running')
+        row = pi.get('NEW')
+        prompts = []
+        for template in (None, 'blank', 'admin-web'):
+            current = dict(row)
+            if template is None:
+                current.pop('template')
+            else:
+                current['template'] = template
+            proc = MagicMock(returncode=0)
+            proc.poll.return_value = 0
+            proc.communicate.return_value = (json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(fixture())}}), '')
+            with patch.object(pi.subprocess, 'Popen', return_value=proc) as launch:
+                pi.generate(current)
+            prompts.append(proc.communicate.call_args.args[0])
+            command = launch.call_args.args[0]
+            schema = command[command.index('--output-schema') + 1]
+            self.assertEqual(Path(schema).name, 'project_init_template.schema.json' if template == 'admin-web' else 'project_init.schema.json')
+        self.assertEqual(prompts[0], prompts[1])
+        self.assertNotIn('runtime에는', prompts[2])
+        self.assertIn('server/app.py', prompts[2])
+        self.assertEqual(pi.validate(fixture(), self.projects), fixture())
+        self.assertEqual(pi.get('NEW')['template'], 'blank')
+
+    def test_existing_initialization_migrates_to_blank(self):
+        self.request()
+        with db.connect() as c:
+            c.execute('ALTER TABLE project_initializations DROP COLUMN template')
+            c.execute('ALTER TABLE project_initializations DROP COLUMN options_json')
+            c.execute('PRAGMA user_version=' + str(len(db.MIGRATIONS) - 1))
+        db.init()
+        row = pi.get('NEW')
+        self.assertEqual(row['template'], 'blank')
+        self.assertEqual(row['options_json'], '{}')
+
     def test_service_settings_are_saved_during_initialization(self):
         self.body.update(service_domain='NEW.example.com', service_port=8400, service_app='newapp', service_prepare_provider='codex')
         self.request()
@@ -233,7 +327,8 @@ else {res.statusCode=404;res.end();}
         with patch.object(pi, 'generate', return_value=payload):
             worker.start()
             try:
-                deadline = time.monotonic() + 5
+                # 임시 Git 저장소 준비도 기다리므로 앱 기동과 같은 제한을 쓴다.
+                deadline = time.monotonic() + pi.BOOT_TIMEOUT
                 proc = None
                 while time.monotonic() < deadline:
                     with pi._lock:

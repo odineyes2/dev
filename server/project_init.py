@@ -21,6 +21,7 @@ import config
 import db
 import issues
 import project_docs
+import project_templates
 import review
 
 ROOT = config.REPO_ROOT.parent
@@ -114,6 +115,9 @@ def request(actor, body):
     provider = body.get('provider')
     if provider not in ('codex', 'claude'):
         raise issues.StoreError('Claude 또는 Codex를 선택해 주세요.')
+    template = body.get('template', 'blank')
+    options = body.get('options', {})
+    project_templates.render(template, options, {'PROJECT_NAME': name, 'PROJECT_KEY': key, 'APP_NAME': service['service_app'], 'PORT': service['service_port'] or 8400})
     target = ROOT.resolve() / folder
     with db.connect() as c:
         old = c.execute('SELECT p.key,r.owner FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE request_id=?', (request_id,)).fetchone()
@@ -148,8 +152,8 @@ def request(actor, body):
                 service['service_port'] = find_free_port()
             pid = c.execute('INSERT INTO projects(key,name,repo_url,local_path,created_at,service_domain,service_port,service_app) VALUES(?,?,?,?,?,?,?,?)', (key, name, repo_url, str(target), now, *service.values())).lastrowid
             c.execute('UPDATE projects SET service_prepare_provider=? WHERE id=?', (provider_choice, pid))
-            c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,status,phase,created_at,updated_at)
-                VALUES(?,?,?,?,?,'queued','기획서 분석 대기',?,?)''', (pid, request_id, issues.actor_label(actor), provider, spec, now, now))
+            c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,template,options_json,status,phase,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,'queued','기획서 분석 대기',?,?)''', (pid, request_id, issues.actor_label(actor), provider, spec, template, json.dumps(options), now, now))
     except sqlite3.IntegrityError:
         with db.connect() as c:
             old = c.execute('SELECT p.key,r.owner FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE request_id=?', (request_id,)).fetchone()
@@ -226,6 +230,20 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
 파일 경로는 슬래시를 사용한 프로젝트 내부 상대 경로이다. .git, .github, .vscode 등 숨김 폴더와 .env는 생성하지 않는다. 숨김 파일은 루트 .env.example과 .gitignore만 허용한다.
 파일 확장자는 .md, .py, .ts, .tsx, .js, .jsx, .json, .yaml, .yml, .toml, .txt, .css, .html, .sql, .example 또는 확장자 없음만 허용한다.
 <기획서>\n{row['spec']}\n</기획서>'''
+    schema = SCHEMA
+    if row.get('template', 'blank') != 'blank':
+        manifest, files = _template(row)
+        # 빈 시작의 원문 프롬프트를 보존하고 템플릿 실행 요구만 바꾼다.
+        begin = prompt.index('필수 요건:')
+        end = prompt.index('AGENTS.md는')
+        prompt = (prompt[:begin] + '앱 코드는 템플릿이 제공한다: ' + json.dumps(manifest['provides'], ensure_ascii=False)
+                  + '\n제공 파일: ' + json.dumps(sorted(files), ensure_ascii=False)
+                  + '\n덮어쓸 수 있는 파일: ' + json.dumps(manifest['overwrite'])
+                  + '\n선택 옵션: ' + row.get('options_json', '{}')
+                  + '\n앱 코드와 runtime은 작성하지 않는다. 제공 문서는 다시 쓰지 않고 README·AGENTS.md·공식 문서의 빠진 파일과 .env.example 보강·기능 Issue/Task만 작성한다.\n'
+                  + prompt[end:])
+        prompt = prompt.replace('초기 앱의 구동과 기본 화면은 지금 완성한다. ', '')
+        schema = SCHEMA.with_name('project_init_template.schema.json')
     if correction:
         prompt += '\n앞선 생성 결과가 다음 검증에서 실패했다. 이 오류를 수정하여 전체 JSON을 다시 반환한다: ' + correction
     with db.connect() as c:
@@ -236,12 +254,12 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
     if row['provider'] == 'codex':
         cmd = review.codex_command('-', [])
         cmd = ['mcp_servers={}' if x.startswith('mcp_servers=') else x for x in cmd]
-        cmd = cmd[:-1] + ['--output-schema', str(SCHEMA), '-']
+        cmd = cmd[:-1] + ['--output-schema', str(schema), '-']
     else:
         empty = cwd / 'empty-mcp.json'
         empty.write_text('{"mcpServers":{}}', encoding='utf-8')
         cmd = [review.claude_bin(), '-p', '--restricted', '--tools', '', '--setting-sources', '', '--disable-slash-commands', '--no-session-persistence', '--strict-mcp-config', '--mcp-config', str(empty),
-               '--output-format', 'json', '--json-schema', SCHEMA.read_text(encoding='utf-8'), '--max-budget-usd', os.environ.get('DEV_EXEC_BUDGET_USD') or '2']
+               '--output-format', 'json', '--json-schema', schema.read_text(encoding='utf-8'), '--max-budget-usd', os.environ.get('DEV_EXEC_BUDGET_USD') or '2']
     env = {k: v for k, v in os.environ.items() if k.upper() in {'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'PATHEXT'}}
     env['PYTHONIOENCODING'] = 'utf-8'
     proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -282,7 +300,36 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
     return json.loads(messages[-1])
 
 
-def validate(result, root):
+def _template(row):
+    """저장된 선택으로 템플릿을 같은 내용으로 렌더한다."""
+    template = row.get('template', 'blank')
+    return project_templates.get(template), project_templates.render(template, json.loads(row.get('options_json', '{}')), {
+        'PROJECT_NAME': row['name'], 'PROJECT_KEY': row['key'],
+        'APP_NAME': row['service_app'], 'PORT': row['service_port']})
+
+
+def validate(result, root, row=None):
+    if row and row.get('template', 'blank') != 'blank':
+        if not isinstance(result, dict) or set(result) != {'description', 'files', 'issues'} or not isinstance(result['files'], list):
+            raise ValueError('템플릿 생성 결과 형식')
+        manifest, files = _template(row)
+        protected = {path.casefold() for path in files} - {path.casefold() for path in manifest['overwrite']}
+        for file in result['files']:
+            if not isinstance(file, dict) or set(file) != {'path', 'content'} or not isinstance(file['path'], str) or not isinstance(file['content'], str):
+                raise ValueError('파일 형식')
+            if file['path'].casefold() in protected:
+                raise ValueError('템플릿 파일 덮어쓰기 금지')
+        # LLM 경로의 중복은 합치기 전 목록으로 확인한다.
+        merged = {**files}
+        for file in result['files']:
+            merged[file['path']] = file['content']
+        combined = {**result, 'runtime': manifest['runtime'], 'files': [{'path': path, 'content': content} for path, content in merged.items()]}
+        validate(combined, root)
+        llm_paths = [file['path'].casefold() for file in result['files']]
+        if len(llm_paths) != len(set(llm_paths)):
+            raise ValueError('중복 파일 경로')
+        return combined
+
     if not isinstance(result, dict) or set(result) != {'description', 'files', 'issues', 'runtime'}:
         raise ValueError('생성 결과 형식')
     issues._text(result['description'], '설명', required=True)
@@ -331,6 +378,7 @@ def validate(result, root):
             raise ValueError('Task 구조: ' + (task_error or 'Task는 20개 이하여야 해요.'))
         if any(t['files'].strip().startswith('없음') for t in issues.parse_tasks(plan)):
             raise ValueError('변경 파일 없는 Task')
+    return result
 
 
 def _git(path, *args):
@@ -356,6 +404,9 @@ def verify_runtime(row, result, path):
                PYTHONUNBUFFERED='1', PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
     directory = config.DATA_DIR / 'project-initializations' / row['request_id']
     directory.mkdir(parents=True, exist_ok=True)
+    if row.get('template', 'blank') != 'blank':
+        # 구동 검사 DB를 생성 소스 밖에 두어 재시도 때 파일 충돌을 막는다.
+        env['DATA_DIR'] = str((directory / 'runtime-data').resolve())
     _checkpoint(row)
     _update(row['key'], phase='최소 앱 실행·접속 검사 중')
     with (directory / 'runtime.log').open('w', encoding='utf-8') as log:
@@ -398,6 +449,11 @@ if(String((a.env||{}).PORT)!==process.env.PORT) throw Error('PM2 port mismatch')
                             for private in ('/PROJECT_SPEC.md', '/.git/config', '/.env'):
                                 if client.get(base + private).status_code != 404:
                                     raise issues.StoreError('초기 앱이 원본·Git·환경 파일을 공개하거나 비공개 경로를 잘못 처리해요.', 409)
+                            if row.get('template', 'blank') != 'blank':
+                                manifest = project_templates.get(row['template'])
+                                login = json.loads(row['options_json']).get('login', manifest['options']['login']['default'])
+                                if login and client.get(base + '/api/me').status_code != 401:
+                                    raise issues.StoreError('초기 앱의 로그인 보호가 정상 응답하지 않아요.', 409)
                             _checkpoint(row)
                             (directory / 'runtime-check.json').write_text(json.dumps({'passed': True, 'kind': runtime['kind'], 'entry': runtime['entry'], 'checks': ['home', 'health', 'private_paths']}), encoding='utf-8')
                             return
@@ -520,7 +576,7 @@ def _run(key):
                 _generation_lock.release()
         _checkpoint(row)
         try:
-            validate(result, Path(row['local_path']))
+            prepared = validate(result, Path(row['local_path']), row)
         except ValueError as e:
             _update(key, phase='생성 결과 형식 보정 중')
             while not _generation_lock.acquire(timeout=0.2):
@@ -531,9 +587,9 @@ def _run(key):
             finally:
                 _generation_lock.release()
             _checkpoint(row)
-            validate(result, Path(row['local_path']))
+            prepared = validate(result, Path(row['local_path']), row)
         _update(key, result_json=json.dumps(result, ensure_ascii=False), phase='문서·골격·Git 생성 중')
-        materialize(row, result)
+        materialize(row, prepared)
         _checkpoint(row)
         _update(key, phase='Issue·Task 등록 중')
         publish(row, result)
