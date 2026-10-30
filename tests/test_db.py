@@ -296,3 +296,17 @@ with db.connect() as c:
     assert {'cache_write_tokens', 'cache_read_tokens'} <= columns
 assert db.init() == len(db.MIGRATIONS)
 print('OK cache token columns')
+
+# 새 종류 기본값과 버리기의 프로젝트·후보 FK를 마이그레이션 뒤에도 지킨다.
+with db.connect() as c:
+    columns = {r[1] for r in c.execute('PRAGMA table_info(project_audits)')}
+    assert 'kind' in columns
+    assert all(r[0] == 'goal' for r in c.execute('SELECT kind FROM project_audits'))
+    assert c.execute("SELECT name FROM sqlite_master WHERE name='project_audits_active'").fetchone()
+    pid = c.execute("INSERT INTO projects(key,name,created_at) VALUES('KIND','kind',?)", (now,)).lastrowid
+    audit_id = c.execute("INSERT INTO project_audits(project_id,request_id,input_fingerprint,provider,actor,created_at,updated_at) VALUES(?,'kind-check','hash','codex','human:admin',?,?)", (pid,now,now)).lastrowid
+    assert c.execute('SELECT kind FROM project_audits WHERE id=?', (audit_id,)).fetchone()[0] == 'goal'
+assert rejected("UPDATE project_audits SET kind='invalid'")
+assert rejected("INSERT INTO project_audit_dismissals VALUES(999,999,'missing','候補','risk','理由','2026-01-01')")
+assert db.init() == len(db.MIGRATIONS)
+print('OK improve migration and constraints')

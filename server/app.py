@@ -528,9 +528,9 @@ def api_audit_preflight(key: str, request: Request, provider: str = 'claude', mo
 
 
 @app.get('/api/projects/{key}/audits')
-def api_audits(key: str, request: Request):
+def api_audits(key: str, request: Request, kind: str | None = None):
     import project_audit
-    return {'audits': project_audit.list_audits(project_audit.project_id(human_only(request), key))}
+    return {'audits': project_audit.list_audits(project_audit.project_id(human_only(request), key), kind)}
 
 
 @app.post('/api/projects/{key}/audits')
@@ -539,7 +539,15 @@ async def api_start_audit(key: str, request: Request):
     a = human_only(request)
     b = await json_body(request)
     return await run_in_threadpool(project_audit_runner.start, a, key, b.get('request_id'),
-                                   b.get('provider', 'claude'), b.get('model'))
+                                   b.get('provider', 'claude'), b.get('model'), b.get('kind', 'goal'))
+
+
+@app.post('/api/projects/{key}/audits/{audit_id}/dismiss')
+async def api_dismiss_audit(key: str, audit_id: int, request: Request):
+    import project_audit
+    a = human_only(request)
+    b = await json_body(request)
+    return await run_in_threadpool(project_audit.dismiss, a, key, audit_id, b.get('candidate_id'), b.get('reason'))
 
 
 @app.get('/api/projects/{key}/audits/{audit_id}')
@@ -585,6 +593,13 @@ def api_trends(from_date: str | None = Query(None, alias='from'),
                to_date: str | None = Query(None, alias='to'), project: str | None = None):
     import usage
     return usage.trends(from_date, to_date, project)
+
+
+@app.get('/api/trends/improve')
+def api_improve_summary(from_date: str | None = Query(None, alias='from'),
+                        to_date: str | None = Query(None, alias='to'), project: str | None = None):
+    import usage
+    return usage.improve_summary(from_date, to_date, project)
 
 
 @app.get("/api/trends/stages")

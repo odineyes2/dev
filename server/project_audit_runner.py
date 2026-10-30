@@ -68,13 +68,13 @@ def preflight(actor, key, provider='claude', model=None):
             'notes': ['Codex 비용은 미측정이며 금액 상한을 강제할 수 없어요.'] if provider == 'codex' else []}
 
 
-def start(actor, key, request_id, provider='claude', model=None):
+def start(actor, key, request_id, provider='claude', model=None, kind='goal'):
     settings = preflight(actor, key, provider, model)
     with db.connect() as c:
         project = _project(c, key)
     # create_audit 내부의 BEGIN IMMEDIATE가 기존 작업 시작과 등록 경쟁을 직렬화한다.
     row = audit.create_audit(project['id'], request_id, provider, issues.actor_label(actor),
-                             model=settings['model'], limits=settings['limits'])
+                             model=settings['model'], limits=settings['limits'], kind=kind)
     with _lock:
         if row['status'] != 'preparing' or row['id'] in _workers:
             return audit.get_audit(project['id'], row['id'])
@@ -137,19 +137,23 @@ def recover():
 
 
 def command(row, cwd):
+    schema_path = audit.SCHEMA_PATH
+    if row.get('kind', 'goal') == 'improve':
+        schema_path = cwd / 'improve.schema.json'
+        schema_path.write_text(audit._json(audit.improve_schema()), encoding='utf-8')
     if row['provider'] == 'claude':
         empty = cwd / 'empty-mcp.json'
         empty.write_text('{"mcpServers":{}}', encoding='utf-8')
         return [review.claude_bin(), '-p', '--restricted', '--tools', '', '--setting-sources', '',
                 '--disable-slash-commands', '--no-session-persistence', '--strict-mcp-config',
                 '--mcp-config', str(empty), '--output-format', 'json', '--json-schema',
-                audit.SCHEMA_PATH.read_text(encoding='utf-8'), '--model', row['model'],
+                schema_path.read_text(encoding='utf-8'), '--model', row['model'],
                 '--max-budget-usd', str(json.loads(row['limits_json'])['budget_usd'])]
     cmd = review.codex_command('-', [])
     cmd = ['mcp_servers={}' if x.startswith('mcp_servers=') else x for x in cmd]
     flags = [value for feature in DISABLED_FEATURES for value in ('-c', f'features.{feature}=false')]
     return cmd[:-1] + flags + ['-c', 'features.skip_host_skill_discovery=true',
-                              '--model', row['model'], '--output-schema', str(audit.SCHEMA_PATH), '-']
+                              '--model', row['model'], '--output-schema', str(schema_path), '-']
 
 
 def _environment():
@@ -223,6 +227,12 @@ needs_confirmation 외 판정은 AGENTS.md가 아닌 document/initial_spec 근�
 complete는 code 근거와 성공한 실행 이력(runs의 mode=execute,status=ok 또는 task_execution_results의 state=unmerged/merged)을 함께 인용해야 한다. 없으면 partial 또는 needs_confirmation으로 표시한다.
 new_work는 partial/missing인 요구에만 연결한다. related_issues는 수집된 Issue의 issue_ref만 사용한다.
 <수집자료>\n''' + audit._json(snapshot) + '\n</수집자료>'
+    if row.get('kind', 'goal') == 'improve':
+        import prompts
+        prompt = prompts.render('improve.md', snapshot=audit._json(snapshot),
+                                history=audit._json(audit.suggestion_history(row['project_id'])))
+    if len(prompt.encode('utf-8')) > limits['input_bytes'] + 16000 or audit.contains_sensitive(prompt):
+        raise ValueError('입력 제한')
     if len(audit._json(snapshot).encode('utf-8')) > limits['input_bytes'] or audit.contains_sensitive(snapshot):
         raise ValueError('입력 제한')
     usage = {'cost_usd': None, 'cost_measured': False, 'input_tokens': None, 'output_tokens': None}
@@ -323,7 +333,7 @@ def _run(project, row):
         stage = '에이전트 분석'
         report, actual, usage = analyze(row, snapshot)
         stage = '점검 결과 검증'
-        audit.validate_report(report, snapshot)
+        audit.validate_report(report, snapshot, row.get('kind', 'goal'))
         status, error = 'complete', ''
     except Cancelled:
         status, error = 'cancelled', '사용자가 점검을 취소했어요.'

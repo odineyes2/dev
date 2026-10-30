@@ -573,3 +573,50 @@ with db.connect() as c:
 assert issues.get_issue(mp['ref'])['task_token_usage']['total_tokens'] == 51
 assert usage.project_usage('MAN')['summary']['total_tokens'] == 995
 print('OK manual usage aggregation and HTTP')
+
+# 종류별 토큰은 시작일, 시간은 자정 경계로 나누며 수동 토큰을 보존한다.
+issues.create_project(human, 'KIND', 'kind')
+ki = issues.create_issue(human, 'KIND', '채택 제안')
+kstart, kend, know = '2026-03-01T14:59:00+00:00', '2026-03-01T15:01:00+00:00', '2026-03-03T00:00:00+00:00'
+with db.connect() as c:
+    kp = c.execute("SELECT id FROM projects WHERE key='KIND'").fetchone()[0]
+    c.execute("UPDATE issues SET status='done',last_done_at=? WHERE id=?", (kend, ki['id']))
+    c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,input_tokens,output_tokens) VALUES(?,'review','ok','human:admin',?,?,10,2)", (ki['id'],kstart,kend))
+    aids = []
+    for kind in ('goal', 'improve'):
+        aid = c.execute("INSERT INTO project_audits(project_id,request_id,input_fingerprint,provider,actor,created_at,updated_at,started_at,ended_at,status,kind,usage_json) VALUES(?,?,?,'codex','human:admin',?,?,?,?,'complete',?,?)",
+            (kp, 'kind-' + kind, 'hash', kstart,kend,kstart,kend,kind,json.dumps({'input_tokens':20,'output_tokens':3,'cost_usd':.12}))).lastrowid
+        aids.append(aid)
+    aid = aids[-1]
+    for index, category in enumerate(('efficiency','risk','feature')):
+        cid = str(index)
+        c.execute("INSERT INTO project_audit_candidates VALUES(?,?,?,'new_work','hash',?)", (aid,kp,cid,json.dumps({'category':category})))
+    c.execute("INSERT INTO project_audit_publications(audit_id,candidate_id,project_id,issue_id,issue_ref,created_at) VALUES(?,'0',?,?,?,?)", (aid,kp,ki['id'],ki['ref'],kend))
+    c.execute("INSERT INTO project_audit_dismissals VALUES(?,?,'1','보류 위험','risk','방향과 다름',?)", (kp,aid,kend))
+    c.execute("INSERT INTO manual_usage VALUES('kind-manual','kind-session','unknown',5,1,0,0,?,?,?,?)", (kstart,ki['id'],ki['ref'],kstart))
+kind_trend = usage.trends('2026-03-01','2026-03-02','KIND',as_of=know)
+assert kind_trend['days'][0]['by_kind'] == {
+    'issue': {'tokens':18,'agent_seconds':60}, 'goal_audit': {'tokens':23,'agent_seconds':60},
+    'improve_audit': {'tokens':23,'agent_seconds':60}}
+assert all(v['tokens'] == 0 and v['agent_seconds'] == 60 for v in kind_trend['days'][1]['by_kind'].values())
+for day in kind_trend['days']:
+    assert sum(v['tokens'] for v in day['by_kind'].values()) == day['total_tokens']
+    assert sum(v['agent_seconds'] for v in day['by_kind'].values()) == day['agent_seconds']
+ks = usage.improve_summary('2026-03-01','2026-03-02','KIND',as_of=know)['summary']
+assert (ks['audit_count'],ks['total_tokens'],ks['agent_seconds'],ks['cost_usd']) == (1,23,120,.12), ks
+assert ks['by_category'] == {'efficiency':1,'risk':1,'feature':1}
+assert (ks['candidate_count'],ks['published_count'],ks['done_count'],ks['dismissed_count']) == (3,1,1,1)
+assert ks['adoption_rate'] == 1/3
+assert usage.improve_summary('2026-03-02','2026-03-02','KIND',as_of=know)['summary']['audit_count'] == 0
+assert usage.improve_summary('2026-03-02','2026-03-02','KIND',as_of=know)['summary']['agent_seconds'] == 60
+assert usage.improve_summary('2026-03-01','2026-03-01','KIND',as_of=know)['summary']['agent_seconds'] == 60
+assert usage.improve_summary('2026-03-01','2026-03-02','OTHER',as_of=know)['summary']['candidate_count'] == 0
+with patch.object(db, 'init'), patch.object(usage, '_now', return_value=usage._time(know)), TestClient(app.app) as client:
+    assert client.get('/api/trends/improve').status_code == 401
+    client.cookies.set('ns_session', 'temporary')
+    response = client.get('/api/trends/improve?from=2026-03-01&to=2026-03-02&project=KIND')
+    assert response.status_code == 200, response.text
+    assert response.json()['summary'] == ks
+    assert client.get('/api/trends/improve?from=bad').status_code == 400
+    assert client.get('/api/trends/improve?project=MISSING').status_code == 404
+print('OK by_kind and improve performance HTTP')

@@ -272,7 +272,8 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
     for offset in range(days):
         day = start_day + timedelta(days=offset)
         rows[day] = {'date': day.isoformat(), 'created_issue_count': 0,
-                     'completed_issue_count': 0, **_empty(), 'partial': False}
+                     'completed_issue_count': 0, **_empty(), 'partial': False,
+                     'by_kind': {k: {'tokens': 0, 'agent_seconds': 0} for k in ('issue', 'goal_audit', 'improve_audit')}}
     ranking = {}
 
     def day_of(value):
@@ -282,7 +283,7 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
     api_cost = dict(estimated_api_cost_usd=0.0, cost_estimated_run_count=0,
                     cost_approx_run_count=0, unpriced_tokens=0)
 
-    def collect(run, counts, active, issue_id=None, estimate=None):
+    def collect(run, counts, active, issue_id=None, estimate=None, kind='issue'):
         started = _time(run['started_at'])
         if started is None or started > now or started >= finish:
             return
@@ -296,6 +297,7 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
                     api_cost['cost_estimated_run_count'] += 1
                     api_cost['cost_approx_run_count'] += bool(estimate['approximate'])
             bucket = rows[day]
+            bucket['by_kind'][kind]['tokens'] += sum(v or 0 for v in counts)
             bucket['run_count'] += 1
             bucket['unmeasured_run_count'] += any(value is None for value in counts)
             bucket['running_run_count'] += active
@@ -321,6 +323,7 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
             segment_end = min(clipped_end, next_day)
             bucket = rows[local_day]
             bucket['agent_seconds'] += (segment_end - cursor).total_seconds()
+            bucket['by_kind'][kind]['agent_seconds'] += (segment_end - cursor).total_seconds()
             if local_day != day:
                 bucket['running_run_count'] += active
             cursor = segment_end
@@ -364,14 +367,14 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
                         output_tokens=token_count(run['output_tokens']),
                         cache_write_tokens=run['cache_write_tokens'],
                         cache_read_tokens=run['cache_read_tokens'], cost_usd=run['cost_usd']))
-        for run in c.execute('SELECT started_at,ended_at,status,usage_json FROM project_audits WHERE 1=1' +
+        for run in c.execute('SELECT kind,started_at,ended_at,status,usage_json FROM project_audits WHERE 1=1' +
                              scope + overlap, args + bounds):
             usage = json.loads(run['usage_json'])
             audit_counts = [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')]
             collect(run, audit_counts, run['status'] in ('preparing', 'running', 'cancelling'),
                     estimate=api_pricing.estimate_cost(
                         input_tokens=audit_counts[0], output_tokens=audit_counts[1],
-                        cost_usd=usage.get('cost_usd')))
+                        cost_usd=usage.get('cost_usd')), kind=run['kind'] + '_audit')
         for manual in c.execute('SELECT m.* FROM manual_usage m LEFT JOIN issues i ON i.id=m.issue_id WHERE 1=1' +
                                 (' AND i.project_id=?' if project_id is not None else '') +
                                 ' AND julianday(m.ts)>=julianday(?) AND julianday(m.ts)<julianday(?)',
@@ -381,6 +384,7 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
                 continue
             bucket = rows[day]
             _add_manual(bucket, manual)
+            bucket['by_kind']['issue']['tokens'] += manual['input_tokens'] + manual['output_tokens']
             if manual['issue_id'] is None:
                 bucket['unlinked_manual_tokens'] = bucket.get('unlinked_manual_tokens', 0) + manual['input_tokens'] + manual['output_tokens']
             else:
@@ -415,6 +419,8 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
                ('created_issue_count', 'completed_issue_count', *_empty())}
     summary['partial'] = any(row['partial'] for row in daily)
     summary.update(api_cost)
+    summary['by_kind'] = {k: {field: sum(r['by_kind'][k][field] for r in daily)
+        for field in ('tokens', 'agent_seconds')} for k in ('issue', 'goal_audit', 'improve_audit')}
     for key in ('manual_tokens', 'unlinked_manual_tokens'):
         summary[key] = sum(row.get(key, 0) for row in daily)
     return dict(project=project.upper() if project else None, from_date=start_day.isoformat(),
@@ -912,3 +918,44 @@ def project_usage(key, limit=50, offset=0, *, as_of=None):
                     limit=limit, offset=offset, total=len(rows), has_more=offset + limit < len(rows),
                     notes=['실행 시간은 병렬 실행도 각각 합산해요.', 'orphaned는 서버가 기록한 종료 시각을 사용해요.',
                            '삭제된 이슈와 수집되지 않은 외부 실행은 포함하지 않아요.'])
+
+
+def improve_summary(from_date=None, to_date=None, project=None, *, as_of=None):
+    """기간별 개선 사용량과 기간 안 시작한 점검의 비용·발행 성과를 집계한다."""
+    period = trends(from_date, to_date, project, as_of=as_of)
+    seoul = ZoneInfo('Asia/Seoul')
+    begin = datetime.combine(date.fromisoformat(period['from_date']), time.min, seoul)
+    finish = datetime.combine(date.fromisoformat(period['to_date']) + timedelta(days=1), time.min, seoul)
+    now = _time(period['as_of'])
+    measured_usage = period['summary']['by_kind']['improve_audit']
+    result = dict(audit_count=0, total_tokens=measured_usage['tokens'],
+                  agent_seconds=measured_usage['agent_seconds'], cost_usd=0.0,
+                  unmeasured_cost_count=0, candidate_count=0,
+                  by_category={k: 0 for k in ('efficiency','risk','feature')},
+                  published_count=0, done_count=0, dismissed_count=0)
+    with db.connect() as c:
+        c.execute('BEGIN')
+        args = (begin.isoformat(), finish.isoformat(), now.isoformat())
+        scope = ''
+        if project:
+            scope = ' AND a.project_id=(SELECT id FROM projects WHERE key=?)'
+            args += (project.upper(),)
+        for row in c.execute("SELECT a.* FROM project_audits a WHERE a.kind='improve' AND julianday(COALESCE(a.started_at,a.created_at))>=julianday(?) AND julianday(COALESCE(a.started_at,a.created_at))<julianday(?) AND julianday(COALESCE(a.started_at,a.created_at))<=julianday(?)" + scope, args):
+            result['audit_count'] += 1
+            measured = json.loads(row['usage_json'])
+            cost = measured.get('cost_usd')
+            if type(cost) in (int,float) and math.isfinite(cost) and cost >= 0:
+                result['cost_usd'] += cost
+            else:
+                result['unmeasured_cost_count'] += 1
+            for candidate in c.execute('SELECT data_json FROM project_audit_candidates WHERE audit_id=?', (row['id'],)):
+                result['candidate_count'] += 1
+                result['by_category'][json.loads(candidate[0])['category']] += 1
+            result['dismissed_count'] += c.execute('SELECT COUNT(*) FROM project_audit_dismissals WHERE audit_id=?', (row['id'],)).fetchone()[0]
+        # 같은 Issue가 여러 점검에 연결돼도 발행·done 성과는 한 번만 센다.
+        cohort = " FROM project_audit_publications p JOIN project_audits a ON a.id=p.audit_id LEFT JOIN issues i ON i.id=p.issue_id WHERE a.kind='improve' AND p.mode='issue' AND julianday(COALESCE(a.started_at,a.created_at))>=julianday(?) AND julianday(COALESCE(a.started_at,a.created_at))<julianday(?) AND julianday(COALESCE(a.started_at,a.created_at))<=julianday(?)" + scope
+        counts = c.execute("SELECT COUNT(DISTINCT p.issue_ref),COUNT(DISTINCT CASE WHEN i.status='done' THEN p.issue_ref END)" + cohort, args).fetchone()
+        result['published_count'], result['done_count'] = counts
+    result['adoption_rate'] = result['published_count'] / result['candidate_count'] if result['candidate_count'] else 0
+    return dict(from_date=period['from_date'], to_date=period['to_date'], project=period['project'],
+                as_of=period['as_of'], summary=result)
