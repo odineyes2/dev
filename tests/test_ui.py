@@ -6084,6 +6084,7 @@ try:
         # 첫 커서는 Project, 제출 버튼은 [발행](DEV-87)
         expect(page.locator('#n-project')).to_be_focused()
         assert page.inner_text("#new-form button[type=submit]").strip() == "발행"
+        page.select_option("#n-project", "NS")  # 앞 검사가 만든 프로젝트와 무관하게 NS 이슈를 만든다.
         page.fill("#n-body", "제목 없이 쓴 요구")
         page.click("#new-form button[type=submit]")
         page.wait_for_function("location.hash.startsWith('#/issue/NS-')")
@@ -6091,6 +6092,7 @@ try:
 
         # Create를 연달아 두 번 눌러도 한 번만 저장(DEV-12)
         page.goto(BASE + "/#/new"); page.wait_for_selector("#n-body")
+        page.select_option("#n-project", "NS")
         page.fill("#n-title", "두 번 누르기 시험"); page.fill("#n-body", "본문")
         page.evaluate("() => { const b = document.querySelector('#new-form button[type=submit]'); b.click(); b.click(); b.click(); }")
         page.wait_for_function("location.hash.startsWith('#/issue/NS-')")

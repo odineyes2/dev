@@ -904,7 +904,7 @@ function trendKindChart(days, key, label){
 }
 function improveSummaryHtml(data){
   const s = data.summary;
-  return `<section class="trend-ranking trend-improve"><h2>개선 제안 · 실험</h2><p class="dim">기간 안 시작한 점검의 성과예요. 채택률 = 발행 수 / 후보 수. 비용은 해당 점검의 누적값, 토큰·시간은 선택 기간 사용량이에요.</p><div class="issue-summary-values"><div><span>점검</span><strong>${summaryNumber(s.audit_count)}회</strong></div><div><span>측정 비용</span><strong>$${Number(s.cost_usd || 0).toFixed(2)}</strong><small>미계측 ${summaryNumber(s.unmeasured_cost_count)}회</small></div><div><span>토큰 · 시간</span><strong>${tokenHtml(s.total_tokens)} · ${summaryDuration(s.agent_seconds)}</strong></div><div><span>후보</span><strong>${summaryNumber(s.candidate_count)}</strong><small>비효율 ${summaryNumber(s.by_category?.efficiency)} · 위험 ${summaryNumber(s.by_category?.risk)} · 기능 ${summaryNumber(s.by_category?.feature)}</small></div><div><span>발행 · Done · 버림</span><strong>${summaryNumber(s.published_count)} · ${summaryNumber(s.done_count)} · ${summaryNumber(s.dismissed_count)}</strong></div><div><span>채택률</span><strong>${(Number(s.adoption_rate || 0)*100).toFixed(1)}%</strong></div></div></section>`;
+  return `<section class="trend-improve"><h2>개선 제안 · 실험</h2><p class="dim">기간 안 시작한 점검의 성과예요. 채택률 = 발행 수 / 후보 수. 비용은 해당 점검의 누적값, 토큰·시간은 선택 기간 사용량이에요.</p><div class="issue-summary-values"><div><span>점검</span><strong>${summaryNumber(s.audit_count)}회</strong></div><div><span>측정 비용</span><strong>$${Number(s.cost_usd || 0).toFixed(2)}</strong><small>미계측 ${summaryNumber(s.unmeasured_cost_count)}회</small></div><div><span>토큰 · 시간</span><strong>${tokenHtml(s.total_tokens)} · ${summaryDuration(s.agent_seconds)}</strong></div><div><span>후보</span><strong>${summaryNumber(s.candidate_count)}</strong><small>비효율 ${summaryNumber(s.by_category?.efficiency)} · 위험 ${summaryNumber(s.by_category?.risk)} · 기능 ${summaryNumber(s.by_category?.feature)}</small></div><div><span>발행 · Done · 버림</span><strong>${summaryNumber(s.published_count)} · ${summaryNumber(s.done_count)} · ${summaryNumber(s.dismissed_count)}</strong></div><div><span>채택률</span><strong>${(Number(s.adoption_rate || 0)*100).toFixed(1)}%</strong></div></div></section>`;
 }
 function trendChart(days, key, label){
   if(['total_tokens', 'agent_seconds'].includes(key) && days.some(d => d.by_kind)) return trendKindChart(days, key, label);
@@ -1017,7 +1017,7 @@ async function loadTrend(){
     try {
       const improve = await api('GET', '/api/trends/improve?' + new URLSearchParams({from, to, ...(project ? {project} : {})}), undefined, current, {notifyErrors:false});
       improveHtml = improveSummaryHtml(improve);
-    } catch(e){ improveHtml = `<section class="trend-ranking trend-improve"><h2>개선 제안</h2><p role="alert">성과를 불러오지 못했어요. ${esc(e.message)} 기간을 다시 조회해 주세요.</p></section>`; }
+    } catch(e){ improveHtml = `<section class="trend-improve"><h2>개선 제안</h2><p role="alert">성과를 불러오지 못했어요. ${esc(e.message)} 기간을 다시 조회해 주세요.</p></section>`; }
     if(!current()) return;
     trendData = data;
     const s = data.summary, noActivity = !data.days.some(d => TREND_METRICS.some(([key]) => Number(d[key] || 0) > 0));
