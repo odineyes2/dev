@@ -161,4 +161,11 @@ else:
 (repo / 'tests' / 'test_env.py').write_text('import os\nprint(os.environ.get("DEV_TEST_RUN"), os.environ.get("PYTHONIOENCODING"))\n', encoding='utf-8')
 r = test_runner.run(str(repo), repo / 'tests' / 'test_env.py', env=env)
 assert r.returncode == 0 and r.stdout.split() == ['1', 'utf-8'], r   # 검사에는 DEV_TEST_RUN을 넘겨 진짜 알림을 막는다
+# 브라우저 검사만 시간 제한이 길다(DEV-209) — 병렬 부하에서 test_ui.py가 600초를 넘었다.
+ui_check, plain = files('limit_ui', 'limit_plain', browser=('limit_ui',))
+assert test_runner.timeout_for(ui_check) == test_runner.BROWSER_TIMEOUT_SEC == 1200
+assert test_runner.timeout_for(plain) == test_runner.TIMEOUT_SEC == 600
+with patch.object(test_runner, 'PIPE_GRACE_SEC', 2), patch.object(test_runner, 'timeout_for', return_value=3):
+    r = test_runner.run(str(repo), repo / 'tests' / 'test_slow.py', env=env)
+assert r.returncode == 124 and '시간 제한 3초' in r.stderr, r.stderr   # run이 검사별 제한을 쓴다
 print('OK — 고아 자식이 파이프를 붙잡아도·시간 초과여도 정해진 시간 안에 돌아오고, 시간 초과는 자식까지 끝낸다')

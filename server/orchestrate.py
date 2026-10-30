@@ -467,7 +467,7 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
         todo.append((t, stamp))
 
     def one(t):
-        run_progress.check_start(ref, t.name)
+        run_progress.check_start(ref, t.name, test_runner.timeout_for(t))
         ok = False
         try:
             runs, bad = _one(t)

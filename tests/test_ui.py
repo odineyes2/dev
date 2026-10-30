@@ -167,6 +167,52 @@ def check_manual_usage(page, shots):
         page.emulate_media(color_scheme=previous['theme'] or 'light')
 
 
+def check_progress_clock(page, shots):
+    """In Progress 경과 시간 hh:mm(DEV-208) — 단계 표시 옆·단독 표시, 받은 뒤 흐른 시간이 더해지는지, 낮·밤 × 너비 배치."""
+    previous = page.evaluate('({theme:localStorage.getItem("dev.theme"), project:localStorage.getItem("dev.project")})')
+    h = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=h, data={'key':'PCL','name':'경과 시간'}).ok
+    running = page.request.post(BASE + '/api/issues', headers=h, data={'project':'PCL','title':'실행 중인 작업'}).json()['ref']
+    manual = page.request.post(BASE + '/api/issues', headers=h, data={'project':'PCL','title':'대화에서 작업 중'}).json()['ref']
+    progress = {'phase':'rework','short':'재작업 중 (2차)','long':'재작업 중 (2차 · 마지막 시도)\n앞선 전체 검사에서 실패: test_x.py','stalled':False}
+    def listing(route):
+        data = route.fetch().json()
+        for row in data['issues']:
+            if row['ref'] in (running, manual):
+                row['status'] = 'in_progress'
+                row['in_progress_seconds'] = 3 * 3600 + 25 * 60 + 40 if row['ref'] == running else 59
+                row['run_progress'] = progress if row['ref'] == running else None
+        route.fulfill(json=data)
+    page.route('**/api/issues?*', listing)
+    try:
+        page.goto(BASE + '/#/?project=PCL')
+        run_clock = page.locator(f'tr[data-ref="{running}"] .progress-clock')
+        expect(run_clock).to_have_text('03:25')
+        expect(page.locator(f'tr[data-ref="{running}"] .progress-short')).to_have_text('재작업 중 (2차)')
+        expect(page.locator(f'tr[data-ref="{running}"] .progress-more')).to_be_visible()
+        expect(page.locator(f'tr[data-ref="{manual}"] .progress-clock')).to_have_text('00:00')   # 실행 없는 In Progress는 시계만
+        assert page.locator(f'tr[data-ref="{manual}"] .progress-short').count() == 0
+        # 받은 뒤 61분이 흐른 것처럼 하면 서버 값에 그만큼 더해진다(목록 갱신을 기다리지 않는다).
+        page.evaluate('''() => { for(const el of document.querySelectorAll('.progress-clock')) el.dataset.at = String(Number(el.dataset.at) - 61 * 60000); tickClocks(); }''')
+        expect(run_clock).to_have_text('04:26')
+        expect(page.locator(f'tr[data-ref="{manual}"] .progress-clock')).to_have_text('01:01')   # 59초 + 61분
+        for theme in ('light','dark'):
+            page.evaluate('t => {document.documentElement.dataset.theme=t;localStorage.setItem("dev.theme",t)}', theme)
+            for width in (1300,390):
+                page.emulate_media(color_scheme=theme)
+                page.set_viewport_size({'width':width,'height':850})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                box, row = run_clock.bounding_box(), page.locator(f'tr[data-ref="{running}"] .progress-note').bounding_box()
+                assert box and row and box['x'] + box['width'] <= row['x'] + row['width'] + 1, (box, row)   # 시계가 칸 밖으로 밀리지 않는다
+                page.locator(f'tr[data-ref="{running}"]').scroll_into_view_if_needed()
+                page.screenshot(path=str(shots / f'progress-clock-{theme}-{width}.png'), animations='disabled')
+    finally:
+        page.unroute('**/api/issues?*', listing)
+        page.set_viewport_size({'width':1300,'height':850})
+        page.evaluate('p => {for(const key of ["theme","project"]){if(p[key] == null)localStorage.removeItem("dev."+key);else localStorage.setItem("dev."+key,p[key]);} document.documentElement.dataset.theme=p.theme || "light"}', previous)
+        page.emulate_media(color_scheme=previous['theme'] or 'light')
+
+
 def check_login_screen(page, shots):
     """로그인 전 화면의 구조와 낮·밤·화면 너비별 배치를 확인한다."""
     assert page.locator('#login').is_visible()
@@ -5499,6 +5545,10 @@ try:
             check_manual_usage(page, shots)
             assert not errs, errs
             print('OK: Manual usage'); sys.exit(0)
+        if '--progress-clock-only' in sys.argv:
+            check_progress_clock(page, shots)
+            assert not errs, errs
+            print('OK: Progress clock'); sys.exit(0)
         if '--issue-tokens-only' in sys.argv:
             check_issue_tokens(page, shots)
             assert not errs, errs
@@ -6399,6 +6449,7 @@ try:
         check_fab(page)
         check_issue_tokens(page, shots)
         check_manual_usage(page, shots)
+        check_progress_clock(page, shots)
         check_issue_types(page, shots)
         check_rating(page, shots)
 

@@ -758,6 +758,7 @@ def api_issues(project: str = "", status: str = "", assignee: int | None = None,
         it['merge_state'] = orchestrate.merge_state(it)
         it['job'] = jobs.job_for(it['id'])
         it['run_progress'] = run_progress.view(it['ref']) if it['status'] == 'in_progress' else None   # 실행 단계(DEV-206)
+    run_progress.elapsed(items[:limit])   # In Progress 경과 시간(DEV-208)
     return {"issues": items[:limit], "has_more": len(items) > limit}
 
 @app.post("/api/issues")
@@ -795,6 +796,7 @@ def api_issue(ref: str):
             ch["merge_state"] = orchestrate.merge_state({**ch, "events": evs[ch["id"]]}, cfg)
             ch["job"] = queued.get(ch["id"])   # 줄에 선 Task는 표에서 "실행 대기 중"(DEV-45)
             ch["run_progress"] = run_progress.view(ch["ref"]) if ch["status"] == "in_progress" else None
+        run_progress.elapsed([it, *it["children"]])   # In Progress 경과 시간(DEV-208)
     return it
 
 
