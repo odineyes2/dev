@@ -11,6 +11,7 @@ DIR = config.REPO_ROOT / "harness" / "prompts"
 SLOT = re.compile(r"\{([a-z_]+)\}")
 # 파일마다 코드가 채우는 자리표시. 목록 밖 이름은 채워지지 않고 글자 그대로 남으니 저장 때 막는다.
 SLOTS = {
+    "improve.md": {"snapshot", "history"},
     "review_claude.md": {"ref", "web_domains"},
     "review_codex.md": {"ref", "web_domains"},
     "description_claude.md": {"ref"},
@@ -22,6 +23,7 @@ SLOTS = {
 # 빠지면 에이전트가 어느 이슈·어떤 검사 범위인지 모르게 되는 자리표시
 REQUIRED = {name: ({"ref"} if name != "capture.md" else set()) | ({"checks"} if name.startswith("execute_") else set())
             for name in SLOTS}
+REQUIRED["improve.md"] = {"snapshot", "history"}
 
 
 def problems(name: str, text: str) -> list[str]:

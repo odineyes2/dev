@@ -1094,6 +1094,23 @@ CREATE INDEX manual_usage_issue ON manual_usage(issue_id);
 CREATE INDEX manual_usage_ts ON manual_usage(ts);
 """)
 
+# 개선 제안은 기존 점검 점유를 공유하고 버린 후보의 이유를 보존한다.
+MIGRATIONS.append("""
+ALTER TABLE project_audits ADD COLUMN kind TEXT NOT NULL DEFAULT 'goal' CHECK(kind IN ('goal','improve'));
+CREATE TABLE project_audit_dismissals (
+ project_id INTEGER NOT NULL,
+ audit_id INTEGER NOT NULL,
+ candidate_id TEXT NOT NULL,
+ title TEXT NOT NULL,
+ category TEXT NOT NULL CHECK(category IN ('efficiency','risk','feature')),
+ reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(audit_id,candidate_id),
+ FOREIGN KEY(audit_id,candidate_id,project_id)
+ REFERENCES project_audit_candidates(audit_id,candidate_id,project_id)
+);
+""")
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

@@ -260,8 +260,12 @@ def collect_snapshot(key, *, base_branch=None, max_file_bytes=MAX_FILE_BYTES,
     return snapshot
 
 
-def validate_report(report, snapshot):
+def validate_report(report, snapshot, kind='goal'):
     """구조와 실제 수집 근거를 함께 검증하며 근거 없는 완료·후보를 거절한다."""
+    if kind == 'improve':
+        return _validate_improve(report, snapshot)
+    if kind != 'goal':
+        raise issues.StoreError('점검 종류가 잘못됐어요.', 400)
     location = 'report'
     def fail(code='REPORT_FORMAT', reason='결과 구조가 올바르지 않아요.'):
         raise issues.StoreError(f'점검 결과 검증 실패 [{code}] · {location}: {reason}', 400)
@@ -353,14 +357,18 @@ def validate_report(report, snapshot):
     return report
 
 
-def create_audit(project_id, request_id, provider, actor, *, model='', inputs=None, limits=None):
+def create_audit(project_id, request_id, provider, actor, *, model='', inputs=None, limits=None, kind='goal'):
     """요청 키의 프로젝트·도구·입력까지 비교해 멱등성을 지킨다."""
-    if provider not in ('claude', 'codex') or not isinstance(request_id, str) or not request_id.strip():
+    if kind not in ('goal', 'improve') or provider not in ('claude', 'codex') or not isinstance(request_id, str) or not request_id.strip():
         raise issues.StoreError('점검 요청이 잘못됐어요.', 400)
     if contains_sensitive([request_id, model, actor, limits]):
         raise issues.StoreError('점검 요청에 민감값이 있어요.', 400)
-    identity = fingerprint({'project_id': project_id, 'provider': provider, 'model': model,
-                            'inputs': inputs, 'limits': limits})
+    payload = {'project_id': project_id, 'provider': provider, 'model': model,
+               'inputs': inputs, 'limits': limits}
+    # 기존 goal 요청은 마이그레이션 전 멱등 키도 그대로 재사용한다.
+    if kind != 'goal':
+        payload['kind'] = kind
+    identity = fingerprint(payload)
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         old = c.execute('SELECT * FROM project_audits WHERE request_id=?', (request_id,)).fetchone()
@@ -377,8 +385,8 @@ def create_audit(project_id, request_id, provider, actor, *, model='', inputs=No
         now = db.now_iso()
         try:
             aid = c.execute('''INSERT INTO project_audits(project_id,request_id,input_fingerprint,
-                provider,model,actor,limits_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)''',
-                (project_id, request_id, identity, provider, model, actor, _json(limits or {}), now, now)).lastrowid
+                provider,model,actor,limits_json,created_at,updated_at,kind) VALUES(?,?,?,?,?,?,?,?,?,?)''',
+                (project_id, request_id, identity, provider, model, actor, _json(limits or {}), now, now, kind)).lastrowid
         except sqlite3.IntegrityError as e:
             raise issues.StoreError('프로젝트가 없거나 이미 점검 중이에요.', 409) from e
         return dict(c.execute('SELECT * FROM project_audits WHERE id=?', (aid,)).fetchone())
@@ -416,13 +424,13 @@ def finish_audit(audit_id, status, *, report=None, error='', actual_model='', us
         if status == 'complete':
             if row['status'] == 'cancelling' or row['snapshot_json'] is None:
                 raise issues.StoreError('점검 결과를 저장할 수 없어요.', 409)
-            validate_report(report, json.loads(row['snapshot_json']))
-            for requirement in report['requirements']:
+            validate_report(report, json.loads(row['snapshot_json']), row['kind'])
+            for requirement in report.get('requirements', []):
                 c.execute('INSERT INTO project_audit_requirements VALUES(?,?,?,?)',
                           (audit_id, requirement['id'], requirement['status'], _json(requirement)))
             for candidate in report['candidates']:
                 c.execute('INSERT INTO project_audit_candidates VALUES(?,?,?,?,?,?)',
-                          (audit_id, row['project_id'], candidate['id'], candidate['disposition'],
+                          (audit_id, row['project_id'], candidate['id'], candidate.get('disposition', 'new_work'),
                            fingerprint(candidate), _json(candidate)))
         now = db.now_iso()
         phase = {'complete': '점검 완료', 'failed': '점검 실패', 'timeout': '점검 시간 초과', 'cancelled': '점검 취소'}[status]
@@ -442,16 +450,19 @@ def get_audit(project_id, audit_id):
         for field in ('snapshot', 'report', 'limits', 'usage'):
             raw = result.pop(field + '_json')
             result[field] = json.loads(raw) if raw is not None else None
+        result['dismissals'] = [dict(r) for r in c.execute('SELECT * FROM project_audit_dismissals WHERE audit_id=?', (audit_id,))]
         result['publications'] = [dict(r) for r in c.execute(
             'SELECT * FROM project_audit_publications WHERE audit_id=?', (audit_id,))]
         return result
 
 
-def list_audits(project_id):
+def list_audits(project_id, kind=None):
+    if kind is not None and kind not in ('goal', 'improve'):
+        raise issues.StoreError('점검 종류가 잘못됐어요.', 400)
     with db.connect() as c:
-        return [dict(r) for r in c.execute('''SELECT id,provider,model,actual_model,status,phase,error,
+        return [dict(r) for r in c.execute('''SELECT id,kind,provider,model,actual_model,status,phase,error,
             base_sha,created_at,started_at,ended_at,updated_at FROM project_audits
-            WHERE project_id=? ORDER BY id DESC''', (project_id,))]
+            WHERE project_id=? AND (? IS NULL OR kind=?) ORDER BY id DESC''', (project_id, kind, kind))]
 
 
 def project_id(actor, key):
@@ -483,6 +494,8 @@ def detail(actor, key, audit_id):
 
 
 def _candidate_identity(candidate, report):
+    if 'category' in candidate:
+        return fingerprint({'kind': 'improve', 'category': candidate['category'], 'title': candidate['title']})
     # 실행별 ID와 설명 표현이 달라도 같은 요구·범위의 이전 발행을 재사용한다.
     requirements = {r['id']: r['title'] for r in report['requirements']}
     return fingerprint({'requirements': sorted(requirements[r] for r in candidate['requirement_ids']),
@@ -511,18 +524,20 @@ def _validate_draft(candidate, snapshot):
         if (re.search(r'조사|분석|검토|research|investigat', task['title'], re.I) and
             not re.search(r'구현|수정|추가|개선|implement|fix|add', task['title'], re.I)):
             raise issues.StoreError('조사만 하는 Task는 개발 Issue로 발행할 수 없어요.', 409)
-    if candidate['prerequisites'] or issues.human_checks(draft):
+    if candidate.get('prerequisites') or issues.human_checks(draft):
         raise issues.StoreError('선행 조건은 사람이 확인한 뒤 다시 점검해 주세요.', 409)
     return draft
 
 
 def publish(actor, key, audit_id, candidate_ids):
     pid = project_id(actor, key)
-    if (not isinstance(candidate_ids, list) or not candidate_ids or len(candidate_ids) > 3 or
+    if (not isinstance(candidate_ids, list) or not candidate_ids or len(candidate_ids) > 5 or
         any(not isinstance(i, str) for i in candidate_ids) or len(set(candidate_ids)) != len(candidate_ids)):
         raise issues.StoreError('발행할 후보를 선택해 주세요.', 400)
     # Git 조회 중 DB 쓰기 잠금을 길게 잡지 않고 잠금 안에서 프로젝트·이력을 다시 확인한다.
     old = get_audit(pid, audit_id)
+    if old['kind'] == 'goal' and len(candidate_ids) > 3:
+        raise issues.StoreError('요구 점검 후보는 최대 3개예요.', 400)
     published_ids = {p['candidate_id'] for p in old['publications'] if p['mode'] == 'issue'}
     current = (collect_snapshot(key, base_branch=old['base_branch'])
                if old['snapshot'] and any(i not in published_ids for i in candidate_ids) else None)
@@ -547,7 +562,11 @@ def publish(actor, key, audit_id, candidate_ids):
             if mapped and mapped['mode'] == 'issue':
                 results.append(dict(mapped))
                 continue
+            if c.execute('SELECT 1 FROM project_audit_dismissals WHERE audit_id=? AND candidate_id=?', (audit_id, cid)).fetchone():
+                raise issues.StoreError('버린 후보는 발행할 수 없어요.', 409)
             data = json.loads(candidate['data_json'])
+            if row['kind'] == 'improve':
+                data = _publication_candidate(data)
             if candidate['disposition'] not in ('new_work', 'reuse_issue'):
                 raise issues.StoreError('개발·보완 후보만 발행할 수 있어요.', 409)
             for ref in data['related_issues']:
@@ -571,7 +590,7 @@ def publish(actor, key, audit_id, candidate_ids):
                     previous = dict(published)
                     break
                 prior = json.loads(published['data_json'])
-                if (prior['scope'] == data['scope'] and
+                if (prior.get('scope') == data['scope'] and
                     {e['source_id'] for e in prior['evidence']} & {e['source_id'] for e in data['evidence']}):
                     ambiguous = True
             if previous:
@@ -599,17 +618,116 @@ def publish(actor, key, audit_id, candidate_ids):
                 body = '\n\n'.join([data['scope'], data['gap'], '완료 기준: ' + '\n'.join(data['completion_criteria']),
                                     '관련 Issue: ' + (', '.join(data['related_issues']) or '없음'),
                                     '선행 조건: ' + ('\n'.join(data['prerequisites']) or '없음'),
-                                    f'점검 #{audit_id} · 후보 {cid}\n기준 커밋: {row["base_sha"]}',
+                                    (f'개선 제안 점검 #{audit_id}에서 시작' if row['kind'] == 'improve' else f'점검 #{audit_id}') + f' · 후보 {cid}\n기준 커밋: {row["base_sha"]}',
                                     '점검 근거: ' + _json(data['evidence']), '참고용 Plan 제안:\n' + data['plan_draft']])
                 body = issues._text(body, '후속 Issue 내용', 50_000, required=True)
                 issue = issues._create_issue(c, actor, key, data['title'], body, data['priority'])
                 iid, ref = issue['id'], issue['ref']
                 if draft:
                     issues._post_plan(c, actor, issue, draft, row['base_sha'], link_review=False)
-                issues._event(c, iid, actor, 'comment', '목표 대비 현황 점검에서 발행한 후속 Issue예요.',
+                issues._event(c, iid, actor, 'comment',
+                              '개선 제안 점검에서 발행한 Issue예요.' if row['kind'] == 'improve' else '목표 대비 현황 점검에서 발행한 후속 Issue예요.',
                               data={'audit_id': audit_id, 'candidate_id': cid})
             c.execute('''INSERT INTO project_audit_publications(audit_id,candidate_id,project_id,issue_id,issue_ref,created_at) VALUES(?,?,?,?,?,?)
                 ON CONFLICT(audit_id,candidate_id) DO UPDATE SET issue_id=excluded.issue_id,issue_ref=excluded.issue_ref,created_at=excluded.created_at,mode='issue' ''',
                       (audit_id, cid, pid, iid, ref, db.now_iso()))
             results.append(dict(c.execute('SELECT * FROM project_audit_publications WHERE audit_id=? AND candidate_id=?', (audit_id, cid)).fetchone()))
         return {'publications': results}
+
+
+# 개선 제안은 요구 판정과 분리하되 같은 원문 근거 범위를 확인한다.
+def _validate_improve(report, snapshot):
+    def fail():
+        raise issues.StoreError('개선 제안의 형식이나 근거가 올바르지 않아요.', 400)
+    if (len(_json(report).encode('utf-8')) > MAX_OUTPUT_BYTES or contains_sensitive(report) or
+        not isinstance(report, dict) or set(report) != {'summary', 'candidates'} or
+        not isinstance(report['summary'], str) or not report['summary'].strip() or
+        not isinstance(report['candidates'], list) or len(report['candidates']) > 5):
+        fail()
+    sources = {s['id']: s for s in snapshot['sources']}
+    ids = set()
+    refs = {s.get('issue_ref') for s in sources.values() if s['kind'] == 'issue'}
+    fields = {'id','category','title','problem','proposal','impact','effort','evidence','related_issues','plan_draft'}
+    for row in report['candidates']:
+        if not isinstance(row, dict) or set(row) != fields:
+            fail()
+        if any(not isinstance(row[k], str) or not row[k].strip() for k in fields - {'evidence','related_issues'}):
+            fail()
+        if row['id'] in ids or row['category'] not in ('efficiency','risk','feature') or row['effort'] not in ('S','M','L'):
+            fail()
+        ids.add(row['id'])
+        if not isinstance(row['related_issues'], list) or any(not isinstance(r, str) or r not in refs for r in row['related_issues']):
+            fail()
+        if not isinstance(row['evidence'], list) or not row['evidence']:
+            fail()
+        found = []
+        for item in row['evidence']:
+            if not isinstance(item, dict) or set(item) - {'source_id','line_start','line_end','section'} or not isinstance(item.get('source_id'), str):
+                fail()
+            source = sources.get(item['source_id'])
+            if source is None:
+                fail()
+            start, end = item.get('line_start'), item.get('line_end')
+            if start is not None or end is not None:
+                if type(start) is not int or type(end) is not int or not isinstance(source['content'], str) or not 1 <= start <= end <= len(source['content'].splitlines()):
+                    fail()
+            section = item.get('section')
+            if section is not None and (not isinstance(section, str) or not section.strip() or not isinstance(source['content'], str) or section not in source['content']):
+                fail()
+            found.append((source, start))
+        if row['category'] == 'feature':
+            if not any(s['kind'] in ('initial_spec', 'issue') or s['kind'] == 'document' and s.get('path') != 'AGENTS.md' for s, _ in found):
+                fail()
+        elif not any(s['kind'] == 'code' and start is not None for s, start in found):
+            fail()
+    return report
+
+
+def _publication_candidate(data):
+    # 기존 발행 안전장치에 전달할 공통 필드만 더하고 원래 제안도 보존한다.
+    return dict(data, scope=data['proposal'], gap=data['problem'], priority='medium',
+                completion_criteria=[data['impact']], prerequisites=[], disposition='new_work')
+
+
+def dismiss(actor, key, audit_id, candidate_id, reason):
+    pid = project_id(actor, key)
+    reason = issues._text(reason, '버리는 이유', 2000, required=True)
+    if contains_sensitive(reason) or not isinstance(candidate_id, str):
+        raise issues.StoreError('버리기 입력이 올바르지 않아요.', 400)
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        row = c.execute('SELECT * FROM project_audits WHERE id=? AND project_id=?', (audit_id, pid)).fetchone()
+        if not row:
+            raise issues.StoreError('점검 기록을 찾을 수 없어요.', 404)
+        if row['kind'] != 'improve' or row['status'] != 'complete':
+            raise issues.StoreError('완료된 개선 제안만 버릴 수 있어요.', 409)
+        candidate = c.execute('SELECT data_json FROM project_audit_candidates WHERE audit_id=? AND candidate_id=?', (audit_id, candidate_id)).fetchone()
+        if not candidate:
+            raise issues.StoreError('후보를 찾을 수 없어요.', 404)
+        if c.execute('SELECT 1 FROM project_audit_publications WHERE audit_id=? AND candidate_id=?', (audit_id, candidate_id)).fetchone():
+            raise issues.StoreError('발행한 후보는 버릴 수 없어요.', 409)
+        data = json.loads(candidate['data_json'])
+        c.execute('INSERT INTO project_audit_dismissals VALUES(?,?,?,?,?,?,?) ON CONFLICT(audit_id,candidate_id) DO NOTHING',
+                  (pid, audit_id, candidate_id, data['title'], data['category'], reason, db.now_iso()))
+        return dict(c.execute('SELECT * FROM project_audit_dismissals WHERE audit_id=? AND candidate_id=?', (audit_id, candidate_id)).fetchone())
+
+
+def suggestion_history(project_id):
+    with db.connect() as c:
+        return {'dismissed': [dict(r) for r in c.execute('SELECT title,category,reason FROM project_audit_dismissals WHERE project_id=? ORDER BY audit_id,candidate_id', (project_id,))],
+                'published': [json.loads(r[0])['title'] for r in c.execute("SELECT c.data_json FROM project_audit_publications p JOIN project_audit_candidates c ON c.audit_id=p.audit_id AND c.candidate_id=p.candidate_id JOIN project_audits a ON a.id=p.audit_id WHERE p.project_id=? AND a.kind='improve'", (project_id,))]}
+
+
+def improve_schema():
+    """공급자 출력 스키마에도 제안 필드와 후보 상한을 적용한다."""
+    evidence = json.loads(SCHEMA_PATH.read_text(encoding='utf-8'))['$defs']['evidence']
+    props = {k: {'type': 'string', 'minLength': 1} for k in
+             ('id','title','problem','proposal','impact','plan_draft')}
+    props.update(category={'type': 'string', 'enum': ['efficiency','risk','feature']},
+                 effort={'type': 'string', 'enum': ['S','M','L']}, evidence=evidence,
+                 related_issues={'type': 'array', 'items': {'type': 'string'}})
+    return {'type': 'object', 'additionalProperties': False, 'required': ['summary','candidates'],
+            'properties': {'summary': {'type': 'string', 'minLength': 1},
+                'candidates': {'type': 'array', 'maxItems': 5, 'items': {
+                    'type': 'object', 'additionalProperties': False,
+                    'required': list(props), 'properties': props}}}}

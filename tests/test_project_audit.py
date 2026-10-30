@@ -589,5 +589,97 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
 
 
+    def improve_report(self):
+        return {'summary': '개선 후보', 'candidates': [dict(
+            id='i1', category='efficiency', title='검색 중복 제거', problem='중복 호출',
+            proposal='검색 결과를 재사용한다.', impact='중복 호출 감소', effort='S',
+            evidence=[{'source_id': 'git:app.py', 'line_start': 1, 'line_end': 2}],
+            related_issues=[], plan_draft='## Tasks\n1. 검색 개선 구현 | 파일: app.py | 확인: 검색 검사 | 선행: 없음')]}
+
+    def completed_improve(self):
+        row = audit.create_audit(self.pid, 'improve', 'codex', 'human:admin', kind='improve')
+        snapshot = audit.collect_snapshot('AUD')
+        audit.save_snapshot(row['id'], snapshot)
+        audit.finish_audit(row['id'], 'complete', report=self.improve_report())
+        return row['id']
+
+    def test_improve_validation_categories_and_actual_lines(self):
+        snapshot = audit.collect_snapshot('AUD')
+        report = self.improve_report()
+        for category in ('efficiency', 'risk'):
+            report['candidates'][0]['category'] = category
+            self.assertEqual(audit.validate_report(report, snapshot, 'improve'), report)
+        for change in ({'line_start': 1, 'line_end': 999}, {'line_start': True, 'line_end': 2},
+                       {'line_start': None, 'line_end': None}, {'source_id': 'absent'}):
+            bad = copy.deepcopy(report)
+            bad['candidates'][0]['evidence'][0].update(change)
+            self.denied(lambda: audit.validate_report(bad, snapshot, 'improve'), 400)
+        report['candidates'][0]['category'] = 'feature'
+        self.denied(lambda: audit.validate_report(report, snapshot, 'improve'), 400)
+        report['candidates'][0]['evidence'] = [{'source_id': 'git:PROJECT_SPEC.md'}]
+        audit.validate_report(report, snapshot, 'improve')
+        five = copy.deepcopy(report)
+        five['candidates'] = [dict(report['candidates'][0], id=str(i)) for i in range(5)]
+        audit.validate_report(five, snapshot, 'improve')
+        five['candidates'].append(dict(five['candidates'][0], id='six'))
+        self.denied(lambda: audit.validate_report(five, snapshot, 'improve'), 400)
+        self.denied(lambda: audit.validate_report(report, snapshot), 400)
+        self.assertEqual(audit.validate_report({'summary': '없음', 'candidates': []}, snapshot, 'improve')['candidates'], [])
+
+    def test_improve_kind_occupancy_and_publication(self):
+        row = audit.create_audit(self.pid, 'busy-kind', 'codex', 'human:admin', kind='improve')
+        self.denied(lambda: audit.create_audit(self.pid, 'busy-goal', 'codex', 'human:admin'), 409)
+        self.denied(lambda: audit.create_audit(self.pid, 'busy-kind', 'codex', 'human:admin'), 409)
+        audit.finish_audit(row['id'], 'cancelled')
+        aid = self.completed_improve()
+        self.assertEqual(audit.get_audit(self.pid, aid)['kind'], 'improve')
+        self.assertEqual(len(audit.list_audits(self.pid, 'goal')), 0)
+        result = audit.publish(self.actor, 'AUD', aid, ['i1'])
+        ref = result['publications'][0]['issue_ref']
+        issue = issues.get_issue(ref)
+        self.assertIn(f'개선 제안 점검 #{aid}에서 시작', issue['body'])
+        self.assertIn('git:app.py', issue['body'])
+        self.assertEqual(issue['status'], 'backlog')
+        self.assertIsNone(issue['approval'])
+        self.assertEqual(audit.publish(self.actor, 'AUD', aid, ['i1']), result)
+        self.assertEqual(audit.suggestion_history(self.pid)['published'], ['검색 중복 제거'])
+        self.denied(lambda: audit.dismiss(self.actor, 'AUD', aid, 'i1', '이유'), 409)
+
+    def test_improve_dismiss_actual_http_and_permissions(self):
+        import app, auth
+        from fastapi.testclient import TestClient
+        aid = self.completed_improve()
+        path = f'/api/projects/AUD/audits/{aid}/dismiss'
+        async def user(cookie):
+            return {'id': 1, 'username': 'admin', 'role': 'admin' if cookie == 'admin' else 'user'} if cookie else None
+        body = {'candidate_id': 'i1', 'reason': '현재 방향과 달라요'}
+        headers = {'X-Requested-With': 'dev'}
+        with patch.object(auth, 'nightshift_user', side_effect=user), TestClient(app.app) as client:
+            self.assertEqual(client.post(path, json=body, headers=headers).status_code, 401)
+            with patch.object(auth, 'agent_for_key', return_value={'id': 1, 'name': 'agent', 'model': ''}):
+                self.assertEqual(client.post(path, json=body, headers={'Authorization': 'Bearer fake'}).status_code, 403)
+            client.cookies.set('ns_session', 'member')
+            self.assertEqual(client.post(path, json=body, headers=headers).status_code, 403)
+            client.cookies.set('ns_session', 'admin')
+            self.assertEqual(client.post(path, json=body).status_code, 403)
+            self.assertEqual(client.post(path, json=dict(body, reason=' '), headers=headers).status_code, 400)
+            self.assertEqual(client.post(path, json=dict(body, candidate_id='unknown'), headers=headers).status_code, 404)
+            issues.create_project(self.actor, 'OTHER', 'other')
+            self.assertEqual(client.post(path.replace('/AUD/', '/OTHER/'), json=body, headers=headers).status_code, 404)
+            response = client.post(path, json=body, headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(client.post(path, json=body, headers=headers).json(), response.json())
+            self.assertEqual(client.get(f'/api/projects/AUD/audits/{aid}').json()['dismissals'][0]['reason'], body['reason'])
+            with patch('project_audit_runner._run'):
+                response = client.post('/api/projects/AUD/audits', headers=headers,
+                    json={'request_id': 'improve-api', 'provider': 'codex', 'kind': 'improve'})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['kind'], 'improve')
+            self.assertEqual(client.post('/api/projects/AUD/audits', headers=headers,
+                json={'request_id': 'bad-kind', 'kind': 'invalid'}).status_code, 400)
+        self.assertEqual(audit.suggestion_history(self.pid)['dismissed'][0]['reason'], body['reason'])
+        self.denied(lambda: audit.publish(self.actor, 'AUD', aid, ['i1']), 409)
+
+
 if __name__ == '__main__':
     unittest.main()

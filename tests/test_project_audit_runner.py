@@ -347,5 +347,27 @@ class AuditRunnerTests(unittest.TestCase):
         runner.cancel(HUMAN, 'AUD', first['id'])
 
 
+    def test_improve_schema_prompt_history_and_mock_execution(self):
+        import prompts
+        row = audit.create_audit(self.pid, 'improve-run', 'codex', 'human:admin', kind='improve',
+            model='gpt-6.1-sol', limits={'timeout_sec': 3, 'budget_usd': None,
+                'input_bytes': audit.MAX_INPUT_BYTES, 'output_bytes': audit.MAX_OUTPUT_BYTES})
+        cmd = runner.command(row, self.root)
+        schema = json.loads(Path(cmd[cmd.index('--output-schema') + 1]).read_text(encoding='utf-8'))
+        self.assertEqual(set(schema['required']), {'summary', 'candidates'})
+        self.assertEqual(schema['properties']['candidates']['maxItems'], 5)
+        self.assertEqual(prompts.problems('improve.md', (prompts.DIR / 'improve.md').read_text(encoding='utf-8')), [])
+        history = {'dismissed': [{'title': '버린 후보', 'reason': '방향 다름'}], 'published': ['발행 후보']}
+        prompt = prompts.render('improve.md', snapshot=audit._json(self.snapshot), history=audit._json(history))
+        self.assertIn('방향 다름', prompt)
+        self.assertIn('발행 후보', prompt)
+        report = {'summary': '후보 없음', 'candidates': []}
+        script = "import sys,json; p=sys.stdin.buffer.read().decode('utf-8'); assert '방향 다름' in p and '발행 후보' in p; print(json.dumps(" + repr({"type":"item.completed", "item":{"type":"agent_message", "text": __import__("json").dumps({"summary":"후보 없음", "candidates":[]})}}) + ",ensure_ascii=True))"
+        with patch.object(audit, 'suggestion_history', return_value=history), patch.object(audit, 'collect_snapshot', return_value=self.snapshot), patch.object(runner, 'command', return_value=[sys.executable, '-c', script]):
+            runner._run({'key': 'AUD'}, row)
+        self.assertEqual(self.get(row)['status'], 'complete')
+        self.assertEqual(self.get(row)['report'], report)
+
+
 if __name__ == '__main__':
     unittest.main()
