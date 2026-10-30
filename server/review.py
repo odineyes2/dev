@@ -498,8 +498,18 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             capture_before = attachments.capture_baseline(cwd)
         except Exception as e:
             capture_warning = f'⚠️ 화면 캡처 기준 목록을 읽지 못했어요: {type(e).__name__}'
+    import run_progress
+    progress = {}   # 실행(Task)만 단계를 남긴다(DEV-206)
+    if label == '실행':
+        with db.connect() as c:
+            row = c.execute('SELECT model FROM runs WHERE id=?', (run_id,)).fetchone()
+        progress = {'provider': 'Codex' if provider == 'codex' else 'Claude', 'model': row['model'] if row else None, 'limit': timeout}
+    failed = ''
     for attempt in range(2 if label == "실행" and not recovery else 1):
         code, note, status, out, err = None, "", "ok", "", ""
+        if progress:
+            run_progress.set_phase(ref, 'recovery' if recovery else 'rework' if attempt else 'implement', attempt=attempt + 1,
+                                   failed=run_progress.failed_names(failed), **progress)
         try:
             # 프롬프트는 명령(cmd)에 보존하되 실행 때 stdin으로 보낸다 — Codex는 마지막 인자, Claude는 "-p" 다음 인자.
             # 파일 지도·하네스·부모 계획서가 길어져도 Windows 명령행 한도(32,767자, WinError 206)를 넘지 않는다.
@@ -521,6 +531,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             status, note = "failed", f"{name}를 실행하지 못했어요({e})"
         if run_id in FORCED_RUNS:
             FORCED_RUNS.discard(run_id)
+            run_progress.clear(ref)
             return "orphaned"
         if code:
             status = "failed"
@@ -543,6 +554,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             break
         # 병합 때 처음 실패를 알면 사람이 다시 실행해야 한다 — 완료 등록 전에 Task worktree에서 전체 검사를 돌려 한 번 스스로 고치게 한다.
         import orchestrate
+        run_progress.set_phase(ref, 'recheck' if attempt else 'checks', **progress)
         failed = orchestrate.run_tests(str(cwd), stage='server_completion', ref=ref)
         if not failed:
             break
@@ -557,6 +569,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         if orchestrate.FLAKY_MARK in failed:   # 같은 코드에서 통과·실패가 섞였다 — 기능 코드가 아니라 검사 코드의 기다리기·순서 가정을 본다
             retry += "\n\n⚠️ 위 검사는 같은 코드에서 통과와 실패가 섞였다. 기능 코드 대신 검사 코드의 기다리기(응답·화면 상태를 기다리는지)와 순서 가정(목록 순서 대신 id로 찾는지)을 먼저 고친다."
         cmd = cmd[:2] + [cmd[2] + retry] + cmd[3:] if provider == "claude" else cmd[:-1] + [cmd[-1] + retry]
+    run_progress.clear(ref)
     stats = spent
     exhausted = status != "timeout" and token_exhausted(out, err, provider)
     if exhausted:

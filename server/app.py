@@ -742,6 +742,7 @@ def api_issues(project: str = "", status: str = "", assignee: int | None = None,
     for it in items[:limit]:
         it['merge_state'] = orchestrate.merge_state(it)
         it['job'] = jobs.job_for(it['id'])
+        it['run_progress'] = run_progress.view(it['ref']) if it['status'] == 'in_progress' else None   # 실행 단계(DEV-206)
     return {"issues": items[:limit], "has_more": len(items) > limit}
 
 @app.post("/api/issues")
@@ -770,6 +771,7 @@ def api_issue(ref: str):
         it["job"] = jobs.job_for(it["id"])   # 대기열 자리(DEV-43)
     with timing.span("merge"):
         it["merge_state"] = orchestrate.merge_state(it)   # 병합 대기·병합됨·재시작 대기·되돌림(DEV-40-3)
+        it["run_progress"] = run_progress.view(it["ref"]) if it["status"] == "in_progress" else None   # 실행 단계(DEV-206)
     with timing.span("children"):
         evs = issues.events_for(ch["id"] for ch in it["children"])   # Task마다 다시 읽지 않고 한 번에(DEV-42-2)
         cfg = orchestrate.settings(it["project_key"]) if it["children"] else None
@@ -777,6 +779,7 @@ def api_issue(ref: str):
         for ch in it["children"]:
             ch["merge_state"] = orchestrate.merge_state({**ch, "events": evs[ch["id"]]}, cfg)
             ch["job"] = queued.get(ch["id"])   # 줄에 선 Task는 표에서 "실행 대기 중"(DEV-45)
+            ch["run_progress"] = run_progress.view(ch["ref"]) if ch["status"] == "in_progress" else None
     return it
 
 
@@ -880,6 +883,7 @@ import orchestrate  # noqa: E402
 
 
 import jobs  # noqa: E402
+import run_progress  # noqa: E402
 
 
 @app.post("/api/issues/{ref}/execute")

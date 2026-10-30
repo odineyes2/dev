@@ -55,6 +55,25 @@ status, prompts, registered = run([None])
 assert status == "ok" and registered and len(prompts) == 1
 print("ok")
 
+# 실행 단계(DEV-206) — 구현 → 전체 검사 → 재작업(실패한 검사 포함) → 다시 검사, 끝나면 지운다.
+import run_progress  # noqa: E402
+phases = []
+seen_popen = review.subprocess.Popen
+def note(value=None):
+    v = run_progress.view(task)
+    phases.append((v['phase'], v['long']))
+    return value
+results = iter(["R05 전체 검사 실패 — T-NS-001 test_x.py: 종료 코드 1 (0x00000001)", None])
+log_path, run_id = review.begin(human, issues.get_issue(task), "execute")
+with patch.object(orchestrate, "run_tests", side_effect=lambda cwd, **kw: note(next(results))), \
+     patch.object(review.subprocess, "Popen", side_effect=lambda c, **kw: note() or seen_popen(cmd, **kw)), \
+     patch.object(execute, "register_completion"):
+    assert review.run_headless(human, task, log_path, run_id, [cmd[0], "-p", "지시"], None, None, 30, "실행") == "ok"
+assert [p for p, _ in phases] == ['implement', 'checks', 'rework', 'recheck'], phases
+assert 'test_x.py' in phases[2][1] and '시간 제한 30초' in phases[0][1], phases
+assert run_progress.view(task) is None
+print("ok phases")
+
 # 바꿀 파일 밖 변경 경고 — tests/ 아래 .py만 허용, 목록이 없으면 검사하지 않는다(NS-32-1 캡처 PNG).
 body = "**바꿀 파일**: server/app_parts/03-enhance.py, `server/model_registry.py`, static/\n\n**확인**: ..."
 changed = ["server/app_parts/03-enhance.py", "server/model_registry.py", "static/app.js", "tests/test_new.py", "tests/shots/a.png", "README.md", "server/other.py"]

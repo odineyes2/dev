@@ -414,6 +414,7 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
 
 def _run_tests(repo, stage, ref, changed, env) -> str | None:
     import regression
+    import run_progress
     selection = regression.resolve(ref, repo if ref or changed is not None else None, changed)
     policy = selection['checks']
     if ref:
@@ -466,6 +467,16 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
         todo.append((t, stamp))
 
     def one(t):
+        run_progress.check_start(ref, t.name)
+        ok = False
+        try:
+            runs, bad = _one(t)
+            ok = not bad
+            return runs, bad
+        finally:
+            run_progress.check_end(ref, t.name, ok)
+
+    def _one(t):
         r = run_test(repo, t, env=env)
         # 불안정 검사 대책(DEV-160-3): 바뀐 검사는 완료 때 3번, 병합에서 실패한 검사는 2번 더 돌려 섞임을 가린다.
         runs, bad = [r], ([r] if r.returncode else [])
@@ -480,6 +491,7 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
     key = ref.split('-')[0] if ref else regression.project_key(repo)
     timing = regression.load_record('regression-durations:' + key)
     started = time.monotonic()
+    run_progress.checks_begin(ref, len(todo))   # 실행 중 화면의 ⓘ에 n/N과 지금 도는 검사를 보인다(DEV-206)
     ran = test_runner.run_all([t for t, _ in todo], one, 1 if env else test_jobs(key), timing)
     wall = round(time.monotonic() - started, 1)
     for t, stamp in todo:   # 결과는 원래 순서대로 모은다
