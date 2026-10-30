@@ -50,14 +50,32 @@ def audit_fixture(status='complete', variant='report', audit_id=1):
                        'requirements': requirements, 'candidates': candidates} if status == 'complete' else None}
 
 
-def mock_audits(page, key='DEV'):
+def improve_fixture(status='complete', audit_id=1):
+    """세 종류의 개선 제안과 코드·문서 근거를 재현한다."""
+    row = audit_fixture(status, audit_id=audit_id)
+    row['kind'] = 'improve'
+    row['dismissals'] = []
+    if row['report']:
+        row['report'] = {'summary':'비효율·위험을 줄이고 기능을 제안해요.', 'candidates':[
+            dict(id=f'c{i}', category=category, title=title, problem='현재 흐름의 개선 여지가 있어요.',
+                 proposal='근거를 확인하고 개선해요.', impact='반복 작업을 줄여요.', effort='S',
+                 evidence=[{'source_id':'git:PROJECT_SPEC.md' if category == 'feature' else 'git:static/app.js', 'line_start':10, 'line_end':12}],
+                 related_issues=['DEV-1'], plan_draft='## Tasks\n1. 개선')
+            for i, (category,title) in enumerate([('efficiency','반복 조회 줄이기'),('risk','동시 요청 보호'),('feature','진행 알림 제안')],1)]}
+    return row
+
+
+def mock_audits(page, key='DEV', kind='goal'):
     """로컬 UI용 API만 대체하며 호출·충돌·응답 유실을 제어한다."""
-    state = {'audits': [audit_fixture()], 'blocked': '', 'available': True, 'requests': [],
+    fixture = improve_fixture if kind == 'improve' else audit_fixture
+    state = {'audits': [fixture()], 'blocked': '', 'available': True, 'requests': [],
              'publish_error': '', 'start_lost': False, 'publish_lost': False, 'cancel_pending': False}
 
     def handle(route):
         request = route.request
         suffix = request.url.split('/audits', 1)[1]
+        if suffix.startswith('?'):
+            suffix = ''
         state['requests'].append((request.method, suffix, request.post_data_json if request.method == 'POST' else None))
         if suffix.startswith('/preflight'):
             provider = 'claude' if 'provider=claude' in suffix else 'codex'
@@ -73,7 +91,7 @@ def mock_audits(page, key='DEV'):
         if request.method == 'POST' and not suffix:
             if state['start_lost']:
                 state['start_lost'] = False; route.abort('failed'); return
-            row = audit_fixture('running', audit_id=max([r['id'] for r in state['audits']] or [0])+1)
+            row = fixture('running', audit_id=max([r['id'] for r in state['audits']] or [0])+1)
             row['provider'] = request.post_data_json['provider']
             state['audits'].insert(0, row)
             route.fulfill(json=row); return
@@ -81,6 +99,10 @@ def mock_audits(page, key='DEV'):
         row = next(r for r in state['audits'] if r['id'] == aid)
         if suffix.endswith('/cancel'):
             row['status'] = 'cancelling' if state['cancel_pending'] else 'cancelled'
+        if suffix.endswith('/dismiss'):
+            result = dict(candidate_id=request.post_data_json['candidate_id'], reason=request.post_data_json['reason'])
+            row['dismissals'].append(result)
+            route.fulfill(json=result); return
         if suffix.endswith('/publish'):
             if state['publish_error']:
                 route.fulfill(status=409, json={'detail': state['publish_error']}); return

@@ -6,7 +6,68 @@ import json
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
-from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits
+from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits, improve_fixture
+
+
+def check_suggestions(page, shots):
+    """개선 제안의 시작·발행·버리기·보류·이력 분리와 네 화면을 확인한다."""
+    original_theme = page.evaluate("localStorage.getItem('dev.theme')")
+    original_project = page.locator('#project-filter').input_value()
+    headers = {'X-Requested-With':'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers, data={'key':'SUGG','name':'개선 제안 검사'}).ok
+    state, handler = mock_audits(page, 'SUGG', 'improve')
+    state['audits'].append(audit_fixture(audit_id=99))
+    page.reload(); page.wait_for_selector('#shell:not([hidden])')
+    page.goto(BASE + '/#/projects?project=SUGG&tab=suggestions')
+    expect(page.locator('.suggestion-card')).to_have_count(3)
+    expect(page.locator('#audit-title')).to_have_text('Suggestions · 실험')
+    expect(page.locator('[data-audit-id]')).to_have_count(1)
+    expect(page.locator('.suggestion-card').last).to_contain_text('기능 제안 · 추측')
+    expect(page.locator('.suggestion-card').first).to_contain_text('static/app.js · 10–12행')
+    page.locator('[data-suggestion-hold="c3"]').click()
+    expect(page.locator('#audit-message')).to_contain_text('그대로 남겨')
+    assert not [r for r in state['requests'] if r[0] == 'POST']
+    for theme in ('light','dark'):
+        page.emulate_media(color_scheme=theme, reduced_motion='reduce')
+        page.evaluate('t => {localStorage.setItem("dev.theme",t); document.documentElement.dataset.theme=t}', theme)
+        for width in (1300,390):
+            page.set_viewport_size({'width':width,'height':850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.evaluate('scrollTo(0,0)')
+            page.screenshot(path=str(shots / f'suggestions-{theme}-{width}.png'), full_page=True)
+    page.locator('[data-suggestion-publish="c1"]').click()
+    expect(page.locator('[data-candidate="c1"]')).to_contain_text('발행한 Issue')
+    page.locator('[data-suggestion-dismiss="c2"]').click()
+    expect(page.locator('[data-candidate="c2"]')).to_contain_text('버림 ·')
+    assert len(state['audits'][0]['dismissals']) == 1
+    page.reload()
+    expect(page.locator('[data-candidate="c2"]')).to_contain_text('버림 ·')
+    state['audits'][0]['stale'] = True
+    page.click('#audit-refresh')
+    expect(page.locator('[data-suggestion-publish="c3"]')).to_be_disabled()
+    state['audits'][0]['stale'] = False
+    page.click('#audit-refresh')
+    expect(page.locator('#audit-start')).to_be_enabled()
+    page.select_option('#audit-provider','claude')
+    page.click('#audit-start')
+    expect(page.locator('#audit-cancel')).to_be_visible()
+    posts = [r[2] for r in state['requests'] if r[0] == 'POST' and not r[1]]
+    assert posts[-1]['kind'] == 'improve' and posts[-1]['provider'] == 'claude'
+    page.click('#audit-cancel')
+    expect(page.locator('#audit-report-title')).to_contain_text('취소됨')
+    state['audits'] = [improve_fixture('failed', audit_id=state['audits'][0]['id'])]
+    page.click('#audit-refresh')
+    expect(page.locator('#audit-detail .error')).to_contain_text('분석을 완료하지 못했어요')
+    state['audits'] = []
+    page.goto(BASE); page.goto(BASE + '/#/projects?project=SUGG&tab=suggestions')
+    expect(page.locator('#audit-history .empty')).to_contain_text('아직 점검 기록이 없어요')
+    page.unroute('**/api/projects/SUGG/audits**', handler)
+    # 다른 검사에 프로젝트 선택이 번지지 않게 복원한다.
+    page.select_option('#project-filter', original_project)
+    expect(page.locator('#project-filter')).to_have_value(original_project)
+    page.evaluate("t => {if(t === null) localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme',t);document.documentElement.dataset.theme=t || 'light'}", original_theme)
+    page.emulate_media(color_scheme=original_theme or 'light')
+    page.set_viewport_size({'width':1300,'height':850})
 
 
 def check_manual_usage(page, shots):
@@ -941,6 +1002,35 @@ def check_trends(page):
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert page.evaluate("document.querySelector('.trend-card').scrollWidth <= document.querySelector('.trend-card').clientWidth")
     page.set_viewport_size({'width': 1300, 'height': 900}); page.unroute('**/api/trends?*')
+    def kinds(route):
+        day = dict(date='2026-10-13', created_issue_count=0, completed_issue_count=0, total_tokens=600, agent_seconds=60,
+                   by_kind={k:dict(tokens=n, agent_seconds=n/10) for k,n in [('issue',100),('goal_audit',200),('improve_audit',300)]})
+        route.fulfill(json=dict(from_date=day['date'],to_date=day['date'],as_of='2026-10-13T02:00:00+00:00', note='종류별 집계',days=[day],summary=day,top_issues=[]))
+    summary_calls = []
+    def improve(route):
+        summary_calls.append(route.request.url)
+        route.fulfill(json={'summary':dict(audit_count=2,total_tokens=300,agent_seconds=30,cost_usd=1.5,unmeasured_cost_count=1,
+            candidate_count=3,by_category=dict(efficiency=1,risk=1,feature=1),published_count=1,done_count=1,dismissed_count=1,adoption_rate=1/3)})
+    page.route('**/api/trends?*', kinds)
+    page.route('**/api/trends/improve?*', improve)
+    page.click('#trend-filter [type="submit"]')
+    expect(page.locator('.trend-improve')).to_contain_text('33.3%')
+    expect(page.locator('.trend-improve')).to_contain_text('$1.50')
+    expect(page.locator('rect[data-kind]')).to_have_count(6)
+    expect(page.locator('[data-trend-chart="total_tokens"] [data-kind="improve_audit"]')).to_have_attribute('height','55')
+    query = parse_qs(urlsplit(summary_calls[-1]).query)
+    assert query['from'] == [page.locator('#trend-from').input_value()] and query['to'] == [page.locator('#trend-to').input_value()]
+    for theme in ('light','dark'):
+        page.emulate_media(color_scheme=theme, reduced_motion='reduce')
+        page.evaluate('t => {localStorage.setItem("dev.theme",t);document.documentElement.dataset.theme=t}',theme)
+        for width in (1300,390):
+            page.set_viewport_size({'width':width,'height':850})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+            page.evaluate('scrollTo(0,0)')
+            page.screenshot(path=str(shots / f'trends-kinds-{theme}-{width}.png'),full_page=True)
+    page.unroute('**/api/trends?*',kinds); page.unroute('**/api/trends/improve?*',improve)
+    page.set_viewport_size({'width':1300,'height':850})
+
 
 
 def check_trend_stages(page, shots):
@@ -1968,7 +2058,15 @@ def check_management_layout(page, shots):
 
 def check_regression_numbers(page, shots):
     """Settings 회귀검사: 번호 순 표·고정 항목 잠금·프로젝트별 파일 목록·모드 저장을 확인한다."""
+    if not any(p['key'] == 'DEV' for p in page.request.get(BASE + '/api/projects').json()['projects']):
+        assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With':'dev'},
+                                 data={'key':'DEV', 'name':'dev', 'local_path':str(ROOT)}).ok
+    page.reload(); page.wait_for_selector('#shell:not([hidden])')
     page.goto(BASE + '/#/settings/regression'); page.wait_for_selector('.check-proc')
+    # 프로젝트 순서와 무관하게 DEV 파일을 검사한다.
+    with page.expect_response(lambda r: r.request.method == 'GET' and '/api/settings/regression?project=DEV' in r.url):
+        page.select_option('#regression-project', 'DEV')
+    expect(page.locator('.check-files summary')).to_contain_text('DEV \uac80\uc0ac \ud30c\uc77c')
     nums = page.eval_on_selector_all('.check-proc', 'els => els.map(e => e.dataset.number)')
     assert nums[0] == 'R01' and nums == sorted(nums) and len(set(nums)) == len(nums) >= 23, nums
     row = page.locator('.check-proc[data-number="R19"]')
@@ -5368,6 +5466,15 @@ try:
             check_issue_table(page, shots)
             assert not errs, errs
             print('OK: Issue table'); sys.exit(0)
+        if '--suggestions-regression-only' in sys.argv:
+            check_suggestions(page, shots)
+            check_regression_numbers(page, shots)
+            assert not errs, errs
+            print('OK: suggestions and regression numbers'); sys.exit(0)
+        if '--suggestions-only' in sys.argv:
+            check_suggestions(page, shots)
+            assert not errs, errs
+            print('OK: suggestions'); sys.exit(0)
         if '--trends-only' in sys.argv:
             check_trends(page)
             assert not errs, errs
@@ -5661,6 +5768,7 @@ try:
         check_free_port(page, shots)
         check_service_diagnostic(page, shots)
         check_project_audits(page, shots)
+        check_suggestions(page, shots)
         check_auto_master(page)
         check_auto_settings(page, shots)
         check_regression_numbers(page, shots)
@@ -5724,6 +5832,7 @@ try:
         assert page.locator('#project-dialog[open]').count() == 0
 
         page.goto(BASE + "/#/new")
+        page.select_option("#n-project", "NS")  # 앞 검사가 만든 프로젝트와 무관하게 NS-1을 만든다.
         page.fill("#n-title", "보드 카드 복사")
         page.fill("#n-body", "## 요구\n- 우클릭 메뉴\n- `Ctrl+C`\n\n<script>alert(1)</script> NS-1 참고")
         assert page.locator('#n-priority').is_hidden()

@@ -886,7 +886,28 @@ function stageBar(row){
   if(!total) return '<td>—</td>';
   return `<td><span class="trend-stage-bar" role="img" aria-label="${esc(parts.filter(p => p[2]).map(p => `${p[1]} ${stageDuration(p[2])}`).join(', '))}">${parts.filter(p => p[2]).map(([key, name, s]) => `<i class="trend-stage-${key}" style="width:${(s / total * 100).toFixed(1)}%" title="${esc(name)} ${esc(stageDuration(s))}"></i>`).join('')}</span></td>`;
 }
+// 종류별 사용량을 같은 날짜의 합계로 쌓아 표시한다.
+function trendKindChart(days, key, label){
+  const kinds = [['issue','이슈 작업'], ['goal_audit','요구 점검'], ['improve_audit','개선 제안']];
+  const field = key === 'total_tokens' ? 'tokens' : 'agent_seconds';
+  const width = Math.max(580, days.length * (trendMarks === 'values' ? 52 : 18)), height = 130;
+  const slot = width / days.length, max = Math.max(1, ...days.map(d => kinds.reduce((v,[k]) => v + Number(d.by_kind?.[k]?.[field] || 0), 0)));
+  const bars = days.map((d,i) => {
+    let sum = 0;
+    return kinds.map(([k,name]) => {
+      const value = Number(d.by_kind?.[k]?.[field] || 0), h = value / max * 110;
+      sum += h;
+      return `<rect class="trend-kind-${k}" data-kind="${k}" x="${i * slot + slot * .2}" y="${122 - sum}" width="${slot * .6}" height="${h}" role="img" aria-label="${esc(d.date)} ${esc(name)} ${esc(trendText(key,value))}"><title>${esc(d.date)} · ${esc(name)} ${esc(trendText(key,value))}</title></rect>`;
+    }).join('') + (trendMarks === 'values' ? `<text x="${(i + .5) * slot}" y="${Math.max(12, 116 - sum)}" text-anchor="middle">${esc(trendText(key, d[key]))}</text>` : '');
+  }).join('');
+  return `<div class="trend-kind-legend">${kinds.map(([k,name]) => `<span class="trend-kind-${k}">${esc(name)}</span>`).join('')}</div><div class="trend-scroll"><svg class="trend-chart" viewBox="0 0 ${width} ${height}"${width > 580 ? ` style="width:${width}px;max-width:none"` : ''} role="img" aria-label="${esc(label)} 종류별 일별 사용량">${bars}</svg></div><div class="trend-axis"><span>${esc(days[0].date)}</span><span>${esc(days.at(-1).date)}</span></div>`;
+}
+function improveSummaryHtml(data){
+  const s = data.summary;
+  return `<section class="trend-ranking trend-improve"><h2>개선 제안 · 실험</h2><p class="dim">기간 안 시작한 점검의 성과예요. 채택률 = 발행 수 / 후보 수. 비용은 해당 점검의 누적값, 토큰·시간은 선택 기간 사용량이에요.</p><div class="issue-summary-values"><div><span>점검</span><strong>${summaryNumber(s.audit_count)}회</strong></div><div><span>측정 비용</span><strong>$${Number(s.cost_usd || 0).toFixed(2)}</strong><small>미계측 ${summaryNumber(s.unmeasured_cost_count)}회</small></div><div><span>토큰 · 시간</span><strong>${tokenHtml(s.total_tokens)} · ${summaryDuration(s.agent_seconds)}</strong></div><div><span>후보</span><strong>${summaryNumber(s.candidate_count)}</strong><small>비효율 ${summaryNumber(s.by_category?.efficiency)} · 위험 ${summaryNumber(s.by_category?.risk)} · 기능 ${summaryNumber(s.by_category?.feature)}</small></div><div><span>발행 · Done · 버림</span><strong>${summaryNumber(s.published_count)} · ${summaryNumber(s.done_count)} · ${summaryNumber(s.dismissed_count)}</strong></div><div><span>채택률</span><strong>${(Number(s.adoption_rate || 0)*100).toFixed(1)}%</strong></div></div></section>`;
+}
 function trendChart(days, key, label){
+  if(['total_tokens', 'agent_seconds'].includes(key) && days.some(d => d.by_kind)) return trendKindChart(days, key, label);
   const values = days.map(d => Number(d[key] || 0)), n = values.length;
   const max = Math.max(1, ...values), height = 130, marks = trendMarks !== 'line';
   const step = trendMarks === 'values' ? 52 : 18, width = marks ? Math.max(580, n * step) : 580, pad = marks ? 14 : 0;
@@ -992,12 +1013,19 @@ async function loadTrend(){
     const data = await api('GET', (stages ? '/api/trends/stages?' : '/api/trends?') + new URLSearchParams({from, to, ...(project ? {project} : {}), ...(stages ? {human:trendHuman ? '1' : '0', agent:trendAgent} : {})}), undefined, current, {notifyErrors:false});
     if(!current()) return;
     if(stages){ trendStageData = data; results.innerHTML = trendIssuesView ? stageIssuesResults(data) : stageResults(data); paintStageTable(root); return; }
+    let improveHtml;
+    try {
+      const improve = await api('GET', '/api/trends/improve?' + new URLSearchParams({from, to, ...(project ? {project} : {})}), undefined, current, {notifyErrors:false});
+      improveHtml = improveSummaryHtml(improve);
+    } catch(e){ improveHtml = `<section class="trend-ranking trend-improve"><h2>개선 제안</h2><p role="alert">성과를 불러오지 못했어요. ${esc(e.message)} 기간을 다시 조회해 주세요.</p></section>`; }
+    if(!current()) return;
     trendData = data;
     const s = data.summary, noActivity = !data.days.some(d => TREND_METRICS.some(([key]) => Number(d[key] || 0) > 0));
     results.innerHTML = `<p class="trend-context">${project ? esc(project) : '전체 프로젝트'} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · ${esc(new Date(data.as_of).toLocaleString('ko-KR', {timeZone:'Asia/Seoul'}))} 조회</p>
       ${s.manual_tokens ? `<p class="trend-manual dim">대화형 Claude Code ${tokenHtml(s.manual_tokens)} 토큰 포함 · 이슈 미연결 ${tokenHtml(s.unlinked_manual_tokens || 0)} 토큰</p>` : ''}
       ${s.partial ? `<p class="trend-partial" role="status">부분 집계 · 토큰 미계측 실행 ${summaryNumber(s.unmeasured_run_count)}건, 시간 미계측 실행 ${summaryNumber(s.unmeasured_duration_run_count)}건, 진행 중 ${summaryNumber(s.running_run_count)}건</p>` : ''}
       ${noActivity ? '<div class="empty">이 기간에는 기록된 활동이 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>' : `<div class="trend-grid">${TREND_METRICS.map(([key,label,unit]) => `<section class="trend-card" aria-label="${label}"><h2>${label}</h2><strong>${trendValue(key, s[key])}</strong><span class="dim">${unit ? unit + ' · ' : ''}기간 합계</span>${key === 'total_tokens' ? trendCostNote(s) : ''}<div data-trend-chart="${key}">${trendChart(data.days, key, label)}</div></section>`).join('')}</div>`}
+      ${improveHtml}
       <section class="trend-ranking"><h2>토큰 상위 작업</h2><p class="dim">선택 기간의 Issue와 Task 직접 실행 토큰과 연결된 대화형 Claude Code 토큰을 순위에 포함해요.</p>
       ${data.top_issues.length ? `<ol>${data.top_issues.map(item => `<li><a href="#/issue/${encodeURIComponent(item.ref)}"><span class="ref">${esc(item.ref)}</span> ${esc(item.title)}</a><strong>${tokenHtml(item.total_tokens)}</strong></li>`).join('')}</ol>` : '<div class="empty">이 기간에 측정된 작업 토큰이 없어요.</div>'}</section>
       <details class="trend-daily"><summary>일별 값 표로 보기</summary><div class="trend-table-wrap"><table><thead><tr><th aria-sort="${trendSortAsc ? 'ascending' : 'descending'}"><button type="button" class="trend-sort" aria-label="날짜 정렬 바꾸기">날짜 <span class="trend-sort-mark" aria-hidden="true">${trendSortAsc ? '▲' : '▼'}</span></button></th>${TREND_METRICS.map(([,label]) => `<th>${label}</th>`).join('')}</tr></thead><tbody>${trendRows()}</tbody></table></div></details>
@@ -2497,7 +2525,7 @@ function projectDomainCell(domain){
 // 목록의 마지막 행에서 생성하고 개별 관리 화면에서 수정한다.
 function renderProjects(editKey, projectTab = 'manage'){
   const ed = projects.find(p => p.key === editKey);
-  if(!['manage', 'documents', 'usage', 'audits'].includes(projectTab)) projectTab = 'manage';
+  if(!['manage', 'documents', 'usage', 'audits', 'suggestions'].includes(projectTab)) projectTab = 'manage';
   history.replaceState(null, '', ed ? `#/projects?project=${encodeURIComponent(ed.key)}&tab=${projectTab}` : '#/projects');
   const projectForm = `
     <form class="form panel" id="project-form" ${ed && projectTab !== 'manage' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-create-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
@@ -2516,14 +2544,14 @@ function renderProjects(editKey, projectTab = 'manage'){
 `;
   view.innerHTML = `
     <div class="projects-page panel management-card">
-    ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'documents', 'usage', 'audits'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '문서', '사용량', '목표 대비 현황 점검'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
+    ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'documents', 'usage', 'audits', 'suggestions'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '문서', '사용량', '목표 대비 현황 점검', 'Suggestions'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
     ${ed ? projectForm : ''}
     ${ed ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
     ${ed && projectTab === 'manage' && me?.kind === 'human' ? `<section class="panel project-restart" aria-labelledby="app-restart-title"><div class="audit-toolbar"><h3 id="app-restart-title">앱 재시작</h3><button type="button" id="app-restart-copy" disabled aria-label="앱 재시작 진단 복사"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg> 진단 복사</button></div><p class="dim">저장된 PM2 앱을 재시작하고 로컬 접속을 확인해요. Dev 자체 재시작은 진행 중인 작업이 끝난 뒤 처리하며 화면이 자동으로 다시 연결돼요.</p><div class="line"><button type="button" id="app-restart-start" disabled>앱 재시작</button><button type="button" id="app-restart-refresh">상태 확인</button></div><div id="app-restart-state" role="status" aria-live="polite">재시작 설정을 확인하고 있어요…</div><p id="app-restart-feedback" class="dim" role="status" aria-live="polite"></p><textarea id="app-restart-manual" aria-label="직접 복사할 앱 재시작 진단" readonly hidden></textarea></section>` : ''}
     ${ed && projectTab === 'manage' ? `<section class="panel project-service"><h3>서비스 연결</h3><p class="dim">도메인과 포트를 저장한 뒤 연결해 주세요. 실행·접속 검사는 일반 코드로 처리해요. 실행 설정이 없을 때만 선택한 에이전트가 유료로 파일을 생성해요. 기존 파일만 사용에서는 에이전트를 호출하지 않아요. 앱 확인 후 DNS·공용 터널을 반영하고 터널을 재시작해요.</p><div class="line"><button type="button" id="p-service-connect" disabled>서비스 연결</button><button type="button" id="p-service-disconnect" disabled>연결 해제</button><button type="button" id="p-service-refresh">새로고침</button></div><section class="service-diagnostic" aria-labelledby="service-diagnostic-title"><div class="service-diagnostic-head"><h4 id="service-diagnostic-title">연결 진단</h4><button type="button" id="p-service-copy" title="복사하기" aria-label="연결 진단 전체 내용 복사하기"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg></button></div><div id="p-service-status" role="status" aria-live="polite"></div><p id="p-service-copy-message" role="status" aria-live="polite" class="dim"></p><textarea id="p-service-copy-text" aria-label="직접 복사할 연결 진단 전체 내용" readonly hidden></textarea></section><p class="dim">연결 해제는 터널 경로만 제거해요. 앱과 DNS 레코드는 유지해요. 도메인을 바꾸면 이전 DNS 레코드는 Cloudflare에서 정리해 주세요.</p></section>` : ''}
     ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg><span>Codex로 문서 생성</span></button><button type="button" data-doc-provider="claude"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg><span>Claude로 문서 생성</span></button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
-    ${ed && projectTab === 'audits' ? `<section class="panel project-audits" aria-labelledby="audit-title"><div class="audit-toolbar"><h3 id="audit-title">목표 대비 현황 점검</h3><button type="button" id="audit-refresh">새로고침</button></div><p class="dim">기준 문서와 현재 코드·검사·Issue 이력을 비교해요. 후보 발행 후 Plan 승인과 Task 실행은 기존 절차를 따라요.</p><div class="audit-toolbar"><label>분석 도구 <select id="audit-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><button type="button" class="primary" id="audit-start" disabled>유료 점검 시작</button></div><div id="audit-preflight" aria-live="polite"></div><p id="audit-message" role="status" aria-live="polite"></p><div class="audit-layout"><section aria-labelledby="audit-history-title"><h4 id="audit-history-title">점검 이력</h4><div id="audit-history"></div></section><section id="audit-detail" aria-label="점검 보고서"></section></div></section>` : ''}
+    ${ed && ['audits', 'suggestions'].includes(projectTab) ? `<section class="panel project-audits" aria-labelledby="audit-title"><div class="audit-toolbar"><h3 id="audit-title">${projectTab === 'suggestions' ? 'Suggestions · 실험' : '목표 대비 현황 점검'}</h3><button type="button" id="audit-refresh">새로고침</button></div><p class="dim">${projectTab === 'suggestions' ? '비효율·위험과 기능을 제안해요. 기능 제안은 추측이며, 사람이 고른 후보만 Issue로 올려요. 버린 이유는 다음 점검에 참고해요.' : '기준 문서와 현재 코드·검사·Issue 이력을 비교해요. 후보 발행 후 Plan 승인과 Task 실행은 기존 절차를 따라요.'}</p><div class="audit-toolbar"><label>분석 도구 <select id="audit-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><button type="button" class="primary" id="audit-start" disabled>유료 점검 시작</button></div><div id="audit-preflight" aria-live="polite"></div><p id="audit-message" role="status" aria-live="polite"></p><div class="audit-layout"><section aria-labelledby="audit-history-title"><h4 id="audit-history-title">점검 이력</h4><div id="audit-history"></div></section><section id="audit-detail" aria-label="점검 보고서"></section></div></section>` : ''}
     ${!ed ? `<table class="issues projects-table"><thead><tr><th>Key</th><th>Name</th><th>서비스 도메인</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th class="col-narrow">Archived</th><th class="col-narrow"></th></tr></thead><tbody>
       ${projects.map(p => `<tr class="row" data-project-row="${esc(p.key)}"><td class="ref">${esc(p.key)}</td><td><a class="project-title" data-project-link="${esc(p.key)}" href="#/projects?project=${encodeURIComponent(p.key)}&tab=manage">${esc(p.name)}</a><div class="sub"><span data-project-service="${esc(p.key)}">상태 확인 중…</span></div></td><td data-project-domain="${esc(p.key)}">${projectDomainCell(p.service_domain)}</td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td class="col-narrow"><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
@@ -2785,7 +2813,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       form.removeAttribute('aria-busy');
     }
   });
-  if(ed && projectTab !== 'audits'){
+  if(ed && !['audits', 'suggestions'].includes(projectTab)){
     const panel = view.querySelector('#project-initialization');
     const refreshInitialization = async () => {
       if(!panel.isConnected) return;
@@ -2834,7 +2862,7 @@ function renderProjects(editKey, projectTab = 'manage'){
   if(ed && projectTab === 'manage' && me?.kind === 'human') bindProjectRestart(ed);
   if(ed && projectTab === 'documents') bindProjectDocuments(ed);
   if(ed && projectTab === 'usage') bindProjectUsage(ed);
-  if(ed && projectTab === 'audits') bindProjectAudits(ed);
+  if(ed && ['audits', 'suggestions'].includes(projectTab)) bindProjectAudits(ed, projectTab === 'suggestions' ? 'improve' : 'goal');
   view.querySelectorAll('[data-delete-project]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
     const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;
     const state = await api('GET', `${url}/delete-check`);
@@ -2946,7 +2974,8 @@ function bindProjectRestart(project){
 }
 
 // 화면을 떠나면 이전 프로젝트의 응답과 인증 오류를 반영하지 않는다.
-function bindProjectAudits(project){
+function bindProjectAudits(project, kind = 'goal'){
+  const improve = kind === 'improve';
   const panel = view.querySelector('.project-audits');
   const provider = panel.querySelector('#audit-provider'), start = panel.querySelector('#audit-start');
   const preflight = panel.querySelector('#audit-preflight'), history = panel.querySelector('#audit-history');
@@ -2995,14 +3024,34 @@ function bindProjectAudits(project){
       return `<li>${source?.issue_ref ? link(source.issue_ref) : esc(source?.path || e.source_id)}${e.section ? ` · ${esc(e.section)}` : ''}${e.line_start ? ` · ${e.line_start}–${e.line_end}행` : ''}${source?.hash ? `<small class="dim">${esc(source.hash)}</small>` : ''}</li>`;
     }).join('')}</ul>`;
   }
+  function improveReport(r, publications){
+    const dismissed = new Map((r.dismissals || []).map(d => [d.candidate_id, d.reason]));
+    const categories = {efficiency:'비효율', risk:'위험(버그 가능성)', feature:'기능 제안 · 추측'};
+    return `<p class="audit-summary">${esc(r.report.summary)}</p><h4>개선 제안 후보</h4>${r.report.candidates.map(c => {
+      const published = publications.get(c.id), reason = dismissed.get(c.id);
+      const disabled = busy || r.stale || r.status !== 'complete';
+      return `<article class="audit-card suggestion-card" data-candidate="${esc(c.id)}"><span class="audit-judgment">${esc(categories[c.category])}</span><h5>${esc(c.title)}</h5><p>${esc(c.problem)}</p><p><b>제안</b> ${esc(c.proposal)}</p><p><b>효과</b> ${esc(c.impact)} · <b>크기</b> ${esc(c.effort)}</p>${evidence(c.evidence, r.snapshot)}${c.related_issues?.length ? `<p>관련 Issue ${c.related_issues.map(link).join(' · ')}</p>` : ''}<details><summary>Plan 초안</summary><pre class="document-source">${esc(c.plan_draft)}</pre></details>${published ? `<p>발행한 Issue ${link(published)}</p>` : reason != null ? `<p class="dim">버림 · ${esc(reason)}</p>` : `<div class="suggestion-actions"><button type="button" data-suggestion-publish="${esc(c.id)}" ${disabled ? 'disabled' : ''}>Issue로 올리기</button><button type="button" data-suggestion-dismiss="${esc(c.id)}" ${disabled ? 'disabled' : ''}>버리기</button><button type="button" data-suggestion-hold="${esc(c.id)}" ${busy ? 'disabled' : ''}>보류</button></div>`}</article>`;
+    }).join('') || '<div class="empty">아직 개선 제안 후보가 없어요.</div>'}`;
+  }
+  async function dismiss(id){
+    if(busy) return;
+    const reason = await confirmDialog('제안을 버리는 이유를 적어 주세요', {input:true, okText:'버리기'});
+    if(!current() || !reason?.trim()) return;
+    busy = true; controls(); drawReport();
+    try {
+      const result = await api('POST', `${url}/${selected}/dismiss`, {candidate_id:id, reason:reason.trim()}, current);
+      if(current()){ report.dismissals = [...(report.dismissals || []), result]; drawReport(); message.textContent = '제안을 버렸어요. 다음 점검에서 이유를 참고해요.'; }
+    } catch(e){ if(current()) message.textContent = `${e.message} 다시 시도해 주세요.`; }
+    finally { if(current()){ busy = false; await load(); } }
+  }
   function drawReport(){
     const r = report, snapshot = r.snapshot, publications = new Map((r.publications || []).filter(p => p.mode !== 'comment').map(p => [p.candidate_id, p.issue_ref]));
     // 재조회에서 발행됐거나 발행 불가가 된 후보는 선택에서 제거한다.
-    const eligible = new Set((r.report?.candidates || []).filter(c => ['new_work', 'reuse_issue'].includes(c.disposition) && !publications.has(c.id) && !r.stale).map(c => c.id));
+    const eligible = new Set((r.report?.candidates || []).filter(c => (improve || ['new_work', 'reuse_issue'].includes(c.disposition)) && !publications.has(c.id) && !r.stale).map(c => c.id));
     for(const id of checked) if(!eligible.has(id)) checked.delete(id);
     detail.innerHTML = `<h4 tabindex="-1" id="audit-report-title">점검 #${r.id} ${state(r.status)}</h4><p class="audit-meta">${esc(r.provider)} · 요청 모델 ${esc(r.model)} · 실제 모델 ${esc(r.actual_model || '아직 미확인')}<br>시작 ${time(r.started_at)} · 종료 ${time(r.ended_at)}<br>기준 ${esc(r.base_branch || '미확인')} · ${esc(r.base_sha || '미확인')}<br>${esc(limitsText(r.limits))}<br>측정 비용 ${r.usage?.cost_measured ? `$${esc(r.usage.cost_usd)}` : '미계측'} · 입력 토큰 ${tokenHtml(r.usage?.input_tokens)} · 출력 토큰 ${tokenHtml(r.usage?.output_tokens)}</p>${r.stale ? `<p class="audit-notice" role="status">오래된 결과예요. ${esc(r.stale_reason)} 새 후보 발행 전에 다시 점검해 주세요.</p>` : ''}${r.error ? `<p class="error" role="alert">${esc(r.error)} 도구와 실행 조건을 확인하고 새 점검을 시작해 주세요.</p>` : ''}${active(r.status) ? `<p role="status">${esc(r.phase || states[r.status])} · 진행 상태를 자동으로 확인해요.</p><button type="button" id="audit-cancel" ${r.status === 'cancelling' || busy ? 'disabled' : ''}>${r.status === 'cancelling' ? '취소 중…' : '점검 취소'}</button>` : ''}
       ${snapshot ? `<details class="audit-materials"><summary>기준 자료와 누락 · 문서 ${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).length}개</summary>${list(snapshot.warnings)}<ul>${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).map(s => `<li>${esc(s.path || s.id)}<small class="dim">${esc(s.hash)}</small></li>`).join('')}</ul><ul>${(snapshot.omissions || []).map(o => `<li>${esc(o.source_id)} · ${esc(o.reason)}</li>`).join('')}</ul>${snapshot.omissions_truncated ? `<p>누락 ${snapshot.omitted_count}개 중 일부만 표시해요.</p>` : ''}</details>` : ''}
-      ${r.report ? `<p class="audit-summary">${esc(r.report.summary)}</p><h4>요구사항별 판단</h4>${r.report.requirements.map(q => `<article class="audit-card"><h5>${esc(q.title)} <span class="audit-judgment">${esc(judgments[q.status])}</span></h5><p>${esc(q.assessment)}</p>${evidence(q.evidence, snapshot)}</article>`).join('') || '<div class="empty">판단할 요구사항 근거가 없어요.</div>'}<h4>후속 Issue 후보</h4><p class="dim">선택한 개발 후보를 새 Issue로 발행하고 관련 Issue를 본문에 기재해요. Plan 제안은 자동으로 승인하거나 실행하지 않아요.</p>${r.report.candidates.map(c => {
+      ${r.report && improve ? improveReport(r, publications) : r.report ? `<p class="audit-summary">${esc(r.report.summary)}</p><h4>요구사항별 판단</h4>${r.report.requirements.map(q => `<article class="audit-card"><h5>${esc(q.title)} <span class="audit-judgment">${esc(judgments[q.status])}</span></h5><p>${esc(q.assessment)}</p>${evidence(q.evidence, snapshot)}</article>`).join('') || '<div class="empty">판단할 요구사항 근거가 없어요.</div>'}<h4>후속 Issue 후보</h4><p class="dim">선택한 개발 후보를 새 Issue로 발행하고 관련 Issue를 본문에 기재해요. Plan 제안은 자동으로 승인하거나 실행하지 않아요.</p>${r.report.candidates.map(c => {
         const published = publications.get(c.id), selectable = ['new_work', 'reuse_issue'].includes(c.disposition) && !published && !r.stale;
         return `<article class="audit-card" data-candidate="${esc(c.id)}"><h5>${selectable ? `<label class="audit-choice"><input type="checkbox" data-candidate-id="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''} ${busy ? 'disabled' : ''}><span>${esc(c.title)}</span></label>` : esc(c.title)}</h5><p class="audit-meta">${esc(dispositions[c.disposition])} · ${esc(c.priority)} · 요구사항 ${c.requirement_ids.map(esc).join(', ')}</p>${published ? `<p>발행한 Issue ${link(published)}</p>` : ''}<p>${esc(c.gap)}</p><p><b>범위</b> ${esc(c.scope)}</p><b>완료 기준</b>${list(c.completion_criteria)}<b>선행 조건</b>${c.prerequisites.length ? list(c.prerequisites) : '<p>없어요.</p>'}${c.related_issues.length ? `<p>관련 Issue ${c.related_issues.map(link).join(' · ')}</p>` : ''}${evidence(c.evidence, snapshot)}<details><summary>Plan 초안</summary><pre class="document-source">${esc(c.plan_draft)}</pre></details>${c.disposition === 'human_confirmation' ? '<p class="dim">사람이 근거와 선행 조건을 확인한 후 다시 점검해 주세요.</p>' : ''}</article>`;
       }).join('') || '<div class="empty">후속 후보가 없어요. 차이가 없거나 근거가 부족하면 후보를 만들지 않아요.</div>'}${r.report.candidates.some(c => ['new_work', 'reuse_issue'].includes(c.disposition) && !publications.has(c.id)) ? `<button type="button" id="audit-publish" ${busy || r.stale || !checked.size ? 'disabled' : ''}>${busy ? '발행 중…' : '선택한 후보 새 Issue로 발행'}</button>` : ''}` : ''}`;
@@ -3010,6 +3059,9 @@ function bindProjectAudits(project){
       input.checked ? checked.add(input.dataset.candidateId) : checked.delete(input.dataset.candidateId);
       detail.querySelector('#audit-publish').disabled = !checked.size;
     });
+    detail.querySelectorAll('[data-suggestion-publish]').forEach(b => b.onclick = () => { checked.clear(); checked.add(b.dataset.suggestionPublish); publish(); });
+    detail.querySelectorAll('[data-suggestion-dismiss]').forEach(b => b.onclick = () => dismiss(b.dataset.suggestionDismiss));
+    detail.querySelectorAll('[data-suggestion-hold]').forEach(b => b.onclick = () => { message.textContent = '후보를 그대로 남겨 뒀어요. 나중에 다시 확인해 주세요.'; });
     detail.querySelector('#audit-cancel')?.addEventListener('click', cancel);
     detail.querySelector('#audit-publish')?.addEventListener('click', publish);
     const diagnosticId = `DEV-AUDIT-${project.key}-${r.id}`;
@@ -3057,9 +3109,9 @@ function bindProjectAudits(project){
     if(!current() || loading || busy) return;
     clearTimeout(timer); loading = true; controls();
     try {
-      const data = await api('GET', url, undefined, current);
+      const data = await api('GET', `${url}?kind=${kind}`, undefined, current);
       if(!current()) return;
-      rows = data.audits; drawHistory();
+      rows = data.audits.filter(r => (r.kind || 'goal') === kind); drawHistory();
       if(selected === null && rows.length) selected = rows[0].id;
       await Promise.all([loadPreflight(), selected !== null ? select(selected) : Promise.resolve()]);
       if(!rows.length) detail.innerHTML = '<div class="empty">점검을 시작하면 여기서 보고서를 확인할 수 있어요.</div>';
@@ -3079,7 +3131,7 @@ function bindProjectAudits(project){
       if(!current() || !data || !data.available || data.blocked_reason) return;
       if(!request){
         if(!await confirmDialog('유료 점검을 시작할까요?', {description:`${data.provider} · 적용 모델 ${data.applied_model}\n${limitsText(data.limits)}`, okText:'점검 시작'})) return;
-        request = {request_id:crypto.randomUUID(), provider:data.provider, model:data.applied_model};
+        request = {request_id:crypto.randomUUID(), provider:data.provider, model:data.applied_model, kind};
       }
       const result = await api('POST', url, request, current);
       if(!current()) return;

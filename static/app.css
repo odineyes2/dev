@@ -963,3 +963,17 @@ table.harness-map td:nth-child(1){ width:22%; } table.harness-map td:nth-child(2
 
 /* 수동 사용량의 모델·설명은 좁은 화면에서도 카드 안에서 줄바꿈한다. */
 .manual-sessions li,.manual-usage-settings p{ overflow-wrap:anywhere; }
+
+/* 개선 제안은 기존 점검 카드와 종류별 사용량 토큰을 공유한다. */
+.suggestion-actions,.trend-kind-legend{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-3)}
+.suggestion-card{overflow-wrap:anywhere}
+.trend-kind-issue{fill:var(--accent);color:var(--accent)}
+.trend-kind-goal_audit{fill:var(--s-in_progress);color:var(--text)}
+.trend-kind-improve_audit{fill:var(--s-done);color:var(--text)}
+.trend-kind-legend span{font-size:12px;color:var(--text);display:inline-flex;align-items:center;gap:var(--sp-1)}
+.trend-kind-legend span::before{content:'';width:12px;height:12px;border-radius:var(--r-sm);background:var(--accent)}
+.trend-kind-legend .trend-kind-goal_audit::before{background:var(--s-in_progress)}
+.trend-kind-legend .trend-kind-improve_audit::before{background:var(--s-done)}
+.trend-improve{margin-bottom:var(--sp-4)}
+.trend-improve .issue-summary-values>div{flex-wrap:wrap}
+.trend-improve small{display:block;color:var(--dim);font-size:12px}
