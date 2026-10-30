@@ -1,0 +1,12 @@
+<!doctype html>
+<!-- 관리 도구의 헤더와 빈 목록을 표시한다. -->
+<html lang="ko" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{PROJECT_NAME}}</title><link rel="stylesheet" href="/static/family.css"><link rel="stylesheet" href="/static/app.css"><script defer src="/static/app.js"></script></head>
+<body><header class="top"><a class="brand" href="/"><svg class="ico brand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 1 0 10.5 10.5Z"/></svg><span class="brand-word">{{PROJECT_NAME}}</span></a><div class="header-right">
+<!-- [option:dark_mode] -->
+<button id="theme" class="theme-toggle-btn" title="밤/낮" aria-label="밤/낮"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button>
+<!-- [/option:dark_mode] -->
+</div></header><main><h1>Overview</h1>
+<!-- [option:login] -->
+<p id="session" role="status">로그인을 확인하고 있어요.</p>
+<!-- [/option:login] -->
+<section class="empty" aria-label="목록">아직 항목이 없어요.</section></main></body></html>
