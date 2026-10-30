@@ -977,3 +977,16 @@ table.harness-map td:nth-child(1){ width:22%; } table.harness-map td:nth-child(2
 .trend-improve{margin-bottom:var(--sp-4)}
 .trend-improve .issue-summary-values>div{flex-wrap:wrap}
 .trend-improve small{display:block;color:var(--dim);font-size:12px}
+
+/* 프로젝트 생성 카드와 기본 기능을 배치한다. */
+.project-templates, #p-template-options{ border:0; padding:0; margin:var(--sp-4) 0; min-width:0; }
+.template-cards{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--sp-2); }
+#project-dialog .template-card{ display:flex; align-items:flex-start; gap:var(--sp-2); padding:var(--sp-3); border:1px solid var(--border); border-radius:8px; cursor:pointer; background:var(--panel); }
+.template-card:has(:checked){ border-color:var(--accent); }
+.template-card:hover{ background:var(--panel-2); }
+#project-dialog .template-card, #project-dialog .template-options label{ flex-direction:row; font-family:var(--sans); text-transform:none; letter-spacing:0; color:var(--text); font-size:14px; font-weight:400; }
+.template-card strong, .template-card .dim{ display:block; font-size:13px; overflow-wrap:anywhere; }
+#project-dialog .template-card input, #project-dialog .template-options input{ width:auto; min-height:0; flex:none; }
+.template-options{ display:flex; flex-wrap:wrap; gap:var(--sp-2) var(--sp-4); }
+#project-dialog .template-options label{ display:flex; align-items:center; gap:var(--sp-2); min-height:40px; }
+@media(max-width:800px){ .template-cards{ grid-template-columns:minmax(0,1fr); } }

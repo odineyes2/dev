@@ -4707,6 +4707,20 @@ def check_project_initialization(page, shots):
         page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
         open_project_creation(page)
         page.click('.project-spec summary'); page.fill('#p-key', 'INIT'); page.fill('#p-name', '기획서 생성 검사'); page.fill('#p-folder', 'init-demo')
+        expect(page.locator('[name="project-template"]')).to_have_count(3)
+        expect(page.locator('[name="project-template"][value="blank"]')).to_be_checked()
+        expect(page.locator('#p-template-options')).to_be_hidden()
+        page.check('[name="project-template"][value="service-split"]')
+        expect(page.locator('[data-template-option]:checked')).to_have_count(3)
+        expect(page.locator('#p-template-options')).to_contain_text('PostgreSQL')
+        page.check('[name="project-template"][value="blank"]')
+        expect(page.locator('#p-template-options')).to_be_hidden()
+        page.check('[name="project-template"][value="admin-web"]')
+        expect(page.locator('[data-template-option]:checked')).to_have_count(3)
+        page.uncheck('[data-template-option="db"]')
+        page.check('[name="project-template"][value="service-split"]')
+        page.check('[name="project-template"][value="admin-web"]')
+        expect(page.locator('[data-template-option="db"]')).not_to_be_checked()
         page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("첨부")')
         assert not requests
         page.set_input_files('#p-spec', {'name': 'example.md', 'mimeType': 'text/markdown', 'buffer': '# 간단한 개인 도구\n기술 스택은 미정'.encode()})
@@ -4717,11 +4731,16 @@ def check_project_initialization(page, shots):
                 page.wait_for_timeout(150)
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 assert page.locator('#project-form').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
+                page.locator('.project-templates').scroll_into_view_if_needed()
                 page.screenshot(path=str(shots / f'project-initialization-{theme}-{width}.png'))
+                page.locator('#p-template-options').scroll_into_view_if_needed()
+                page.screenshot(path=str(shots / f'project-template-options-{theme}-{width}.png'))
         page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("요청 확인 실패")')
         page.locator('#p-initialize').evaluate('e => {e.click();e.click()}')
         page.wait_for_selector('#project-initialization:not([hidden])')
         assert len(requests) == 2 and requests[0] == requests[1]
+        assert requests[0]['template'] == 'admin-web'
+        assert requests[0]['options'] == {'login': True, 'db': False, 'dark_mode': True}
         assert len(uploads) == 1
         assert '기획서 분석 대기' in page.inner_text('#project-initialization')
         state.update(status='failed', phase='생성 중단', error='서버 재시작으로 중단됐어요.')
