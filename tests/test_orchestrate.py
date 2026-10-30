@@ -752,7 +752,7 @@ with db.connect() as c:
 client = TestClient(app.app)
 with patch.object(app, '_resolve_actor', AsyncMock(return_value=({'kind': 'agent', 'id': 1}, ''))):
     assert client.post('/api/orchestrate/self-restart/now').status_code == 403
-proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], stdout=subprocess.DEVNULL,
                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
 review.ACTIVE_PROCESSES[active_run] = proc
 with patch.object(app, '_resolve_actor', AsyncMock(return_value=(me, ''))):

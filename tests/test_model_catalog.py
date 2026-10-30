@@ -48,7 +48,7 @@ assert "이 실행의 모델: gpt-6-sol" in review.with_model(["codex", "exec", 
 
 s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
 proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app:app", "--port", str(port)], cwd=ROOT / "server",
-                        env={**os.environ, "DEV_NIGHTSHIFT_URL": "http://127.0.0.1:9"}, stderr=subprocess.DEVNULL)
+                        env={**os.environ, "DEV_NIGHTSHIFT_URL": "http://127.0.0.1:9"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 BASE = f"http://127.0.0.1:{port}"
 H = {"Authorization": f"Bearer {key}"}
 

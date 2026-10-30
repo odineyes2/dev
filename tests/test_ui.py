@@ -5227,8 +5227,8 @@ tmp = Path(tempfile.mkdtemp())
 (tmp / "capture_app.py").write_text(BOOTSTRAP, "utf-8")
 ns_port, dev_port = free_port(), free_port()
 env = child_environment(tmp, ns_port, dev_port)
-procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "fake_ns:app", "--port", str(ns_port)], cwd=tmp, env=env, stderr=subprocess.DEVNULL),
-         subprocess.Popen([sys.executable, str(tmp / "capture_app.py"), str(ROOT / "server"), str(ns_port), str(dev_port)], cwd=tmp, env=env, stderr=subprocess.DEVNULL)]
+procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "fake_ns:app", "--port", str(ns_port)], cwd=tmp, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+         subprocess.Popen([sys.executable, str(tmp / "capture_app.py"), str(ROOT / "server"), str(ns_port), str(dev_port)], cwd=tmp, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)]
 BASE = f"http://127.0.0.1:{dev_port}"
 shots = ROOT / "tests" / "shots"; shots.mkdir(exist_ok=True)
 try:
