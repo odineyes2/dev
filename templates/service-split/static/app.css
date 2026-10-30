@@ -1,0 +1,10 @@
+/* 관리 도구의 본문과 좁은 화면 여백을 정한다. */
+body { --page-max:1440px; --page-gutter:max(clamp(24px, calc((100vw - 900px) / 8), 74px), calc((100vw - var(--page-max)) / 2)); }
+.top { padding-left:var(--page-gutter); padding-right:var(--page-gutter); }
+main { max-width:none; margin:0; padding:24px var(--page-gutter); }
+h1 { font-size:24px; font-weight:650; margin:0 0 16px; }
+.header-right { display:flex; align-items:center; gap:8px; }
+.brand { min-width:0; }
+.brand-word { overflow-wrap:anywhere; }
+.theme-toggle-btn { min-width:40px; min-height:40px; flex-shrink:0; background:var(--panel); color:var(--text); }
+@media (max-width:800px) { body { --page-gutter:16px; } .top { padding:16px; gap:12px; } }
