@@ -320,6 +320,14 @@ table.issues:not(.tasks) .title-cell{ width:100%; min-width:240px; overflow-wrap
 .side #ask-codex-review{ margin-top:var(--sp-2); }
 .side #ask-codex-execute{ margin-top:var(--sp-2); }
 .review-actions{ display:flex; gap:6px; flex-wrap:wrap; }
+/* 결정 버튼과 폼의 두 동작을 같은 너비로 배열한다. */
+#result-actions, #decision-actions,
+#decision-form .row-end, #result-form .row-end{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--sp-2); }
+#result-actions > button:first-child:nth-last-child(odd),
+#decision-actions > button:first-child:nth-last-child(odd){ grid-column:1/-1; }
+#result-actions > button, #decision-actions > button,
+#decision-form .row-end > button, #result-form .row-end > button{ width:100%; justify-content:center; }
+
 .decision{ margin-top:var(--sp-4); padding-top:var(--sp-4); border-top:1px solid var(--border); }
 .decision-state{ margin-bottom:var(--sp-3); }
 .decision-state .md, .decision-state p{ margin:var(--sp-2) 0 0; }
