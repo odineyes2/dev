@@ -1,0 +1,2 @@
+-- 게임 점수 테이블을 만든다.
+CREATE TABLE scores (id INTEGER PRIMARY KEY, name TEXT NOT NULL, score INTEGER NOT NULL CHECK(score BETWEEN 0 AND 1000000));

@@ -243,6 +243,8 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
                   + '\n앱 코드와 runtime은 작성하지 않는다. 제공 문서는 다시 쓰지 않고 README·AGENTS.md·공식 문서의 빠진 파일과 .env.example 보강·기능 Issue/Task만 작성한다.\n'
                   + prompt[end:])
         prompt = prompt.replace('초기 앱의 구동과 기본 화면은 지금 완성한다. ', '')
+        if row.get('template') == 'web-game':
+            prompt += '\nREADME에는 공개 점수 API가 연습용이며 실제 서비스의 속도 제한·인증은 별도 구현해야 한다고 명시한다.'
         schema = SCHEMA.with_name('project_init_template.schema.json')
     if correction:
         prompt += '\n앞선 생성 결과가 다음 검증에서 실패했다. 이 오류를 수정하여 전체 JSON을 다시 반환한다: ' + correction
@@ -451,7 +453,7 @@ if(String((a.env||{}).PORT)!==process.env.PORT) throw Error('PM2 port mismatch')
                                     raise issues.StoreError('초기 앱이 원본·Git·환경 파일을 공개하거나 비공개 경로를 잘못 처리해요.', 409)
                             if row.get('template', 'blank') != 'blank':
                                 manifest = project_templates.get(row['template'])
-                                login = json.loads(row['options_json']).get('login', manifest['options']['login']['default'])
+                                login = json.loads(row['options_json']).get('login', manifest['options'].get('login', {}).get('default', False))
                                 if login and client.get(base + '/api/me').status_code != 401:
                                     raise issues.StoreError('초기 앱의 로그인 보호가 정상 응답하지 않아요.', 409)
                             _checkpoint(row)

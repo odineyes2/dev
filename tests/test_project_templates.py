@@ -57,7 +57,8 @@ class Nightshift(BaseHTTPRequestHandler):
 
 class TemplatesTest(unittest.TestCase):
     def test_catalog_and_validation(self):
-        self.assertEqual(templates.catalog()[0]['id'], 'blank')
+        self.assertEqual([m['id'] for m in templates.catalog()], ['blank', 'admin-web', 'service-split', 'web-game'])
+        self.assertTrue(all(m['provides'] for m in templates.catalog()))
         self.assertEqual(templates.render('blank', {}, {}), {})
         for template_id in ('../admin-web', 'missing', None):
             with self.assertRaises(templates.StoreError):
@@ -74,7 +75,7 @@ class TemplatesTest(unittest.TestCase):
         self.assertEqual(templates._blocks('# [option:login]\n// [option:db]\nx\n// [/option:db]\n# [/option:login]\n', {'login': True, 'db': False}), '')
 
     def test_family_and_collection(self):
-        for template_id in ('admin-web', 'service-split'):
+        for template_id in ('admin-web', 'service-split', 'web-game'):
             self.assertEqual(sync_family.check(ROOT / f'templates/{template_id}/static'), [])
             self.assertEqual((ROOT / f'templates/{template_id}/docs/DESIGN.md').read_bytes(), (ROOT / 'docs/DESIGN.md').read_bytes())
         self.assertFalse(any('templates' in p.relative_to(ROOT).parts for p in test_runner.test_files(ROOT)))
@@ -84,6 +85,33 @@ class TemplatesTest(unittest.TestCase):
 
     def test_service_split(self):
         self.check_option_matrix('service-split')
+
+    def test_web_game(self):
+        for scores, dark in itertools.product((False, True), repeat=2):
+            options = {'scores': scores, 'dark_mode': dark}
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder)
+                files = templates.render('web-game', options, VALUES)
+                self.assertEqual('server/db.py' in files, scores)
+                self.assertEqual('server/migrations/001_scores.sql' in files, scores)
+                self.assertEqual('id="scores"' in files['static/index.html'], scores)
+                self.assertEqual('id="theme"' in files['static/index.html'], dark)
+                self.assertFalse(any('[option:' in text or '{{' in text for text in files.values()))
+                validation = {'description': '검사용 게임', 'runtime': templates.get('web-game')['runtime'],
+                              'files': [{'path': n, 'content': t} for n, t in files.items()], 'issues': []}
+                validation['files'] += [{'path': n, 'content': '# 문서\n'} for n in pi.REQUIRED - files.keys()]
+                with self.assertRaisesRegex(ValueError, 'Issue 개수'):
+                    pi.validate(validation, path)
+                copy_files(path, files)
+                row = {'request_id': 'game-check', 'key': 'TEST', 'template': 'web-game', 'options_json': json.dumps(options), 'service_port': 8400, 'service_app': 'template-test'}
+                with patch.object(pi.config, 'DATA_DIR', path / 'verify-data'), patch.object(pi, '_checkpoint'), patch.object(pi, '_update'):
+                    pi.verify_runtime(row, validation, path)
+                env = {k: v for k, v in os.environ.items() if k.upper() in {'PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'}}
+                env.update(PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
+                for command in ([sys.executable, 'tests/test_app.py'], ['node', 'tests/test_game.js'],
+                                *[['node', '--check', n] for n in ('static/app.js', 'static/game.js', 'ecosystem.config.js', 'tests/test_game.js')]):
+                    result = subprocess.run(command, cwd=path, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def check_option_matrix(self, template_id):
         fake = ThreadingHTTPServer(('127.0.0.1', 0), Nightshift)
@@ -154,6 +182,10 @@ class TemplatesTest(unittest.TestCase):
     def test_service_split_capture(self):
         self.capture_template('service-split')
 
+    @unittest.skipUnless(CAPTURE, 'R04는 --capture로 실행한다')
+    def test_web_game_capture(self):
+        self.capture_template('web-game')
+
     def capture_template(self, template_id):
         from playwright.sync_api import sync_playwright, expect
         # Dev 전용 capture_ui는 생성 앱을 지원하지 않아 복사본을 로컬 서버로 캡처한다.
@@ -185,7 +217,15 @@ class TemplatesTest(unittest.TestCase):
                             page = browser.new_page(viewport={'width': width, 'height': 850}, color_scheme=theme)
                             page.route('**/*', lambda route: route.continue_() if route.request.url.startswith(f'http://127.0.0.1:{port}/') else route.abort())
                             page.goto(f'http://127.0.0.1:{port}/')
-                            expect(page.locator('#session')).to_have_text('nightshift에서 로그인한 뒤 새로고침해 주세요.')
+                            if template_id == 'web-game':
+                                expect(page.locator('#game')).to_be_visible()
+                                expect(page.locator('#status')).to_contain_text('플레이 중이에요.')
+                                page.locator('#pause').click()
+                                expect(page.locator('#status')).to_contain_text('멈췄어요.')
+                                page.locator('#restart').click()
+                                expect(page.locator('#status')).to_contain_text('플레이 중이에요.')
+                            else:
+                                expect(page.locator('#session')).to_have_text('nightshift에서 로그인한 뒤 새로고침해 주세요.')
                             expect(page.locator('html')).to_have_attribute('data-theme', theme)
                             self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
                             output = ROOT / '.ui-captures' / template_id

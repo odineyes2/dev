@@ -1,0 +1,162 @@
+/* family.css — 원본 dev@19e57e2a26 sha256:95039f03ffee0c1245e52a08e1d9fdc90f42aac1644043a1591ae1cc56dd6eee · 여기서 고치지 말 것 */
+/* 패밀리룩 공용 CSS — dev·nightshift·Moai가 같이 쓰는 토큰(낮·밤)·헤더·탭 줄·공통 부품 (DESIGN.md 2~8절).
+   원본은 dev의 static/family.css 하나다. 공용 부품은 여기서만 고치고 scripts/sync_family.py로 퍼뜨린다.
+   글자는 역할이 둘이다:
+   - 틀(로고·메뉴·섹션 제목·표 머리·라벨·ID): 모노·대문자·작게·넓은 자간
+   - 내용(제목·본문·댓글): Pretendard·보통 크기·살짝 좁은 자간
+   색은 거의 무채색, 색은 상태(점·배지)와 주요 동작에만. */
+@font-face{ font-family:'Pretendard Variable'; font-weight:45 920; font-style:normal; font-display:swap;
+  src:url('/fonts/PretendardVariable.woff2') format('woff2-variations'); }
+@font-face{ font-family:'IBM Plex Mono'; font-weight:400; font-style:normal; font-display:swap; src:url('/fonts/IBMPlexMono-400.woff2') format('woff2'); }
+@font-face{ font-family:'IBM Plex Mono'; font-weight:500; font-style:normal; font-display:swap; src:url('/fonts/IBMPlexMono-500.woff2') format('woff2'); }
+@font-face{ font-family:'IBM Plex Mono'; font-weight:600; font-style:normal; font-display:swap; src:url('/fonts/IBMPlexMono-600.woff2') format('woff2'); }
+/* 한글만 먼저 선택한다. 영문 시스템 글꼴의 한글 지원 여부와 무관하다. */
+@font-face{ font-family:'Dev Pretendard Hangul'; font-weight:45 920; font-style:normal; font-display:swap;
+  src:url('/fonts/PretendardVariable.woff2') format('woff2-variations');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
+@font-face{ font-family:'Dev Apple Hangul'; font-weight:400; font-style:normal; font-display:swap;
+  src:local('AppleSDGothicNeo-Regular'),local('Apple SD Gothic Neo Regular');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
+@font-face{ font-family:'Dev Apple Hangul'; font-weight:500; font-style:normal; font-display:swap;
+  src:local('AppleSDGothicNeo-Medium'),local('Apple SD Gothic Neo Medium');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
+@font-face{ font-family:'Dev Apple Hangul'; font-weight:600; font-style:normal; font-display:swap;
+  src:local('AppleSDGothicNeo-SemiBold'),local('Apple SD Gothic Neo SemiBold');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
+@font-face{ font-family:'Dev Apple Hangul'; font-weight:650; font-style:normal; font-display:swap;
+  src:local('AppleSDGothicNeo-Bold'),local('Apple SD Gothic Neo Bold');
+  unicode-range:U+1100-11FF,U+3130-318F,U+A960-A97F,U+AC00-D7AF,U+D7B0-D7FF; }
+
+:root{
+  --sans:'Pretendard Variable', -apple-system, 'Segoe UI', sans-serif;
+  --mono:'IBM Plex Mono', 'Pretendard Variable', Consolas, monospace;
+  --track-brand:0.24em; --track-nav:0.14em; --track-label:0.12em;
+
+  /* 색 — nightshift와 같은 값 */
+  --bg:#F7F8FA; --panel:#FFFFFF; --panel-2:#F2F4F7; --border:#E3E6EB; --border-strong:#D0D5DD;
+  --text:#1B1F24; --dim:#6B7280; --faint:#98A2B3;
+  --accent:#2563EB; --accent-rgb:37,99,235; --danger:#DC2626;
+  --grad-primary:linear-gradient(135deg, #3B7DF5, #2054D6);
+  --grad-primary-hover:linear-gradient(135deg, #5691F7, #2C63EE);
+  --shadow:0 1px 2px rgba(16,24,40,0.04);
+  --shadow-pop:0 8px 24px rgba(16,24,40,0.12);
+
+  /* 상태색 — 진행 중은 nightshift의 "실행 중" 주황, 검토는 파랑 */
+  --s-backlog:#98A2B3; --s-waiting:var(--s-backlog); --s-triage:#7C3AED; --s-in_progress:#B45309; --s-in_review:#2563EB;
+  --s-changes_requested:#DC2626; --s-on_hold:#6B7280; --s-done:#15803D; --s-closed:#98A2B3;
+
+  /* 여백·모서리 — 촘촘하지 않게 */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
+  --r-sm:6px; --r-md:8px; --r-lg:12px;
+  --tabbar-h:48px; /* 상단 고정 탭 줄 높이 — .side·앵커 이동 오프셋 */
+}
+:root[data-theme="dark"]{
+  --bg:#14161B; --panel:#1C1F26; --panel-2:#22262E; --border:#2C3038; --border-strong:#3A3F49;
+  --text:#E7E9ED; --dim:#97A0AC; --faint:#6B7380; --accent:#6D9BFF; --accent-rgb:109,155,255;
+  --shadow:none; --shadow-pop:0 8px 24px rgba(0,0,0,0.4); color-scheme:dark;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme]){
+    --bg:#14161B; --panel:#1C1F26; --panel-2:#22262E; --border:#2C3038; --border-strong:#3A3F49;
+    --text:#E7E9ED; --dim:#97A0AC; --faint:#6B7380; --accent:#6D9BFF; --accent-rgb:109,155,255;
+    --shadow:none; --shadow-pop:0 8px 24px rgba(0,0,0,0.4); color-scheme:dark;
+  }
+}
+:root[data-theme="light"]{ color-scheme:light; }
+
+*{ box-sizing:border-box; }
+html{ overflow-x:hidden; scroll-padding-top:var(--tabbar-h); }
+body{ margin:0; background:var(--bg); color:var(--text); font:14px/1.6 var(--sans); letter-spacing:-0.005em;
+  -webkit-font-smoothing:antialiased; }
+a{ color:var(--accent); text-decoration:none; }
+a:hover{ text-decoration:underline; text-underline-offset:3px; }
+[hidden]{ display:none !important; }
+.dim{ color:var(--dim); }
+.list-loading, .list-error{ display:flex; align-items:center; justify-content:center; gap:var(--sp-2); padding:var(--sp-5) var(--sp-4); color:var(--dim); font-size:13px; }
+.list-spinner{ flex:none; animation:list-spin 1s linear infinite; }
+@keyframes list-spin{ to{ transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce){ .list-spinner{ animation:none; } }
+.error{ color:var(--danger); min-height:1.2em; margin:0; font-size:13px; }
+::selection{ background:rgba(var(--accent-rgb),0.2); }
+
+/* 입력·버튼 */
+input, select, textarea, button, .button{
+  font:inherit; font-size:13.5px; color:var(--text); background:var(--panel); border:1px solid var(--border);
+  border-radius:var(--r-sm); padding:7px 11px; transition:border-color .12s, background .12s, box-shadow .12s;
+}
+input:focus, select:focus, textarea:focus{ outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(var(--accent-rgb),0.15); }
+textarea{ width:100%; min-height:120px; resize:vertical; font-family:var(--mono); font-size:13px; line-height:1.6; }
+button, .button{ cursor:pointer; display:inline-flex; align-items:center; gap:6px; white-space:nowrap; font-weight:500; }
+button:hover, .button:hover{ border-color:var(--border-strong); background:var(--panel-2); text-decoration:none; }
+.primary{ background:var(--grad-primary); border-color:transparent; color:#fff; font-weight:600; }
+.primary:hover{ background:var(--grad-primary-hover); border-color:transparent; box-shadow:0 4px 14px rgba(37,99,235,0.3); }
+.primary:active{ transform:translateY(1px); }
+.ghost{ background:transparent; border-color:transparent; color:var(--dim); }
+.ghost:hover{ background:var(--panel-2); color:var(--text); border-color:transparent; }
+.danger{ color:var(--danger); }
+.danger:hover{ border-color:var(--danger); background:transparent; }
+button:disabled{ opacity:.5; cursor:default; }
+input[type=checkbox]{ width:16px; height:16px; padding:0; accent-color:var(--accent); }
+
+/* 헤더·전역 탭 — nightshift(01-base.css)와 같은 구성·스타일(DEV-4) */
+.ico{ width:1.2em; height:1.2em; flex:none; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; vertical-align:-0.22em; }
+.ico.brand-icon{ fill:currentColor; stroke:none; }
+.top{ position:relative; display:flex; align-items:center; justify-content:space-between; padding:18px 28px;
+  background:var(--panel); border-bottom:1px solid var(--border); }
+.brand{ display:flex; align-items:center; gap:12px; color:var(--text); }
+.brand:hover{ text-decoration:none; }
+.brand svg{ width:20px; height:20px; flex:none; }
+.brand-word{ font-size:13px; font-weight:600; letter-spacing:var(--track-brand); text-transform:uppercase; }
+.header-right{ display:flex; align-items:center; gap:16px; }
+/* 사용자 칩·밤/낮 토글 — 필 모양, 모노 글자 */
+.user-chip, .theme-toggle-btn{ display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:20px;
+  border:1px solid var(--border); background:var(--panel); color:var(--dim); cursor:pointer;
+  font-family:var(--mono); font-size:11.5px; font-weight:600; transition:border-color .15s, color .15s, background .15s; }
+.user-chip:hover, .theme-toggle-btn:hover, .user-chip[aria-expanded="true"]{ border-color:var(--accent); color:var(--accent); background:var(--panel); }
+.user-chip{ max-width:180px; }
+.user-chip-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:110px; }
+.role-badge{ font-size:9.5px; text-transform:uppercase; letter-spacing:0.1em; padding:1px 5px; border-radius:4px;
+  background:rgba(var(--accent-rgb),0.12); color:var(--accent); }
+.user-menu{ position:absolute; right:28px; top:calc(100% - 6px); z-index:30; min-width:180px; padding:6px; display:flex; flex-direction:column;
+  background:var(--panel); border:1px solid var(--border); border-radius:var(--r-md); box-shadow:var(--shadow-pop); }
+.user-menu a, .user-menu button{ display:flex; align-items:center; gap:8px; padding:8px 10px; border:none; border-radius:var(--r-sm);
+  background:none; color:var(--text); font-size:13px; font-weight:400; cursor:pointer; text-align:left; }
+.user-menu a:hover, .user-menu button:hover{ background:var(--panel-2); text-decoration:none; }
+.user-menu .ico{ color:var(--dim); }
+/* 탭 줄 — 평소 아이콘만, 마우스를 올리면 제목이 펼쳐진다. 활성 탭은 파랑 밑줄. */
+.tab-bar{ position:sticky; top:0; z-index:15; background:var(--panel); border-bottom:1px solid var(--border); }
+.tab-bar-inner{ max-width:1320px; margin:0 auto; padding:0 28px; display:flex; align-items:center; gap:4px;
+  overflow-x:auto; scrollbar-width:none; }
+.tab-bar-inner::-webkit-scrollbar{ display:none; }
+.tab-btn{ display:inline-flex; align-items:center; padding:12px 10px; margin-bottom:-1px; border-bottom:2px solid transparent;
+  color:var(--dim); font-family:var(--mono); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:var(--track-nav);
+  white-space:nowrap; flex-shrink:0; }
+.tab-btn:hover{ color:var(--text); text-decoration:none; }
+.tab-btn.active{ color:var(--accent); border-bottom-color:var(--accent); }
+.tab-btn .ico{ width:17px; height:17px; vertical-align:0; }
+.tab-label{ display:inline-block; max-width:0; opacity:0; overflow:hidden; margin-left:0;
+  transition:max-width .28s ease, opacity .2s ease, margin-left .28s ease; }
+@media (hover:hover){
+  .tab-btn:hover .tab-label, .tab-btn:focus-visible .tab-label{ max-width:12em; opacity:1; margin-left:7px; }
+}
+@media (prefers-reduced-motion:reduce){ .tab-label{ transition:none; } }
+.tab-bar-sep{ width:1px; height:16px; background:var(--border); margin:0 8px; flex-shrink:0; }
+.tab-bar-actions{ margin-left:auto; display:flex; align-items:center; gap:8px; padding:6px 0 6px 12px; flex-shrink:0; }
+.tab-bar-actions select, .tab-bar-actions .button{ padding:5px 10px; font-size:13px; }
+main{ padding:28px; max-width:1320px; margin:0 auto; }
+
+/* 칩·필터 */
+.chips{ display:flex; gap:6px; flex-wrap:wrap; }
+.chip{ font-family:var(--mono); padding:5px 11px; border-radius:999px; border:1px solid var(--border); background:var(--panel); cursor:pointer;
+  font-size:11px; font-weight:500; letter-spacing:0.04em; color:var(--dim); user-select:none; }
+.chip:hover{ border-color:var(--border-strong); color:var(--text); }
+.chip.on{ background:rgba(var(--accent-rgb),0.1); border-color:rgba(var(--accent-rgb),0.4); color:var(--accent); }
+
+/* 상태 — 색 점 + 이름 */
+.status{ display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:500; letter-spacing:-0.005em; white-space:nowrap; color:var(--text); }
+.status::before{ content:""; width:8px; height:8px; border-radius:50%; background:var(--sc); box-shadow:0 0 0 3px color-mix(in srgb, var(--sc) 18%, transparent); }
+
+/* 빈 상태·토스트 */
+.empty{ padding:64px var(--sp-4); text-align:center; color:var(--dim); background:var(--panel); border:1px dashed var(--border); border-radius:var(--r-md); }
+.toast{ position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:#1B1F24; color:#fff; padding:10px 16px;
+  border-radius:var(--r-md); z-index:20; max-width:90vw; box-shadow:var(--shadow-pop); font-size:13.5px; }
