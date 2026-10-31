@@ -9,6 +9,96 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits, improve_fixture
 
 
+def check_decision_layout(page, shots):
+    """결정 버튼의 아이콘·격자·폼 너비를 낮·밤과 두 화면 폭에서 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    viewport = page.viewport_size
+    theme = page.evaluate("localStorage.getItem('dev.theme')")
+    def post(path, data):
+        response = page.request.post(BASE + path, headers=headers, data=data)
+        assert response.ok, (path, response.status)
+        return response.json()
+    post('/api/projects', {'key': 'DGRID', 'name': '결정 배치 검사'})
+    plain = post('/api/issues', {'project': 'DGRID', 'title': '결과 결정'})['ref']
+    planned = post('/api/issues', {'project': 'DGRID', 'title': '계획 결정'})['ref']
+    post(f'/api/issues/{planned}/plans', {'body': '화면 배치 확인 계획'})
+    child = post('/api/issues', {'project': 'DGRID', 'parent': planned, 'title': '하위 결정'})['ref']
+    post(f'/api/issues/{child}/plans', {'body': '하위 계획'})
+    for ref in (plain, planned, child):
+        post(f'/api/issues/{ref}/status', {'status': 'in_review'})
+
+    def grid(selector, icons, labels):
+        container = page.locator(selector)
+        buttons = container.locator(':scope > button')
+        expect(buttons).to_have_count(len(icons))
+        boxes = []
+        for index, (icon, label) in enumerate(zip(icons, labels)):
+            button = buttons.nth(index)
+            expect(button).to_have_text(label)
+            expect(button.locator(f'svg.ico[aria-hidden="true"] use[href="#i-{icon}"]')).to_have_count(1)
+            boxes.append(button.bounding_box())
+        if len(boxes) % 2:
+            assert abs(boxes[0]['width'] - container.bounding_box()['width']) <= 1
+            boxes = boxes[1:]
+        if boxes:
+            assert max(b['width'] for b in boxes) - min(b['width'] for b in boxes) <= 1
+            for left, right in zip(boxes[::2], boxes[1::2]):
+                assert abs(left['y'] - right['y']) <= 1
+                assert right['x'] > left['x'] + left['width']
+
+    def form(kind):
+        row = page.locator(f'#{kind}-form .row-end')
+        expect(row).to_be_visible()
+        expect(page.locator(f'#{kind}-actions')).to_be_hidden()
+        left = page.locator(f'#{kind}-cancel').bounding_box()
+        right = page.locator(f'#{kind}-send').bounding_box()
+        gap = row.evaluate('(e) => parseFloat(getComputedStyle(e).columnGap)')
+        assert abs(left['width'] - right['width']) <= 1
+        assert abs(left['width'] + right['width'] + gap - row.bounding_box()['width']) <= 1
+        assert abs(left['y'] - right['y']) <= 1
+
+    for scheme in ('light', 'dark'):
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 850})
+            page.evaluate("t => {localStorage.setItem('dev.theme',t); document.documentElement.dataset.theme=t}", scheme)
+            for ref, count in ((plain, 3), (planned, 4), (child, 4)):
+                page.goto(BASE + f'/#/issue/{ref}')
+                expect(page.locator('#approve')).to_be_visible()
+                grid('#result-actions', ['check-check'] + (['list-checks'] if count == 4 else []) + ['pencil', 'x'],
+                     ['결과 승인'] + (['전체 완료'] if count == 4 else []) + ['수정 요청', '결과 거절'])
+                if ref != plain:
+                    grid('#decision-actions', ['check', 'clipboard-check'] + ([] if ref == child else ['pencil']) + ['x'],
+                         ['계획 승인', '메모 붙여 승인'] + ([] if ref == child else ['메모 붙여 재검토']) + ['계획 거절'])
+                if ref == child:
+                    continue
+                page.locator('#result').screenshot(path=str(shots / f'decision_result_{count}_{scheme}_{width}.png'))
+                for action in ('#request-changes', '#result-actions [data-to="closed"]'):
+                    page.locator(action).click()
+                    form('result')
+                    page.click('#result-cancel')
+                if ref == planned:
+                    page.locator('#decision').screenshot(path=str(shots / f'decision_actions_{scheme}_{width}.png'))
+                    for verdict in ('review', 'approve_notes', 'reject'):
+                        page.locator(f'[data-verdict="{verdict}"]').click()
+                        form('decision')
+                        if verdict == 'review':
+                            page.locator('#decision').screenshot(path=str(shots / f'decision_form_{scheme}_{width}.png'))
+                        page.click('#decision-cancel')
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    post(f'/api/issues/{planned}/decision', {'verdict': 'approve', 'plan_version': 1})
+    page.goto(BASE + f'/#/issue/{planned}')
+    grid('#decision-actions', ['pencil'], ['메모 붙여 재검토'])
+    # 임시 이슈가 뒤의 전체 목록 개수 검사에 섞이지 않도록 프로젝트째 정리한다.
+    token = page.request.get(BASE + '/api/projects/DGRID/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/DGRID', headers=headers,
+                               data={'confirmation_token': token}).ok
+    page.goto(BASE + '/#/')
+    expect(page.locator('tr.row[data-ref^="DGRID-"]')).to_have_count(0)
+    assert not page.request.get(BASE + '/api/issues?project=DGRID').json()['issues']
+    page.set_viewport_size(viewport)
+    page.evaluate("t => {if(t === null) localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme',t); document.documentElement.dataset.theme=t || 'light'}", theme)
+
+
 def check_suggestions(page, shots):
     """개선 제안의 시작·발행·버리기·보류·이력 분리와 네 화면을 확인한다."""
     original_theme = page.evaluate("localStorage.getItem('dev.theme')")
@@ -5506,6 +5596,10 @@ try:
         if '--login-only' in sys.argv:
             assert not errs, errs
             print('OK: login screen and authentication'); sys.exit(0)
+        if '--decision-layout-only' in sys.argv:
+            check_decision_layout(page, shots)
+            assert not errs, errs
+            print('OK: decision layout'); sys.exit(0)
         if '--task-alignment-only' in sys.argv:
             check_task_action_alignment(page, shots)
             assert not errs, errs
@@ -5848,6 +5942,7 @@ try:
         check_auto_master(page)
         check_auto_settings(page, shots)
         check_regression_numbers(page, shots)
+        check_decision_layout(page, shots)
         check_attachments(page, shots)
         check_new_attachment_images(page, shots)
         check_composer_images(page, shots)

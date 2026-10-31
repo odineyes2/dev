@@ -1511,10 +1511,10 @@ function decisionHtml(it){
       <div id="revision-provider-row" hidden><label for="revision-provider">검토 Agent</label> <select id="revision-provider"><option value="claude">Claude</option><option value="codex">Codex</option></select><p class="dim hint">메모를 반영해 계획서를 다시 작성해요. 코드는 수정하지 않으며 선택한 Agent 계정의 사용량을 사용해요.</p></div>
       <div class="row-end"><button id="decision-cancel">취소</button><button id="decision-send" class="primary"></button></div></div>
     <div class="review-actions" id="decision-actions">
-      ${a && !a.stale ? '' : `<button data-verdict="approve"${it.status === 'in_review' ? '' : ' class="primary"'}${it.plan.revision_note ? ' disabled' : ''}>계획 승인</button>
-      <button data-verdict="approve_notes"${it.plan.revision_note ? ' disabled' : ''}>메모 붙여 승인</button>`}
-      ${it.parent_ref ? '' : '<button data-verdict="review">메모 붙여 재검토</button>'}
-      ${a && !a.stale ? '' : '<button data-verdict="reject" class="danger">계획 거절</button>'}</div>`}</div>`;
+      ${a && !a.stale ? '' : `<button data-verdict="approve"${it.status === 'in_review' ? '' : ' class="primary"'}${it.plan.revision_note ? ' disabled' : ''}><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg><span>계획 승인</span></button>
+      <button data-verdict="approve_notes"${it.plan.revision_note ? ' disabled' : ''}><svg class="ico" aria-hidden="true"><use href="#i-clipboard-check"/></svg><span>메모 붙여 승인</span></button>`}
+      ${it.parent_ref ? '' : '<button data-verdict="review"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg><span>메모 붙여 재검토</span></button>'}
+      ${a && !a.stale ? '' : '<button data-verdict="reject" class="danger"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg><span>계획 거절</span></button>'}</div>`}</div>`;
 }
 // ---- 결과 결정(DEV-16): in_review에서 승인 → Done · 수정 요청 → Changes Requested · 거절 → Closed ----
 const RESULT_FORM = {
@@ -1529,10 +1529,10 @@ function resultHtml(it){
         <button type="button" id="result-attach-btn">이미지 첨부</button>
         <input type="file" id="result-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden></div>
       <div class="row-end"><button id="result-cancel">취소</button><button id="result-send"></button></div></div>
-    <div class="review-actions" id="result-actions"><button id="approve" class="primary" ${it.execute?.result_approval_blocked ? 'disabled title="후속 검사·병합·운영 반영 확인이 끝나야 승인할 수 있어요."' : ''}>결과 승인 → 완료</button>
-      ${it.children.length || it.parent_ref ? '<button class="complete-tree">전체 완료</button>' : ''}
-      <button data-to="changes_requested" id="request-changes">수정 요청</button>
-      <button data-to="closed" class="danger">결과 거절</button></div></div></div>`;
+    <div class="review-actions" id="result-actions"><button id="approve" class="primary" ${it.execute?.result_approval_blocked ? 'disabled title="후속 검사·병합·운영 반영 확인이 끝나야 승인할 수 있어요."' : ''}><svg class="ico" aria-hidden="true"><use href="#i-check-check"/></svg><span>결과 승인</span></button>
+      ${it.children.length || it.parent_ref ? '<button class="complete-tree"><svg class="ico" aria-hidden="true"><use href="#i-list-checks"/></svg><span>전체 완료</span></button>' : ''}
+      <button data-to="changes_requested" id="request-changes"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg><span>수정 요청</span></button>
+      <button data-to="closed" class="danger"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg><span>결과 거절</span></button></div></div></div>`;
 }
 // ---- 단계 안내: 지금 어디이고 다음에 뭘 하면 되는지 한 줄 ----
 function stageHtml(it, liveMode, liveProvider){
