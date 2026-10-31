@@ -148,6 +148,8 @@ def worker(ref, repo, row):
         env = project_build.environment(execute.safe_env(repo))
         for target in row['targets']:
             path = work / target['file']
+            # 프로젝트 검사 규칙(DEV-212)으로 찾은 파일이면 그 규칙의 명령·시간 제한으로 돌린다
+            path = next((t for t in regression.test_files(work, ref.split('-')[0]) if t == path), path)
             # 같은 검사를 3번 돌려 모두 통과해야 통과다 — 섞이면 불안정한 검사(DEV-160-3)
             outputs = [orchestrate.run_test(str(work), path, target['args'], env) for _ in range(REPEAT)]
             bad = [o for o in outputs if o.returncode]

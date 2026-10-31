@@ -38,7 +38,7 @@ def catalog(project=None):
     if not project:   # 문맥 없는 목록은 dev 루트 tests/만(기존 동작)
         files = sorted(p for pattern in ('test_*.py', 'test_*.js') for p in repo.joinpath('tests').glob(pattern))
     else:
-        files = test_files(repo) if repo and repo.is_dir() else []
+        files = test_files(repo, project) if repo and repo.is_dir() else []
     rels = {p: 'tests/' + p.name if not project else p.relative_to(repo).as_posix() for p in files}
     labels = registry.file_numbers(project or DEV_KEY, rels.values()) if repo else {}
     for path in files:
@@ -160,7 +160,7 @@ def planning_instructions(ref=None):
     issue, repo = _project_repo(ref) if ref else (None, None)
     rows = [r for r in settings()['checks'] if not r['key'].startswith('file:')]
     if issue and not _is_dev(repo, issue):
-        files = ', '.join(f"file:{p.name}={Path(p).relative_to(repo).as_posix()}" for p in test_files(repo)) if repo and Path(repo).is_dir() else ''
+        files = ', '.join(f"file:{p.name}={Path(p).relative_to(repo).as_posix()}" for p in test_files(repo, issue['project_key'])) if repo and Path(repo).is_dir() else ''
         keys = ', '.join(r['key'] + '=' + r['mode'] for r in rows) + ('. 이 프로젝트의 검사 파일(키=경로): ' + files if files else '. 이 프로젝트에는 찾은 검사 파일이 없다')
     else:
         keys = ', '.join(row['key'] + '=' + row['mode'] for row in settings()['checks'])
@@ -320,7 +320,7 @@ def resolve(ref=None, repo=None, changed=None):
                        'reason': reason if mode == 'auto' else '사람 설정: ' + mode.upper(), 'name': row['name']}
     # 다른 프로젝트의 독자 테스트는 이름 일치/고위험/계획 선택이 없으면 직접 실행 단계의 기본 검사로 본다.
     if repo:
-        for path in test_files(repo):
+        for path in test_files(repo, pk):
             key = 'file:' + path.name
             if key not in checks:
                 auto = high or choice.get('checks', {}).get(key, True)
@@ -354,7 +354,7 @@ def resolve(ref=None, repo=None, changed=None):
     scan = Path(repo or Path(__file__).resolve().parents[1])
     labels = {}
     if scan.is_dir():
-        found = {f.name: (f.relative_to(scan) if f.is_absolute() and f.is_relative_to(scan) else f).as_posix() for f in test_files(scan)}
+        found = {f.name: (f.relative_to(scan) if f.is_absolute() and f.is_relative_to(scan) else f).as_posix() for f in test_files(scan, pk)}
         by_path = registry.file_numbers(pk, found.values())
         labels = {name: by_path.get(rel, '') for name, rel in found.items()}
     for key, item in checks.items():
@@ -363,10 +363,10 @@ def resolve(ref=None, repo=None, changed=None):
             'changed_tests': sorted(changed_tests), 'changed_tests_off': human_off}
 
 
-def test_files(repo):
-    """루트 검사와 Moai의 패키지 검사를 모두 찾는다(수동 명령과 같은 목록 — test_runner)."""
+def test_files(repo, project_key=None):
+    """프로젝트의 검사 규칙(orchestrate.json `tests`, 없으면 기본 — 루트 검사와 Moai의 패키지 검사)으로 찾는다(DEV-212, test_runner)."""
     import test_runner
-    return test_runner.test_files(repo)
+    return test_runner.test_files(repo, project_key)
 
 
 def work_tree_hash(repo):

@@ -1,4 +1,5 @@
 """검사 파일 여러 개를 동시에 돌린다 — 서버 완료·병합 검사와 수동 명령(scripts/run_tests.py)이 같이 쓴다(DEV-200). DB를 쓰지 않는다."""
+import json
 import os
 import subprocess
 import sys
@@ -12,18 +13,67 @@ BROWSER_TIMEOUT_SEC = 1200   # 브라우저 검사는 병렬 부하에서 600초
 PIPE_GRACE_SEC = 30   # 검사가 끝난 뒤 출력 파이프가 닫히기를 기다리는 시간
 
 
-def test_files(repo):
-    """루트 검사와 Moai의 패키지 검사를 모두 찾는다."""
-    return sorted({path for folder in ('tests', 'backend/tests') for pattern in ('test_*.py', 'test_*.js')
-                   for path in Path(repo, folder).glob(pattern) if pattern.endswith('py') or folder == 'tests'})
+# 검사 파일을 찾고 돌리는 규칙(DEV-212). 프로젝트가 orchestrate.json의 `tests`에 적지 않으면 이 기본값을 쓴다.
+# glob은 저장소 기준 패턴, run은 명령 — {python}=dev의 Python, {file}=검사 파일 절대 경로, {module}=점으로 이은 모듈 이름.
+# 선택: timeout(초), browser(true면 브라우저 검사 — 한 번에 하나, 제한 BROWSER_TIMEOUT_SEC).
+DEFAULT_RULES = [
+    {'glob': 'tests/test_*.py', 'run': ['{python}', '{file}']},
+    {'glob': 'tests/test_*.js', 'run': ['node', '--test', '{file}']},
+    {'glob': 'backend/tests/test_*.py', 'run': ['{python}', '-m', 'unittest', '{module}']},   # Moai 패키지 검사
+]
+
+
+class TestFile(type(Path())):
+    """찾은 검사 파일 — 어떤 규칙으로 찾았는지(rule)를 같이 들고 다녀 실행할 때 같은 규칙을 쓴다."""
+    rule = None
+
+
+def rules(project_key=None) -> tuple[list[dict], str]:
+    """(규칙 목록, 설정 오류 문구). 설정이 없으면 기본값, 잘못됐으면 기본값과 오류를 준다 — 서버 검사는 오류를 실패로 알린다."""
+    if not project_key:
+        return DEFAULT_RULES, ''
+    import config
+    try:
+        cfg = (json.loads((config.DATA_DIR / 'orchestrate.json').read_text(encoding='utf-8')).get(project_key) or {}).get('tests')
+    except (OSError, ValueError):
+        return DEFAULT_RULES, ''
+    if cfg is None:
+        return DEFAULT_RULES, ''
+    ok = isinstance(cfg, list) and cfg and all(
+        isinstance(r, dict) and isinstance(r.get('glob'), str) and r['glob'] and not Path(r['glob']).is_absolute() and '..' not in Path(r['glob']).parts
+        and isinstance(r.get('run'), list) and r['run'] and all(isinstance(x, str) for x in r['run'])
+        and isinstance(r.get('timeout', 1), int) and r.get('timeout', 1) > 0 for r in cfg)
+    if not ok:
+        return DEFAULT_RULES, (f'orchestrate.json의 {project_key}.tests 설정이 잘못됐어요 — '
+                               '[{"glob": "tests/test_*.py", "run": ["{python}", "{file}"]}] 모양이어야 해요(glob은 저장소 안 상대 경로).')
+    return cfg, ''
+
+
+def test_files(repo, project_key=None):
+    """프로젝트 규칙(없으면 기본값 — 루트 검사와 Moai의 패키지 검사)으로 검사 파일을 찾는다. 같은 파일은 앞 규칙이 갖는다."""
+    found = {}
+    for rule in rules(project_key)[0]:
+        for path in sorted(Path(repo).glob(rule['glob'])):
+            if path.is_file() and path not in found:
+                t = TestFile(path)
+                t.rule = rule
+                found[path] = t
+    return sorted(found.values())
+
+
+def rule_for(repo, t):
+    """검사 파일을 찾은 규칙. 규칙 없이 받은 경로(재현 실행 등)는 기본 규칙에서 맞는 것을 고른다."""
+    if getattr(t, 'rule', None):
+        return t.rule
+    relative = (Path(t).relative_to(Path(repo)) if Path(t).is_relative_to(Path(repo)) else Path(t)).as_posix()
+    return next((r for r in DEFAULT_RULES if Path(relative).full_match(r['glob'])), DEFAULT_RULES[0])
 
 
 def command(repo, t):
-    """검사 하나를 실행할 명령 — JS는 node:test, Moai 패키지 검사는 unittest 모듈, 나머지는 파일 그대로."""
-    relative = (t.relative_to(Path(repo)) if t.is_relative_to(Path(repo)) else t).as_posix()
-    return (['node', '--test', str(t)] if relative.endswith('.js') else
-            [sys.executable, '-m', 'unittest', relative[:-3].replace('/', '.')]
-            if relative.startswith('backend/tests/') else [sys.executable, str(t)])
+    """검사 하나를 실행할 명령 — 규칙의 run에 {python}·{file}·{module}을 채운다."""
+    relative = (Path(t).relative_to(Path(repo)) if Path(t).is_relative_to(Path(repo)) else Path(t)).as_posix()
+    values = {'python': sys.executable, 'file': str(t), 'module': relative.rsplit('.', 1)[0].replace('/', '.')}
+    return [part.format(**values) for part in rule_for(repo, t)['run']]
 
 
 def kill_tree(proc) -> None:
@@ -71,12 +121,18 @@ def run(repo, t, args=(), env=None):
 
 
 def timeout_for(t) -> int:
-    """검사 하나의 시간 제한(초) — 브라우저 검사는 BROWSER_TIMEOUT_SEC, 나머지는 TIMEOUT_SEC."""
+    """검사 하나의 시간 제한(초) — 규칙의 timeout, 없으면 브라우저 검사는 BROWSER_TIMEOUT_SEC, 나머지는 TIMEOUT_SEC."""
+    rule = getattr(t, 'rule', None)
+    if rule and rule.get('timeout'):
+        return rule['timeout']
     return BROWSER_TIMEOUT_SEC if is_browser(t) else TIMEOUT_SEC
 
 
 def is_browser(t) -> bool:
-    """브라우저(Playwright)를 띄우는 검사 — 메모리를 많이 써서 동시에 하나만 돌린다."""
+    """브라우저(Playwright)를 띄우는 검사 — 메모리를 많이 써서 동시에 하나만 돌린다. 규칙의 browser가 있으면 그것을 따른다."""
+    rule = getattr(t, 'rule', None)
+    if rule and 'browser' in rule:
+        return bool(rule['browser'])
     try:
         return t.suffix == '.py' and 'playwright' in t.read_text(encoding='utf-8', errors='replace')
     except OSError:

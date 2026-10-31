@@ -22,6 +22,12 @@
      "MO": {"migrations": {"glob": "backend/migrations/*.sql", "applied_cmd": "<읽기 전용 조회 명령>"},
             "workers": [{"app": "moai-research-worker", "when": ["backend/research/*"]}],
             "worker_busy_cmd": "<실행 중 작업 수 조회 명령>"}}
+
+검사 규칙(DEV-212): 프로젝트의 `tests`에 [{"glob": 저장소 기준 패턴, "run": 명령, "timeout": 초(선택), "browser": 참/거짓(선택)}]를
+적으면 그 규칙으로 검사 파일을 찾아 돌린다. 명령의 {python}·{file}·{module}은 dev의 Python·검사 파일 경로·모듈 이름으로 채운다.
+없으면 기본 규칙(`test_runner.DEFAULT_RULES` — tests/test_*.py·tests/test_*.js·backend/tests/test_*.py). 예:
+    "XX": {"tests": [{"glob": "tests/*.test.ts", "run": ["npx", "vitest", "run", "{file}"]}]}
+잘못 적으면 서버 검사가 기본 규칙으로 몰래 돌지 않고 실패로 알린다.
 """
 import fnmatch
 import hashlib
@@ -402,14 +408,22 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
     """발견한 검사를 한 번씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다.
     프로젝트가 이 단계에 격리 PostgreSQL을 켰으면 검사 동안만 띄워 넘긴다(DEV-183)."""
     import isolated_pg
+    import run_progress
     project = ref.split('-')[0] if ref else None
     if not project:
         return _run_tests(repo, stage, ref, changed, None)
-    with isolated_pg.cluster(project, stage, ref) as (extra, note):
-        if note:
-            issues.add_comment({'kind': 'human', 'name': 'system/isolated-pg'}, ref, f'⚠️ {stage}: {note}')
-        env = {**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, **extra} if extra else None
-        return _run_tests(repo, stage, ref, changed, env)
+    if isolated_pg.wanted(project, stage) is not None:   # 띄우는 동안 "준비 중: 임시 DB"(DEV-212) — 검사가 시작되면 n/N으로 바뀐다
+        run_progress.prepare(ref, '임시 DB', merge=stage == 'server_merge')
+    try:
+        with isolated_pg.cluster(project, stage, ref) as (extra, note):
+            if note:
+                issues.add_comment({'kind': 'human', 'name': 'system/isolated-pg'}, ref, f'⚠️ {stage}: {note}')
+            env = {**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, **extra} if extra else None
+            return _run_tests(repo, stage, ref, changed, env)
+    finally:   # 검사 전에 끝나도(꺼진 단계·규칙 오류) 준비 표시를 남기지 않는다
+        run_progress.prepare_end(ref)
+        if stage == 'server_merge':
+            run_progress.merge_end(ref)
 
 
 def _run_tests(repo, stage, ref, changed, env) -> str | None:
@@ -424,6 +438,7 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
     if stage == 'server_completion' and ref and ref.startswith('MO-'):
         from execute import prepare_checks
         try:
+            run_progress.prepare(ref, '웹 빌드')   # 검사 전 준비를 진행 표시에 보인다(DEV-212)
             prepare_checks(repo, {'project_key': 'MO'}, build=True)
         except issues.StoreError as error:
             return str(error)
@@ -438,7 +453,11 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
             'reg': hashlib.sha256(Path(regression.__file__).read_bytes()).hexdigest(), 'files': {}}
     miss = {}
     changed_tests = set(selection.get('changed_tests') or [])
-    files = regression.test_files(repo)
+    key = ref.split('-')[0] if ref else regression.project_key(repo)
+    rules_error = test_runner.rules(key)[1]
+    if rules_error:   # 사람이 적은 검사 규칙이 잘못되면 기본 규칙으로 몰래 돌리지 않고 실패로 알린다(DEV-212)
+        return rules_error
+    files = regression.test_files(repo, key)
     todo = []   # (검사, 지문) — 재사용·건너뜀이 아닌 것만 아래에서 한꺼번에 돌린다
     for t in files:
         if not policy.get('file:' + t.name, {'enabled': True})['enabled']:
@@ -488,7 +507,6 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
                     bad.append(again)
         return runs, bad
     # 병렬(DEV-200): 격리 PG는 모든 검사가 한 클러스터를 같이 쓰므로 순차로 돌린다.
-    key = ref.split('-')[0] if ref else regression.project_key(repo)
     timing = regression.load_record('regression-durations:' + key)
     started = time.monotonic()
     # 실행 중 화면의 ⓘ에 n/N과 지금 도는 검사를 보인다(DEV-206) — 병합 검사도 같이(DEV-211)

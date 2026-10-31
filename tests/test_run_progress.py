@@ -81,6 +81,28 @@ run_progress.merge_end('X-2-1')
 assert run_progress.merge_view('X-2-1') is None
 print('OK — 병합 검사 n/N·재사용 수·끝나면 지움')
 
+# 3-2. 검사 전 준비(DEV-212) — "준비 중: …"으로 보이고, 검사 목록이 정해지면 n/N으로 바뀐다.
+run_progress.set_phase('X-3-1', 'checks', limit=1800)
+run_progress.prepare('X-3-1', '웹 빌드')
+v = run_progress.view('X-3-1', time.time() + 90)
+assert v['short'] == '준비 중: 웹 빌드' and '준비 중: 웹 빌드 (1분째)' in v['long'] and not v['stalled'], v
+assert run_progress.view('X-3-1', time.time() + run_progress.CHECKS_SILENT_SEC + 5)['stalled']   # 준비가 너무 길면 멈춤
+run_progress.checks_begin('X-3-1', 5)
+v = run_progress.view('X-3-1')
+assert v['short'] == '전체 검사 중 (0/5)' and '준비 중' not in v['long'], v
+run_progress.clear('X-3-1')
+run_progress.prepare('X-3-2', '임시 DB')   # 도는 실행이 없으면(병합도 아니면) 남기지 않는다
+assert run_progress.view('X-3-2') is None and run_progress.merge_view('X-3-2') is None
+# 병합 검사의 준비 — 병합 검사 시작부터 이어서 세고, 끝나면 지운다.
+run_progress.prepare('X-3-3', '임시 DB', merge=True)
+v = run_progress.merge_view('X-3-3')
+assert v['phase'] == 'merge' and v['short'] == '준비 중: 임시 DB' and '병합 검사 중' in v['long'], v
+run_progress.checks_begin('X-3-3', 2, merge=True)
+assert run_progress.merge_view('X-3-3')['short'] == '병합 검사 중 (0/2)'
+run_progress.merge_end('X-3-3')
+assert run_progress.merge_view('X-3-3') is None
+print('OK — 검사 전 준비 표시')
+
 # 4. 서버 완료 전 검사가 파일마다 진행을 남긴다.
 repo = Path(tempfile.mkdtemp())
 subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=repo, check=True)
