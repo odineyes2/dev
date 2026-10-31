@@ -921,7 +921,7 @@ async def api_execute(ref: str, request: Request):
 async def api_review(ref: str, request: Request):
     me = actor(request)
     b = await json_body(request) if await request.body() else {}
-    return await run_in_threadpool(jobs.enqueue, me, ref, "review", b.get("provider"), note=b.get("note"), plan_version=b.get("plan_version"))
+    return await run_in_threadpool(jobs.enqueue, me, ref, "review", b.get("provider"), note=b.get("note"), plan_version=b.get("plan_version"), attachment_ids=b.get("attachment_ids"))
 
 
 @app.post('/api/issues/{ref}/retry-merge')

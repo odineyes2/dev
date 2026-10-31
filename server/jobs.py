@@ -336,13 +336,16 @@ def reconcile():
             _waiting(c, j)
 
 
-def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, note=None, plan_version=None) -> dict:
+def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, note=None, plan_version=None, attachment_ids=None) -> dict:
     """줄에 넣고 펌프를 돌린다. 바로 시작하면 {started}, 아니면 {queued, position}."""
     import auto_settings
     import execute
     import project_docs
     if actor["kind"] != "human":
         raise issues.StoreError("검토·실행은 사람만 맡길 수 있어요.", 403)
+    if attachment_ids is not None:
+        if not isinstance(attachment_ids, list) or note is None or mode != 'review':
+            raise issues.StoreError('첨부는 메모 붙여 재검토에서 목록으로 보내 주세요.', 400)
     if note is not None:
         if not isinstance(note, str):
             raise issues.StoreError('재검토 메모는 글로 적어 주세요.', 400)
@@ -383,6 +386,9 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
                 raise issues.StoreError('하위 Task가 실행·병합 중이에요. 작업이 끝난 뒤 재검토해 주세요.', 409)
             if c.execute("SELECT 1 FROM runs WHERE issue_id=? AND status='running' UNION ALL SELECT 1 FROM jobs WHERE issue_id=? AND status='queued' LIMIT 1", (issue['id'], issue['id'])).fetchone():
                 raise issues.StoreError('이미 맡긴 작업이 있어요. 끝나거나 대기를 취소한 뒤 재검토해 주세요.', 409)
+        if attachment_ids:
+            import attachments
+            attachments.link(c, actor, issue['id'], attachment_ids)
         existing = c.execute("SELECT provider FROM runs WHERE issue_id=? AND mode=? AND status='running' UNION ALL SELECT provider FROM jobs WHERE issue_id=? AND mode=? AND status='queued' LIMIT 1",
                              (issue["id"], mode, issue["id"], mode)).fetchone()
         if existing and existing["provider"] != provider:
@@ -399,7 +405,7 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
         j = c.execute("SELECT * FROM jobs WHERE issue_id=? AND mode=? AND status='queued'", (issue["id"], mode)).fetchone()
         if note is not None:
             issues._event(c, issue['id'], actor, 'comment', note,
-                          {'plan_revision_request': True, 'plan_version': plan_version, 'job_id': j['id'], 'provider': provider})
+                          {'plan_revision_request': True, 'plan_version': plan_version, 'job_id': j['id'], 'provider': provider, 'attachment_ids': attachment_ids or []})
         _waiting(c, j)
     pump()
     job = next((j for j in list_jobs() if j["issue_id"] == issue["id"] and j["mode"] == mode), None)

@@ -40,6 +40,11 @@ try:
                 page = context.new_page()
                 errors = []
                 page.on('pageerror', lambda e: errors.append(str(e)))
+                unapproved = client.post('/api/issues', json={'project': 'MO', 'title': '승인 메모 첨부 숨김'}).json()['ref']
+                client.post(f'/api/issues/{unapproved}/plans', json={'body': '계획'}).raise_for_status()
+                page.goto(base + '/#/issue/' + unapproved)
+                page.locator('[data-verdict="approve_notes"]').click()
+                assert page.locator('#decision-attach').is_hidden()
                 for theme in ('light', 'dark'):
                     for width in (1300, 390):
                         page.set_viewport_size({'width': width, 'height': 900})
@@ -47,6 +52,10 @@ try:
                         page.evaluate("theme => {localStorage.setItem('dev.theme',theme);document.documentElement.dataset.theme=theme}", theme)
                         page.goto(base + '/#/issue/' + ref)
                         page.locator('[data-verdict="review"]').click()
+                        assert page.locator('#decision-attach-btn').is_visible()
+                        with page.expect_response(lambda r: r.request.method == 'POST' and r.url.endswith('/api/attachments')):
+                            page.locator('#decision-file').set_input_files({'name': 'reference.md', 'mimeType': 'text/markdown', 'buffer': b'# reference'})
+                        assert page.locator('#decision-files .cmp-chip').count() == 1
                         assert page.input_value('#decision-note') == approved_note
                         page.locator('#superseded-tasks summary').click()
                         assert page.locator('#superseded-tasks a').count() == 1
@@ -64,7 +73,9 @@ try:
                 assert page.input_value('#decision-note') == note
                 assert not client.get('/api/jobs').json()['jobs']
                 page.unroute('**/api/issues/*/review')
-                page.click('#decision-send')
+                with page.expect_request(lambda r: r.method == 'POST' and r.url.endswith('/review')) as sent:
+                    page.click('#decision-send')
+                assert len(sent.value.post_data_json['attachment_ids']) == 1
                 page.locator('#decision-form').wait_for(state='detached')
                 result = client.get(f'/api/issues/{ref}').json()
                 assert result['plan']['revision_note'] == note
