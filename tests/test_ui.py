@@ -1509,9 +1509,9 @@ def check_free_port(page, shots):
     assert next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key'] == 'PORT')['service_port'] == 8492
     start(); page.goto(BASE + '/#/projects'); page.wait_for_selector('#project-add')
     pending.pop(0).fulfill(json={'port': 8493})
-    page.click('#project-add'); page.wait_for_selector('#project-dialog[open]')
+    page.click('#project-add'); page.wait_for_selector('#project-dialog[open]'); page.click('#p-register-mode'); page.locator('#p-domain').evaluate('e => e.closest("details").open = true')
     assert page.input_value('#p-port') == ''
-    start(); page.click('#project-close'); page.click('#project-add'); answer(8494)
+    start(); page.click('#project-close'); page.click('#project-add'); page.click('#p-register-mode'); page.locator('#p-domain').evaluate('e => e.closest("details").open = true'); answer(8494)
     assert page.input_value('#p-port') == ''
     start(); answer(8495)
     assert page.input_value('#p-port') == '8495'
@@ -1532,8 +1532,8 @@ def check_free_port(page, shots):
     page.click('#project-form [type=submit]'); page.wait_for_selector('#project-dialog', state='hidden')
     assert next(p for p in page.request.get(BASE + '/api/projects').json()['projects'] if p['key'] == 'NEWPORT')['service_port'] == 8496
     # 파일 업로드 전 초기 생성의 입력 검증 실패 뒤에도 버튼을 복구한다.
-    page.click('#project-add'); page.fill('#p-key', 'INITPORT'); page.fill('#p-name', '초기 생성')
-    page.locator('.project-spec summary').click(); page.click('#p-initialize')
+    open_project_creation(page, 'blank'); page.locator('#p-domain').evaluate('e => e.closest("details").open = true'); page.fill('#p-key', 'INITPORT'); page.fill('#p-name', '초기 생성')
+    page.click('#p-initialize')
     page.wait_for_function("document.querySelector('#project-error').textContent.includes('Markdown')")
     assert page.locator('#p-free-port').is_enabled()
     page.locator('#p-spec').set_input_files({'name': 'test.md', 'mimeType': 'text/markdown', 'buffer': b'# temporary spec'})
@@ -3317,10 +3317,18 @@ def check_settings_navigation(page, shots):
     page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('.projects-page')
 
 
-def open_project_creation(page):
+def open_project_creation(page, mode="register"):
     page.click('#project-add')
     page.wait_for_selector('#project-dialog[open]')
-    assert page.locator('#p-key').evaluate('e => e === document.activeElement')
+    expect(page.locator('[data-template-pick]')).to_have_count(4)
+    expect(page.locator('#p-key')).to_be_hidden()
+    expect(page.locator('#p-repo')).to_be_hidden()
+    expect(page.locator('[data-template-pick]').first).to_be_focused()
+    for card in page.locator('[data-template-pick]').all():
+        assert card.locator('li').count() > 0
+    if mode == 'register': page.click('#p-register-mode')
+    else: page.click('[data-template-pick="' + mode + '"]')
+    expect(page.locator('#p-key')).to_be_focused()
 
 
 def check_project_row(page, shots):
@@ -3340,7 +3348,7 @@ def check_project_row(page, shots):
         page.keyboard.press('Shift+Tab')
         assert page.locator('#project-dialog').evaluate('e => e.contains(document.activeElement)')
         page.keyboard.press('Tab'); page.keyboard.press('Tab')
-        assert page.locator('#p-key').evaluate('e => e === document.activeElement')
+        expect(page.locator('[data-template-pick]').first).to_be_focused()
         page.keyboard.press('Escape')
         assert not form.is_visible()
         assert page.locator('#project-add').evaluate('e => e === document.activeElement')
@@ -4959,21 +4967,29 @@ def check_project_initialization(page, shots):
     page.route('**/api/projects/INIT/initialization/cancel', cancel_initialization)
     try:
         page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
-        open_project_creation(page)
-        page.click('.project-spec summary'); page.fill('#p-key', 'INIT'); page.fill('#p-name', '기획서 생성 검사'); page.fill('#p-folder', 'init-demo')
-        expect(page.locator('[name="project-template"]')).to_have_count(3)
-        expect(page.locator('[name="project-template"][value="blank"]')).to_be_checked()
+        open_project_creation(page, 'blank')
+        page.fill('#p-key', 'INIT'); page.fill('#p-name', '기획서 생성 검사'); page.fill('#p-folder', 'init-demo')
+        expect(page.locator('[data-template-pick]')).to_have_count(4)
         expect(page.locator('#p-template-options')).to_be_hidden()
-        page.check('[name="project-template"][value="service-split"]')
+        page.click('#p-step-back')
+        expect(page.locator('[data-template-pick="blank"]')).to_be_focused()
+        page.keyboard.press('Enter')
+        expect(page.locator('#p-key')).to_be_focused()
+        assert not requests
+        expect(page.locator('#p-path')).to_be_disabled()
+        expect(page.locator('#p-register')).to_be_hidden()
+        page.click('#p-step-back'); page.click('[data-template-pick="web-game"]')
+        expect(page.locator('[data-template-option]:checked')).to_have_count(2)
+        page.click('#p-step-back'); page.click('[data-template-pick="service-split"]')
         expect(page.locator('[data-template-option]:checked')).to_have_count(3)
         expect(page.locator('#p-template-options')).to_contain_text('PostgreSQL')
-        page.check('[name="project-template"][value="blank"]')
+        page.click('#p-step-back'); page.click('[data-template-pick="blank"]')
         expect(page.locator('#p-template-options')).to_be_hidden()
-        page.check('[name="project-template"][value="admin-web"]')
+        page.click('#p-step-back'); page.click('[data-template-pick="admin-web"]')
         expect(page.locator('[data-template-option]:checked')).to_have_count(3)
         page.uncheck('[data-template-option="db"]')
-        page.check('[name="project-template"][value="service-split"]')
-        page.check('[name="project-template"][value="admin-web"]')
+        page.click('#p-step-back'); page.click('[data-template-pick="service-split"]')
+        page.click('#p-step-back'); page.click('[data-template-pick="admin-web"]')
         expect(page.locator('[data-template-option="db"]')).not_to_be_checked()
         page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("첨부")')
         assert not requests
@@ -4985,8 +5001,11 @@ def check_project_initialization(page, shots):
                 page.wait_for_timeout(150)
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 assert page.locator('#project-form').evaluate('e => e.scrollWidth <= e.clientWidth + 1')
-                page.locator('.project-templates').scroll_into_view_if_needed()
+                page.click('#p-step-back')
+                expect(page.locator('[data-template-pick]').first).to_be_visible()
+                assert page.locator('[data-template-pick] li').count() > 4
                 page.screenshot(path=str(shots / f'project-initialization-{theme}-{width}.png'))
+                page.click('[data-template-pick="admin-web"]')
                 page.locator('#p-template-options').scroll_into_view_if_needed()
                 page.screenshot(path=str(shots / f'project-template-options-{theme}-{width}.png'))
         page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("요청 확인 실패")')
@@ -5897,6 +5916,13 @@ try:
             check_settings_navigation(page, shots)
             assert not errs, errs
             print('OK: fonts and Settings navigation'); sys.exit(0)
+        if '--project-wizard-only' in sys.argv:
+            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+            check_project_row(page, shots)
+            check_project_flows(page, shots, answers, asked)
+            check_project_initialization(page, shots)
+            assert not errs, errs
+            print('OK: project wizard'); sys.exit(0)
         if '--project-registration-only' in sys.argv:
             page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
             check_project_row(page, shots)
