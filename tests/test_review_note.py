@@ -88,6 +88,39 @@ with TestClient(A.app) as client:
         automation._approve_plans(conn, setting)
     assert issues.get_issue(auto['ref'])['approval'] is None
 
+    # 첨부 검증 실패는 댓글·대기열·임시 첨부 상태를 모두 보존한다.
+    attached_issue = issues.create_issue(me, 'NOTE', '첨부 재검토')
+    issues.post_plan(me, attached_issue['ref'], '첨부 확인 계획')
+    attached_route = f"/api/issues/{attached_issue['ref']}/review"
+    uploaded = client.post('/api/attachments', files={'file': ('reference.md', b'# reference', 'text/markdown')}, headers=H)
+    assert uploaded.status_code == 200, uploaded.text
+    aid = uploaded.json()['id']
+    payload = {'provider': 'codex', 'note': NOTE, 'plan_version': 1, 'attachment_ids': [aid]}
+    for change, status in [({'attachment_ids': aid}, 400), ({'note': None}, 400),
+                           ({'attachment_ids': ['missing']}, 404), ({'plan_version': 99}, 409),
+                           ({'attachment_ids': [aid, 'missing']}, 404)]:
+        before_jobs = len(jobs.list_jobs())
+        before_events = len(issues.get_issue(attached_issue['ref'])['events'])
+        response = client.post(attached_route, json={**payload, **change}, headers=H)
+        assert response.status_code == status, response.text
+        assert len(jobs.list_jobs()) == before_jobs
+        assert len(issues.get_issue(attached_issue['ref'])['events']) == before_events
+        with db.connect() as conn:
+            row = conn.execute('SELECT issue_id,expires_at FROM attachments WHERE id=?', (aid,)).fetchone()
+            assert row['issue_id'] is None and row['expires_at']
+    response = client.post(attached_route, json=payload, headers=H)
+    assert response.status_code == 200, response.text
+    current = issues.get_issue(attached_issue['ref'])
+    assert current['plan']['revision_attachments'] == [aid]
+    assert issues.compact_issue(current)['plan']['revision_attachments'] == [aid]
+    event = next(e for e in current['events'] if e['data'].get('plan_revision_request'))
+    assert event['data']['attachment_ids'] == [aid]
+    assert f'reference.md({aid})' in review.revision_prompt(current)
+    assert 'read_attachment' in review.revision_prompt(current)
+    with db.connect() as conn:
+        row = conn.execute('SELECT issue_id,expires_at FROM attachments WHERE id=?', (aid,)).fetchone()
+        assert row['issue_id'] == current['id'] and row['expires_at'] is None
+
     key = client.post('/api/agents', json={'name': 'test-agent'}, headers=H).json()['key']
     client.cookies.clear()
     response = client.post(route, json=request, headers={'Authorization': 'Bearer ' + key})

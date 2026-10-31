@@ -14,6 +14,43 @@ let agentsById = new Map();
 let tokenUnit = 'auto';
 const view = document.getElementById('view');
 
+// 결정·결과 폼의 임시 첨부를 같은 방식으로 관리한다.
+function attachPicker({list, send, button, input, textarea, enabled, imagesOnly = false}) {
+    const rFiles = [];   // {name, busy, error, data, preview}
+    const rDelete = f => { if(f.preview){ URL.revokeObjectURL(f.preview); f.preview = null; } if(f.data) void api('DELETE', `/api/attachments/${encodeURIComponent(f.data.id)}`).catch(() => {}); };
+    const rClear = () => rFiles.splice(0).forEach(rDelete);
+    window.addEventListener('hashchange', rClear, { once: true });   // 화면을 떠나면 연결 안 된 첨부를 지운다
+    const rDraw = () => {
+      list.innerHTML = rFiles.map((f, i) => `<span class="cmp-chip${f.error ? ' bad' : ''}">${f.preview ? `<span class="cmp-thumb"><img src="${f.preview}" alt=""></span>` : ''}${esc(f.name)}${f.busy ? ' · 업로드 중…' : f.error ? ' · 실패' : ''}
+        <button type="button" data-picker-remove="${i}" title="첨부 제거" aria-label="${esc(f.name)} 첨부 제거"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button></span>`).join('');
+      send.disabled = rFiles.some(f => f.busy || f.error);
+    };
+    const rAdd = files => files.forEach(async file => {
+      if(!enabled() || (imagesOnly && !file.type.startsWith('image/'))) return;
+      const f = { name: file.name || 'image.png', busy: true, error: '', preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : null };
+      rFiles.push(f); rDraw();
+      try{
+        const body = new FormData(); body.append('file', file, f.name);
+        f.data = await api('POST', '/api/attachments', body);
+        if(!rFiles.includes(f)) rDelete(f);
+      }catch(err){ f.error = err.message; toast(`${f.name}: ${err.message} 제거하고 다시 첨부해 주세요.`); }
+      finally{ f.busy = false; rDraw(); }
+    });
+    button.addEventListener('click', () => input.click());
+    input.addEventListener('change', (e) => { rAdd([...e.target.files]); e.target.value = ''; });
+    textarea.addEventListener('paste', (e) => {
+      if(!enabled()) return;
+      const imgs = [...(e.clipboardData?.files || [])].filter(x => x.type.startsWith('image/'));
+      if(imgs.length){ e.preventDefault(); rAdd(imgs); }
+    });
+    list.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-picker-remove]'); if(!b) return;
+      const [f] = rFiles.splice(+b.dataset.pickerRemove, 1); if(f) rDelete(f); rDraw();
+    });
+    return { ids: () => rFiles.map(f => f.data.id), clear: () => { rClear(); rDraw(); },
+      take: () => rFiles.splice(0).forEach(f => { if(f.preview) URL.revokeObjectURL(f.preview); }) };
+}
+
 // ---- 공용 ----
 function esc(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1470,6 +1507,7 @@ function decisionHtml(it){
     ${busy ? '<div class="dim hint">검토가 도는 중이라 끝나면 결정할 수 있어요.</div>' : `
     ${it.plan.revision_note ? '<p class="dim hint">이 계획서는 재검토를 요청했어요. 새 계획서가 올라온 뒤 승인해 주세요.</p>' : ''}
     <div id="decision-form" hidden><textarea id="decision-note" aria-label="계획서 결정 또는 재검토 메모"></textarea>
+      <div id="decision-attach" hidden><div id="decision-files" class="cmp-files"></div><button type="button" id="decision-attach-btn" class="secondary">파일 첨부</button><input id="decision-file" type="file" multiple hidden accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mp3,.wav,.ogg,.m4a,.md,.json"></div>
       <div id="revision-provider-row" hidden><label for="revision-provider">검토 Agent</label> <select id="revision-provider"><option value="claude">Claude</option><option value="codex">Codex</option></select><p class="dim hint">메모를 반영해 계획서를 다시 작성해요. 코드는 수정하지 않으며 선택한 Agent 계정의 사용량을 사용해요.</p></div>
       <div class="row-end"><button id="decision-cancel">취소</button><button id="decision-send" class="primary"></button></div></div>
     <div class="review-actions" id="decision-actions">
@@ -1753,27 +1791,7 @@ async function renderIssue(ref, background = false){
   if($('approve')){
     $('approve').addEventListener('click', () => setStatus('done'));
     let to = null;
-    // 수정 요청 참조 이미지 — 빠른 발행과 같은 방식으로 먼저 올리고, 보낼 때 attachment_ids로 연결한다
-    const rFiles = [];   // {name, busy, error, data, preview}
-    const rDelete = f => { if(f.preview){ URL.revokeObjectURL(f.preview); f.preview = null; } if(f.data) void api('DELETE', `/api/attachments/${encodeURIComponent(f.data.id)}`).catch(() => {}); };
-    const rClear = () => rFiles.splice(0).forEach(rDelete);
-    window.addEventListener('hashchange', rClear, { once: true });   // 화면을 떠나면 연결 안 된 첨부를 지운다
-    const rDraw = () => {
-      $('result-files').innerHTML = rFiles.map((f, i) => `<span class="cmp-chip${f.error ? ' bad' : ''}">${f.preview ? `<span class="cmp-thumb"><img src="${f.preview}" alt=""></span>` : ''}${esc(f.name)}${f.busy ? ' · 업로드 중…' : f.error ? ' · 실패' : ''}
-        <button type="button" data-r-remove="${i}" title="첨부 제거" aria-label="${esc(f.name)} 첨부 제거"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button></span>`).join('');
-      $('result-send').disabled = rFiles.some(f => f.busy || f.error);
-    };
-    const rAdd = files => files.forEach(async file => {
-      if(!file.type.startsWith('image/')) return;
-      const f = { name: file.name || 'image.png', busy: true, error: '', preview: URL.createObjectURL(file) };
-      rFiles.push(f); rDraw();
-      try{
-        const body = new FormData(); body.append('file', file, f.name);
-        f.data = await api('POST', '/api/attachments', body);
-        if(!rFiles.includes(f)) rDelete(f);
-      }catch(err){ f.error = err.message; toast(`${f.name}: ${err.message} 제거하고 다시 첨부해 주세요.`); }
-      finally{ f.busy = false; rDraw(); }
-    });
+    const picker = attachPicker({list: $('result-files'), send: $('result-send'), button: $('result-attach-btn'), input: $('result-file'), textarea: $('result-note'), enabled: () => to === 'changes_requested', imagesOnly: true});
     $('result-actions').querySelectorAll('[data-to]').forEach(b => b.addEventListener('click', () => {
       to = b.dataset.to; const f = RESULT_FORM[to];
       $('result-form').hidden = false; $('result-actions').hidden = true;
@@ -1781,33 +1799,24 @@ async function renderIssue(ref, background = false){
       $('result-note').value = ''; $('result-note').placeholder = f.placeholder;
       $('result-send').textContent = f.send; $('result-send').className = f.cls; $('result-note').focus();
     }));
-    $('result-attach-btn').addEventListener('click', () => $('result-file').click());
-    $('result-file').addEventListener('change', (e) => { rAdd([...e.target.files]); e.target.value = ''; });
-    $('result-note').addEventListener('paste', (e) => {
-      if(to !== 'changes_requested') return;
-      const imgs = [...(e.clipboardData?.files || [])].filter(x => x.type.startsWith('image/'));
-      if(imgs.length){ e.preventDefault(); rAdd(imgs); }
-    });
-    $('result-files').addEventListener('click', (e) => {
-      const b = e.target.closest('[data-r-remove]'); if(!b) return;
-      const [f] = rFiles.splice(+b.dataset.rRemove, 1); if(f) rDelete(f); rDraw();
-    });
-    $('result-cancel').addEventListener('click', () => { rClear(); rDraw(); $('result-form').hidden = true; $('result-actions').hidden = false; });
+    $('result-cancel').addEventListener('click', () => { picker.clear(); $('result-form').hidden = true; $('result-actions').hidden = false; });
     $('result-send').addEventListener('click', (e) => {
       const note = $('result-note').value.trim();
       if(!note){ toast('메모를 적어 주세요'); return; }
-      const ids = to === 'changes_requested' ? rFiles.map(f => f.data.id) : [];
+      const ids = to === 'changes_requested' ? picker.ids() : [];
       // 보낸 뒤에는 화면을 새로 그리므로 이 목록은 비운다(떠날 때 연결된 첨부를 지우지 않게). 실패하면 임시 첨부는 만료로 정리된다.
-      rFiles.splice(0).forEach(f => { if(f.preview) URL.revokeObjectURL(f.preview); });
+      picker.take();
       whileBusy(e.currentTarget, () => setStatus(to, note, ids));
     });
   }
   if($('decision-actions')){
     let verdict = null;
+    const picker = attachPicker({list: $('decision-files'), send: $('decision-send'), button: $('decision-attach-btn'), input: $('decision-file'), textarea: $('decision-note'), enabled: () => verdict === 'review'});
     const send = async (v, note) => {
       if(v === 'review') {
         if(!note.trim()){ toast('수정할 방향을 메모로 적어 주세요'); return; }
-        const r = await api('POST', `/api/issues/${R}/review`, { provider: $('revision-provider').value, note, plan_version: it.plan.version });
+        const r = await api('POST', `/api/issues/${R}/review`, { provider: $('revision-provider').value, note, plan_version: it.plan.version, attachment_ids: picker.ids() });
+        picker.take();
         toast(queuedMsg(r, '메모 붙여 재검토를 맡겼어요 — 새 계획서를 기다려 주세요'));
         await reload(); return;
       }
@@ -1819,6 +1828,7 @@ async function renderIssue(ref, background = false){
       if(verdict === 'approve'){ whileBusy(e.currentTarget, () => send('approve', '')); return; }
       $('decision-form').hidden = false; $('decision-actions').hidden = true;
       $('revision-provider-row').hidden = verdict !== 'review';
+      $('decision-attach').hidden = verdict !== 'review';
       $('revision-provider').value = runs.find(r => r.mode === 'review')?.provider || 'claude';
       $('decision-note').value = verdict === 'review' ? (it.plan.revision_note || it.approval?.note || '') : verdict === 'approve_notes' ? decisionQuestions(it.plan.body) : '';
       $('decision-note').placeholder = verdict === 'review' ? '예: SQLite는 임시예요. PostgreSQL 기준으로 계획서를 다시 작성해 주세요.' : verdict === 'approve_notes' ? '계획서가 물은 것에 대한 답, 고칠 내용 (예: 1번은 끄기로)' : '거절 이유 (예: NS-3과 중복, 필요 없어짐)';
@@ -1826,7 +1836,7 @@ async function renderIssue(ref, background = false){
       $('decision-send').classList.toggle('danger', verdict === 'reject'); $('decision-send').classList.toggle('primary', verdict !== 'reject');
       $('decision-note').focus();
     }));
-    $('decision-cancel').addEventListener('click', () => { $('decision-form').hidden = true; $('decision-actions').hidden = false; });
+    $('decision-cancel').addEventListener('click', () => { picker.clear(); $('decision-form').hidden = true; $('decision-actions').hidden = false; });
     $('decision-send').addEventListener('click', (e) => whileBusy(e.currentTarget, () => send(verdict, $('decision-note').value)));
   }
   view.querySelectorAll('.run-task').forEach(b => b.addEventListener('click', async (e) => {

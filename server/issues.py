@@ -512,6 +512,15 @@ def plan_revision_note(c, issue_id, version):
     return row['body'] if row else None
 
 
+def plan_revision_attachments(c, issue_id, version):
+    """해당 판의 최신 재검토 메모에 함께 붙인 첨부만 반환한다."""
+    row = c.execute("""SELECT data_json FROM events WHERE issue_id=? AND actor LIKE 'human:%'
+        AND json_extract(data_json,'$.plan_revision_request')=1
+        AND json_extract(data_json,'$.plan_version')=? ORDER BY id DESC LIMIT 1""",
+        (issue_id, version)).fetchone()
+    return json.loads(row['data_json']).get('attachment_ids', []) if row else []
+
+
 COMPACT_NOTES = 10
 COMPACT_NOTE_CHARS = 800
 
@@ -535,7 +544,7 @@ def compact_issue(d: dict) -> dict:
     notes = [{"kind": e["kind"], "actor": e["actor"], "at": (e.get("created_at") or "")[:16], "body": e["body"][:COMPACT_NOTE_CHARS]}
              for e in d.get("events") or [] if _meaningful(e)]
     out = {k: d.get(k) for k in ("ref", "title", "status", "labels", "parent_ref", "body", "title_missing", "type_ids", "type_revision", "blocked_by")}
-    out["plan"] = {k: plan.get(k) for k in ("version", "body", "revision_note")} if plan else None
+    out["plan"] = {k: plan.get(k) for k in ("version", "body", "revision_note", "revision_attachments")} if plan else None
     out["approval"] = d.get("approval")
     out["human_checks"] = d.get("human_checks") or []
     out["attachments"] = [{k: a.get(k) for k in ("id", "kind", "name", "url")} for a in d.get("attachments") or []]
@@ -556,6 +565,7 @@ def get_issue(ref) -> dict:
         d["plan"] = dict(plan) if plan else None
         if plan:
             d["plan"]["revision_note"] = plan_revision_note(c, row['id'], plan['version'])
+            d["plan"]["revision_attachments"] = plan_revision_attachments(c, row['id'], plan['version'])
         d["human_checks"] = human_checks(plan["body"]) if plan else []
         dec = c.execute("SELECT * FROM decisions WHERE issue_id=? AND gate='plan' ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
         if dec:   # 요약(list와 같은 모양)에 메모·누가·언제를 더한다

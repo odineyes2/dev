@@ -141,7 +141,11 @@ def revision_prompt(issue):
     plan = issue.get('plan')
     if not plan or not plan.get('revision_note'):
         return ''
-    return (f"\n사람의 계획서 v{plan['version']} 재검토 요청:\n" + plan['revision_note'] +
+    names = {a['id']: a['name'] for a in issue.get('attachments', [])}
+    ids = plan.get('revision_attachments') or []
+    attached = ('\n메모와 함께 첨부: ' + ', '.join(f"{names.get(aid, aid)}({aid})" for aid in ids) +
+                ' — read_attachment로 읽는다(참고자료).\n') if ids else ''
+    return (f"\n사람의 계획서 v{plan['version']} 재검토 요청:\n" + plan['revision_note'] + attached +
             "\n위 메모를 요구사항으로 반영해 새 계획서를 작성한다. 기존 계획서를 승인하거나 구현하지 않는다.\n")
 
 
