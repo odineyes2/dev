@@ -786,6 +786,14 @@ def api_issue(ref: str):
         it["review_running"] = review.is_running(it["id"])   # 이 이슈에서 검토·실행이 도는 중(DEV-13)
         with db.connect() as c:   # 이 이슈가 설 줄(Task는 실행, 그 밖은 검토)이 다른 작업으로 바쁜지 — 맡기면 대기열에 선다
             it["review_busy"] = jobs.start_block(c, it["project_key"], "execute" if it["parent_ref"] else "review") is not None
+            import model_catalog, auto_settings
+            names = {m["id"]: m["name"] for v in model_catalog.VENDORS for m in v["models"]}
+            it["delegates"] = {"review_timeout_sec": review.TIMEOUT_SEC}
+            for provider in auto_settings.PROVIDERS:
+                agent = auto_settings.agent_for(c, it["id"], provider)
+                model = agent["model"] if agent else None
+                it["delegates"][provider] = {"agent": agent["name"] if agent else None,
+                                             "model": model, "model_name": names.get(model, model)}
     with timing.span("execute"):
         it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
         import troubleshoot
