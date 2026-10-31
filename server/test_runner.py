@@ -54,7 +54,7 @@ def test_files(repo, project_key=None):
     found = {}
     for rule in rules(project_key)[0]:
         for path in sorted(Path(repo).glob(rule['glob'])):
-            if path.is_file() and path not in found:
+            if path not in found:
                 t = TestFile(path)
                 t.rule = rule
                 found[path] = t
