@@ -9,6 +9,69 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits, improve_fixture
 
 
+def check_complete_summary(page, shots):
+    """완료 확인창의 제목·Task·메모와 취소를 네 화면에서 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    def post(path, data):
+        response = page.request.post(BASE + path, headers=headers, data=data)
+        assert response.ok, (path, response.status)
+        return response.json()
+    post('/api/projects', {'key': 'CSUM', 'name': '완료 내용 검사'})
+    title = '긴 이슈 제목을 빠짐없이 보여 주고 작업 내용을 확인해요 ' * 3
+    root = post('/api/issues', {'project': 'CSUM', 'title': title})['ref']
+    tasks = [post('/api/issues', {'project': 'CSUM', 'parent': root, 'title': f'묶음 {i} 작업 제목 ' * 3})['ref'] for i in range(8)]
+    post(f'/api/issues/{tasks[0]}/status', {'status': 'done'})
+    post(f'/api/issues/{root}/status', {'status': 'in_review'})
+    leaf = post('/api/issues', {'project': 'CSUM', 'title': '메모만 있는 이슈'})['ref']
+    post(f'/api/issues/{leaf}/status', {'status': 'in_review', 'note': '**이전 메모**'})
+    post(f'/api/issues/{leaf}/status', {'status': 'in_progress'})
+    post(f'/api/issues/{leaf}/status', {'status': 'in_review', 'note': '# 확인한 작업\n- **제목 표시**와 `검사`를 마쳤어요.\n> __안내__를 확인해요.\n* 넷째 줄\n- 다섯째 줄'})
+    viewport = page.viewport_size
+    theme = page.evaluate("localStorage.getItem('dev.theme')")
+    for scheme in ('light', 'dark'):
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 800})
+            page.evaluate("t => {localStorage.setItem('dev.theme',t); document.documentElement.dataset.theme=t}", scheme)
+            # Task 상세에서도 최상위 이슈 내용을 보여 준다.
+            page.goto(BASE + f'/#/issue/{tasks[1]}')
+            expect(page.locator('.side .complete-tree')).to_be_visible()
+            page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
+            page.click('.side .complete-tree')
+            dialog = page.locator('.confirm-dialog[open]')
+            expect(dialog.locator('.confirm-summary')).to_have_text(title.strip())
+            assert dialog.locator('.confirm-summary').evaluate('e => e.scrollWidth <= e.clientWidth')
+            expect(dialog.locator('.confirm-work-title')).to_have_text('작업 내용')
+            expect(dialog.locator('.confirm-item')).to_have_count(6)
+            expect(dialog.locator('.confirm-more')).to_have_text('외 2개')
+            expect(dialog.locator('.confirm-note').first).to_have_text('Done')
+            expect(dialog.locator('.confirm-foot')).to_contain_text('되돌릴 수 없어요')
+            expect(dialog.locator('.confirm-foot')).to_contain_text('아직 끝나지 않은 Task')
+            assert dialog.evaluate('e => e.scrollWidth <= e.clientWidth')
+            assert dialog.locator('.confirm-ok').bounding_box()['y'] < 760
+            dialog.screenshot(path=str(shots / f'complete_summary_tasks_{scheme}_{width}.png'))
+            dialog.locator('.confirm-cancel').click()
+            assert page.request.get(BASE + f'/api/issues/{root}').json()['status'] == 'in_review'
+            page.goto(BASE + '/#/')
+            expect(page.locator(f'[data-action="complete-tree"][data-ref="{leaf}"]')).to_be_visible()
+            page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
+            page.click(f'[data-action="complete-tree"][data-ref="{leaf}"]')
+            expect(dialog.locator('.confirm-body')).to_have_text('확인한 작업\n제목 표시와 검사를 마쳤어요.\n안내를 확인해요.\n넷째 줄\n다섯째 줄')
+            assert dialog.locator('.confirm-body').evaluate("e => getComputedStyle(e).webkitLineClamp === '4'")
+            expect(dialog.locator('.confirm-items')).to_have_count(0)
+            dialog.screenshot(path=str(shots / f'complete_summary_note_{scheme}_{width}.png'))
+            dialog.locator('.confirm-cancel').click()
+            assert page.request.get(BASE + f'/api/issues/{leaf}').json()['status'] == 'in_review'
+    page.evaluate("() => { window.confirmCompleteTree({ref:'CSUM-0', title:'작업 내용 없음', children:[], events:[]}); }")
+    expect(page.locator('.confirm-work-title')).to_have_count(0)
+    page.click('.confirm-cancel')
+    token = page.request.get(BASE + '/api/projects/CSUM/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/CSUM', headers=headers, data={'confirmation_token': token}).ok
+    page.set_viewport_size(viewport)
+    page.evaluate("t => {if(t === null) localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme',t); document.documentElement.dataset.theme=t || 'light'}", theme)
+    page.goto(BASE + '/#/')
+    page.evaluate("() => { window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); }")
+
+
 def check_decision_layout(page, shots):
     """결정 버튼의 아이콘·격자·폼 너비를 낮·밤과 두 화면 폭에서 확인한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -5517,12 +5580,12 @@ try:
         page.wait_for_selector("#shell:not([hidden])")
         # 기존 화면 흐름 검사는 문구와 취소 응답을 기록한다. 모달 자체는 --confirm-only에서 검사한다.
         def confirm_answer(message, options):
-            asked.append(message + '\n' + options.get('description', '') + '\n' + '\n'.join(x.get('ref', '') + ' ' + x.get('title', '') for x in options.get('items', [])))
+            asked.append(message + '\n' + options.get('description', '') + '\n' + options.get('summary', '') + '\n' + options.get('body', '') + '\n' + '\n'.join(x.get('ref', '') + ' ' + x.get('title', '') for x in options.get('items', [])))
             answer = answers.pop(0) if answers else "모바일도 확인해 주세요"
             return answer if options.get('input') else answer is not None
         page.expose_function('testConfirmAnswer', confirm_answer)
         if '--confirm-only' not in sys.argv:
-            page.add_init_script("window.addEventListener('DOMContentLoaded', () => { window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); });")
+            page.add_init_script("window.addEventListener('DOMContentLoaded', () => { window.realConfirmDialog = window.confirmDialog; window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); });")
         page.evaluate("() => { window.realConfirmDialog = window.confirmDialog; window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); }")
         if '--confirm-only' in sys.argv:
             page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
@@ -5596,6 +5659,10 @@ try:
         if '--login-only' in sys.argv:
             assert not errs, errs
             print('OK: login screen and authentication'); sys.exit(0)
+        if '--complete-summary-only' in sys.argv:
+            check_complete_summary(page, shots)
+            assert not errs, errs
+            print('OK: complete summary'); sys.exit(0)
         if '--decision-layout-only' in sys.argv:
             check_decision_layout(page, shots)
             assert not errs, errs
@@ -5942,6 +6009,7 @@ try:
         check_auto_master(page)
         check_auto_settings(page, shots)
         check_regression_numbers(page, shots)
+        check_complete_summary(page, shots)
         check_decision_layout(page, shots)
         check_attachments(page, shots)
         check_new_attachment_images(page, shots)

@@ -80,17 +80,17 @@ function toast(msg){
   clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, 3000);
 }
 // 계획서의 '사람이 할 일'(NS-60) — Done 전에 다 했는지 확인받는다. 없으면 바로 통과. 서버도 확인 없이는 Done을 거절한다.
-function confirmDialog(message, {description, items = [], moreLabel, okText = '확인', danger = false, input = false, focusCancel = false} = {}){
+function confirmDialog(message, {description, summary, body: workBody, wrapItems = false, itemLimit = 3, items = [], moreLabel, okText = '확인', danger = false, input = false, focusCancel = false} = {}){
   return new Promise(resolve => {
     const previous = document.activeElement;
     const dialog = document.createElement('dialog');
     dialog.className = 'confirm-dialog';
     dialog.setAttribute('role', 'alertdialog');
     dialog.setAttribute('aria-modal', 'true');
-    const [title, ...body] = String(message).split('\n');
-    const detail = description ?? body.join('\n');
-    const list = items.length ? `<div class="confirm-items">${items.slice(0,3).map(x => `<div class="confirm-item"><span class="confirm-ref">${esc(x.ref)}</span><span class="confirm-item-title" title="${esc(x.title)}">${esc(x.title)}</span>${x.note ? `<span class="confirm-note">${esc(x.note)}</span>` : ''}</div>`).join('')}${items.length > 3 ? `<div class="confirm-more">${esc(moreLabel ?? `외 ${items.length - 3}개`)}</div>` : ''}</div>` : '';
-    dialog.innerHTML = `<form method="dialog"><h2 id="confirm-title">${esc(title)}</h2><p class="confirm-message">${esc(detail)}</p>${list}${input ? '<input class="confirm-input" aria-label="닫는 이유" required>' : ''}<div class="confirm-actions"><button type="button" class="confirm-cancel">취소</button><button type="submit" class="confirm-ok${danger ? ' danger' : ''}">${esc(okText)}</button></div></form>`;
+    const [title, ...lines] = String(message).split('\n');
+    const detail = description ?? lines.join('\n');
+    const list = items.length ? `<div class="confirm-items${wrapItems ? ' wrap' : ''}">${items.slice(0,itemLimit).map(x => `<div class="confirm-item"><span class="confirm-ref">${esc(x.ref)}</span><span class="confirm-item-title" title="${esc(x.title)}">${esc(x.title)}</span>${x.note ? `<span class="confirm-note">${esc(x.note)}</span>` : ''}</div>`).join('')}${items.length > itemLimit ? `<div class="confirm-more">${esc(moreLabel ?? `외 ${items.length - itemLimit}개`)}</div>` : ''}</div>` : '';
+    dialog.innerHTML = `<form method="dialog"><h2 id="confirm-title">${esc(title)}</h2><div class="confirm-content">${summary ? `<p class="confirm-summary">${esc(summary)}</p>` : ''}${summary && (list || workBody) ? '<h3 class="confirm-work-title">작업 내용</h3>' : ''}${summary ? '' : `<p class="confirm-message">${esc(detail)}</p>`}${list}${workBody ? `<p class="confirm-body">${esc(workBody)}</p>` : ''}${summary ? `<p class="confirm-message confirm-foot">${esc(detail)}</p>` : ''}${input ? '<input class="confirm-input" aria-label="닫는 이유" required>' : ''}</div><div class="confirm-actions"><button type="button" class="confirm-cancel">취소</button><button type="submit" class="confirm-ok${danger ? ' danger' : ''}">${esc(okText)}</button></div></form>`;
     dialog.setAttribute('aria-labelledby', 'confirm-title');
     if(!detail) dialog.querySelector('.confirm-message').remove();
     if(detail){ dialog.querySelector('.confirm-message').id = 'confirm-description'; dialog.setAttribute('aria-describedby', 'confirm-description'); }
@@ -102,6 +102,22 @@ function confirmDialog(message, {description, items = [], moreLabel, okText = '�
     dialog.onclose = () => { dialog.remove(); if(previous?.isConnected) previous.focus({preventScroll:true}); resolve(result); };
     dialog.showModal();
     (input ? dialog.querySelector('.confirm-input') : dialog.querySelector(focusCancel ? '.confirm-cancel' : '.confirm-ok')).focus();
+  });
+}
+// 마지막 검토 메모를 HTML 없이 평문으로 보여 준다.
+function inReviewNote(it){
+  const event = [...(it.events || [])].reverse().find(e => e.kind === 'status' && e.data?.to === 'in_review' && e.body?.trim());
+  return (event?.body || '').replace(/\*\*|__|`/g, '').replace(/^\s*(?:#+|[-*>])\s+/gm, '').trim();
+}
+function confirmCompleteTree(root){
+  const children = root.children || [];
+  const warn = children.filter(c => !['done', 'closed'].includes(c.status)
+    && (c.status !== 'in_review' || ['병합 대기', '재시작 대기', '되돌림'].includes(c.merge_state)));
+  return confirmDialog(`${root.ref}을 완료할까요?`, {
+    summary:root.title, body:children.length ? '' : inReviewNote(root),
+    items:children.map(c => ({...c, note:STATUS_LABEL[c.status] || c.status})), wrapItems:true, itemLimit:6,
+    description:'하위 Task까지 모두 Done이 되고, 되돌릴 수 없어요.' + (warn.length ? `\n병합 대기 중이거나 아직 끝나지 않은 Task가 있어요: ${warn.map(c => c.ref).join(', ')}` : ''),
+    okText:'완료로 바꾸기', focusCancel:true
   });
 }
 async function confirmChecks(items){
@@ -659,9 +675,8 @@ function bindActions(container,session,refresh){
           const root=await api('GET',`/api/issues/${encodeURIComponent(i.ref)}`,undefined,current);
           if(!current())return;
           const open=[root,...root.children].filter(x=>!['done','closed'].includes(x.status));
-          const warn=root.children.filter(x=>!['done','closed'].includes(x.status) && (x.status!=='in_review' || ['병합 대기','재시작 대기','되돌림'].includes(x.merge_state)));
           if(!open.length){toast('이미 모두 끝났어요');return;}
-          if(!await confirmDialog(`${root.ref}을 완료할까요?`, {description:'하위 Task까지 모두 Done이 되고, 되돌릴 수 없어요.' + (warn.length ? `\n병합 대기 중이거나 아직 끝나지 않은 Task가 있어요: ${warn.map(x=>x.ref).join(', ')}` : ''), items:open, okText:'완료로 바꾸기', focusCancel:true})) return;
+          if(!await confirmCompleteTree(root)) return;
           if(!await confirmChecks(root.human_checks))return;
         }else if(!['decision','task-approve'].includes(kind)){
           const name=provider==='claude'?'Claude':'Codex';
@@ -1778,9 +1793,7 @@ async function renderIssue(ref, background = false){
     // 최상위의 바로 아래 Task까지만 보여 준다(서버는 더 깊은 자손도 닫는다)
     const open = [root, ...root.children].filter(x => !['done', 'closed'].includes(x.status));
     if(!open.length){ toast('이미 모두 끝났어요'); return; }
-    const warn = root.children.filter(c => !['done', 'closed'].includes(c.status)
-      && (c.status !== 'in_review' || ['병합 대기', '재시작 대기', '되돌림'].includes(c.merge_state)));
-    if(!await confirmDialog(`${root.ref}을 완료할까요?`, {description:'하위 Task까지 모두 Done이 되고, 되돌릴 수 없어요.' + (warn.length ? `\n병합 대기 중이거나 아직 끝나지 않은 Task가 있어요: ${warn.map(x=>x.ref).join(', ')}` : ''), items:open, okText:'완료로 바꾸기', focusCancel:true})) return;
+    if(!await confirmCompleteTree(root)) return;
     if(!await confirmChecks(root.human_checks)) return;
     b.disabled = true; b.textContent = '완료하는 중…';
     try{ await api('POST', `/api/issues/${R}/complete-tree`, { confirm_checks: true }); }
