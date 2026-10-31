@@ -680,11 +680,12 @@ function bindActions(container,session,refresh){
           if(!await confirmChecks(root.human_checks))return;
         }else if(!['decision','task-approve'].includes(kind)){
           const name=provider==='claude'?'Claude':'Codex';
-          const task=kind==='execute'?await api('GET',`/api/issues/${encodeURIComponent(i.ref)}`,undefined,current):null;
+          const detail=await api('GET',`/api/issues/${encodeURIComponent(i.ref)}`,undefined,current);
+          const task=kind==='execute'?detail:null;
           if(!current())return;
           const limit=task?(provider==='codex'?`시간 제한은 ${Math.floor(task.execute.timeout_sec/60)}분이고 비용 상한은 없어요.`:`비용 상한은 $${task.execute.budget_usd}이에요.`):'';
           const scope=task ? '홈서버의 격리된 worktree에서 구현해요. 실행 후 기존 자동 병합 정책이 적용돼요.' : '홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).';
-          if(!await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?`, {description:`${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}`, okText:kind==='review'?'검토 맡기기':'실행 맡기기'}))return;
+          if(!await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?`, {description:task ? `${delegateLine(task, provider)}${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}` : reviewConfirmText(detail, provider), okText:kind==='review'?'검토 맡기기':'실행 맡기기'}))return;
         }
         if(!current())return;
         await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:kind==='complete-tree'?{confirm_checks:true}:provider?{provider}:{},current);
@@ -1412,6 +1413,15 @@ function runsHtml(runs){
   }).join('')}</ul>`;
 }
 // ---- 대기열(DEV-43): 바쁠 때 누른 것은 줄에 서고 하나씩 차례로 ----
+function delegateLine(it, provider){
+  const d = it.delegates?.[provider];
+  if(!d) return '';
+  return `모델 ${d.model ? `${d.model_name || d.model} (${d.model})` : 'CLI 기본값'}${d.agent ? ` · Agent "${d.agent}"` : ''}\n`;
+}
+function reviewConfirmText(it, provider){
+  const timeout = it.delegates?.review_timeout_sec;
+  return `${delegateLine(it, provider)}계획서만 올리고 코드는 고치지 않아요${timeout == null ? '' : ` · 최대 ${Math.floor(timeout / 60)}분`}\n${it.review_busy ? '앞 작업이 끝나면 시작해요' : '바로 시작해요'}`;
+}
 const QUEUE_LINE = '다른 일이 돌고 있으면 끝난 뒤 차례로 시작해요.';
 function jobHtml(j, edges){   // 이 이슈가 줄에 있으면 버튼 자리에 "대기 n번째 · 취소"
   return `<div class="queued"><span class="status" style="--sc:var(--s-waiting)">Waiting · ${PROVIDER_NAME[j.provider] || 'Claude'} 대기 ${j.position}번째</span>
@@ -1862,7 +1872,7 @@ async function renderIssue(ref, background = false){
       const task = await api('GET', `/api/issues/${encodeURIComponent(ref)}`);
       const name = PROVIDER_NAME[provider], x = task.execute;
       const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(x.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${x.budget_usd}이에요.`;
-      if(!await confirmDialog(`${ref}을(를) ${name}에게 실행 맡길까요?`, {description:`홈서버에서 relay/${ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+      if(!await confirmDialog(`${ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${delegateLine(task, provider)}홈서버에서 relay/${ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`, okText:'실행 맡기기'})) return;
       const r = await api('POST', `/api/issues/${encodeURIComponent(ref)}/execute`, { provider });
@@ -1929,7 +1939,7 @@ ${QUEUE_LINE}`, okText:'실행 맡기기'})) return;
     if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;
     const name = PROVIDER_NAME[provider];
     const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(it.execute.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${it.execute.budget_usd}이에요.`;
-    if(!await confirmDialog(`${it.ref}을(를) ${name}에게 실행 맡길까요?`, {description:`홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+    if(!await confirmDialog(`${it.ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${delegateLine(it, provider)}홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`, okText:'실행 맡기기'})) return;
     pendingExecutions.set(ref, provider);
@@ -1948,9 +1958,7 @@ ${QUEUE_LINE}`, okText:'실행 맡기기'})) return;
     if($(id)) $(id).addEventListener('click', async (e) => {
       if(e.currentTarget.disabled || pendingReviews.has(ref)) return;
       const name = PROVIDER_NAME[provider];
-      if(!await confirmDialog(`${it.ref}을(를) ${name}에게 검토 맡길까요?`, {description:`홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).
-사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
-${QUEUE_LINE}`, okText:'검토 맡기기'})) return;
+      if(!await confirmDialog(`${it.ref}을(를) ${name}에게 검토 맡길까요?`, {description:reviewConfirmText(it, provider), okText:'검토 맡기기'})) return;
       pendingReviews.set(ref, provider);
       $('review-btns').outerHTML = busyLine(provider, '검토');
       try {

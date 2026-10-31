@@ -9,6 +9,92 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits, improve_fixture
 
 
+def check_delegate_confirm(page, shots):
+    """위임 안내의 공용 문구와 실제 확인창을 네 화면에서 확인한다."""
+    headers = {'X-Requested-With': 'dev'}
+    assert page.request.post(BASE + '/api/projects', headers=headers, data={'key': 'DLGT', 'name': '위임 안내 검사'}).ok
+    response = page.request.post(BASE + '/api/issues', headers=headers, data={'project': 'DLGT', 'title': '위임 안내 검사'})
+    assert response.ok
+    ref = response.json()['ref']
+    page.goto(BASE + f'/#/issue/{ref}')
+    expect(page.locator('#ask-review')).to_be_visible()
+    sample = {'delegates': {'claude': {'agent': '<Agent>', 'model': 'claude-opus-5-5', 'model_name': 'Opus 5.5'}, 'codex': {'agent': None, 'model': None, 'model_name': None}, 'review_timeout_sec': 1200}, 'review_busy': False}
+    text = page.evaluate('(it) => reviewConfirmText(it, "claude")', sample)
+    assert 'Opus 5.5 (claude-opus-5-5)' in text and 'Agent "<Agent>"' in text
+    assert '최대 20분' in text and '바로 시작해요' in text and '로그인된' not in text
+    assert len(text.splitlines()) == 3
+    sample['review_busy'] = True
+    assert '앞 작업이 끝나면' in page.evaluate('(it) => reviewConfirmText(it, "claude")', sample)
+    assert 'CLI 기본값' in page.evaluate('(it) => reviewConfirmText(it, "codex")', sample)
+    assert '모델' not in page.evaluate('() => reviewConfirmText({}, "claude")')
+    sample['review_busy'] = False
+    def detail(route):
+        response = route.fetch()
+        payload = response.json()
+        payload.update(sample)
+        route.fulfill(response=response, json=payload)
+    issue_url = '**/api/issues/' + ref
+    page.route(issue_url, detail)
+    page.reload()
+    expect(page.locator('#ask-review')).to_be_visible()
+    viewport = page.viewport_size
+    theme = page.evaluate("localStorage.getItem('dev.theme')")
+    for scheme in ('light', 'dark'):
+        for width in (1300, 390):
+            page.set_viewport_size({'width': width, 'height': 800})
+            page.evaluate("t => {localStorage.setItem('dev.theme',t); document.documentElement.dataset.theme=t}", scheme)
+            page.evaluate('() => {window.confirmDialog = window.realConfirmDialog;}')
+            page.click('#ask-review')
+            dialog = page.locator('.confirm-dialog[open]')
+            expect(dialog).to_be_visible()
+            expect(dialog.locator('.confirm-message')).to_contain_text('모델')
+            expect(dialog.locator('.confirm-message')).to_contain_text('Opus 5.5 (claude-opus-5-5)')
+            expect(dialog.locator('.confirm-message')).to_contain_text('Agent "<Agent>"')
+            expect(dialog.locator('.confirm-message')).to_contain_text('계획서만 올리고 코드는 고치지 않아요')
+            assert '로그인된' not in dialog.inner_text()
+            assert dialog.evaluate('e => e.scrollWidth <= e.clientWidth')
+            page.evaluate('() => document.getAnimations().forEach(a => a.finish())')
+            page.screenshot(path=str(shots / f'delegate_confirm_{scheme}_{width}.png'))
+            dialog.locator('.confirm-cancel').click()
+    page.goto(BASE + '/#/')
+    quick = page.locator(f'[data-action="review"][data-ref="{ref}"][data-provider="claude"]')
+    expect(quick).to_be_visible()
+    page.evaluate('() => {window.confirmDialog = window.realConfirmDialog;}')
+    quick.click()
+    dialog = page.locator('.confirm-dialog[open]')
+    expect(dialog.locator('.confirm-message')).to_have_text(text)
+    dialog.locator('.confirm-cancel').click()
+    page.unroute(issue_url, detail)
+    # 승인된 Task의 상세·표·빠른 액션도 비용 안내와 모델 줄을 함께 유지한다.
+    def post(path, data):
+        result = page.request.post(BASE + path, headers=headers, data=data)
+        assert result.ok, (path, result.status)
+        return result.json()
+    post(f'/api/issues/{ref}/plans', {'body': '## Tasks\n1. 위임 실행 검사 | 파일: static/app.js | 확인: 안내 확인'})
+    post(f'/api/issues/{ref}/decision', {'verdict': 'approve', 'plan_version': 1})
+    child = page.request.get(BASE + '/api/issues/' + ref).json()['children'][0]['ref']
+    for route, selector in ((f'issue/{child}', '#ask-execute'), (f'issue/{ref}', f'.run-task[data-ref="{child}"][data-provider="claude"]'), ('', f'[data-action="execute"][data-ref="{child}"][data-provider="claude"]')):
+        page.goto(BASE + '/#/' + route)
+        expect(page.locator(selector)).to_be_visible()
+        page.evaluate('() => {window.confirmDialog = window.realConfirmDialog;}')
+        page.click(selector)
+        expect(dialog.locator('.confirm-message')).to_contain_text('모델')
+        expect(dialog.locator('.confirm-message')).to_contain_text('비용 상한은 $2')
+        dialog.locator('.confirm-cancel').click()
+    page.goto(BASE + f'/#/issue/{child}')
+    expect(page.locator('#ask-codex-execute')).to_be_visible()
+    page.evaluate('() => {window.confirmDialog = window.realConfirmDialog;}')
+    page.click('#ask-codex-execute')
+    expect(dialog.locator('.confirm-message')).to_contain_text('비용 상한은 없어요')
+    dialog.locator('.confirm-cancel').click()
+    page.set_viewport_size(viewport)
+    page.evaluate("t => {if(t === null) localStorage.removeItem('dev.theme'); else localStorage.setItem('dev.theme',t); document.documentElement.dataset.theme=t || 'light'}", theme)
+    page.evaluate('() => {window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options);}')
+    token = page.request.get(BASE + '/api/projects/DLGT/delete-check').json()['confirmation_token']
+    assert page.request.delete(BASE + '/api/projects/DLGT', headers=headers, data={'confirmation_token': token}).ok
+    page.goto(BASE + '/#/')
+
+
 def check_complete_summary(page, shots):
     """완료 확인창의 제목·Task·메모와 취소를 네 화면에서 확인한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -5674,6 +5760,10 @@ try:
         if '--login-only' in sys.argv:
             assert not errs, errs
             print('OK: login screen and authentication'); sys.exit(0)
+        if '--delegate-confirm-only' in sys.argv:
+            check_delegate_confirm(page, shots)
+            assert not errs, errs
+            print('OK: delegate confirm'); sys.exit(0)
         if '--complete-summary-only' in sys.argv:
             check_complete_summary(page, shots)
             assert not errs, errs
@@ -6024,6 +6114,7 @@ try:
         check_auto_master(page)
         check_auto_settings(page, shots)
         check_regression_numbers(page, shots)
+        check_delegate_confirm(page, shots)
         check_complete_summary(page, shots)
         check_decision_layout(page, shots)
         check_attachments(page, shots)

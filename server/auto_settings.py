@@ -63,12 +63,18 @@ def _settings(c, project):
     return result
 
 
-def model_for(c, issue_id, provider):
+def agent_for(c, issue_id, provider):
     """이슈의 역할(Description 요청이면 description, 아니면 검토·실행) 순서에서 그 provider의 첫 Agent 모델. 없으면 None."""
     project = c.execute("SELECT p.id, p.key FROM projects p JOIN issues i ON i.project_id=p.id WHERE i.id=?", (issue_id,)).fetchone()
     described = c.execute("SELECT 1 FROM project_description_requests WHERE issue_id=?", (issue_id,)).fetchone()
     role = "description_provider_order" if described else "provider_order"
     agent = next((a for a in _settings(c, project)["agent_orders"][role] if a["provider"] == provider), None)
+    return agent
+
+
+def model_for(c, issue_id, provider):
+    """위임 Agent와 같은 규칙으로 실행 모델을 고른다."""
+    agent = agent_for(c, issue_id, provider)
     return agent["model"] if agent else None
 
 

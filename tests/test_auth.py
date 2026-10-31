@@ -59,6 +59,19 @@ with TestClient(A.app) as c:
     assert all([a['id'] for a in order] == [rid] for order in settings['agent_orders'].values())
     with db.connect() as conn:
         assert auto_settings.model_for(conn, made['id'], 'claude') == 'claude-opus-5-5'
+    delegates = c.get(f'/api/issues/{ref}').json()['delegates']
+    assert delegates['claude'] == {'agent': 'runner', 'model': 'claude-opus-5-5', 'model_name': 'Opus 5.5'}
+    assert delegates['codex'] == {'agent': None, 'model': None, 'model_name': None}
+    assert delegates['review_timeout_sec'] == A.review.TIMEOUT_SEC
+    other = c.post('/api/agents', json={'name': 'description runner', 'vendor': 'anthropic', 'model': 'claude-sonnet-5-5'}, headers=H).json()['agent']['id']
+    assert c.patch('/api/projects/CHAT/auto-settings', json={'agent_orders': {'description_provider_order': [other, rid]}}, headers=H).status_code == 200
+    with db.connect() as conn:
+        conn.execute("INSERT INTO project_description_requests VALUES (?, (SELECT id FROM projects WHERE key='CHAT'), 'claude', '', 'now')", (made['id'],))
+        assert auto_settings.model_for(conn, made['id'], 'claude') == 'claude-sonnet-5-5'
+    assert c.get(f'/api/issues/{ref}').json()['delegates']['claude'] == {'agent': 'description runner', 'model': 'claude-sonnet-5-5', 'model_name': 'Sonnet 5.5'}
+    with db.connect() as conn:
+        conn.execute('DELETE FROM project_description_requests WHERE issue_id=?', (made['id'],))
+        conn.execute('DELETE FROM agents WHERE id=?', (other,))
     assert c.patch(f'/api/issues/{ref}', json={'assignee_agent_id': rid}, headers=H).status_code == 200
     order = {'agent_orders': {role: [rid] for role in auto_settings.ORDER_FIELDS}}
     assert c.patch('/api/projects/CHAT/auto-settings', json=order, headers=H).status_code == 200
