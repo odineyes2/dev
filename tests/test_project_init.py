@@ -111,6 +111,17 @@ class InitializationTest(unittest.TestCase):
         report = config.DATA_DIR / 'project-initializations' / row['request_id'] / 'runtime-check.json'
         self.assertTrue(json.loads(report.read_text())['passed'])
 
+    def test_web_game_request_and_runtime_without_login(self):
+        self.body.update(template='web-game', options={'scores': False})
+        self.request()
+        self.assertEqual(pi.get('NEW')['template'], 'web-game')
+        with patch.object(pi, 'generate', return_value=self.template_fixture()):
+            pi._run('NEW')
+        self.assertEqual(pi.status('NEW')['status'], 'complete', pi.status('NEW'))
+        target = self.projects / 'new-product'
+        self.assertTrue((target / 'static/game.js').is_file())
+        self.assertFalse((target / 'server/db.py').exists())
+
     def test_template_overwrite_and_invalid_options(self):
         for template, options in [('unknown', {}), ('blank', {'login': True}), ('admin-web', {'db': 'yes'})]:
             self.body.update(template=template, options=options)
@@ -143,7 +154,7 @@ class InitializationTest(unittest.TestCase):
         pi._update('NEW', status='running')
         row = pi.get('NEW')
         prompts = []
-        for template in (None, 'blank', 'admin-web'):
+        for template in (None, 'blank', 'admin-web', 'web-game'):
             current = dict(row)
             if template is None:
                 current.pop('template')
@@ -157,7 +168,7 @@ class InitializationTest(unittest.TestCase):
             prompts.append(proc.communicate.call_args.args[0])
             command = launch.call_args.args[0]
             schema = command[command.index('--output-schema') + 1]
-            self.assertEqual(Path(schema).name, 'project_init_template.schema.json' if template == 'admin-web' else 'project_init.schema.json')
+            self.assertEqual(Path(schema).name, 'project_init_template.schema.json' if template in ('admin-web', 'web-game') else 'project_init.schema.json')
         self.assertEqual(prompts[0], prompts[1])
         self.assertNotIn('runtime에는', prompts[2])
         self.assertIn('server/app.py', prompts[2])

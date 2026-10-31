@@ -1,0 +1,23 @@
+/* 게임 화면과 좁은 화면의 조작 영역을 배치한다. */
+body { --page-max:1440px; --page-gutter:max(clamp(24px, calc((100vw - 900px) / 8), 74px), calc((100vw - var(--page-max)) / 2)); }
+.top { padding-left:var(--page-gutter); padding-right:var(--page-gutter); }
+main { max-width:none; margin:0; padding:24px var(--page-gutter); }
+h1 { font-size:24px; font-weight:650; margin:0 0 16px; }
+.header-right { display:flex; align-items:center; gap:8px; }
+.brand { min-width:0; }
+.brand-word { overflow-wrap:anywhere; }
+.theme-toggle-btn { min-width:40px; min-height:40px; flex-shrink:0; background:var(--panel); color:var(--text); }
+@media (max-width:800px) { body { --page-gutter:16px; } .top { padding:16px; gap:12px; } }
+h1 { font-size: 24px; font-weight: 650; }
+h2 { font-size: 16px; }
+p { line-height: 1.6; }
+.dim { color: var(--dim); font-size: 13px; }
+.game-toolbar, form { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); margin-block: var(--sp-4); }
+#status { margin-right: auto; font-variant-numeric: tabular-nums; }
+button, input { min-height: 40px; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; }
+button { cursor: pointer; }
+button:hover { background: var(--panel-2); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+#game { display: block; width: 100%; aspect-ratio: 16 / 9; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; touch-action: none; }
+input { max-width: 100%; }
+@media (max-width: 800px) { .brand-word { font-size: 14px; } #status { flex-basis: 100%; } }

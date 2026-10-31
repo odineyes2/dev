@@ -14,7 +14,7 @@ MARKER = re.compile(r'^\s*(?:(?:#|//|/\*|<!--)\s*)?\[(/?)option:([a-z_]+)\](?:\s
 def get(template_id):
     """매니페스트를 읽고 알 수 없는 종류는 거절한다."""
     if template_id == 'blank':
-        return {'id': 'blank', 'name': '빈 시작', 'description': '기획서로 최소 앱을 만들어요.', 'options': {}, 'provides': [], 'overwrite': []}
+        return {'id': 'blank', 'name': '빈 시작', 'description': '기획서로 최소 앱을 만들어요.', 'options': {}, 'provides': ['기획서로 에이전트가 최소 앱 작성', '공식 문서·Issue·Task 초안', '기본 화면·health 실행 검사'], 'overwrite': []}
     if not isinstance(template_id, str) or not re.fullmatch(r'[a-z][a-z0-9-]*', template_id):
         raise StoreError('알 수 없는 템플릿이에요.')
     path = ROOT / template_id / 'template.json'
@@ -26,7 +26,7 @@ def get(template_id):
 def catalog():
     """화면에 필요한 목록과 옵션 기본값을 돌려준다."""
     manifests = [get('blank')] + [get(p.parent.name) for p in sorted(ROOT.glob('*/template.json'))]
-    return [{key: copy.deepcopy(m[key]) for key in ('id', 'name', 'description', 'options')} for m in manifests]
+    return [{key: copy.deepcopy(m[key]) for key in ('id', 'name', 'description', 'options', 'provides')} for m in manifests]
 
 
 def _blocks(text, options):
