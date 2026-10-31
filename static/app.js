@@ -2074,7 +2074,7 @@ async function renderNew(params){
       <p id="n-dep-status" class="dim" role="status"></p>
     </fieldset>
     ${typePicker(types)}<label>Labels (쉼표로)<input id="n-labels"></label>
-    <div class="row-end"><a class="button" id="cancel-new" href="#/">취소</a><button class="primary" type="submit">발행</button></div>
+    <div class="row-end form-actions"><a class="button" id="cancel-new" href="#/">취소</a><button class="primary" type="submit">발행</button></div>
   </form>`;
   const form = view.querySelector('#new-form'), entries = [];
   let departed = false, published = false, saving = false, nextImage = 0;

@@ -2439,6 +2439,21 @@ def check_attachments(page, shots):
             page.screenshot(path=str(shots / f'attachments_detail_{scheme}_{width}.png'),full_page=True)
             new()
             page.fill('#n-url','https://example.com/' + 'long' * 50); page.click('#add-url'); ready(1)
+            row = page.locator('#new-form .form-actions')
+            left = page.locator('#cancel-new').bounding_box()
+            right = row.locator('button[type=submit]').bounding_box()
+            bounds = row.bounding_box()
+            gap = row.evaluate('e => parseFloat(getComputedStyle(e).columnGap)')
+            assert abs(left['width'] - right['width']) <= 1
+            assert abs(left['height'] - right['height']) <= 1
+            assert abs(left['y'] - right['y']) <= 1
+            assert abs(right['x'] + right['width'] - bounds['x'] - bounds['width']) <= 1
+            if width == 390:
+                assert abs(left['width'] + right['width'] + gap - bounds['width']) <= 1
+                assert min(left['height'], right['height']) >= 40
+            else:
+                assert min(left['width'], right['width']) >= 120
+                assert left['width'] + right['width'] + gap < bounds['width']
             assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
             page.screenshot(path=str(shots / f'attachments_new_{scheme}_{width}.png'),full_page=True)
             # 취소하면 임시 URL도 삭제한다.
