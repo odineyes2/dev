@@ -1,6 +1,7 @@
 """검사 파일 여러 개를 동시에 돌린다 — 서버 완료·병합 검사와 수동 명령(scripts/run_tests.py)이 같이 쓴다(DEV-200). DB를 쓰지 않는다."""
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -15,11 +16,16 @@ PIPE_GRACE_SEC = 30   # 검사가 끝난 뒤 출력 파이프가 닫히기를 �
 
 # 검사 파일을 찾고 돌리는 규칙(DEV-212). 프로젝트가 orchestrate.json의 `tests`에 적지 않으면 이 기본값을 쓴다.
 # glob은 저장소 기준 패턴, run은 명령 — {python}=dev의 Python, {file}=검사 파일 절대 경로, {module}=점으로 이은 모듈 이름.
-# 선택: timeout(초), browser(true면 브라우저 검사 — 한 번에 하나, 제한 BROWSER_TIMEOUT_SEC).
+# 선택: timeout(초), browser(true면 브라우저 검사 — 한 번에 하나, 제한 BROWSER_TIMEOUT_SEC),
+# item(검사 항목 하나가 끝난 출력 줄의 정규식, 이름은 name 그룹 — 진행 ⓘ에 "n개 항목 지남"으로 보인다, DEV-213).
+SCRIPT_ITEM = r'^\s*(?:OK|ok)\b[\s:—–-]*(?P<name>.*)$'   # 스크립트 검사가 단계마다 찍는 "OK — …"·"ok: …"
+NODE_ITEM = r'^\s*(?:✔|ok \d+ - )\s*(?P<name>.+?)(?: \([\d.]+m?s\))?$'   # node --test의 spec·TAP 통과 줄
+UNITTEST_ITEM = r'^(?P<name>\S+) \(.*\.\.\. (?:ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)$'   # unittest -v
 DEFAULT_RULES = [
-    {'glob': 'tests/test_*.py', 'run': ['{python}', '{file}']},
-    {'glob': 'tests/test_*.js', 'run': ['node', '--test', '{file}']},
-    {'glob': 'backend/tests/test_*.py', 'run': ['{python}', '-m', 'unittest', '{module}']},   # Moai 패키지 검사
+    {'glob': 'tests/test_*.py', 'run': ['{python}', '{file}'], 'item': SCRIPT_ITEM},
+    {'glob': 'tests/test_*.js', 'run': ['node', '--test', '{file}'], 'item': NODE_ITEM},
+    # Moai 패키지 검사 — -v라야 항목마다 결과 줄이 나온다
+    {'glob': 'backend/tests/test_*.py', 'run': ['{python}', '-m', 'unittest', '-v', '{module}'], 'item': UNITTEST_ITEM},
 ]
 
 
@@ -42,11 +48,30 @@ def rules(project_key=None) -> tuple[list[dict], str]:
     ok = isinstance(cfg, list) and cfg and all(
         isinstance(r, dict) and isinstance(r.get('glob'), str) and r['glob'] and not Path(r['glob']).is_absolute() and '..' not in Path(r['glob']).parts
         and isinstance(r.get('run'), list) and r['run'] and all(isinstance(x, str) for x in r['run'])
-        and isinstance(r.get('timeout', 1), int) and r.get('timeout', 1) > 0 for r in cfg)
+        and isinstance(r.get('timeout', 1), int) and r.get('timeout', 1) > 0 and _pattern_ok(r.get('item')) for r in cfg)
     if not ok:
         return DEFAULT_RULES, (f'orchestrate.json의 {project_key}.tests 설정이 잘못됐어요 — '
                                '[{"glob": "tests/test_*.py", "run": ["{python}", "{file}"]}] 모양이어야 해요(glob은 저장소 안 상대 경로).')
     return cfg, ''
+
+
+def _pattern_ok(pattern) -> bool:
+    if pattern is None:
+        return True
+    try:
+        return isinstance(pattern, str) and bool(re.compile(pattern))
+    except re.error:
+        return False
+
+
+def item_name(rule, line):
+    """출력 한 줄이 검사 항목이 끝난 줄이면 그 이름(없으면 빈 문자열), 아니면 None."""
+    pattern = rule.get('item') if rule else None
+    m = re.match(pattern, line.rstrip('\r\n')) if pattern else None
+    if not m:
+        return None
+    name = (m.groupdict().get('name') or '').strip()
+    return name[:80] + ('…' if len(name) > 80 else '')
 
 
 def test_files(repo, project_key=None):
@@ -84,13 +109,16 @@ def kill_tree(proc) -> None:
         proc.kill()
 
 
-def _drain(stream, chunks):
+def _drain(stream, chunks, on_line=None):
     for line in stream:
         chunks.append(line)
+        if on_line:
+            on_line(line)
 
 
-def run(repo, t, args=(), env=None):
+def run(repo, t, args=(), env=None, on_item=None):
     """검사 하나를 시간 제한과 출력 보존 규칙으로 실행한다. env는 이미 비밀값을 뺀 환경이다.
+    on_item을 주면 규칙의 item 줄이 나올 때마다 항목 이름으로 부른다(진행 표시용, DEV-213).
     출력은 따로 읽어 모은다 — 검사가 남긴 고아 자식이 출력 파이프를 붙잡아도 시간 제한·검사 종료 뒤
     PIPE_GRACE_SEC만 기다리고 돌아온다(subprocess.run은 Windows에서 이때 영원히 멈췄다, DEV-205)."""
     proc = subprocess.Popen(command(repo, t) + list(args), cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -98,7 +126,17 @@ def run(repo, t, args=(), env=None):
                             env={**env, "PYTHONIOENCODING": "utf-8", "PYTHONFAULTHANDLER": "1", "DEV_TEST_RUN": "1"},   # 테스트가 진짜 ntfy로 알림을 보내지 않게
                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     out, err = [], []
-    readers = [threading.Thread(target=_drain, args=pair, daemon=True) for pair in ((proc.stdout, out), (proc.stderr, err))]
+    rule, on_line = rule_for(repo, t), None
+    if on_item and rule.get('item'):
+        def on_line(line):
+            name = item_name(rule, line)
+            if name is not None:
+                try:
+                    on_item(name)
+                except Exception:   # 진행 표시가 검사 출력 읽기를 끊지 않는다
+                    pass
+    readers = [threading.Thread(target=_drain, args=(stream, chunks, on_line), daemon=True)
+               for stream, chunks in ((proc.stdout, out), (proc.stderr, err))]
     for reader in readers:
         reader.start()
     note, limit = '', timeout_for(t)

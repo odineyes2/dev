@@ -1,5 +1,6 @@
-"""프로젝트별 검사 규칙(DEV-212) — orchestrate.json `tests`로 찾을 파일·명령·시간 제한을 정하고, 서버 검사·진행 n/N이 그 규칙을 따르는지."""
+"""프로젝트별 검사 규칙(DEV-212) — orchestrate.json `tests`로 찾을 파일·명령·시간 제한을 정하고, 서버 검사·진행 n/N·파일 안 항목 진행(DEV-213)이 그 규칙을 따르는지."""
 import json
+import time
 import os
 import subprocess
 import sys
@@ -35,7 +36,7 @@ assert names == ['backend/tests/test_c.py', 'tests/test_a.py', 'tests/test_b.js'
 by = {t.name: t for t in test_runner.test_files(repo)}
 assert test_runner.command(str(repo), by['test_a.py']) == [sys.executable, str(by['test_a.py'])]
 assert test_runner.command(str(repo), by['test_b.js']) == ['node', '--test', str(by['test_b.js'])]
-assert test_runner.command(str(repo), by['test_c.py']) == [sys.executable, '-m', 'unittest', 'backend.tests.test_c']
+assert test_runner.command(str(repo), by['test_c.py']) == [sys.executable, '-m', 'unittest', '-v', 'backend.tests.test_c']   # -v: 항목마다 결과 줄(DEV-213)
 # 규칙 없이 받은 경로(재현 실행 등)도 기본 규칙에서 맞는 명령을 고른다.
 assert test_runner.command(str(repo), repo / 'backend' / 'tests' / 'test_c.py')[1:3] == ['-m', 'unittest']
 print('OK — 설정이 없으면 기본 규칙')
@@ -101,3 +102,31 @@ assert seen == ['준비 중: 임시 DB'], seen
 assert run_progress.view(task)['short'].startswith('전체 검사 중 (') and '준비 중' not in run_progress.view(task)['long'], run_progress.view(task)   # 통과한 검사는 재사용돼 1/1일 수 있다
 run_progress.clear(task)
 print('OK — 임시 DB 준비 표시')
+
+# 6. 파일 안 검사 항목 진행(DEV-213) — 출력의 항목 줄을 세어 ⓘ "지금: …"에 지난 항목 수와 마지막 항목을 보인다.
+import threading  # noqa: E402
+(repo / 'checks' / 'slow.check.py').write_text(
+    'import sys, time, pathlib\nprint("OK — 첫 단계", flush=True)\nprint("ok: 둘째 단계", flush=True)\nprint("그냥 출력", flush=True)\n'
+    'pathlib.Path(sys.argv[1]).write_text("go")\nwhile not pathlib.Path(sys.argv[2]).exists(): time.sleep(0.05)\n', encoding='utf-8')
+flag_dir = Path(tempfile.mkdtemp())
+write_settings({'PX': {'tests': [{'glob': 'checks/slow.check.py', 'item': test_runner.SCRIPT_ITEM,
+                                  'run': ['{python}', '{file}', str(flag_dir / 'started'), str(flag_dir / 'release')]}]}})
+run_progress.set_phase(task, 'checks', limit=1800)
+result = {}
+worker = threading.Thread(target=lambda: result.update(failed=orchestrate.run_tests(str(repo), 'server_completion', task)))
+worker.start()
+for _ in range(200):
+    long = (run_progress.view(task) or {}).get('long', '')
+    if (flag_dir / 'started').exists() and '2개 항목 지남' in long:
+        break
+    time.sleep(0.05)
+assert '지금: slow.check.py · 2개 항목 지남 — 마지막: 둘째 단계' in long, long
+(flag_dir / 'release').write_text('go')
+worker.join(60)
+assert not worker.is_alive() and result['failed'] is None, result
+assert '항목 지남' not in run_progress.view(task)['long']   # 끝난 검사는 항목 진행을 지운다
+run_progress.clear(task)
+# 항목 패턴을 잘못 적으면 규칙 오류다.
+write_settings({'PX': {'tests': [{'glob': 'checks/*.py', 'run': ['{python}', '{file}'], 'item': '(unclosed'}]}})
+assert 'PX.tests 설정이 잘못됐어요' in test_runner.rules('PX')[1]
+print('OK — 파일 안 검사 항목 진행')

@@ -24,7 +24,8 @@
             "worker_busy_cmd": "<실행 중 작업 수 조회 명령>"}}
 
 검사 규칙(DEV-212): 프로젝트의 `tests`에 [{"glob": 저장소 기준 패턴, "run": 명령, "timeout": 초(선택), "browser": 참/거짓(선택)}]를
-적으면 그 규칙으로 검사 파일을 찾아 돌린다. 명령의 {python}·{file}·{module}은 dev의 Python·검사 파일 경로·모듈 이름으로 채운다.
+적으면 그 규칙으로 검사 파일을 찾아 돌린다. "item"(선택)은 검사 항목 하나가 끝난 출력 줄의 정규식(이름은 name 그룹)으로,
+진행 ⓘ에 "n개 항목 지남 — 마지막: …"을 보인다(DEV-213, 기본 규칙은 `OK — …`·unittest -v·node --test 줄). 명령의 {python}·{file}·{module}은 dev의 Python·검사 파일 경로·모듈 이름으로 채운다.
 없으면 기본 규칙(`test_runner.DEFAULT_RULES` — tests/test_*.py·tests/test_*.js·backend/tests/test_*.py). 예:
     "XX": {"tests": [{"glob": "tests/*.test.ts", "run": ["npx", "vitest", "run", "{file}"]}]}
 잘못 적으면 서버 검사가 기본 규칙으로 몰래 돌지 않고 실패로 알린다.
@@ -336,9 +337,10 @@ def _merged(repo, ref) -> bool:
     return _git(repo, "merge-base", "--is-ancestor", branch_name(ref), BASE_BRANCH).returncode == 0
 
 
-def run_test(repo, t, args=(), env=None):
-    """선택한 검사 하나를 기존 시간 제한과 출력 보존 규칙으로 실행한다(명령·시간 제한은 test_runner와 같다)."""
-    return test_runner.run(repo, t, args, {k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env)
+def run_test(repo, t, args=(), env=None, on_item=None):
+    """선택한 검사 하나를 기존 시간 제한과 출력 보존 규칙으로 실행한다(명령·시간 제한은 test_runner와 같다).
+    on_item은 검사 항목이 하나 끝날 때마다 부른다(진행 표시, DEV-213)."""
+    return test_runner.run(repo, t, args, {k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env, on_item=on_item)
 
 
 TEST_JOBS_KEY = 'test_jobs:'   # app_settings 키 접두 — 프로젝트별 동시 검사 수(DEV-201)
@@ -496,12 +498,15 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
             run_progress.check_end(ref, t.name, ok)
 
     def _one(t):
-        r = run_test(repo, t, env=env)
+        def item(name):
+            run_progress.check_item(ref, t.name, name)
+        r = run_test(repo, t, env=env, on_item=item)
         # 불안정 검사 대책(DEV-160-3): 바뀐 검사는 완료 때 3번, 병합에서 실패한 검사는 2번 더 돌려 섞임을 가린다.
         runs, bad = [r], ([r] if r.returncode else [])
         if (stage == 'server_completion' and t.name in changed_tests) or (stage == 'server_merge' and r.returncode):
             for _ in range(2):
-                again = run_test(repo, t, env=env)
+                run_progress.check_start(ref, t.name, test_runner.timeout_for(t))   # 다시 돌리는 동안의 경과·항목을 처음부터
+                again = run_test(repo, t, env=env, on_item=item)
                 runs.append(again)
                 if again.returncode:
                     bad.append(again)

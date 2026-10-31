@@ -12,7 +12,7 @@ import test_runner
 
 _lock = threading.Lock()
 _runs = {}     # ref → {'phase', 'since', 'attempt', 'provider', 'model', 'limit', 'failed'}
-_checks = {}   # ref → {'total', 'done', 'failed', 'failed_names', 'reused', 'skipped', 'running': {검사 이름: (시작 시각, 제한)}}
+_checks = {}   # ref → {'total', 'done', 'failed', 'failed_names', 'reused', 'skipped', 'running': {검사 이름: (시작 시각, 제한)}, 'items': {검사 이름: (지난 항목 수, 마지막 항목)}}
 _merges = {}   # ref → 병합 검사 시작 시각(DEV-211)
 _prep = {}     # ref → (준비 이름, 시작 시각)(DEV-212)
 
@@ -61,7 +61,7 @@ def checks_begin(ref, total, reused=0, skipped=0, merge=False):
         if merge and ref:
             _merges.setdefault(ref, time.time())   # 준비부터 이어서 센다
         if ref in _runs or merge and ref:
-            _checks[ref] = {'total': total, 'done': 0, 'failed': 0, 'failed_names': [], 'reused': reused, 'skipped': skipped, 'running': {}}
+            _checks[ref] = {'total': total, 'done': 0, 'failed': 0, 'failed_names': [], 'reused': reused, 'skipped': skipped, 'running': {}, 'items': {}}
 
 
 def merge_end(ref):
@@ -77,6 +77,15 @@ def check_start(ref, name, limit=None):
     with _lock:
         if ref in _checks:
             _checks[ref]['running'][name] = (time.time(), limit or test_runner.TIMEOUT_SEC)
+            _checks[ref]['items'][name] = (0, '')   # 다시 돌리면(섞임 확인) 항목도 처음부터 센다
+
+
+def check_item(ref, name, item):
+    """도는 검사 파일 안에서 항목 하나가 끝났다(DEV-213 — test_runner가 출력 줄로 알아본다)."""
+    with _lock:
+        if ref in _checks and name in _checks[ref]['running']:
+            count, last = _checks[ref]['items'].get(name, (0, ''))
+            _checks[ref]['items'][name] = (count + 1, item or last)
 
 
 def check_end(ref, name, ok):
@@ -84,6 +93,7 @@ def check_end(ref, name, ok):
         if ref in _checks:
             c = _checks[ref]
             c['running'].pop(name, None)
+            c['items'].pop(name, None)
             c['done'] += 1
             c['failed'] += 0 if ok else 1
             if not ok:
@@ -120,7 +130,9 @@ def _check_lines(checks, now):
     if checks.get('failed_names'):
         lines.append('실패: ' + ', '.join(checks['failed_names']))
     for name, (since, limit) in sorted(checks['running'].items(), key=lambda kv: kv[1][0]):
-        lines.append(f"지금: {name} ({_span(now - since)}째 / 제한 {_span(limit)})")
+        count, last = checks.get('items', {}).get(name, (0, ''))
+        progress = f' · {count}개 항목 지남' + (f' — 마지막: {last}' if last else '') if count else ''
+        lines.append(f"지금: {name}{progress} ({_span(now - since)}째 / 제한 {_span(limit)})")
         stalled = stalled or now - since > limit + test_runner.PIPE_GRACE_SEC * 2 + 60
     lines.append(f'검사 하나의 시간 제한은 {_span(test_runner.TIMEOUT_SEC)}, 브라우저 검사는 {_span(test_runner.BROWSER_TIMEOUT_SEC)}이에요.')
     return lines, stalled
@@ -137,7 +149,7 @@ def _prep_line(ref, now):
 
 def _snapshot(ref):
     with _lock:
-        return {**_checks[ref], 'running': dict(_checks[ref]['running']), 'failed_names': list(_checks[ref]['failed_names'])} if ref in _checks else None
+        return {**_checks[ref], 'running': dict(_checks[ref]['running']), 'items': dict(_checks[ref]['items']), 'failed_names': list(_checks[ref]['failed_names'])} if ref in _checks else None
 
 
 def merge_view(ref, now=None) -> dict | None:

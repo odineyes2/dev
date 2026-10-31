@@ -116,7 +116,7 @@ parent = issues.create_issue(me, 'PX', '부모')['ref']
 task = issues.create_issue(me, 'PX', '작업', parent=parent)['ref']
 seen = []
 real = run_progress.view
-with patch.object(orchestrate, 'run_test', side_effect=lambda repo, t, args=(), env=None: (
+with patch.object(orchestrate, 'run_test', side_effect=lambda repo, t, args=(), env=None, on_item=None: (
         seen.append(real(task)['long']), test_runner.run(repo, t, args, dict(os.environ)))[1]):
     run_progress.set_phase(task, 'checks', limit=1800)
     failed = orchestrate.run_tests(str(repo), 'server_completion', task)
@@ -128,7 +128,7 @@ print('OK — 서버 검사가 파일마다 진행을 남긴다')
 # 4-1. 병합 검사(server_merge)도 파일마다 진행을 남기고, 끝나면 지운다(DEV-211).
 run_progress.clear(task)
 seen = []
-with patch.object(orchestrate, 'run_test', side_effect=lambda repo, t, args=(), env=None: (
+with patch.object(orchestrate, 'run_test', side_effect=lambda repo, t, args=(), env=None, on_item=None: (
         seen.append(run_progress.merge_view(task)), test_runner.run(repo, t, args, dict(os.environ)))[1]):
     orchestrate.run_tests(str(repo), 'server_merge', task)
 assert any(s and s['short'].startswith('병합 검사 중 (') and '지금: test_' in s['long'] for s in seen), seen
