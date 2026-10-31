@@ -2764,13 +2764,16 @@ function renderProjects(editKey, projectTab = 'manage'){
     if(saving || !dialog?.open) return;
     portRevision++; portTouched = false; portMessage.textContent = '';
     form.reset(); clearSuggestion(); initRequest = null;
+    selectedTemplate = 'blank';
+    if(templateCatalog) templateCatalog.forEach(t => { templateValues[t.id] = Object.fromEntries(Object.entries(t.options).map(([k, o]) => [k, o.default])); });
+    setCreationStep('pick', false);
     form.querySelectorAll('details').forEach(el => { el.open = false; });
     form.querySelector('#project-error').textContent = '';
     form.querySelector('#p-init-message').textContent = '';
     dialog.close(); add.focus();
   };
   if(dialog){
-    add.onclick = () => { dialog.showModal(); form.querySelector('#p-key').focus(); };
+    add.onclick = () => { dialog.showModal(); setCreationStep('pick'); };
     close.onclick = closeCreation;
     dialog.addEventListener('cancel', e => { e.preventDefault(); closeCreation(); });
     dialog.addEventListener('keydown', e => {
@@ -2790,6 +2793,49 @@ function renderProjects(editKey, projectTab = 'manage'){
   const initialize = view.querySelector('#p-initialize');
   let selectedTemplate = 'blank', templateCatalog = null;
   const templateValues = {};
+  let creationMode = 'pick';
+  if(dialog){
+    const fields = form.querySelector(':scope > .line'); fields.id = 'p-details';
+    const spec = form.querySelector('.project-spec');
+    const content = document.createElement('section'); content.className = spec.className;
+    spec.querySelector('summary').remove(); content.append(...spec.childNodes); spec.replaceWith(content);
+    const picker = document.createElement('section'); picker.id = 'p-pick-step';
+    picker.innerHTML = '<h3>어떤 앱으로 시작할까요?</h3><button type="button" id="p-register-mode" class="ghost">기존 저장소 등록하기</button>';
+    picker.lastChild.before(form.querySelector('.project-templates'));
+    const heading = document.createElement('div'); heading.id = 'p-step-heading';
+    heading.innerHTML = '<button type="button" id="p-step-back">템플릿 바꾸기</button><strong id="p-selected-template"></strong>';
+    fields.before(picker, heading);
+    const service = form.querySelector('#p-domain').closest('.project-description');
+    const details = document.createElement('details'); details.className = 'project-description';
+    details.innerHTML = '<summary>서비스 설정</summary>'; service.before(details); details.append(service);
+    form.querySelector('#p-register-mode').onclick = () => setCreationStep('register');
+    form.querySelector('#p-step-back').onclick = () => setCreationStep('pick');
+    const actions = form.querySelector('.actions'); actions.lastElementChild.id = 'p-register';
+    actions.append(initialize); initialize.classList.add('primary');
+    content.querySelector('p.dim').textContent = '기획서로 최소 앱·공식 문서·Issue·Task를 만들고 실행 검사해요. 선택한 도구의 유료 분석을 시작하며, 기능 Task 실행은 별도 승인이 필요해요.';
+    content.querySelectorAll('p.dim')[1].textContent = 'UTF-8 Markdown · 최대 200KB.';
+    setCreationStep('pick', false);
+  }
+  function setCreationStep(mode, focus = true){
+    if(!dialog || saving) return;
+    creationMode = mode; initRequest = null; clearSuggestion();
+    const picking = mode === 'pick', template = mode === 'template';
+    form.querySelector('#p-pick-step').hidden = !picking;
+    form.querySelector('#p-details').hidden = picking;
+    form.querySelector('#p-step-heading').hidden = picking;
+    form.querySelector('#p-step-back').textContent = template ? '템플릿 바꾸기' : '처음으로';
+    form.querySelector('#p-selected-template').textContent = template ? templateCatalog?.find(t => t.id === selectedTemplate)?.name || '' : '기존 저장소 등록';
+    for(const selector of ['#p-path', '#p-description']) form.querySelector(selector).closest('label').hidden = template;
+    form.querySelector('.project-spec').hidden = !template;
+    form.querySelector('#p-register').hidden = template;
+    initialize.hidden = !template;
+    form.querySelector('#project-error').textContent = '';
+    if(templateCatalog && template) renderTemplateOptions();
+    form.querySelectorAll('#p-details input, #p-details textarea, #p-details select, #p-details button').forEach(el => {
+      el.disabled = picking || !!el.closest('[hidden]') || (el === freePort && portLookup);
+    });
+    if(focus) (picking ? form.querySelector(`[data-template-pick="${selectedTemplate}"]`) || form.querySelector('#p-register-mode') : form.querySelector('#p-key')).focus();
+  }
   function renderTemplateOptions(){
     const section = view.querySelector('#p-template-options');
     const template = templateCatalog.find(t => t.id === selectedTemplate);
@@ -2809,12 +2855,13 @@ function renderProjects(editKey, projectTab = 'manage'){
       if(!Array.isArray(catalog) || !catalog.some(t => t.id === 'blank')) throw new Error('앱 종류 목록을 확인해 주세요.');
       templateCatalog = catalog;
       catalog.forEach(t => { templateValues[t.id] = Object.fromEntries(Object.entries(t.options).map(([key, option]) => [key, option.default])); });
-      cards.innerHTML = catalog.map(t => `<label class="template-card"><input type="radio" name="project-template" value="${esc(t.id)}" ${t.id === selectedTemplate ? 'checked' : ''}><span><strong>${esc(t.name)}</strong><span class="dim">${esc(t.description)}</span></span></label>`).join('');
-      cards.querySelectorAll('input').forEach(input => input.onchange = () => {
-        selectedTemplate = input.value; initRequest = null; renderTemplateOptions();
+      cards.innerHTML = catalog.map(t => `<button type="button" class="template-card" data-template-pick="${esc(t.id)}"><span><strong>${esc(t.name)}</strong><span class="dim">${esc(t.description)}</span><ul class="dim">${(t.provides || []).map(item => `<li>${esc(item)}</li>`).join('')}</ul></span></button>`).join('');
+      cards.querySelectorAll('[data-template-pick]').forEach(button => button.onclick = () => {
+        selectedTemplate = button.dataset.templatePick; setCreationStep('template');
       });
       renderTemplateOptions();
-      initialize.disabled = saving || portLookup;
+      initialize.disabled = saving || portLookup || creationMode !== 'template';
+      if(dialog?.open && creationMode === 'pick') setCreationStep('pick');
     }catch(error){
       if(!form.isConnected) return;
       cards.textContent = `${error.message} `;
@@ -2828,7 +2875,7 @@ function renderProjects(editKey, projectTab = 'manage'){
   };
   form.addEventListener('submit', async e => {
     e.preventDefault();
-    if(saving || portLookup) return;
+    if(saving || portLookup || (dialog && creationMode === 'pick')) return;
     saving = true;
     const button = submitBtn(e), cancel = view.querySelector('#p-cancel');
     const original = button.textContent;
@@ -2838,7 +2885,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     button.textContent = '저장 중…'; form.setAttribute('aria-busy', 'true');
     view.querySelector('#project-error').textContent = '';
     try{
-      if(!ed && (e.submitter?.id === 'p-initialize' || initRequest)){
+      if(!ed && (creationMode === 'template' || initRequest)){
         if(!templateCatalog) throw new Error('앱 종류를 먼저 불러와 주세요.');
         if(!initRequest){
           const file = view.querySelector('#p-spec').files[0];
