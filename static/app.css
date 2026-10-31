@@ -363,6 +363,13 @@ details summary{ cursor:pointer; padding:6px 0; color:var(--dim); font-size:13px
 .comment-box{ display:flex; flex-direction:column; gap:var(--sp-2); margin-top:var(--sp-4); padding-top:var(--sp-4); border-top:1px solid var(--border); }
 .comment-box textarea{ min-height:84px; font-family:var(--sans); font-size:14px; }
 .row-end{ display:flex; justify-content:flex-end; gap:var(--sp-2); }
+/* 새 이슈의 취소·발행은 같은 너비로, 좁은 화면에서는 행 전체를 채운다. */
+.form-actions{ display:grid; grid-template-columns:repeat(2,minmax(120px,max-content)); justify-content:end; padding-top:var(--sp-4); border-top:1px solid var(--border); }
+.form-actions > .button, .form-actions > button{ width:100%; justify-content:center; }
+@media(max-width:800px){
+  .form-actions{ grid-template-columns:repeat(2,minmax(0,1fr)); justify-content:stretch; }
+  .form-actions > .button, .form-actions > button{ min-height:40px; }
+}
 
 /* 폼 */
 .form{ max-width:780px; display:flex; flex-direction:column; gap:var(--sp-4); }
