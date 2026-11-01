@@ -450,6 +450,21 @@ def check_progress_clock(page, shots):
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 box, row = run_clock.bounding_box(), page.locator(f'tr[data-ref="{running}"] .progress-note').bounding_box()
                 assert box and row and box['x'] + box['width'] <= row['x'] + row['width'] + 1, (box, row)   # 시계가 칸 밖으로 밀리지 않는다
+                short = page.locator(f'tr[data-ref="{running}"] .progress-short')
+                short_box = short.bounding_box()
+                if width == 390:
+                    assert short_box['y'] + short_box['height'] <= box['y'] + 1, (short_box, box)
+                    assert short.evaluate('e => e.scrollWidth <= e.clientWidth')
+                    assert run_clock.evaluate('e => getComputedStyle(e, "::before").content') == 'none'
+                else:
+                    assert abs(short_box['y'] - box['y']) <= 1, (short_box, box)
+                more = page.locator(f'tr[data-ref="{running}"] .progress-more').bounding_box()
+                for item in (box, more):
+                    assert item['x'] >= row['x'] - 1 and item['x'] + item['width'] <= row['x'] + row['width'] + 1
+                    assert item['y'] >= row['y'] - 1 and item['y'] + item['height'] <= row['y'] + row['height'] + 1
+                manual_note = page.locator(f'tr[data-ref="{manual}"] .progress-note').bounding_box()
+                manual_box = manual_clock.bounding_box()
+                assert abs(manual_note['height'] - manual_box['height']) <= 1
                 page.locator(f'tr[data-ref="{running}"]').scroll_into_view_if_needed()
                 page.screenshot(path=str(shots / f'progress-clock-{theme}-{width}.png'), animations='disabled')
     finally:
