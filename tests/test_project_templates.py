@@ -293,6 +293,20 @@ class TemplatesTest(unittest.TestCase):
                                 expect(page.locator('#status')).to_contain_text('이동 0')
                                 expect(page.locator('#game')).to_have_attribute('data-board', original)
                                 expect(page.locator('#undo')).to_be_disabled()
+                            if genre == 'card':
+                                expect(page.locator('#game')).to_have_attribute('data-phase', 'player')
+                                expect(page.locator('#player .card')).to_have_count(2)
+                                page.locator('#hit').click()
+                                expect(page.locator('#player .card')).to_have_count(3)
+                                if page.locator('#stand').is_enabled():
+                                    page.locator('#stand').click()
+                                expect(page.locator('#game')).to_have_attribute('data-phase', 'result')
+                                expect(page.locator('#hit')).to_be_disabled()
+                                expect(page.locator('#stand')).to_be_disabled()
+                                page.locator('#next').click()
+                                expect(page.locator('#game')).to_have_attribute('data-phase', 'player')
+                                page.locator('#stand').click()
+                                expect(page.locator('#game')).to_have_attribute('data-phase', 'result')
                             if genre == 'platformer':
                                 page.locator('#game').focus()
                                 page.wait_for_function("Number(document.querySelector('#game').dataset.playerY) === 408")

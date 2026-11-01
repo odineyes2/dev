@@ -1,0 +1,21 @@
+<!-- 블랙잭의 손패·턴 동작과 공통 점수 영역을 표시한다. -->
+<!doctype html>
+<!-- 게임 화면과 점수 기록을 표시한다. -->
+<html lang="ko" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{PROJECT_NAME}}</title><link rel="stylesheet" href="/static/family.css"><link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/genre.css"><script defer src="/static/game.js"></script><script defer src="/static/app.js"></script></head>
+<body><header class="top"><a class="brand" href="/"><svg class="ico brand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 1 0 10.5 10.5Z"/></svg><span class="brand-word">{{PROJECT_NAME}}</span></a><div class="header-right">
+<!-- [option:dark_mode] -->
+<button id="theme" class="theme-toggle-btn" title="밤/낮" aria-label="밤/낮"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button>
+<!-- [/option:dark_mode] -->
+</div></header><main><h1>Blackjack</h1>
+<p>히트로 한 장 더 받고, 스탠드로 딜러에게 턴을 넘겨요. 21을 넘으면 버스트예요.</p>
+<div class="game-toolbar"><span id="status" role="status"></span><button id="pause" type="button">일시정지</button><button id="restart" type="button">새 게임</button></div>
+<div id="game" role="group" aria-label="블랙잭 테이블">
+<section><h2 id="dealer-title">딜러</h2><div id="dealer" class="hand"></div></section>
+<section><h2 id="player-title">플레이어</h2><div id="player" class="hand"></div></section>
+</div>
+<div class="game-toolbar"><button id="hit" type="button">히트</button><button id="stand" type="button">스탠드</button><button id="next" type="button">다음 라운드</button></div>
+<p class="dim">에이스는 1 또는 11이에요. 딜러는 17 이상에서 멈춰요. 점수는 승리한 라운드 수예요.</p>
+<!-- [option:scores] -->
+<section><h2>Top scores</h2><form id="scores"><label>이름 <input id="name" required minlength="1" maxlength="20" value="플레이어"></label><button type="submit">점수 기록</button></form><p id="score-message" role="status"></p><ol id="leaders"></ol><p class="dim">공개 연습용 기록이에요. 실제 서비스의 인증·남용 방지는 별도로 준비해 주세요.</p></section>
+<!-- [/option:scores] -->
+</main></body></html>
