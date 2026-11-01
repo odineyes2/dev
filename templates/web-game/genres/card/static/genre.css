@@ -1,0 +1,6 @@
+/* 손패와 턴 동작을 공용 디자인 토큰으로 배치한다. */
+#game { display:grid; gap:var(--sp-4); padding:var(--sp-4); box-sizing:border-box; aspect-ratio:auto; touch-action:manipulation; }
+#game h2 { margin-top:0; }
+.hand { display:flex; flex-wrap:wrap; gap:var(--sp-2); }
+.card { padding:var(--sp-3); border:1px solid var(--border); border-radius:6px; background:var(--panel-2); color:var(--text); font-size:16px; font-weight:600; }
+button:disabled { opacity:.5; cursor:default; }

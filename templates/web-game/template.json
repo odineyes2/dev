@@ -51,6 +51,20 @@
         "scores",
         "dark_mode"
       ]
+    },
+    {
+      "id": "card",
+      "name": "카드·보드",
+      "description": "히트와 스탠드로 딜러와 블랙잭을 즐겨요.",
+      "provides": [
+        "52장 덱과 Fisher–Yates 섞기",
+        "deal → player → dealer → result 턴 상태 기계",
+        "에이스·버스트·딜러 17 규칙과 승리 수 기록"
+      ],
+      "options": [
+        "scores",
+        "dark_mode"
+      ]
     }
   ],
   "runtime": {
