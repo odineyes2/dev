@@ -3,11 +3,20 @@
   "name": "웹게임",
   "description": "Canvas 게임과 공개 Python 서버로 시작해요.",
   "provides": [
-    "Canvas 게임 화면과 고정 간격 게임 루프",
-    "키보드·터치 입력",
-    "SQLite 점수 기록",
+    "공개 Python 서버와 선택 점수 API",
     "패밀리룩과 낮·밤 전환",
-    "PM2 설정과 HTTP·로직 검사"
+    "PM2 설정과 HTTP·로직 검사",
+    "장르별 게임 뼈대 선택"
+  ],
+  "default_genre": "arcade",
+  "genres": [
+    {
+      "id": "arcade",
+      "name": "아케이드/액션",
+      "description": "방향키와 터치로 움직여 코인을 모아요.",
+      "provides": ["Canvas 게임 화면과 고정 간격 게임 루프", "키보드·터치 입력", "코인 수집과 점수 기록"],
+      "options": ["scores", "dark_mode"]
+    }
   ],
   "runtime": {
     "kind": "python",

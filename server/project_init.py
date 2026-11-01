@@ -88,7 +88,7 @@ def get(key):
 
 def status(key):
     row = get(key)
-    return {**{k: row[k] for k in ('key', 'provider', 'status', 'phase', 'error', 'local_path', 'updated_at')},
+    return {**{k: row[k] for k in ('key', 'provider', 'status', 'phase', 'error', 'local_path', 'updated_at', 'genre')},
             'refs': json.loads(row['refs_json'])}
 
 
@@ -117,7 +117,8 @@ def request(actor, body):
         raise issues.StoreError('Claude 또는 Codex를 선택해 주세요.')
     template = body.get('template', 'blank')
     options = body.get('options', {})
-    project_templates.render(template, options, {'PROJECT_NAME': name, 'PROJECT_KEY': key, 'APP_NAME': service['service_app'], 'PORT': service['service_port'] or 8400})
+    genre = body.get('genre') or ''
+    project_templates.render(template, options, {'PROJECT_NAME': name, 'PROJECT_KEY': key, 'APP_NAME': service['service_app'], 'PORT': service['service_port'] or 8400}, genre=genre)
     target = ROOT.resolve() / folder
     with db.connect() as c:
         old = c.execute('SELECT p.key,r.owner FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE request_id=?', (request_id,)).fetchone()
@@ -152,8 +153,8 @@ def request(actor, body):
                 service['service_port'] = find_free_port()
             pid = c.execute('INSERT INTO projects(key,name,repo_url,local_path,created_at,service_domain,service_port,service_app) VALUES(?,?,?,?,?,?,?,?)', (key, name, repo_url, str(target), now, *service.values())).lastrowid
             c.execute('UPDATE projects SET service_prepare_provider=? WHERE id=?', (provider_choice, pid))
-            c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,template,options_json,status,phase,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,'queued','기획서 분석 대기',?,?)''', (pid, request_id, issues.actor_label(actor), provider, spec, template, json.dumps(options), now, now))
+            c.execute('''INSERT INTO project_initializations(project_id,request_id,owner,provider,spec,template,options_json,genre,status,phase,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,'queued','기획서 분석 대기',?,?)''', (pid, request_id, issues.actor_label(actor), provider, spec, template, json.dumps(options), genre, now, now))
     except sqlite3.IntegrityError:
         with db.connect() as c:
             old = c.execute('SELECT p.key,r.owner FROM project_initializations r JOIN projects p ON p.id=r.project_id WHERE request_id=?', (request_id,)).fetchone()
@@ -233,10 +234,12 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
     schema = SCHEMA
     if row.get('template', 'blank') != 'blank':
         manifest, files = _template(row)
+        genre = project_templates.selected_genre(manifest, row.get('genre'))
         # 빈 시작의 원문 프롬프트를 보존하고 템플릿 실행 요구만 바꾼다.
         begin = prompt.index('필수 요건:')
         end = prompt.index('AGENTS.md는')
-        prompt = (prompt[:begin] + '앱 코드는 템플릿이 제공한다: ' + json.dumps(manifest['provides'], ensure_ascii=False)
+        prompt = (prompt[:begin] + '앱 코드는 템플릿이 제공한다: ' + json.dumps(manifest['provides'] + (genre['provides'] if genre else []), ensure_ascii=False)
+                  + ('\n선택 장르: ' + genre['name'] if genre else '')
                   + '\n제공 파일: ' + json.dumps(sorted(files), ensure_ascii=False)
                   + '\n덮어쓸 수 있는 파일: ' + json.dumps(manifest['overwrite'])
                   + '\n선택 옵션: ' + row.get('options_json', '{}')
@@ -307,7 +310,7 @@ def _template(row):
     template = row.get('template', 'blank')
     return project_templates.get(template), project_templates.render(template, json.loads(row.get('options_json', '{}')), {
         'PROJECT_NAME': row['name'], 'PROJECT_KEY': row['key'],
-        'APP_NAME': row['service_app'], 'PORT': row['service_port']})
+        'APP_NAME': row['service_app'], 'PORT': row['service_port']}, genre=row.get('genre'))
 
 
 def validate(result, root, row=None):
@@ -454,6 +457,8 @@ if(String((a.env||{}).PORT)!==process.env.PORT) throw Error('PM2 port mismatch')
                             if row.get('template', 'blank') != 'blank':
                                 manifest = project_templates.get(row['template'])
                                 login = json.loads(row['options_json']).get('login', manifest['options'].get('login', {}).get('default', False))
+                                genre = project_templates.selected_genre(manifest, row.get('genre'))
+                                login = login and (genre is None or 'login' in genre['options'])
                                 if login and client.get(base + '/api/me').status_code != 401:
                                     raise issues.StoreError('초기 앱의 로그인 보호가 정상 응답하지 않아요.', 409)
                             _checkpoint(row)

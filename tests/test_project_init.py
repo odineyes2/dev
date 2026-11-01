@@ -65,6 +65,13 @@ class InitializationTest(unittest.TestCase):
         self.projects.mkdir()
         self.addCleanup(patch.stopall)
         patch.object(pi, 'ROOT', self.projects).start()
+        # 병렬 회귀검사의 프로세스 시작 지연이 검사 대상 오류를 가리지 않게 한다.
+        run = pi.subprocess.run
+        def run_with_margin(*args, **kwargs):
+            if kwargs.get('timeout') is not None:
+                kwargs['timeout'] = max(60, kwargs['timeout'])
+            return run(*args, **kwargs)
+        patch.object(pi.subprocess, 'run', side_effect=run_with_margin).start()
         patch.object(config, 'DATA_DIR', root / 'data').start()
         patch.object(config, 'DB_PATH', root / 'data' / 'dev.db').start()
         patch.object(pi.automation, 'provider_available', return_value=True).start()
@@ -112,9 +119,11 @@ class InitializationTest(unittest.TestCase):
         self.assertTrue(json.loads(report.read_text())['passed'])
 
     def test_web_game_request_and_runtime_without_login(self):
-        self.body.update(template='web-game', options={'scores': False})
+        self.body.update(template='web-game', options={'scores': False}, genre='arcade')
         self.request()
         self.assertEqual(pi.get('NEW')['template'], 'web-game')
+        self.assertEqual(pi.get('NEW')['genre'], 'arcade')
+        self.assertEqual(pi.status('NEW')['genre'], 'arcade')
         with patch.object(pi, 'generate', return_value=self.template_fixture()):
             pi._run('NEW')
         self.assertEqual(pi.status('NEW')['status'], 'complete', pi.status('NEW'))
@@ -123,6 +132,10 @@ class InitializationTest(unittest.TestCase):
         self.assertFalse((target / 'server/db.py').exists())
 
     def test_template_overwrite_and_invalid_options(self):
+        for template, genre in [('web-game', 'missing'), ('admin-web', 'arcade')]:
+            self.body.update(template=template, options={}, genre=genre)
+            self.assertEqual(self.client.post('/api/projects/initialize', json=self.body, headers=HEADERS).status_code, 400)
+        self.body.pop('genre')
         for template, options in [('unknown', {}), ('blank', {'login': True}), ('admin-web', {'db': 'yes'})]:
             self.body.update(template=template, options=options)
             self.assertEqual(self.client.post('/api/projects/initialize', json=self.body, headers=HEADERS).status_code, 400)
@@ -172,6 +185,9 @@ class InitializationTest(unittest.TestCase):
         self.assertEqual(prompts[0], prompts[1])
         self.assertNotIn('runtime에는', prompts[2])
         self.assertIn('server/app.py', prompts[2])
+        self.assertIn('선택 장르: 아케이드/액션', prompts[3])
+        for item in pi.project_templates.get('web-game')['genres'][0]['provides']:
+            self.assertIn(item, prompts[3])
         self.assertEqual(pi.validate(fixture(), self.projects), fixture())
         self.assertEqual(pi.get('NEW')['template'], 'blank')
 
@@ -180,11 +196,14 @@ class InitializationTest(unittest.TestCase):
         with db.connect() as c:
             c.execute('ALTER TABLE project_initializations DROP COLUMN template')
             c.execute('ALTER TABLE project_initializations DROP COLUMN options_json')
-            c.execute('PRAGMA user_version=' + str(len(db.MIGRATIONS) - 1))
+            c.execute('ALTER TABLE project_initializations DROP COLUMN genre')
+            version = next(i for i, migration in enumerate(db.MIGRATIONS) if 'ADD COLUMN template' in migration)
+            c.execute('PRAGMA user_version=' + str(version))
         db.init()
         row = pi.get('NEW')
         self.assertEqual(row['template'], 'blank')
         self.assertEqual(row['options_json'], '{}')
+        self.assertEqual(row['genre'], '')
 
     def test_service_settings_are_saved_during_initialization(self):
         self.body.update(service_domain='NEW.example.com', service_port=8400, service_app='newapp', service_prepare_provider='codex')

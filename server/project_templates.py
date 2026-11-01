@@ -26,7 +26,20 @@ def get(template_id):
 def catalog():
     """화면에 필요한 목록과 옵션 기본값을 돌려준다."""
     manifests = [get('blank')] + [get(p.parent.name) for p in sorted(ROOT.glob('*/template.json'))]
-    return [{key: copy.deepcopy(m[key]) for key in ('id', 'name', 'description', 'options', 'provides')} for m in manifests]
+    return [{key: copy.deepcopy(m[key]) for key in ('id', 'name', 'description', 'options', 'provides', 'genres', 'default_genre') if key in m} for m in manifests]
+
+
+def selected_genre(manifest, genre=None):
+    """장르 선택을 검증하고 생략한 선택은 기본 장르로 읽는다."""
+    genres = manifest.get('genres', [])
+    if not genres and not genre:
+        return None
+    genre = genre or manifest.get('default_genre')
+    if isinstance(genre, str) and re.fullmatch(r'[a-z][a-z0-9-]*', genre):
+        for item in genres:
+            if item['id'] == genre:
+                return item
+    raise StoreError('알 수 없는 장르예요.')
 
 
 def _blocks(text, options):
@@ -49,13 +62,18 @@ def _blocks(text, options):
     return ''.join(output)
 
 
-def render(template_id, options, values):
+def render(template_id, options, values, genre=None):
     """옵션 파일을 빼고 자리표시를 치환한 파일 사전을 만든다."""
     manifest = get(template_id)
+    selected = selected_genre(manifest, genre)
     if not isinstance(options, dict) or options.keys() - manifest['options'].keys() or any(type(v) is not bool for v in options.values()):
         raise StoreError('템플릿 옵션을 확인해 주세요.')
     enabled = {key: value['default'] for key, value in manifest['options'].items()}
     enabled.update(options)
+    if selected:
+        if options.keys() - set(selected['options']):
+            raise StoreError('장르에서 지원하지 않는 옵션이에요.')
+        enabled = {key: value if key in selected['options'] else False for key, value in enabled.items()}
     if template_id == 'blank':
         return {}
     if not isinstance(values, dict) or set(values) != VALUES:
@@ -68,12 +86,18 @@ def render(template_id, options, values):
     dropped = {path for key, option in manifest['options'].items() if not enabled[key] for path in option.get('drop', [])}
     result = {}
     base = ROOT / template_id
-    for path in sorted(base.rglob('*')):
+    sources = [(base, path) for path in sorted(base.rglob('*')) if path.relative_to(base).parts[0] != 'genres']
+    if selected:
+        overlay = base / 'genres' / selected['id']
+        if (base / 'genres').is_symlink() or overlay.is_symlink():
+            raise StoreError('템플릿에는 링크를 둘 수 없어요.')
+        sources += [(overlay, path) for path in sorted(overlay.rglob('*'))]
+    for source, path in sources:
         if path.is_symlink():
             raise StoreError('템플릿에는 링크를 둘 수 없어요.')
         if not path.is_file():
             continue
-        relative = path.relative_to(base).as_posix()
+        relative = path.relative_to(source).as_posix()
         if relative == 'template.json' or relative in dropped:
             continue
         if any(part.startswith('.') for part in PurePosixPath(relative).parts) and relative not in ('.env.example', '.gitignore'):
