@@ -1,0 +1,7 @@
+/* 퍼즐 격자를 공용 디자인 토큰으로 표시한다. */
+#game { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--sp-2); padding:var(--sp-3); width:min(100%,450px); box-sizing:border-box; aspect-ratio:1; touch-action:manipulation; }
+.tile { min-width:0; min-height:40px; padding:var(--sp-1); font-size:24px; font-weight:600; color:var(--accent); }
+.tile { text-align:center; }
+.tile:disabled { cursor:default; color:var(--text); opacity:1; }
+.tile.empty { visibility:hidden; }
+button:disabled { cursor:default; }

@@ -37,6 +37,20 @@
         "scores",
         "dark_mode"
       ]
+    },
+    {
+      "id": "puzzle",
+      "name": "퍼즐",
+      "description": "숫자 타일을 옮겨 4×4 격자를 완성해요.",
+      "provides": [
+        "항상 풀 수 있는 슬라이드 퍼즐 섞기",
+        "격자 보드·턴과 이동 수·완성 판정",
+        "되돌리기 스택과 키보드·타일 클릭 입력"
+      ],
+      "options": [
+        "scores",
+        "dark_mode"
+      ]
     }
   ],
   "runtime": {
