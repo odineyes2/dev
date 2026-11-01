@@ -2087,6 +2087,8 @@ def check_project_audits(page, shots):
     page.wait_for_function('document.querySelector("#audit-start").textContent.includes("다시 보내기")')
     first = posts('')[-1][2]
     assert first['model'] == 'claude-opus-5-5'
+    # 재전송 문구 뒤에도 후속 조회가 이어진다. 활성화 전의 DOM 클릭은 무시된다.
+    expect(page.locator('#audit-start')).to_be_enabled()
     page.locator('#audit-start').evaluate('b => {b.click();b.click()}')
     page.wait_for_selector('#audit-cancel')
     assert posts('')[-1][2] == first and len(posts('')) == 2
@@ -4982,8 +4984,20 @@ def check_project_initialization(page, shots):
         expect(page.locator('#p-path')).to_be_disabled()
         expect(page.locator('#p-register')).to_be_hidden()
         page.click('#p-step-back'); page.click('[data-template-pick="web-game"]')
-        expect(page.locator('[data-template-option]:checked')).to_have_count(2)
-        page.click('#p-step-back'); page.click('[data-template-pick="service-split"]')
+        expect(page.locator('[data-genre-pick]')).to_have_count(5)
+        expect(page.locator('[data-genre-pick="arcade"]')).to_be_focused()
+        expect(page.locator('#p-details')).to_be_hidden()
+        for genre, count in [('arcade', 2), ('platformer', 2), ('puzzle', 2), ('card', 2), ('novel', 1)]:
+            page.click(f'[data-genre-pick="{genre}"]')
+            expect(page.locator('#p-key')).to_be_focused()
+            expect(page.locator('[data-template-option]:checked')).to_have_count(count)
+            expect(page.locator('#p-selected-template')).to_contain_text('웹게임 · ')
+            expect(page.locator('#p-step-back')).to_have_text('장르 바꾸기')
+            page.click('#p-step-back')
+            expect(page.locator(f'[data-genre-pick="{genre}"]')).to_be_focused()
+        page.click('#p-genre-back')
+        expect(page.locator('[data-template-pick="web-game"]')).to_be_focused()
+        page.click('[data-template-pick="service-split"]')
         expect(page.locator('[data-template-option]:checked')).to_have_count(3)
         expect(page.locator('#p-template-options')).to_contain_text('PostgreSQL')
         page.click('#p-step-back'); page.click('[data-template-pick="blank"]')
@@ -5011,12 +5025,16 @@ def check_project_initialization(page, shots):
                 page.click('[data-template-pick="admin-web"]')
                 page.locator('#p-template-options').scroll_into_view_if_needed()
                 page.screenshot(path=str(shots / f'project-template-options-{theme}-{width}.png'))
+        page.click('#p-step-back'); page.click('[data-template-pick="web-game"]')
+        expect(page.locator('[data-genre-pick="novel"]')).to_be_focused()
+        page.keyboard.press('Enter')
         page.click('#p-initialize'); page.wait_for_function('document.querySelector("#project-error").textContent.includes("요청 확인 실패")')
         page.locator('#p-initialize').evaluate('e => {e.click();e.click()}')
         page.wait_for_selector('#project-initialization:not([hidden])')
         assert len(requests) == 2 and requests[0] == requests[1]
-        assert requests[0]['template'] == 'admin-web'
-        assert requests[0]['options'] == {'login': True, 'db': False, 'dark_mode': True}
+        assert requests[0]['template'] == 'web-game'
+        assert requests[0]['genre'] == 'novel'
+        assert requests[0]['options'] == {'dark_mode': True}
         assert len(uploads) == 1
         assert '기획서 분석 대기' in page.inner_text('#project-initialization')
         state.update(status='failed', phase='생성 중단', error='서버 재시작으로 중단됐어요.')
@@ -5919,6 +5937,10 @@ try:
             check_settings_navigation(page, shots)
             assert not errs, errs
             print('OK: fonts and Settings navigation'); sys.exit(0)
+        if '--project-genres-only' in sys.argv:
+            check_project_initialization(page, shots)
+            assert not errs, errs
+            print('OK: project genres'); sys.exit(0)
         if '--project-wizard-only' in sys.argv:
             page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
             check_project_row(page, shots)
