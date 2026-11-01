@@ -777,6 +777,9 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .progress-more:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
 .progress-pop{ position:fixed; z-index:1000; width:max-content; max-width:min(320px, calc(100vw - 16px)); padding:var(--sp-3); border:1px solid var(--border); border-radius:var(--r-md); background:var(--panel); color:var(--text); box-shadow:var(--shadow-pop); font-size:13px; line-height:1.6; white-space:pre-line; overflow-wrap:anywhere; }
 @media(max-width:800px){
+  .progress-note{ flex-wrap:wrap; row-gap:0; }
+  .progress-short{ flex:1 0 100%; }
+  .progress-short + .progress-clock::before{ content:none; }
   #list-body table.issues th:nth-child(3){ width:140px; }
   #list-body table.issues th:last-child{ width:48px; font-size:0; }
 }
