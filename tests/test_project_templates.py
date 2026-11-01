@@ -284,6 +284,15 @@ class TemplatesTest(unittest.TestCase):
                                 expect(page.locator('#status')).to_contain_text('플레이 중이에요.')
                             else:
                                 expect(page.locator('#session')).to_have_text('nightshift에서 로그인한 뒤 새로고침해 주세요.')
+                            if genre == 'puzzle':
+                                original = page.locator('#game').get_attribute('data-board')
+                                page.locator('#game button:enabled').first.click()
+                                expect(page.locator('#status')).to_contain_text('이동 1')
+                                self.assertNotEqual(page.locator('#game').get_attribute('data-board'), original)
+                                page.locator('#undo').click()
+                                expect(page.locator('#status')).to_contain_text('이동 0')
+                                expect(page.locator('#game')).to_have_attribute('data-board', original)
+                                expect(page.locator('#undo')).to_be_disabled()
                             if genre == 'platformer':
                                 page.locator('#game').focus()
                                 page.wait_for_function("Number(document.querySelector('#game').dataset.playerY) === 408")
