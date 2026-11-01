@@ -1,5 +1,6 @@
 """템플릿 옵션·복사본 기동·인증·자체 검사·공용 CSS를 로컬에서 검사한다."""
 import itertools
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -56,9 +57,48 @@ class Nightshift(BaseHTTPRequestHandler):
 
 
 class TemplatesTest(unittest.TestCase):
+    def test_genre_overlay_and_validation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            base = root / 'fixture'
+            copy_files(base, {
+                'template.json': json.dumps({'id': 'fixture', 'options': {'scores': {'default': True, 'drop': ['db.py']}},
+                    'default_genre': 'arcade', 'genres': [{'id': 'arcade', 'options': ['scores']}, {'id': 'novel', 'options': []}]}),
+                'app.txt': 'base', 'db.py': 'database',
+                'genres/novel/app.txt': '{{PROJECT_KEY}}\n# [option:scores]\nscore\n# [/option:scores]\n',
+                'genres/novel/new.txt': 'added', 'genres/unused/unused.txt': 'unused'})
+            with patch.object(templates, 'ROOT', root):
+                self.assertEqual(templates.render('fixture', {}, VALUES), {'app.txt': 'base', 'db.py': 'database'})
+                self.assertEqual(templates.render('fixture', {}, VALUES, genre='novel'), {'app.txt': 'TEST\n', 'new.txt': 'added'})
+                for genre, options in [('missing', {}), ('../novel', {}), (['novel'], {}), ('novel', {'scores': False})]:
+                    with self.assertRaises(templates.StoreError):
+                        templates.render('fixture', options, VALUES, genre=genre)
+                hidden = base / 'genres/novel/.hidden'
+                hidden.write_text('hidden')
+                with self.assertRaises(templates.StoreError):
+                    templates.render('fixture', {}, VALUES, genre='novel')
+        for template in ('blank', 'admin-web'):
+            with self.assertRaises(templates.StoreError):
+                templates.render(template, {}, VALUES, genre='arcade')
+
+    def test_arcade_output_unchanged(self):
+        hashes = [
+            '615c99da3323cb63bb6c495d30af5f8ab0a6a98cc0bf09a5ec5d5fe537f05bc9',
+            'a1763e75cbb6b2f6d9d079117609bb88dd1cb28d8fd978807ae3b8f36db50ddd',
+            'ea42156627e2910243cc670d3451e0c33ff244f5034a88601f30b73623baa5fa',
+            '9f3a7bdbdf1200060b8eccdd8683317a4a06db50fd7c927294dedb9c596ec4c8']
+        for (scores, dark), expected in zip(itertools.product((False, True), repeat=2), hashes):
+            for genre in (None, 'arcade'):
+                files = templates.render('web-game', {'scores': scores, 'dark_mode': dark}, VALUES, genre=genre)
+                actual = hashlib.sha256(''.join(p + '\0' + files[p] for p in sorted(files)).encode()).hexdigest()
+                self.assertEqual(actual, expected)
+
     def test_catalog_and_validation(self):
         self.assertEqual([m['id'] for m in templates.catalog()], ['blank', 'admin-web', 'service-split', 'web-game'])
         self.assertTrue(all(m['provides'] for m in templates.catalog()))
+        game = next(m for m in templates.catalog() if m['id'] == 'web-game')
+        self.assertEqual(game['default_genre'], 'arcade')
+        self.assertEqual(game['genres'][0]['options'], ['scores', 'dark_mode'])
         self.assertEqual(templates.render('blank', {}, {}), {})
         for template_id in ('../admin-web', 'missing', None):
             with self.assertRaises(templates.StoreError):
@@ -154,7 +194,8 @@ class TemplatesTest(unittest.TestCase):
                     result = subprocess.run([sys.executable, '-c', code], cwd=path, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     for name in ('static/app.js', 'ecosystem.config.js'):
-                        result = subprocess.run(['node', '--check', name], cwd=path, capture_output=True, text=True, timeout=10)
+                        # 병렬 검사 중 Node 시작 지연에도 문법 검사 결과를 기다린다.
+                        result = subprocess.run(['node', '--check', name], cwd=path, capture_output=True, text=True, timeout=60)
                         self.assertEqual(result.returncode, 0, result.stderr)
         finally:
             fake.shutdown()
