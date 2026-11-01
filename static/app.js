@@ -2767,6 +2767,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     portRevision++; portTouched = false; portMessage.textContent = '';
     form.reset(); clearSuggestion(); initRequest = null;
     selectedTemplate = 'blank';
+    Object.keys(selectedGenre).forEach(key => delete selectedGenre[key]);
     if(templateCatalog) templateCatalog.forEach(t => { templateValues[t.id] = Object.fromEntries(Object.entries(t.options).map(([k, o]) => [k, o.default])); });
     setCreationStep('pick', false);
     form.querySelectorAll('details').forEach(el => { el.open = false; });
@@ -2794,7 +2795,10 @@ function renderProjects(editKey, projectTab = 'manage'){
   form.addEventListener('input', () => { clearSuggestion(); if(!saving) initRequest = null; });
   const initialize = view.querySelector('#p-initialize');
   let selectedTemplate = 'blank', templateCatalog = null;
-  const templateValues = {};
+  const templateValues = {}, selectedGenre = {};
+  const currentTemplate = () => templateCatalog?.find(t => t.id === selectedTemplate);
+  const currentGenre = () => currentTemplate()?.genres?.find(g => g.id === selectedGenre[selectedTemplate]);
+  const allowedOptions = () => Object.entries(currentTemplate().options).filter(([key]) => !currentGenre() || currentGenre().options.includes(key));
   let creationMode = 'pick';
   if(dialog){
     const fields = form.querySelector(':scope > .line'); fields.id = 'p-details';
@@ -2806,12 +2810,15 @@ function renderProjects(editKey, projectTab = 'manage'){
     picker.lastChild.before(form.querySelector('.project-templates'));
     const heading = document.createElement('div'); heading.id = 'p-step-heading';
     heading.innerHTML = '<button type="button" id="p-step-back">템플릿 바꾸기</button><strong id="p-selected-template"></strong>';
-    fields.before(picker, heading);
+    const genres = document.createElement('section'); genres.id = 'p-genre-step'; genres.hidden = true;
+    genres.innerHTML = '<h3>어떤 웹게임인가요?</h3><div id="p-genres" class="template-cards"></div><button type="button" id="p-genre-back" class="ghost">템플릿 바꾸기</button>';
+    genres.querySelector('#p-genre-back').onclick = () => setCreationStep('pick');
+    fields.before(picker, genres, heading);
     const service = form.querySelector('#p-domain').closest('.project-description');
     const details = document.createElement('details'); details.className = 'project-description';
     details.innerHTML = '<summary>서비스 설정</summary>'; service.before(details); details.append(service);
     form.querySelector('#p-register-mode').onclick = () => setCreationStep('register');
-    form.querySelector('#p-step-back').onclick = () => setCreationStep('pick');
+    form.querySelector('#p-step-back').onclick = () => setCreationStep(creationMode === 'template' && currentTemplate()?.genres?.length ? 'genre' : 'pick');
     const actions = form.querySelector('.actions'); actions.lastElementChild.id = 'p-register';
     actions.append(initialize); initialize.classList.add('primary');
     content.querySelector('p.dim').textContent = '기획서로 최소 앱·공식 문서·Issue·Task를 만들고 실행 검사해요. 선택한 도구의 유료 분석을 시작하며, 기능 Task 실행은 별도 승인이 필요해요.';
@@ -2821,28 +2828,37 @@ function renderProjects(editKey, projectTab = 'manage'){
   function setCreationStep(mode, focus = true){
     if(!dialog || saving) return;
     creationMode = mode; initRequest = null; clearSuggestion();
-    const picking = mode === 'pick', template = mode === 'template';
+    const genre = mode === 'genre', picking = mode === 'pick', choosing = picking || genre, template = mode === 'template';
     form.querySelector('#p-pick-step').hidden = !picking;
-    form.querySelector('#p-details').hidden = picking;
-    form.querySelector('#p-step-heading').hidden = picking;
-    form.querySelector('#p-step-back').textContent = template ? '템플릿 바꾸기' : '처음으로';
-    form.querySelector('#p-selected-template').textContent = template ? templateCatalog?.find(t => t.id === selectedTemplate)?.name || '' : '기존 저장소 등록';
+    form.querySelector('#p-genre-step').hidden = !genre;
+    if(genre) renderGenres();
+    form.querySelector('#p-details').hidden = choosing;
+    form.querySelector('#p-step-heading').hidden = choosing;
+    form.querySelector('#p-step-back').textContent = template ? (currentTemplate()?.genres?.length ? '장르 바꾸기' : '템플릿 바꾸기') : '처음으로';
+    form.querySelector('#p-selected-template').textContent = template ? [currentTemplate()?.name, currentGenre()?.name].filter(Boolean).join(' · ') : '기존 저장소 등록';
     for(const selector of ['#p-path', '#p-description']) form.querySelector(selector).closest('label').hidden = template;
     form.querySelector('.project-spec').hidden = !template;
-    form.querySelector('#p-register').hidden = template;
+    form.querySelector('#p-register').hidden = choosing || template;
     initialize.hidden = !template;
     form.querySelector('#project-error').textContent = '';
     if(templateCatalog && template) renderTemplateOptions();
     form.querySelectorAll('#p-details input, #p-details textarea, #p-details select, #p-details button').forEach(el => {
-      el.disabled = picking || !!el.closest('[hidden]') || (el === freePort && portLookup);
+      el.disabled = choosing || !!el.closest('[hidden]') || (el === freePort && portLookup);
     });
-    if(focus) (picking ? form.querySelector(`[data-template-pick="${selectedTemplate}"]`) || form.querySelector('#p-register-mode') : form.querySelector('#p-key')).focus();
+    if(focus) (genre ? form.querySelector(`[data-genre-pick="${selectedGenre[selectedTemplate] || currentTemplate().default_genre}"]`) : picking ? form.querySelector(`[data-template-pick="${selectedTemplate}"]`) || form.querySelector('#p-register-mode') : form.querySelector('#p-key')).focus();
+  }
+  function renderGenres(){
+    const cards = form.querySelector('#p-genres');
+    cards.innerHTML = currentTemplate().genres.map(g => `<button type="button" class="template-card" data-genre-pick="${esc(g.id)}"><span><strong>${esc(g.name)}</strong><span class="dim">${esc(g.description)}</span><ul class="dim">${g.provides.map(item => `<li>${esc(item)}</li>`).join('')}</ul></span></button>`).join('');
+    cards.querySelectorAll('[data-genre-pick]').forEach(button => button.onclick = () => {
+      selectedGenre[selectedTemplate] = button.dataset.genrePick; setCreationStep('template');
+    });
   }
   function renderTemplateOptions(){
     const section = view.querySelector('#p-template-options');
     const template = templateCatalog.find(t => t.id === selectedTemplate);
-    section.hidden = !Object.keys(template.options).length;
-    section.querySelector('.template-options').innerHTML = Object.entries(template.options).map(([key, option]) => `<label><input type="checkbox" data-template-option="${esc(key)}" ${templateValues[selectedTemplate][key] ? 'checked' : ''}>${esc(option.name)}</label>`).join('');
+    section.hidden = !allowedOptions().length;
+    section.querySelector('.template-options').innerHTML = allowedOptions().map(([key, option]) => `<label><input type="checkbox" data-template-option="${esc(key)}" ${templateValues[selectedTemplate][key] ? 'checked' : ''}>${esc(option.name)}</label>`).join('');
     section.querySelectorAll('[data-template-option]').forEach(input => input.onchange = () => {
       templateValues[selectedTemplate][input.dataset.templateOption] = input.checked;
       initRequest = null;
@@ -2859,7 +2875,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       catalog.forEach(t => { templateValues[t.id] = Object.fromEntries(Object.entries(t.options).map(([key, option]) => [key, option.default])); });
       cards.innerHTML = catalog.map(t => `<button type="button" class="template-card" data-template-pick="${esc(t.id)}"><span><strong>${esc(t.name)}</strong><span class="dim">${esc(t.description)}</span><ul class="dim">${(t.provides || []).map(item => `<li>${esc(item)}</li>`).join('')}</ul></span></button>`).join('');
       cards.querySelectorAll('[data-template-pick]').forEach(button => button.onclick = () => {
-        selectedTemplate = button.dataset.templatePick; setCreationStep('template');
+        selectedTemplate = button.dataset.templatePick; setCreationStep(currentTemplate().genres?.length ? 'genre' : 'template');
       });
       renderTemplateOptions();
       initialize.disabled = saving || portLookup || creationMode !== 'template';
@@ -2877,7 +2893,7 @@ function renderProjects(editKey, projectTab = 'manage'){
   };
   form.addEventListener('submit', async e => {
     e.preventDefault();
-    if(saving || portLookup || (dialog && creationMode === 'pick')) return;
+    if(saving || portLookup || (dialog && !['template', 'register'].includes(creationMode))) return;
     saving = true;
     const button = submitBtn(e), cancel = view.querySelector('#p-cancel');
     const original = button.textContent;
@@ -2900,7 +2916,8 @@ function renderProjects(editKey, projectTab = 'manage'){
           const attachment = await api('POST', '/api/attachments', data);
           if(!form.isConnected) return;
           initRequest = {request_id: crypto.randomUUID(), attachment_id: attachment.id,
-            template: selectedTemplate, options: {...templateValues[selectedTemplate]},
+            template: selectedTemplate, ...(currentGenre() ? {genre: currentGenre().id} : {}),
+            options: Object.fromEntries(allowedOptions().map(([key]) => [key, templateValues[selectedTemplate][key]])),
             key: val('#p-key'), name: val('#p-name'), repo_url: val('#p-repo'), folder, provider: val('#p-init-provider'), service_domain: val('#p-domain'), service_port: val('#p-port') || 0, service_app: val('#p-service-app'), service_prepare_provider: val('#p-service-provider')};
         }
         const result = await api('POST', '/api/projects/initialize', initRequest);
