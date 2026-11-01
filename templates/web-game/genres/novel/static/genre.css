@@ -1,0 +1,6 @@
+/* 장면 대사와 선택지를 공용 디자인 토큰으로 배치한다. */
+#game { box-sizing:border-box; aspect-ratio:auto; padding:var(--sp-5); touch-action:manipulation; }
+#speaker { color:var(--accent); margin-top:0; }
+#dialogue { white-space:pre-wrap; overflow-wrap:anywhere; }
+#choices { display:grid; gap:var(--sp-3); margin-top:var(--sp-5); }
+#choices button { text-align:left; overflow-wrap:anywhere; }

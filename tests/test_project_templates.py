@@ -127,9 +127,11 @@ class TemplatesTest(unittest.TestCase):
         self.check_option_matrix('service-split')
 
     def test_web_game(self):
-        for genre in (g['id'] for g in templates.get('web-game')['genres']):
-            for scores, dark in itertools.product((False, True), repeat=2):
-                options = {'scores': scores, 'dark_mode': dark}
+        for spec in templates.get('web-game')['genres']:
+            genre = spec['id']
+            for enabled in itertools.product((False, True), repeat=len(spec['options'])):
+                options = dict(zip(spec['options'], enabled))
+                scores, dark = options.get('scores', False), options.get('dark_mode', False)
                 with self.subTest(options=options), tempfile.TemporaryDirectory() as folder:
                     path = Path(folder)
                     files = templates.render('web-game', options, VALUES, genre=genre)
@@ -153,6 +155,15 @@ class TemplatesTest(unittest.TestCase):
                                     *[['node', '--check', n] for n in ('static/app.js', 'static/game.js', 'ecosystem.config.js', 'tests/test_game.js')]):
                         result = subprocess.run(command, cwd=path, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_novel_without_scores(self):
+        for value in (False, True):
+            with self.assertRaises(templates.StoreError):
+                templates.render('web-game', {'scores': value}, VALUES, genre='novel')
+        files = templates.render('web-game', {}, VALUES, genre='novel')
+        self.assertNotIn('server/db.py', files)
+        self.assertNotIn('server/migrations/001_scores.sql', files)
+        self.assertNotIn('/api/scores', files['static/app.js'])
 
     def test_genre_common_blocks(self):
         import re
@@ -244,6 +255,10 @@ class TemplatesTest(unittest.TestCase):
         for genre in templates.get('web-game')['genres']:
             self.capture_template('web-game', genre['id'])
 
+    @unittest.skipUnless(CAPTURE, 'R04는 --capture로 실행한다')
+    def test_novel_capture(self):
+        self.capture_template('web-game', 'novel')
+
     def capture_template(self, template_id, genre=None):
         from playwright.sync_api import sync_playwright, expect
         # Dev 전용 capture_ui는 생성 앱을 지원하지 않아 복사본을 로컬 서버로 캡처한다.
@@ -275,15 +290,28 @@ class TemplatesTest(unittest.TestCase):
                             page = browser.new_page(viewport={'width': width, 'height': 850}, color_scheme=theme)
                             page.route('**/*', lambda route: route.continue_() if route.request.url.startswith(f'http://127.0.0.1:{port}/') else route.abort())
                             page.goto(f'http://127.0.0.1:{port}/')
-                            if template_id == 'web-game':
+                            if template_id == 'web-game' and genre != 'novel':
                                 expect(page.locator('#game')).to_be_visible()
                                 expect(page.locator('#status')).to_contain_text('플레이 중이에요.')
                                 page.locator('#pause').click()
                                 expect(page.locator('#status')).to_contain_text('멈췄어요.')
                                 page.locator('#restart').click()
                                 expect(page.locator('#status')).to_contain_text('플레이 중이에요.')
-                            else:
+                            elif template_id != 'web-game':
                                 expect(page.locator('#session')).to_have_text('nightshift에서 로그인한 뒤 새로고침해 주세요.')
+                            if genre == 'novel':
+                                expect(page.locator('#game')).to_have_attribute('data-scene', 'start')
+                                page.locator('#choices button').first.click()
+                                expect(page.locator('#game')).to_have_attribute('data-scene', 'hall')
+                                page.locator('#save').click()
+                                expect(page.locator('#save-message')).to_have_text('진행을 저장했어요.')
+                                page.reload()
+                                page.locator('#load').click()
+                                expect(page.locator('#game')).to_have_attribute('data-scene', 'hall')
+                                page.locator('#choices button').first.click()
+                                expect(page.locator('#game')).to_have_attribute('data-scene', 'library')
+                                page.locator('#load').click()
+                                expect(page.locator('#game')).to_have_attribute('data-scene', 'hall')
                             if genre == 'puzzle':
                                 original = page.locator('#game').get_attribute('data-board')
                                 page.locator('#game button:enabled').first.click()
