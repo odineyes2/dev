@@ -114,3 +114,48 @@ assert len(issues.get_issue(q)["children"]) == 1
 assert len(issues.get_issue(q)['superseded_children']) == 1
 
 print("ok")
+
+# 펌프마다 도는 recover()는 끝난 기록 전부가 아니라 알림 전 기록과 올릴 수 있는 부모만 본다(DEV-221).
+from unittest.mock import patch  # noqa: E402
+import notify  # noqa: E402
+
+
+def finished(ref, notified):
+    iid = issues.get_issue(ref)['id']
+    with db.connect() as c:
+        rid = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at) VALUES(?,'execute','ok','human:admin',?)", (iid, db.now_iso())).lastrowid
+        c.execute("INSERT INTO execution_completion(run_id,issue_id,ref,actor,task_sha,auto_merge,phase,notified,owner_event,cfg_json,updated_at) "
+                  "VALUES(?,?,?,'human:admin','x',1,'complete',?,0,'{}',?)", (rid, iid, ref, notified, db.now_iso()))
+    return rid
+
+
+old = issues.create_issue(me, "TP", "끝난 상위")["ref"]
+olds = [issues.create_issue(me, "TP", f"끝난 {n}", parent=old)["ref"] for n in range(3)]
+for ref in olds:
+    issues.set_status(me, ref, "done"); finished(ref, 1)
+with db.connect() as c:   # 완료 게이트(후속 검사)는 이 검사 범위 밖이라 상태만 바꾼다
+    c.execute("UPDATE issues SET status='done' WHERE id=?", (issues.get_issue(old)['id'],))
+live = issues.create_issue(me, "TP", "사람이 마저 끝낼 상위")["ref"]
+la, lb, lc = (issues.create_issue(me, "TP", n, parent=live)["ref"] for n in ("가", "나", "다"))
+for ref in (la, lb):
+    issues.set_status(me, ref, "done"); finished(ref, 1)
+fresh = issues.create_issue(me, "TP", "알림 전 단독")["ref"]
+issues.set_status(me, fresh, "in_review"); fresh_run = finished(fresh, 0)
+calls = []
+real = orchestrate._publish
+with patch.object(orchestrate, '_publish', side_effect=lambda a, r: (calls.append(r['ref']), real(a, r))), patch.object(notify, 'send') as sent:
+    orchestrate.recover()
+    assert not set(olds) & set(calls), calls                 # 부모가 done — 다시 보지 않는다
+    assert calls.count(la) + calls.count(lb) == 1, calls      # 올릴 수 있는 부모는 하나만
+    assert fresh in calls and any(x.args[0] == fresh for x in sent.call_args_list), calls   # 알림 전 기록은 알림까지
+    notices = sent.call_count
+    assert issues.get_issue(live)['status'] == 'backlog'      # 남은 Task가 있어 아직 그대로
+    issues.set_status(me, lc, "done")                         # 사람이 마지막 Task를 끝내면
+    calls.clear(); orchestrate.recover()
+    assert issues.get_issue(live)['status'] == 'in_review', calls   # 다음 펌프에서 올린다
+    calls.clear(); orchestrate.recover()
+    assert calls == [], calls                                 # 다 올린 뒤엔 아무것도 다시 보지 않는다
+    assert sent.call_count == notices                         # 알림은 한 번만
+with db.connect() as c:
+    assert c.execute('SELECT notified FROM execution_completion WHERE run_id=?', (fresh_run,)).fetchone()[0] == 1
+print("ok recover")

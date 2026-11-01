@@ -688,6 +688,8 @@ function bindActions(container,session,refresh){
           if(!await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?`, {description:task ? `${delegateLine(task, provider)}${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}` : reviewConfirmText(detail, provider), okText:kind==='review'?'검토 맡기기':'실행 맡기기'}))return;
         }
         if(!current())return;
+        // 응답(대기열 등록·착수)까지 누른 버튼에 스피너를 보인다(DEV-221).
+        b.innerHTML='<svg class="ico list-spinner" aria-hidden="true"><use href="#i-loader-circle"/></svg>'; b.setAttribute('aria-busy','true');
         await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:kind==='complete-tree'?{confirm_checks:true}:provider?{provider}:{},current);
         if(current())toast(kind==='decision'?'계획을 승인했어요.':kind==='task-approve'?'Task를 승인했어요.':kind==='complete-tree'?'묶음을 끝냈어요.':'작업을 대기열에 등록했어요.');
       }catch(e){ /* 최신 정보로 다시 판단한다. */ }

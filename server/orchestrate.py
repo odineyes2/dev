@@ -1136,10 +1136,19 @@ def recover():
         if stale:
             continue
         handle({'kind': 'human', 'name': record['actor'].split(':', 1)[1]}, record['ref'])
-    # 최종 전환 직후 종료돼도 부모 승격을 놓치지 않는다.
+    # 최종 전환 직후 종료돼도 알림·부모 승격을 놓치지 않는다. 끝난 기록 전부를 매번 다시 부르면 펌프가
+    # 기록 수만큼 느려지므로(DEV-221) 알림 전 기록과, 부모가 아직 올릴 수 있는 상태인 기록만 부모당 하나 본다.
     with db.connect() as c:
-        finished = [dict(r) for r in c.execute("SELECT * FROM execution_completion WHERE phase='complete' AND auto_merge=1")]
+        finished = [dict(r) for r in c.execute(
+            "SELECT e.*, i.parent_id AS parent_id FROM execution_completion e JOIN issues i ON i.id=e.issue_id "
+            "LEFT JOIN issues p ON p.id=i.parent_id WHERE e.phase='complete' AND e.auto_merge=1 AND (e.notified=0 OR "
+            "(p.id IS NOT NULL AND p.status NOT IN ('in_progress','waiting','on_hold','changes_requested','in_review','done','closed'))) "
+            "ORDER BY e.notified, e.run_id")]
+    parents = set()
     for record in finished:
+        if record['notified'] and record['parent_id'] in parents:
+            continue
+        parents.add(record['parent_id'])
         _publish({'kind': 'human', 'name': record['actor'].split(':', 1)[1]}, record)
 
 

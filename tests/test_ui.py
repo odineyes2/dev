@@ -4157,6 +4157,9 @@ def check_list_loading(page, shots):
     """응답을 보류하여 요청 수명·경합·시각 상태를 검사한다."""
     # 로그인은 shell 표시 뒤에도 초기 조회와 route가 이어진다. 이전 요청을 가로채지 않는다.
     page.wait_for_selector('#list-body[aria-busy="false"]')
+    # 5초 실시간 갱신(followProgress)도 같은 /api/issues?를 불러 pending에 끼면 엉뚱한 요청에 응답한다 —
+    # 이 검사는 로딩 수명만 보므로 검사 동안 멈추고 끝에서 되돌린다(DEV-222).
+    page.evaluate("() => { window.__followProgress = followProgress; followProgress = () => {}; stopLiveRefresh(); }")
     pending = []
     page.route("**/api/issues?*", lambda route: pending.append(route))
     def request_count(n):
@@ -4292,7 +4295,7 @@ def check_list_loading(page, shots):
         page.goto(BASE + '/#/'); request_count(1)
         reply(pending.pop(0)); settled()
     page.unroute('**/api/issues?*')
-    page.evaluate("localStorage.removeItem('dev.list'); document.documentElement.dataset.theme = 'light'")
+    page.evaluate("localStorage.removeItem('dev.list'); document.documentElement.dataset.theme = 'light'; followProgress = window.__followProgress")
 
 
 def check_review_buttons(page, ref, shots):
