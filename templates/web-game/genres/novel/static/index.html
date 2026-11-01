@@ -1,0 +1,15 @@
+<!-- 노벨의 장면·선택지와 저장 동작을 표시한다. -->
+<!doctype html>
+<!-- 게임 화면과 점수 기록을 표시한다. -->
+<html lang="ko" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{PROJECT_NAME}}</title><link rel="stylesheet" href="/static/family.css"><link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/genre.css"><script defer src="/static/game.js"></script><script defer src="/static/app.js"></script></head>
+<body><header class="top"><a class="brand" href="/"><svg class="ico brand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 1 0 10.5 10.5Z"/></svg><span class="brand-word">{{PROJECT_NAME}}</span></a><div class="header-right">
+<!-- [option:dark_mode] -->
+<button id="theme" class="theme-toggle-btn" title="밤/낮" aria-label="밤/낮"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button>
+<!-- [/option:dark_mode] -->
+</div></header><main><h1>밤의 도서관</h1>
+<p>선택지를 눌러 이야기를 이어 가요. 진행은 이 브라우저에 한 칸 저장할 수 있어요.</p>
+<div class="game-toolbar"><span id="status" role="status"></span><button id="restart" type="button">처음부터</button></div>
+<section id="game" aria-label="이야기" aria-live="polite"><h2 id="speaker"></h2><p id="dialogue"></p><div id="choices"></div></section>
+<div class="game-toolbar"><button id="save" type="button">저장</button><button id="load" type="button">불러오기</button></div>
+<p id="save-message" role="status"></p>
+</main></body></html>
