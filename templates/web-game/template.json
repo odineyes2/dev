@@ -14,8 +14,29 @@
       "id": "arcade",
       "name": "아케이드/액션",
       "description": "방향키와 터치로 움직여 코인을 모아요.",
-      "provides": ["Canvas 게임 화면과 고정 간격 게임 루프", "키보드·터치 입력", "코인 수집과 점수 기록"],
-      "options": ["scores", "dark_mode"]
+      "provides": [
+        "Canvas 게임 화면과 고정 간격 게임 루프",
+        "키보드·터치 입력",
+        "코인 수집과 점수 기록"
+      ],
+      "options": [
+        "scores",
+        "dark_mode"
+      ]
+    },
+    {
+      "id": "platformer",
+      "name": "플랫포머",
+      "description": "중력과 점프로 발판을 건너 도착 깃발까지 가요.",
+      "provides": [
+        "문자열 타일 맵과 AABB 충돌",
+        "중력·바닥 점프와 코인·도착 판정",
+        "고정 간격 루프와 키보드·모바일 버튼"
+      ],
+      "options": [
+        "scores",
+        "dark_mode"
+      ]
     }
   ],
   "runtime": {

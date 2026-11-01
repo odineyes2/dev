@@ -1,0 +1,4 @@
+/* 플랫포머 규칙과 화면을 구성한다. */
+.platform-controls { display:flex; gap:var(--sp-3); margin-block:var(--sp-4); touch-action:none; }
+.platform-controls button { min-width:40px; user-select:none; }
+.platform-controls button:last-child { margin-left:auto; }
