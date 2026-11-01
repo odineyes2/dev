@@ -131,6 +131,15 @@ class InitializationTest(unittest.TestCase):
         self.assertTrue((target / 'static/game.js').is_file())
         self.assertFalse((target / 'server/db.py').exists())
 
+    def test_web_game_default_genre_preserves_legacy_request(self):
+        self.body.update(template='web-game', options={})
+        self.request()
+        row = pi.get('NEW')
+        self.assertEqual(row['genre'], '')
+        self.assertEqual(pi.status('NEW')['genre'], '')
+        explicit = {**row, 'genre': 'arcade'}
+        self.assertEqual(pi._template(row), pi._template(explicit))
+
     def test_template_overwrite_and_invalid_options(self):
         for template, genre in [('web-game', 'missing'), ('admin-web', 'arcade')]:
             self.body.update(template=template, options={}, genre=genre)
