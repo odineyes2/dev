@@ -481,7 +481,6 @@ async function route(){
     else if(name === 'issue' && arg) await renderIssue(decodeURIComponent(arg));
     else if(name === 'new') await renderNew(new URLSearchParams(location.hash.split('?')[1] || ''));
     else if(name === 'agents') await renderAgents();
-    else if(name === 'harness') await renderHarness();
     else if(name === 'projects'){
       const params = new URLSearchParams(location.hash.split('?')[1] || '');
       // 로그인 직후 프로젝트 목록보다 hash 이동이 먼저 와도 상세 주소를 보존한다.
@@ -495,9 +494,7 @@ async function route(){
     }
     else if(name === 'settings' && settingsTab === 'auto') await renderSettings();
     else if(name === 'settings' && settingsTab === 'types') await renderTypes();
-    else if(name === 'settings' && settingsTab === 'regression') await renderRegressionSettings();
     else if(name === 'settings' && settingsTab === 'fonts') renderFontSettings();
-    else if(name === 'settings' && settingsTab === 'claude-code') await renderManualUsageSettings();
     else if(name === 'settings' && settingsTab === 'tokens') await renderTokenSettings();
     else view.innerHTML = '<div class="empty">없는 화면이에요.</div>';
   }catch(e){ if(!view.innerHTML) view.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
@@ -517,8 +514,8 @@ function followProgress(refresh, current){
   };
   liveTimer = setTimeout(tick, 5000);
 }
-const LIVE_MERGE = new Set(['병합 검사 중', '운영 반영 중', '재시작 확인 중', '복구 중', '복구 확인 중']);
-function activeProgress(i){ return i.review_running || i.job || i.execute?.reproduction?.result?.status === 'running' || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
+const LIVE_MERGE = new Set(['병합 중', '운영 반영 중', '재시작 확인 중', '복구 중', '복구 확인 중']);
+function activeProgress(i){ return i.review_running || i.job || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
 function splitProgress(text, mode){
   if(text.length <= 20 && !text.includes('—')) return {short:text, long:''};
   const ref = '[A-Z][A-Z0-9]*-\\d+(?:-\\d+)?';
@@ -542,7 +539,7 @@ function splitProgress(text, mode){
   return {short, long:text};
 }
 function progressHtml(i){
-  const run = !i.job?.note && (!i.merge_state || i.run_progress?.phase === 'merge') ? i.run_progress : null;   // 실행 단계 — 구현·전체 검사·재작업·멈춤(DEV-206), 병합 검사 n/N(DEV-211)
+  const run = !i.job?.note && !i.merge_state ? i.run_progress : null;   // 실행 단계 — 구현·멈춤(DEV-206)
   const text = i.job?.note || i.merge_state || run?.long || (i.status === 'in_progress' && i.parent_ref ? '구현 중' : '');
   const clock = clockHtml(i);
   if(!text) return clock ? `<div class="progress-note">${clock}</div>` : '';
@@ -633,27 +630,10 @@ function actionKind(i){
   return i.status==='backlog' && !c.plan_version && !c.has_children ? 'review' : '';
 }
 function actionOff(kind,s,i){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='task-approve' ? s.auto_approve===true : kind==='decision' && i.status==='triage' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
-// 목록과 상세 카드가 준비 상태와 확인 절차를 공유한다.
-function qaButton(start, ref, id=''){
-  const latest=start.latest, label=start.active?'QA 중':latest?.status==='passed'?'QA 통과':latest?.status==='failed'?`QA 실패 ${latest.fail_count}건`:['inconclusive','orphaned'].includes(latest?.status)?'QA 판정 불가':'QA 검사';
-  return `<button type="button" ${id?`id="${id}"`:''} class="qa-action" data-action="qa" data-ref="${esc(ref)}" aria-disabled="${!!(start.active || start.reason)}" title="${esc(start.reason || label)}">${label}</button>`;
-}
-async function requestQa(ref,current){
-  const panel=await api('GET',`/api/issues/${encodeURIComponent(ref)}/qa`,undefined,current);
-  if(!current())return;
-  const start=panel.start;
-  if(start.active || start.reason){toast(start.active?'QA 중이에요.':start.reason);return;}
-  const a=start.agent;
-  if(!a){toast('QA Agent를 확인하지 못했어요.');return;}
-  if(!await confirmDialog(`${ref}을(를) QA 검사할까요?`,{description:`검사할 Agent: ${a.name} (${a.provider} · ${a.model})\n유료 호출이에요 — 이 서버에 로그인된 ${a.provider} 계정 사용량에서 나가요.\n재작업 ${start.rework_count}/${start.rework_limit}`,okText:'QA 검사'}))return;
-  if(!current())return;
-  const result=await api('POST',`/api/issues/${encodeURIComponent(ref)}/qa`,{},current);
-  if(current())toast(result.created?'QA를 요청했어요':'이미 있는 QA 회차를 보여 드려요');
-}
 function actionHtml(i){
   const kind=actionKind(i); if(!kind) return '';
   const settings=actionSession?.settings;
-  return `<div class="issue-actions" aria-label="Action">${kind==='complete-tree' && !i.parent_ref && i.action_context.qa ? qaButton(i.action_context.qa,i.ref) : ''}${(['review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
+  return `<div class="issue-actions" aria-label="Action">${(['review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
     const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':kind==='task-approve'?'승인':'전체 완료';
     return `<button type="button" draggable="false" data-action="${kind}" data-ref="${esc(i.ref)}" data-provider="${provider}" title="${label}" aria-label="${label}" aria-disabled="${!settings || !!actionOff(kind,settings,i)}">${provider?`<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider==='claude'?'claude':'openai'}"/></svg>`:`<svg class="ico" aria-hidden="true"><use href="#i-${({decision:'clipboard-check','task-approve':'check','complete-tree':'check-check'})[kind]}"/></svg>`}</button>`;
   }).join('')}</div>`;
@@ -681,14 +661,7 @@ function bindActions(container,session,refresh){
       e.stopPropagation();
       const i=session.items.get(b.dataset.ref),kind=b.dataset.action,provider=b.dataset.provider;
       const current=()=>actionSession===session && session.current();
-      if(!current() || pendingActions.has(i.ref) || (kind==='qa' ? actionKind(i)!=='complete-tree' || !!i.parent_ref : actionKind(i)!==kind)) return;
-      if(kind==='qa'){
-        if(i.action_context.qa?.reason || i.action_context.qa?.active){toast(i.action_context.qa.reason || 'QA 중이에요.');return;}
-        pendingActions.add(i.ref);
-        try{await requestQa(i.ref,current);}catch(e){if(current())toast(e.message);}
-        finally{pendingActions.delete(i.ref);if(current())await refresh();}
-        return;
-      }
+      if(!current() || pendingActions.has(i.ref) || actionKind(i)!==kind) return;
       const settings=session.settings;
       if(!settings){toast('Auto 설정을 확인하지 못했어요. 새로고침해 다시 조회해 주세요.');return;}
       if(actionOff(kind,settings,i)){toast('Auto 모드에서는 해당 버튼이 비활성화됩니다.');return;}
@@ -761,12 +734,12 @@ function issueTokensHtml(i, detail = false){
   const describe = usage => {
     if(!usage) return {text:'미측정', explanation:'토큰 집계 정보가 아직 없어요.'};
     const u = usage;
-    const measured = u.run_count > u.unmeasured_run_count || u.manual_session_count > 0;
+    const measured = u.run_count > u.unmeasured_run_count;
     const partial = u.partial || u.unmeasured_run_count > 0 || u.running_run_count > 0;
     const total = number(u.total_tokens);
-    let text = !u.run_count && !u.manual_session_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${formatTokens(u.total_tokens)}`;
+    let text = !u.run_count ? '실행 없음' : !measured ? '미측정' : `${partial ? '측정된 ' : ''}${formatTokens(u.total_tokens)}`;
     if(u.running_run_count) text += ' · 실행 중';
-    return {text, explanation:`입력 ${number(u.input_tokens)} · 출력 ${number(u.output_tokens)} · 합계 ${total} 토큰 · 미측정 ${number(u.unmeasured_run_count)}회 · 실행 중 ${number(u.running_run_count)}회${u.manual_session_count ? ` · 대화형 Claude Code ${number(u.manual_tokens)}토큰 포함 · ${number(u.manual_session_count)}세션` : ''}`};
+    return {text, explanation:`입력 ${number(u.input_tokens)} · 출력 ${number(u.output_tokens)} · 합계 ${total} 토큰 · 미측정 ${number(u.unmeasured_run_count)}회 · 실행 중 ${number(u.running_run_count)}회`};
   };
   const own = describe(u);
   const explanation = own.explanation + ' · 이 Issue의 직접 실행분이에요. 수집된 대화형 Claude Code 사용량을 포함해요.';
@@ -984,7 +957,7 @@ function stageBar(row){
 }
 // 종류별 사용량을 같은 날짜의 합계로 쌓아 표시한다.
 function trendKindChart(days, key, label){
-  const kinds = [['issue','이슈 작업'], ['goal_audit','요구 점검'], ['improve_audit','개선 제안']];
+  const kinds = [['issue','이슈 작업']];
   const field = key === 'total_tokens' ? 'tokens' : 'agent_seconds';
   const width = Math.max(580, days.length * (trendMarks === 'values' ? 52 : 18)), height = 130;
   const slot = width / days.length, max = Math.max(1, ...days.map(d => kinds.reduce((v,[k]) => v + Number(d.by_kind?.[k]?.[field] || 0), 0)));
@@ -997,10 +970,6 @@ function trendKindChart(days, key, label){
     }).join('') + (trendMarks === 'values' ? `<text x="${(i + .5) * slot}" y="${Math.max(12, 116 - sum)}" text-anchor="middle">${esc(trendText(key, d[key]))}</text>` : '');
   }).join('');
   return `<div class="trend-kind-legend">${kinds.map(([k,name]) => `<span class="trend-kind-${k}">${esc(name)}</span>`).join('')}</div><div class="trend-scroll"><svg class="trend-chart" viewBox="0 0 ${width} ${height}"${width > 580 ? ` style="width:${width}px;max-width:none"` : ''} role="img" aria-label="${esc(label)} 종류별 일별 사용량">${bars}</svg></div><div class="trend-axis"><span>${esc(days[0].date)}</span><span>${esc(days.at(-1).date)}</span></div>`;
-}
-function improveSummaryHtml(data){
-  const s = data.summary;
-  return `<section class="trend-improve"><h2>개선 제안 · 실험</h2><p class="dim">기간 안 시작한 점검의 성과예요. 채택률 = 발행 수 / 후보 수. 비용은 해당 점검의 누적값, 토큰·시간은 선택 기간 사용량이에요.</p><div class="issue-summary-values"><div><span>점검</span><strong>${summaryNumber(s.audit_count)}회</strong></div><div><span>측정 비용</span><strong>$${Number(s.cost_usd || 0).toFixed(2)}</strong><small>미계측 ${summaryNumber(s.unmeasured_cost_count)}회</small></div><div><span>토큰 · 시간</span><strong>${tokenHtml(s.total_tokens)} · ${summaryDuration(s.agent_seconds)}</strong></div><div><span>후보</span><strong>${summaryNumber(s.candidate_count)}</strong><small>비효율 ${summaryNumber(s.by_category?.efficiency)} · 위험 ${summaryNumber(s.by_category?.risk)} · 기능 ${summaryNumber(s.by_category?.feature)}</small></div><div><span>발행 · Done · 버림</span><strong>${summaryNumber(s.published_count)} · ${summaryNumber(s.done_count)} · ${summaryNumber(s.dismissed_count)}</strong></div><div><span>채택률</span><strong>${(Number(s.adoption_rate || 0)*100).toFixed(1)}%</strong></div></div></section>`;
 }
 function trendChart(days, key, label){
   if(['total_tokens', 'agent_seconds'].includes(key) && days.some(d => d.by_kind)) return trendKindChart(days, key, label);
@@ -1109,20 +1078,12 @@ async function loadTrend(){
     const data = await api('GET', (stages ? '/api/trends/stages?' : '/api/trends?') + new URLSearchParams({from, to, ...(project ? {project} : {}), ...(stages ? {human:trendHuman ? '1' : '0', agent:trendAgent} : {})}), undefined, current, {notifyErrors:false});
     if(!current()) return;
     if(stages){ trendStageData = data; results.innerHTML = trendIssuesView ? stageIssuesResults(data) : stageResults(data); paintStageTable(root); return; }
-    let improveHtml;
-    try {
-      const improve = await api('GET', '/api/trends/improve?' + new URLSearchParams({from, to, ...(project ? {project} : {})}), undefined, current, {notifyErrors:false});
-      improveHtml = improveSummaryHtml(improve);
-    } catch(e){ improveHtml = `<section class="trend-improve"><h2>개선 제안</h2><p role="alert">성과를 불러오지 못했어요. ${esc(e.message)} 기간을 다시 조회해 주세요.</p></section>`; }
-    if(!current()) return;
     trendData = data;
     const s = data.summary, noActivity = !data.days.some(d => TREND_METRICS.some(([key]) => Number(d[key] || 0) > 0));
     results.innerHTML = `<p class="trend-context">${project ? esc(project) : '전체 프로젝트'} · ${esc(data.from_date)} ~ ${esc(data.to_date)} · ${esc(new Date(data.as_of).toLocaleString('ko-KR', {timeZone:'Asia/Seoul'}))} 조회</p>
-      ${s.manual_tokens ? `<p class="trend-manual dim">대화형 Claude Code ${tokenHtml(s.manual_tokens)} 토큰 포함 · 이슈 미연결 ${tokenHtml(s.unlinked_manual_tokens || 0)} 토큰</p>` : ''}
       ${s.partial ? `<p class="trend-partial" role="status">부분 집계 · 토큰 미계측 실행 ${summaryNumber(s.unmeasured_run_count)}건, 시간 미계측 실행 ${summaryNumber(s.unmeasured_duration_run_count)}건, 진행 중 ${summaryNumber(s.running_run_count)}건</p>` : ''}
       ${noActivity ? '<div class="empty">이 기간에는 기록된 활동이 없어요. 기간이나 프로젝트를 바꿔 보세요.</div>' : `<div class="trend-grid">${TREND_METRICS.map(([key,label,unit]) => `<section class="trend-card" aria-label="${label}"><h2>${label}</h2><strong>${trendValue(key, s[key])}</strong><span class="dim">${unit ? unit + ' · ' : ''}기간 합계</span>${key === 'total_tokens' ? trendCostNote(s) : ''}<div data-trend-chart="${key}">${trendChart(data.days, key, label)}</div></section>`).join('')}</div>`}
-      ${improveHtml}
-      <section class="trend-ranking"><h2>토큰 상위 작업</h2><p class="dim">선택 기간의 Issue와 Task 직접 실행 토큰과 연결된 대화형 Claude Code 토큰을 순위에 포함해요.</p>
+      <section class="trend-ranking"><h2>토큰 상위 작업</h2><p class="dim">선택 기간의 Issue와 Task 직접 실행 토큰을 순위에 포함해요.</p>
       ${data.top_issues.length ? `<ol>${data.top_issues.map(item => `<li><a href="#/issue/${encodeURIComponent(item.ref)}"><span class="ref">${esc(item.ref)}</span> ${esc(item.title)}</a><strong>${tokenHtml(item.total_tokens)}</strong></li>`).join('')}</ol>` : '<div class="empty">이 기간에 측정된 작업 토큰이 없어요.</div>'}</section>
       <details class="trend-daily"><summary>일별 값 표로 보기</summary><div class="trend-table-wrap"><table><thead><tr><th aria-sort="${trendSortAsc ? 'ascending' : 'descending'}"><button type="button" class="trend-sort" aria-label="날짜 정렬 바꾸기">날짜 <span class="trend-sort-mark" aria-hidden="true">${trendSortAsc ? '▲' : '▼'}</span></button></th>${TREND_METRICS.map(([,label]) => `<th>${label}</th>`).join('')}</tr></thead><tbody>${trendRows()}</tbody></table></div></details>
       <p class="dim trend-note">${esc(data.note)} 완료 Issue는 현재 Done 상태와 마지막 완료일을 기준으로 해요. 진행 중 실행은 조회 시각까지 포함해요. 미계측 값과 삭제된 기록은 합계에 포함되지 않아요.</p>`;
@@ -1422,10 +1383,6 @@ function decisionQuestions(body){   // 계획서의 "정해야 할 것" 절의 �
 const RUN_STATUS = { running: ['in_progress', '도는 중'], ok: ['done', '완료'], failed: ['changes_requested', '실패'], timeout: ['in_progress', '시간 초과'], orphaned: ['on_hold', '끊김'] };
 const PROVIDER_NAME = { claude: 'Claude', codex: 'Codex' };
 const RUN_MODE = { review: '검토', execute: '실행' };
-function manualSessionsHtml(sessions){
-  if(!sessions.length) return '';
-  return `<ul class="runs manual-sessions">${sessions.map(s => `<li><div>대화형 Claude Code <span class="model">${esc(s.model)}</span></div><div class="dim">${fmtTime(s.started_at)} ~ ${fmtTime(s.ended_at)} · ${tokenHtml(s.input_tokens + s.output_tokens)} 토큰</div></li>`).join('')}</ul>`;
-}
 function runsHtml(runs){
   if(!runs.length) return '<div class="dim hint">아직 실행 기록이 없어요.</div>';
   return `<ul class="runs">${runs.map(r => {
@@ -1503,30 +1460,6 @@ view.addEventListener('click', (e) => {
 // 선행 대기는 서버 문구로 가린다 — panel이 대기/불가를 따로 주면 그걸로
 function waitOnly(blocked){ return !!blocked && blocked.startsWith('선행 Task'); }
 const pendingExecutions = new Map();
-function troubleshootingHtml(it){
-  const t = it.troubleshooting;
-  if(!t || (!t.failure && !t.requests.length)) return '';
-  const f = t.failure, labels = {queued:'대기',running:'복구 실행 중',succeeded:'코드 복구 완료',failed:'복구 실패',cancelled:'취소',needs_input:'확인 필요'};
-  return `<section class="panel troubleshooting"><h2>트러블슈팅</h2>
-    ${f ? `<p>원 실행 #${f.source_run_id} · Plan v${f.plan_version}</p><p class="dim">${esc(f.blocked || f.hint || '코드·테스트 실패를 복구할 수 있어요.')}</p>${f.available ? '<button id="ask-troubleshoot" title="승인된 Plan 안에서 기존 작업을 이어받아요. 추가 CLI 호출은 1회·최대 10분이며 사용량이 발생해요.">트러블슈팅 요청</button>' : ''}<button id="copy-troubleshooting" class="secondary">진단 복사</button><details><summary>실패 진단</summary><pre>${esc(f.diagnostic)}</pre></details>` : ''}
-    ${t.requests.map(r => `<details><summary>TS-${r.id} · ${labels[r.status]} · 원 실행 #${r.source_run_id}${r.run_id ? ` → 복구 #${r.run_id}` : ''}</summary><p>${esc(r.provider || '대기')} · ${esc(r.model || '')} · ${r.automatic ? '자동' : '수동'}</p><p class="dim">요청: ${esc(r.actor || '')} · ${fmtTime(r.created_at)}${r.started_at ? `<br>시작: ${fmtTime(r.started_at)}` : ''}${r.ended_at ? `<br>종료: ${fmtTime(r.ended_at)}` : ''}</p><pre>${esc(r.diagnostic)}</pre><p class="dim">복구 호출의 토큰: 입력 ${tokenHtml(r.input_tokens)} · 출력 ${tokenHtml(r.output_tokens)} · 비용 ${r.cost_usd == null ? '미측정' : '$' + r.cost_usd}</p></details>`).join('')}</section>`;
-}
-function reproductionHtml(it){
-  const r = it.execute?.reproduction, result = r?.result;
-  if(!r || (!r.targets?.length && !result?.id)) return '';
-  const labels = {running:'실패 검사를 재현하고 있어요…',passed:'재현 검사 통과',failed:'재현 검사 실패',interrupted:'재현 중단'};
-  const targets = r.targets.map(t => `${t.file} ${t.args.join(' ')}`).join(', ');
-  return `<section class="check-reproduction" aria-label="실패 검사 재현"><div class="agent-sub">실패 검사 재현</div>
-    <button id="reproduce-checks" type="button" ${r.available ? '' : 'disabled'} title="실패 검사를 재현하고 통과하면 후속 검사·병합·운영 반영 확인까지 자동으로 진행해요. Agent 호출은 추가하지 않아요.">실패 검사 재현 후 자동 반영</button>
-    <p class="dim">${esc(targets)}${r.source_sha ? ` · 기준 ${esc(r.source_sha.slice(0,7))}` : ''}</p>
-    ${r.blocked ? `<p class="dim">${esc(r.blocked)}</p>` : ''}
-    ${result?.id ? `<div role="status" aria-live="polite"><p>${labels[result.status] || esc(result.status)}${result.source_sha ? ` · 검사 커밋 ${esc(result.source_sha.slice(0,7))}` : ''}</p>
-    ${(result.results || []).map(t => `<div>${esc(t.file)} ${esc(t.args.join(' '))} · ${t.status === 'passed' ? '통과' : '실패'} · 종료 코드 ${Number(t.exit_code)}</div>`).join('')}
-    ${result.followup ? `<p>${({pending:'후속 검사·병합 대기',running:'후속 검사·병합·운영 반영 진행 중',complete:'후속 검사·병합·운영 반영 확인 완료',failed:'후속 검사 실패',blocked:'후속 처리 보류'})[result.followup] || esc(result.followup)}</p>` : ''}
-    ${result.note ? `<p>${esc(result.note)}</p>` : ''}
-    ${result.ended_at ? `<a href="/api/issues/${encodeURIComponent(it.ref)}/reproduce-checks/log" target="_blank" rel="noopener">전체 재현 로그 보기</a>` : ''}</div>` : ''}</section>`;
-}
-
 function executeHtml(it, liveMode, liveProvider, edges){
   const x = it.execute, running = it.review_running && liveMode === 'execute';
   const job = it.job && it.job.mode === 'execute' ? it.job : null;
@@ -1535,11 +1468,10 @@ function executeHtml(it, liveMode, liveProvider, edges){
   const hint = x.blocked ? esc(x.blocked) + (waitOnly(x.blocked) ? ' 눌러 두면 선행이 끝난 뒤 차례로 시작해요.' : '')
     : it.review_busy && !running ? `다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}` : '';
   const b = x.branch;
-  const checks = x.regression ? `<details class="task-checks"><summary title="실제 변경에 따라 Auto 선택이 보강될 수 있어요.">검사 선택 · ${{light:'가벼움',normal:'보통',high:'높음'}[x.regression.level]} · ${x.regression.planned ? '승인 계획 반영' : '서버 판단'}</summary>${Object.values(x.regression.checks).sort((a,b) => Number(b.enabled) - Number(a.enabled)).map(c => `<div>${c.number ? `<span class="check-no">${esc(c.number)}</span> ` : ''}<b>${esc(c.name)}</b> · ${c.mode.toUpperCase()} · ${c.enabled ? '실행' : '생략'}<p class="dim">${esc(c.reason)}</p></div>`).join('')}${Object.entries(x.regression_results || {}).filter(([,r]) => r.results).map(([stage,r]) => `<h4>${stage === 'server_completion' ? '최근 완료 전 검사' : '최근 병합 검사'}</h4>${Object.entries(r.results).map(([name,result]) => `<div>${esc(name)} · ${{passed:'통과',failed:'실패',reused:'기존 통과 결과 재사용',skipped:'생략'}[result]}</div>`).join('')}`).join('')}</details>` : '';
   const buttons = `<div class="agent-btns" id="exec-btns"><button id="ask-execute" title="격리된 worktree에서 구현해요 — Claude 비용 상한 $${x.budget_usd}."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg>Claude에게 실행 맡기기</button>
     <button id="ask-codex-execute" title="Codex: 시간 제한 ${Math.floor(x.timeout_sec / 60)}분 · 비용 상한 없음."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg>Codex에게 실행 맡기기</button></div>`;
   const merge = (b ? `<div class="branch"><code>${esc(b.branch)}</code> <span class="dim">커밋 ${b.commits}개</span>
-      ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}</div>` : '') + checks + reproductionHtml(it);
+      ${b.diff_stat ? `<pre>${esc(b.diff_stat)}</pre>` : ''}</div>` : '');
   return `<div class="exec"><div class="agent-sub">실행</div>${job ? jobHtml(job, edges) : provider ? busyLine(provider, '실행') : `${stopped ? '' : buttons}${hint ? `<div class="dim hint">${hint}</div>` : ''}`}
     ${merge ? `<div class="agent-sub">병합</div>${merge}` : ''}</div>`;
 }
@@ -1590,13 +1522,12 @@ function stageHtml(it, liveMode, liveProvider){
   const a = it.approval, x = it.execute, ok = a && !a.stale && a.verdict !== 'reject';
   let msg = '';
   if(['done', 'closed'].includes(it.status)) return '';
-  if(it.execute?.reproduction?.result?.status === 'running') msg = '실패 검사 재현 중 — 검사 결과와 로그가 준비되면 상태가 갱신돼요.';
-  else if(LIVE_MERGE.has(it.merge_state)) msg = `${esc(it.merge_state)} — 운영 반영 확인이 끝나면 결과를 확인할 수 있어요.`;
+  if(LIVE_MERGE.has(it.merge_state)) msg = `${esc(it.merge_state)} — 운영 반영 확인이 끝나면 결과를 확인할 수 있어요.`;
   else if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
   else if(it.job) msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — ${esc(it.job.note || '앞의 일이 끝나면 차례로 시작해요.')}`;
-  else if(x?.retry_merge_available) msg = mergeFailureLine(x);
+  else if(x?.retry_merge_available) msg = '병합 보류 — 병합 재시도를 눌러 다시 진행할 수 있어요.';
   else if(x?.manual_merge_confirmable) msg = '자동 병합이 끝나지 않았어요 — 직접 main에 반영했으면 “수동 반영 확인”을 눌러 주세요.';
-  else if(x?.manual_merge_available) msg = '수동 커밋 병합 대기 — 병합 진행을 누르면 서버 검사와 운영 반영을 시작해요.';
+  else if(x?.manual_merge_available) msg = '수동 커밋 병합 대기 — 병합 진행을 누르면 운영 반영을 시작해요.';
   else if(it.merge_state === '병합됨') msg = '병합됨 — 결과를 확인해 주세요.';
   else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
   else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
@@ -1607,17 +1538,11 @@ function stageHtml(it, liveMode, liveProvider){
     msg = next ? `계획 승인됨 → <a href="#/issue/${esc(next.ref)}">${esc(next.ref)}</a>에서 실행 맡기기` : it.children.length ? '모든 Task가 실행됐어요 — 결과를 확인해 주세요.' : '계획 승인됨.'; }
   // 상황별 버튼은 이 줄 하나에만 둔다(DEV-113) — 도는 중·대기 중이면 숨긴다
   const idle = x && !it.review_running && !it.job && !LIVE_MERGE.has(it.merge_state);
-  const actions = (idle && x.manual_merge_available ? '<button id="manual-merge" title="연결된 수동 커밋을 서버에서 검사하고 기존 병합 경로로 반영해요.">병합 진행</button>' : '')
-    + (idle && x.manual_merge_confirmable ? '<button id="confirm-manual-merge" title="Task 커밋이 main에 들어갔는지 서버가 확인하고 병합 완료로 표시해요. 검사·재시작은 하지 않아요.">수동 반영 확인</button>' : '')
-    + (idle && x.retry_merge_available ? '<button id="retry-merge" title="기존 구현 커밋으로 서버 검사·병합만 다시 진행해요. 회귀검사 설정과 자동 병합·재시작 정책이 적용돼요.">병합 재시도</button>' : '')
-    + (idle && x.repair_available ? '<button class="register-repair" title="에이전트 재호출 없이 연결된 수정 커밋을 검사하고 기존 병합 정책으로 처리해요.">수정 커밋 검사·결과 등록</button>' : '');
+  const actions = (idle && x.manual_merge_available ? '<button id="manual-merge" title="연결된 수동 커밋을 기존 병합 경로로 반영해요.">병합 진행</button>' : '')
+    + (idle && x.manual_merge_confirmable ? '<button id="confirm-manual-merge" title="Task 커밋이 main에 들어갔는지 서버가 확인하고 병합 완료로 표시해요. 재시작은 하지 않아요.">수동 반영 확인</button>' : '')
+    + (idle && x.retry_merge_available ? '<button id="retry-merge" title="기존 구현 커밋으로 병합만 다시 진행해요. 자동 병합·재시작 정책이 적용돼요.">병합 재시도</button>' : '')
+    + (idle && x.repair_available ? '<button class="register-repair" title="에이전트 재호출 없이 연결된 수정 커밋을 기존 병합 정책으로 처리해요.">수정 커밋 결과 등록</button>' : '');
   return `<div class="stage" id="stage"><span>${msg}</span>${actions ? `<span class="stage-actions">${actions}</span>` : ''}</div>`;
-}
-// 병합 보류 원인 한 줄 — 서버의 마지막 검사 결과에서 실패한 검사 이름만 뽑는다
-function mergeFailureLine(x){
-  const failed = stage => Object.entries(x.regression_results?.[stage]?.results || {}).filter(([, r]) => r === 'failed').map(([name]) => name.replace(/\.py$/, ''));
-  const merge = failed('server_merge'), done = failed('server_completion');
-  return merge.length ? `병합 검사 실패 — ${esc(merge.join(', '))}` : done.length ? `완료 전 검사 실패 — ${esc(done.join(', '))}` : '병합 보류 — 실패 진단은 아래 트러블슈팅에서 확인해 주세요.';
 }
 // 부모 화면에서 바로 실행: 계획 승인됨 · 아직 안 한 Task(서버가 다시 확인한다). 바쁘거나 선행이 안 끝났으면 줄에 선다(DEV-43)
 // — Task 여럿을 한 번에 눌러 두면 선행 순서대로 돈다.
@@ -1688,7 +1613,6 @@ async function renderIssue(ref, background = false){
           ${it.plan && !['done', 'closed'].includes(it.status) ? decisionHtml(it) : ''}</div>
         ${it.superseded_by_plan ? `<div class="stage">계획서 v${it.superseded_by_plan}으로 대체된 이전 Task예요. 기록은 보존되며 실행 대상에서 제외됐어요.</div>` : ''}
         ${it.parent_ref ? '' : resultHtml(it)}
-        ${it.parent_ref ? '' : '<section class="panel qa-card" id="qa-card" aria-labelledby="qa-title"><h2 id="qa-title">QA</h2><p class="dim">불러오는 중…</p></section>'}
         <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues tasks">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}<div class="task-history">${processingAgentsHtml(ch)} ${completionTimeHtml(ch)} ${issueTokensHtml(ch)}</div></td><td>${statusHtml(ch.status)}${progressHtml(ch)}</td>
@@ -1698,7 +1622,6 @@ async function renderIssue(ref, background = false){
           <div class="comment-box"><textarea id="comment" placeholder="댓글(마크다운)"></textarea>
             <div class="row-end"><button id="send-comment" class="primary">댓글 달기</button></div></div></div>
         ${it.parent_ref ? resultHtml(it) : ''}
-        ${troubleshootingHtml(it)}
       </div>
       <aside class="side panel">
         <div class="field issue-token-detail"><span>Tokens</span><div>${issueTokensHtml(it, true)}</div></div>
@@ -1719,7 +1642,7 @@ async function renderIssue(ref, background = false){
         <div class="field"><span>Agent</span>
           ${reviewSection}
           ${it.execute ? executeHtml(it, liveMode, liveRun.provider, edges) : ''}</div>
-        <div class="field"><span>실행 기록</span>${runs.length || !it.manual_sessions?.length ? runsHtml(runs) : ''}${manualSessionsHtml(it.manual_sessions || [])}</div>
+        <div class="field"><span>실행 기록</span>${runsHtml(runs)}</div>
         <div class="field"><button id="delete" class="danger" title="이슈 지우기" aria-label="이슈 지우기"><svg class="ico"><use href="#i-trash"/></svg></button></div>
       </aside>
     </div>`;
@@ -1836,7 +1759,6 @@ async function renderIssue(ref, background = false){
     catch(e){ reload(); return; }
     toast(`${root.ref} 묶음을 끝냈어요`); location.hash = '#/';
   }));
-  if(!it.parent_ref) void renderQa(it, $('qa-card'));
   if($('approve')){
     $('approve').addEventListener('click', () => setStatus('done'));
     let to = null;
@@ -1913,17 +1835,6 @@ ${QUEUE_LINE}`, okText:'실행 맡기기'})) return;
     }
   }));
   // Claude에게 검토 맡기기(DEV-13) — 도는 동안은 15초마다 이 화면을 다시 불러 계획서가 올라오면 보이게
-  if($('ask-troubleshoot')) $('ask-troubleshoot').onclick = e => whileBusy(e.currentTarget, async () => {
-    await api('POST', `/api/issues/${R}/troubleshoot`, it.troubleshooting.failure);
-    toast('트러블슈팅을 요청했어요.');
-    if(location.hash === `#/issue/${it.ref}`) await reload();
-  });
-  if($('copy-troubleshooting')) $('copy-troubleshooting').onclick = async () => {
-    const f = it.troubleshooting.failure;
-    const text = `${it.ref} 트러블슈팅 진단\n원 실행 #${f.source_run_id} · Plan v${f.plan_version}\nTask 커밋: ${f.task_sha}\n분류: ${f.classification}\n${f.blocked || f.hint || ''}\n${f.diagnostic}`;
-    try { await navigator.clipboard.writeText(text); toast('진단을 복사했어요.'); }
-    catch(e){ prompt('진단을 복사해 주세요.', text); }
-  };
   if($('confirm-manual-merge')) $('confirm-manual-merge').onclick = async e => {
     e.currentTarget.disabled = true;
     try{
@@ -1946,20 +1857,15 @@ ${QUEUE_LINE}`, okText:'실행 맡기기'})) return;
     e.currentTarget.textContent = '병합 시작 중…';
     try{
       await api('POST', `/api/issues/${R}/manual-merge`, {});
-      toast('수동 커밋의 검사와 병합을 시작했어요.');
+      toast('수동 커밋의 병합을 시작했어요.');
     }catch(e){ /* api()가 오류를 알린다. */ }
     finally{ if(location.hash === `#/issue/${it.ref}`) await reload(); }
   };
   view.querySelectorAll('.register-repair').forEach(button => button.onclick = e => whileBusy(e.currentTarget, async () => {
     await api('POST', `/api/issues/${R}/register-repair`, {});
-    toast('수정 커밋의 서버 검사와 결과 등록을 시작했어요.');
+    toast('수정 커밋의 결과 등록을 시작했어요.');
     if(location.hash === `#/issue/${it.ref}`) await reload();
   }));
-  if($('reproduce-checks')) $('reproduce-checks').onclick = e => whileBusy(e.currentTarget, async () => {
-    await api('POST', `/api/issues/${R}/reproduce-checks`, {token: it.execute.reproduction.token});
-    toast('실패 검사 재현을 시작했어요.');
-    if(location.hash === `#/issue/${it.ref}`) await reload();
-  });
   for(const [id, provider] of [['ask-execute', 'claude'], ['ask-codex-execute', 'codex']]) {
     if($(id)) $(id).addEventListener('click', async (e) => {
     if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;
@@ -2309,7 +2215,7 @@ document.addEventListener('keydown', (e) => {
   if(composer.hidden) void openComposer(); else closeComposer();   // 열린 상태에서 백틱(입력칸 밖)이면 닫는다(DEV-96)
 });
 // 전역 탭 단축키는 한글 입력 상태에서도 물리 키로 판별한다(DEV-224).
-const NAV_KEYS = {KeyI:'issues', KeyT:'trends', KeyA:'agents', KeyP:'projects', KeyH:'harness', KeyS:'settings'};
+const NAV_KEYS = {KeyI:'issues', KeyT:'trends', KeyA:'agents', KeyP:'projects', KeyS:'settings'};
 document.addEventListener('keydown', (e) => {
   const nav = NAV_KEYS[e.code];
   if(!nav || e.ctrlKey || e.altKey || e.metaKey || e.repeat || e.isComposing || sharedLightbox?.isOpen || !composer.hidden || document.getElementById('shell').hidden) return;
@@ -2403,103 +2309,6 @@ function managementHeader(title, tabs, back = ''){
   const container = document.createElement('div');
   container.append(header);
   return container.innerHTML;
-}
-// ---- Harness (DEV-132·136) — 에이전트가 실제로 받는 것을 서브탭 5개로 보여 주고, 규칙·프롬프트 파일은 고칠 수 있다 ----
-// 프로젝트 → {data, at}. 탭 이동·편집 취소는 이걸 다시 그리고, 서버는 처음·다시 불러오기·저장 뒤에만 부른다
-const harnessCache = new Map();
-async function renderHarness(force = false){
-  const params = new URLSearchParams(location.hash.split('?')[1] || '');
-  if(!projects.length) await loadProjects();
-  const filter = document.getElementById('project-filter')?.value;
-  const key = params.get('project') || filter || projects[0]?.key || '';
-  // 서브탭 — 에이전트가 받는 것을 종류별로(DEV-136). 탭은 주소에 남겨 새로고침·공유해도 같은 탭
-  const TABS = [['common', '공통 하네스'], ['project', '프로젝트 하네스'], ['map', '파일 지도'], ['prompts', '코드 속 프롬프트'], ['settings', '코드 속 설정값']];
-  const tab = TABS.some(([t]) => t === params.get('tab')) ? params.get('tab') : 'common';
-  const href = (k, t) => `#/harness?project=${encodeURIComponent(k)}&tab=${t}`;
-  const seq = ++issueRenderSeq;
-  view.innerHTML = `<section class="panel management-card harness-page">
-    ${managementHeader('Harness', '')}
-    <form class="form harness-pick" onsubmit="return false"><div class="line">
-      <label>Project<select id="h-project">${projects.map(p => `<option value="${esc(p.key)}" ${p.key === key ? 'selected' : ''}>${esc(`${p.key} · ${p.name}`)}</option>`).join('')}</select></label>
-      <label class="actions"><button type="button" id="h-reload">다시 불러오기</button><span class="dim" id="h-at" role="status"></span></label>
-    </div></form>
-    <nav class="harness-tabs" role="tablist" aria-label="Harness">${TABS.map(([t, name]) => `<a role="tab" class="harness-tab${t === tab ? ' active' : ''}" aria-selected="${t === tab}" data-tab="${t}" href="${href(key, t)}">${name}</a>`).join('')}</nav>
-    <div id="harness-body" aria-live="polite" aria-busy="true"><div class="usage-loading" role="status">불러와요…</div></div></section>`;
-  view.querySelector('#h-project').addEventListener('change', e => { location.hash = href(e.target.value, tab); });
-  view.querySelector('.harness-tab.active')?.scrollIntoView({block: 'nearest', inline: 'nearest'});   // 좁은 화면에서 고른 탭이 가려지지 않게
-  const body = view.querySelector('#harness-body');
-  if(!key){ body.removeAttribute('aria-busy'); body.innerHTML = '<div class="empty">프로젝트가 아직 없어요.</div>'; return; }
-  const current = () => seq === issueRenderSeq;
-  view.querySelector('#h-reload').addEventListener('click', () => renderHarness(true));
-  let hit = force ? null : harnessCache.get(key), data = hit?.data;
-  if(!data){
-    try{ data = await api('GET', `/api/harness?project=${encodeURIComponent(key)}`, undefined, current); }
-    catch(e){ if(current()){ body.removeAttribute('aria-busy'); body.innerHTML = `<div class="empty">${esc(e.message)}</div>`; } return; }
-    if(!current() || !data) return;
-    harnessCache.set(key, hit = {data, at: new Date().toISOString()});
-  }
-  view.querySelector('#h-at').textContent = `불러온 시각 ${fmtTime(hit.at)}`;
-  const L = data.layers;
-  const pre = text => `<pre class="harness-text">${esc(text)}</pre>`;
-  const fileCard = (f, scope, path, extra = '') => `<article class="harness-file" data-path="${esc(path)}" data-scope="${esc(scope)}">
-    <header><b>${esc(f.label)}</b><code class="dim harness-loc" title="저장 위치">${esc(f.location || f.source)}</code>
-    ${f.editable ? `<button type="button" class="harness-edit">편집</button>` : ''}</header>${extra}
-    <div class="harness-content">${f.note ? `<p class="dim">${esc(f.note)}</p>` : f.exists ? pre(f.content) : '<p class="dim">아직 없는 파일이에요. 편집해서 저장하면 새로 만들어요.</p>'}</div>
-    <div class="harness-result" role="status"></div></article>`;
-  const list = a => a && a.length ? `<ul>${a.map(x => `<li><code>${esc(x)}</code></li>`).join('')}</ul>` : '<p class="dim">없음</p>';
-  const panel = (source, inner, editable) => `<section class="harness-panel" role="tabpanel" data-tab="${tab}"><p class="dim">출처 ${esc(source)} <span class="chip-static">${editable ? '편집 가능' : '읽기 전용'}</span></p>${inner}</section>`;
-  const chip = x => `<code class="chip-static">{${esc(x)}}</code>`;
-  const slotChips = f => `<p class="harness-slots dim">쓸 수 있는 자리표시: ${f.slots.length ? f.slots.map(chip).join(' ') : '없음'}${f.required.length ? ` · 꼭 있어야 하는 것: ${f.required.map(chip).join(' ')}` : ''}</p>`;
-  const P = L.prompts, S = L.settings;
-  const stageName = {review: '검토', execute: '실행'}, providerName = {claude: 'Claude', codex: 'Codex'};
-  const setting = E => `<details class="harness-setting" data-stage="${esc(E.stage)}" data-provider="${esc(E.provider)}"><summary>${stageName[E.stage]} · ${providerName[E.provider]}</summary><dl class="harness-enf">
-      <dt>허용 도구</dt><dd>${list(E.allowed_tools)}</dd><dt>차단 도구</dt><dd>${list(E.blocked_tools)}</dd>
-      <dt>기본 도구</dt><dd>${list(E.builtin_tools)}</dd><dt>웹 도메인</dt><dd>${list(E.web_domains)}</dd>
-      <dt>한도</dt><dd>${list(Object.entries(E.limits || {}).map(([k, v]) => `${k}: ${v}`))}</dd>
-      ${E.secret_env_removed ? `<dt>제거되는 환경변수</dt><dd>${list(E.secret_env_removed)}</dd>` : ''}
-      ${E.merge_rules ? `<dt>병합 규칙</dt><dd>${list(E.merge_rules)}</dd>` : ''}
-      <dt>명령 인자</dt><dd>${list(E.args)}</dd></dl></details>`;
-  body.removeAttribute('aria-busy');
-  const panels = {
-    common: () => panel(L.common.source, fileCard(L.common, 'common', 'harness/COMMON.md'), true),
-    project: () => panel(`${key} 저장소의 규칙 파일`, L.project.map(f => {
-      return fileCard(f, key, f.label, f.readers ? `<p class="dim harness-readers">읽는 에이전트: ${esc(f.readers)}</p>` : '');
-    }).join(''), true),
-    map: () => panel(L.file_map.source, (L.file_map.rows || []).length ? `<p class="dim">에이전트 프롬프트에 붙는 지도예요. 내용은 각 파일 첫머리의 설명 한 줄이에요.</p>
-      <div class="harness-map-wrap"><table class="issues harness-map"><thead><tr><th>경로</th><th>파일명</th><th>내용</th></tr></thead><tbody>${
-        L.file_map.rows.map(r => `<tr><td class="dim">${r.dir === '.' ? '/' : esc(r.dir) + '/'}</td><td><code>${esc(r.name)}</code></td><td>${r.desc ? esc(r.desc) : '<span class="dim">설명 없음</span>'}</td></tr>`).join('')
-      }</tbody></table></div>${(L.file_map.dropped || []).length ? `<p class="dim">크기 상한으로 파일 수만 넣은 폴더: ${L.file_map.dropped.map(d => `${esc(d.dir)}/ (${d.files}개)`).join(', ')}</p>` : ''}`
-      : '<p class="dim">지도를 만들 수 없어요.</p>', false),
-    prompts: () => panel('dev 저장소 harness/prompts/*.md', P.files.map(f => fileCard(f, 'prompts', f.path, slotChips(f))).join('') +
-      `<div class="harness-filled"><b>코드가 채우는 부분</b><p class="dim">아래는 파일이 아니라 코드가 상황에 따라 덧붙여요.</p>${list(P.code_filled)}</div>`, true),
-    settings: () => panel('server/review.py · server/execute.py', S.items.map(setting).join('') + '<p class="dim">바꾸려면 이슈로 요청해 주세요.</p>', false),
-  };
-  body.innerHTML = `<p class="dim">${esc(data.note)}</p>${panels[tab]()}`;
-  body.querySelectorAll('.harness-edit').forEach(btn => btn.addEventListener('click', async () => {
-    const card = btn.closest('.harness-file'), { scope, path } = card.dataset;
-    const content = card.querySelector('.harness-content'), result = card.querySelector('.harness-result');
-    btn.disabled = true;
-    try{
-      const q = `scope=${encodeURIComponent(scope)}&path=${encodeURIComponent(path)}`;
-      let base = (await api('GET', `/api/harness/history?${q}`, undefined, current)).base_sha;
-      const f = scope === 'prompts' ? P.files.find(x => x.path === path) : scope === 'common' ? L.common : L.project.find(x => x.label === path);
-      content.innerHTML = `<textarea class="harness-area" rows="14" aria-label="${esc(path)} 내용">${esc(f?.content || '')}</textarea>
-        <div class="harness-actions"><button type="button" class="primary harness-save">저장</button><button type="button" class="harness-cancel">취소</button></div>`;
-      content.querySelector('.harness-cancel').addEventListener('click', () => renderHarness());
-      content.querySelector('.harness-save').addEventListener('click', async ev => {
-        ev.target.disabled = true; result.textContent = '';
-        try{
-          const r = await api('PUT', '/api/harness/file', {scope, path, content: content.querySelector('textarea').value, base_sha: base}, current, {notifyErrors: false});
-          if(!r) return;
-          base = r.base_sha;
-          result.innerHTML = `<p>저장했어요 · 커밋 <code>${esc(r.commit.slice(0, 8))}</code></p>${pre(r.diff)}`;
-          toast('저장했어요');
-          harnessCache.clear();   // 공통 하네스·프롬프트는 모든 프로젝트 화면에 걸려 있어 통째로 비운다
-        }catch(e){ result.innerHTML = `<p class="error harness-error" role="alert">${esc(e.message)}</p>`; }
-        ev.target.disabled = false;
-      });
-    }catch(e){ result.innerHTML = `<p class="error harness-error" role="alert">${esc(e.message)}</p>`; btn.disabled = false; }
-  }));
 }
 async function renderAgents(newKey, selectedTab){
   if(newKey) agentNewKey = newKey;
@@ -2611,7 +2420,7 @@ function projectDomainCell(domain){
 // 목록의 마지막 행에서 생성하고 개별 관리 화면에서 수정한다.
 function renderProjects(editKey, projectTab = 'manage'){
   const ed = projects.find(p => p.key === editKey);
-  if(!['manage', 'documents', 'usage', 'audits', 'suggestions'].includes(projectTab)) projectTab = 'manage';
+  if(!['manage', 'usage'].includes(projectTab)) projectTab = 'manage';
   history.replaceState(null, '', ed ? `#/projects?project=${encodeURIComponent(ed.key)}&tab=${projectTab}` : '#/projects');
   const projectForm = `
     <form class="form panel" id="project-form" ${ed && projectTab !== 'manage' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-create-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
@@ -2623,21 +2432,18 @@ function renderProjects(editKey, projectTab = 'manage'){
       <label class="project-port">로컬 포트<span class="project-port-controls"><input id="p-port" type="number" min="1" max="65535" step="1" placeholder="예: 8400" value="${ed?.service_port || ''}" aria-describedby="p-port-message"><button type="button" id="p-free-port">빈 포트</button></span><span id="p-port-message" role="status" aria-live="polite"></span></label>
       <label>PM2 앱 이름<input id="p-service-app" maxlength="80" placeholder="예: myapp (이미 실행 중이면 비워요)" value="${esc(ed?.service_app || '')}"></label><label>실행 파일 생성 방식<select id="p-service-provider">${[["auto","자동 · 작업 에이전트 우선순위"],["codex","Codex"],["claude","Claude"],["none","기존 파일만 사용 · 유료 호출 없음"]].map(([value,label]) => `<option value="${value}"${(ed?.service_prepare_provider || "auto") === value ? " selected" : ""}>${label}</option>`).join("")}</select></label></div><p class="dim">로컬 포트는 다른 서비스가 쓰지 않는 번호를 정하고 앱 실행 설정에도 같은 값을 사용해 주세요. 이 값을 저장해도 앱의 포트가 자동으로 바뀌지는 않아요.</p></div>
       <label class="project-description">프로젝트 설명<textarea id="p-description" maxlength="200000" placeholder="목적, 대상 사용자와 원하는 기능을 적어 주세요.">${esc(ed?.description || '')}</textarea></label>
-      ${ed ? '<div class="project-description"><button type="button" id="p-description-request">현재 상태로 Description 작성</button><p id="p-description-status" role="status" aria-live="polite"></p></div>' : ''}
-      ${ed ? '' : `<details class="project-description project-spec"><summary>기획서로 시작</summary><p class="dim">기획서로 공식 문서·실행 가능한 최소 앱·로컬 Git·Issue·Task를 만들어요. 기본 화면과 health의 로컬 실행 검사까지 통과해야 초기 생성이 완료돼요. 선택한 에이전트의 유료 분석을 시작하며, 제품 기능 Task 실행은 별도 승인이 필요해요.</p><fieldset class="project-templates"><legend>앱 종류</legend><div id="p-templates" class="template-cards" aria-live="polite">앱 종류를 불러오고 있어요…</div></fieldset><fieldset id="p-template-options" hidden><legend>기본 기능</legend><div class="template-options"></div></fieldset><div class="line"><label>기획서<input id="p-spec" type="file" accept=".md,text/markdown"></label><label>Projects 하위 폴더명<input id="p-folder" placeholder="예: moai" maxlength="80"></label><label>분석 도구<select id="p-init-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label></div><p class="dim">UTF-8 Markdown · 최대 200KB. 위 Repository와 Local path는 기존 저장소 등록에 사용해요.</p><button type="button" id="p-initialize">초기 프로젝트 생성</button><p id="p-init-message" role="status" aria-live="polite"></p></details>`}
+      ${ed ? '' : `<details class="project-description project-spec"><summary>기획서로 시작</summary><p class="dim">기획서로 실행 가능한 최소 앱·로컬 Git·Issue·Task를 만들어요. 기본 화면과 health가 로컬에서 응답해야 초기 생성이 완료돼요. 선택한 에이전트의 유료 분석을 시작하며, 제품 기능 Task 실행은 별도 승인이 필요해요.</p><fieldset class="project-templates"><legend>앱 종류</legend><div id="p-templates" class="template-cards" aria-live="polite">앱 종류를 불러오고 있어요…</div></fieldset><fieldset id="p-template-options" hidden><legend>기본 기능</legend><div class="template-options"></div></fieldset><div class="line"><label>기획서<input id="p-spec" type="file" accept=".md,text/markdown"></label><label>Projects 하위 폴더명<input id="p-folder" placeholder="예: moai" maxlength="80"></label><label>분석 도구<select id="p-init-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label></div><p class="dim">UTF-8 Markdown · 최대 200KB. 위 Repository와 Local path는 기존 저장소 등록에 사용해요.</p><button type="button" id="p-initialize">초기 프로젝트 생성</button><p id="p-init-message" role="status" aria-live="polite"></p></details>`}
       <label class="actions">${ed ? '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">저장</button>'
         : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">등록</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
 `;
   view.innerHTML = `
     <div class="projects-page panel management-card">
-    ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'documents', 'usage', 'audits', 'suggestions'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '문서', '사용량', '목표 대비 현황 점검', 'Suggestions'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
+    ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'usage'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '사용량'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
     ${ed ? projectForm : ''}
     ${ed ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
     ${ed && projectTab === 'manage' && me?.kind === 'human' ? `<section class="panel project-restart" aria-labelledby="app-restart-title"><div class="audit-toolbar"><h3 id="app-restart-title">앱 재시작</h3><button type="button" id="app-restart-copy" disabled aria-label="앱 재시작 진단 복사"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg> 진단 복사</button></div><p class="dim">저장된 PM2 앱을 재시작하고 로컬 접속을 확인해요. Dev 자체 재시작은 진행 중인 작업이 끝난 뒤 처리하며 화면이 자동으로 다시 연결돼요.</p><div class="line"><button type="button" id="app-restart-start" disabled>앱 재시작</button><button type="button" id="app-restart-refresh">상태 확인</button></div><div id="app-restart-state" role="status" aria-live="polite">재시작 설정을 확인하고 있어요…</div><p id="app-restart-feedback" class="dim" role="status" aria-live="polite"></p><textarea id="app-restart-manual" aria-label="직접 복사할 앱 재시작 진단" readonly hidden></textarea></section>` : ''}
     ${ed && projectTab === 'manage' ? `<section class="panel project-service"><h3>서비스 연결</h3><p class="dim">도메인과 포트를 저장한 뒤 연결해 주세요. 실행·접속 검사는 일반 코드로 처리해요. 실행 설정이 없을 때만 선택한 에이전트가 유료로 파일을 생성해요. 기존 파일만 사용에서는 에이전트를 호출하지 않아요. 앱 확인 후 DNS·공용 터널을 반영하고 터널을 재시작해요.</p><div class="line"><button type="button" id="p-service-connect" disabled>서비스 연결</button><button type="button" id="p-service-disconnect" disabled>연결 해제</button><button type="button" id="p-service-refresh">새로고침</button></div><section class="service-diagnostic" aria-labelledby="service-diagnostic-title"><div class="service-diagnostic-head"><h4 id="service-diagnostic-title">연결 진단</h4><button type="button" id="p-service-copy" title="복사하기" aria-label="연결 진단 전체 내용 복사하기"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg></button></div><div id="p-service-status" role="status" aria-live="polite"></div><p id="p-service-copy-message" role="status" aria-live="polite" class="dim"></p><textarea id="p-service-copy-text" aria-label="직접 복사할 연결 진단 전체 내용" readonly hidden></textarea></section><p class="dim">연결 해제는 터널 경로만 제거해요. 앱과 DNS 레코드는 유지해요. 도메인을 바꾸면 이전 DNS 레코드는 Cloudflare에서 정리해 주세요.</p></section>` : ''}
-    ${ed ? `<section class="panel project-docs" ${projectTab !== 'documents' ? 'hidden' : ''}><h3>공식 문서</h3><p class="dim">저장한 설명으로 생성 Issue를 등록하고 선택 도구의 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 Task 실행으로 진행해요.</p><div class="line"><button type="button" data-doc-provider="codex"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-openai"/></svg><span>Codex로 문서 생성</span></button><button type="button" data-doc-provider="claude"><svg class="ico brand-icon" aria-hidden="true"><use href="#i-claude"/></svg><span>Claude로 문서 생성</span></button><button type="button" id="docs-refresh">새로고침</button></div><p id="docs-message" role="status" aria-live="polite"></p><div id="docs-requests"></div><div id="docs-body" aria-live="polite"></div></section>` : ''}
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
-    ${ed && ['audits', 'suggestions'].includes(projectTab) ? `<section class="panel project-audits" aria-labelledby="audit-title"><div class="audit-toolbar"><h3 id="audit-title">${projectTab === 'suggestions' ? 'Suggestions · 실험' : '목표 대비 현황 점검'}</h3><button type="button" id="audit-refresh">새로고침</button></div><p class="dim">${projectTab === 'suggestions' ? '비효율·위험과 기능을 제안해요. 기능 제안은 추측이며, 사람이 고른 후보만 Issue로 올려요. 버린 이유는 다음 점검에 참고해요.' : '기준 문서와 현재 코드·검사·Issue 이력을 비교해요. 후보 발행 후 Plan 승인과 Task 실행은 기존 절차를 따라요.'}</p><div class="audit-toolbar"><label>분석 도구 <select id="audit-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label><button type="button" class="primary" id="audit-start" disabled>유료 점검 시작</button></div><div id="audit-preflight" aria-live="polite"></div><p id="audit-message" role="status" aria-live="polite"></p><div class="audit-layout"><section aria-labelledby="audit-history-title"><h4 id="audit-history-title">점검 이력</h4><div id="audit-history"></div></section><section id="audit-detail" aria-label="점검 보고서"></section></div></section>` : ''}
     ${!ed ? `<table class="issues projects-table"><thead><tr><th>Key</th><th>Name</th><th>서비스 도메인</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th class="col-narrow">Archived</th><th class="col-narrow"></th></tr></thead><tbody>
       ${projects.map(p => `<tr class="row" data-project-row="${esc(p.key)}"><td class="ref">${esc(p.key)}</td><td><a class="project-title" data-project-link="${esc(p.key)}" href="#/projects?project=${encodeURIComponent(p.key)}&tab=manage">${esc(p.name)}</a><div class="sub"><span data-project-service="${esc(p.key)}">상태 확인 중…</span></div></td><td data-project-domain="${esc(p.key)}">${projectDomainCell(p.service_domain)}</td><td class="hide-m">${esc(p.repo_url)}</td>
         <td class="hide-m dim">${esc(p.local_path)}</td><td class="col-narrow"><input type="checkbox" data-archive="${esc(p.key)}" ${p.archived ? 'checked' : ''}></td>
@@ -3000,7 +2806,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       form.removeAttribute('aria-busy');
     }
   });
-  if(ed && !['audits', 'suggestions'].includes(projectTab)){
+  if(ed){
     const panel = view.querySelector('#project-initialization');
     const refreshInitialization = async () => {
       if(!panel.isConnected) return;
@@ -3031,25 +2837,12 @@ function renderProjects(editKey, projectTab = 'manage'){
     if(ed){ renderProjects(); view.querySelector('#project-add').focus(); }
     else closeCreation();
   });
-  const descRequest = view.querySelector('#p-description-request');
-  if(descRequest) descRequest.addEventListener('click', async () => {
-    // 저장하지 않은 설명은 에이전트가 쓴 값으로 덮어써질 수 있다.
-    if(val('#p-description') !== (ed.description || '') && !await confirmDialog('설명 작성을 맡길까요?', {description:'저장하지 않은 설명은 에이전트 결과로 바뀔 수 있어요.', okText:'작성 맡기기'})) return;
-    whileBusy(descRequest, async () => {
-      const r = await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/description/request`);
-      const status = view.querySelector('#p-description-status');
-      if(!status) return;
-      status.innerHTML = `<a href="#/issue/${esc(r.ref)}">${esc(r.ref)}</a>로 ${r.reused ? '이미 등록돼 있어요' : '등록했어요'} · 선택된 에이전트: ${PROVIDER_NAME[r.provider] || esc(r.provider)}${r.queue_error ? ` · ${esc(r.queue_error)}` : ''}`;
-    });
-  });
   view.querySelectorAll('[data-project-tab]').forEach(b => b.onclick = () => {
     renderProjects(ed.key, b.dataset.projectTab);
     view.querySelector(`[data-project-tab="${b.dataset.projectTab}"]`).focus();
   });
   if(ed && projectTab === 'manage' && me?.kind === 'human') bindProjectRestart(ed);
-  if(ed && projectTab === 'documents') bindProjectDocuments(ed);
   if(ed && projectTab === 'usage') bindProjectUsage(ed);
-  if(ed && ['audits', 'suggestions'].includes(projectTab)) bindProjectAudits(ed, projectTab === 'suggestions' ? 'improve' : 'goal');
   view.querySelectorAll('[data-delete-project]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
     const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;
     const state = await api('GET', `${url}/delete-check`);
@@ -3160,204 +2953,6 @@ function bindProjectRestart(project){
   load();
 }
 
-// 화면을 떠나면 이전 프로젝트의 응답과 인증 오류를 반영하지 않는다.
-function bindProjectAudits(project, kind = 'goal'){
-  const improve = kind === 'improve';
-  const panel = view.querySelector('.project-audits');
-  const provider = panel.querySelector('#audit-provider'), start = panel.querySelector('#audit-start');
-  const preflight = panel.querySelector('#audit-preflight'), history = panel.querySelector('#audit-history');
-  const detail = panel.querySelector('#audit-detail'), message = panel.querySelector('#audit-message');
-  const refresh = panel.querySelector('#audit-refresh'), url = `/api/projects/${encodeURIComponent(project.key)}/audits`;
-  const current = () => panel.isConnected;
-  const active = s => ['preparing', 'running', 'cancelling'].includes(s);
-  const states = {preparing:'준비 중', running:'진행 중', cancelling:'취소 중', complete:'완료', failed:'실패', timeout:'시간 초과', cancelled:'취소됨'};
-  const judgments = {complete:'완료', partial:'부분 구현', missing:'미구현', needs_confirmation:'확인 필요'};
-  const dispositions = {new_work:'새 개발 작업', reuse_issue:'기존 작업 후속 개발', human_confirmation:'사람 확인 필요'};
-  const state = s => `<span class="audit-state audit-${esc(s)}"><span aria-hidden="true"></span>${esc(states[s] || s)}</span>`;
-  const time = v => v ? esc(new Date(v).toLocaleString()) : '미계측';
-  const link = ref => `<a href="#/issue/${encodeURIComponent(ref)}">${esc(ref)}</a>`;
-  const list = rows => `<ul>${(rows || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
-  const limitsText = l => `시간 제한 ${formatDuration(l?.timeout_sec)} · ${l?.cost_enforced ? `비용 상한 $${l.budget_usd}` : '비용 미측정 · 금액 상한을 강제할 수 없어요'}`;
-  let settings = null, rows = [], selected = null, report = null, busy = false, loading = false;
-  let preflightToken = 0, detailToken = 0, request = null, timer;
-  const checked = new Set();
-  function controls(){
-    start.disabled = busy || loading || !settings || !settings.available || !!settings.blocked_reason || rows.some(r => active(r.status));
-    start.textContent = busy ? '처리 중…' : request ? '같은 점검 요청 다시 보내기' : '유료 점검 시작';
-    provider.disabled = busy || !!request;
-    refresh.disabled = busy || loading;
-  }
-  async function loadPreflight(){
-    const token = ++preflightToken;
-    settings = null; controls();
-    preflight.innerHTML = '<div class="usage-loading" role="status">실행 조건을 확인해요…<div class="audit-skeleton" aria-hidden="true"></div></div>';
-    const valid = () => current() && token === preflightToken;
-    try {
-      const data = await api('GET', `${url}/preflight?provider=${provider.value}`, undefined, valid);
-      if(!valid()) return null;
-      settings = data;
-      preflight.innerHTML = `<p class="audit-meta">${esc(data.provider)} · 적용 모델 ${esc(data.applied_model)}<br>${esc(limitsText(data.limits))}</p>${data.model !== data.applied_model ? `<p>선택 모델 ${esc(data.model)} 대신 위 모델을 적용해요.</p>` : ''}${(data.notes || []).map(n => `<p class="dim">${esc(n)}</p>`).join('')}${!data.available ? '<p class="error">분석 도구를 사용할 수 없어요. 도구 설정을 확인해 주세요.</p>' : ''}${data.blocked_reason ? `<p class="audit-notice">${esc(data.blocked_reason)}</p>` : ''}${data.queued_jobs?.length ? `<p class="dim">대기 중 작업 ${data.queued_jobs.length}개가 있어요.</p>` : ''}`;
-      return data;
-    } catch(e){ if(valid()) preflight.innerHTML = `<p class="error" role="alert">${esc(e.message)} 새로고침으로 다시 확인해 주세요.</p>`; return null; }
-    finally { if(valid()) controls(); }
-  }
-  function drawHistory(){
-    history.innerHTML = rows.length ? `<ul class="audit-history">${rows.map(r => `<li><button type="button" data-audit-id="${r.id}" aria-current="${r.id === selected ? 'true' : 'false'}"><span>점검 #${r.id} · ${esc(r.provider)}</span>${state(r.status)}<small>${time(r.created_at)}</small></button></li>`).join('')}</ul>` : '<div class="empty">아직 점검 기록이 없어요.</div>';
-    history.querySelectorAll('[data-audit-id]').forEach(b => b.onclick = () => select(Number(b.dataset.auditId), true));
-  }
-  function evidence(items, snapshot){
-    return `<ul class="audit-evidence">${(items || []).map(e => {
-      const source = snapshot?.sources?.find(s => s.id === e.source_id);
-      return `<li>${source?.issue_ref ? link(source.issue_ref) : esc(source?.path || e.source_id)}${e.section ? ` · ${esc(e.section)}` : ''}${e.line_start ? ` · ${e.line_start}–${e.line_end}행` : ''}${source?.hash ? `<small class="dim">${esc(source.hash)}</small>` : ''}</li>`;
-    }).join('')}</ul>`;
-  }
-  function improveReport(r, publications){
-    const dismissed = new Map((r.dismissals || []).map(d => [d.candidate_id, d.reason]));
-    const categories = {efficiency:'비효율', risk:'위험(버그 가능성)', feature:'기능 제안 · 추측'};
-    return `<p class="audit-summary">${esc(r.report.summary)}</p><h4>개선 제안 후보</h4>${r.report.candidates.map(c => {
-      const published = publications.get(c.id), reason = dismissed.get(c.id);
-      const disabled = busy || r.stale || r.status !== 'complete';
-      return `<article class="audit-card suggestion-card" data-candidate="${esc(c.id)}"><span class="audit-judgment">${esc(categories[c.category])}</span><h5>${esc(c.title)}</h5><p>${esc(c.problem)}</p><p><b>제안</b> ${esc(c.proposal)}</p><p><b>효과</b> ${esc(c.impact)} · <b>크기</b> ${esc(c.effort)}</p>${evidence(c.evidence, r.snapshot)}${c.related_issues?.length ? `<p>관련 Issue ${c.related_issues.map(link).join(' · ')}</p>` : ''}<details><summary>Plan 초안</summary><pre class="document-source">${esc(c.plan_draft)}</pre></details>${published ? `<p>발행한 Issue ${link(published)}</p>` : reason != null ? `<p class="dim">버림 · ${esc(reason)}</p>` : `<div class="suggestion-actions"><button type="button" data-suggestion-publish="${esc(c.id)}" ${disabled ? 'disabled' : ''}>Issue로 올리기</button><button type="button" data-suggestion-dismiss="${esc(c.id)}" ${disabled ? 'disabled' : ''}>버리기</button><button type="button" data-suggestion-hold="${esc(c.id)}" ${busy ? 'disabled' : ''}>보류</button></div>`}</article>`;
-    }).join('') || '<div class="empty">아직 개선 제안 후보가 없어요.</div>'}`;
-  }
-  async function dismiss(id){
-    if(busy) return;
-    const reason = await confirmDialog('제안을 버리는 이유를 적어 주세요', {input:true, okText:'버리기'});
-    if(!current() || !reason?.trim()) return;
-    busy = true; controls(); drawReport();
-    try {
-      const result = await api('POST', `${url}/${selected}/dismiss`, {candidate_id:id, reason:reason.trim()}, current);
-      if(current()){ report.dismissals = [...(report.dismissals || []), result]; drawReport(); message.textContent = '제안을 버렸어요. 다음 점검에서 이유를 참고해요.'; }
-    } catch(e){ if(current()) message.textContent = `${e.message} 다시 시도해 주세요.`; }
-    finally { if(current()){ busy = false; await load(); } }
-  }
-  function drawReport(){
-    const r = report, snapshot = r.snapshot, publications = new Map((r.publications || []).filter(p => p.mode !== 'comment').map(p => [p.candidate_id, p.issue_ref]));
-    // 재조회에서 발행됐거나 발행 불가가 된 후보는 선택에서 제거한다.
-    const eligible = new Set((r.report?.candidates || []).filter(c => (improve || ['new_work', 'reuse_issue'].includes(c.disposition)) && !publications.has(c.id) && !r.stale).map(c => c.id));
-    for(const id of checked) if(!eligible.has(id)) checked.delete(id);
-    detail.innerHTML = `<h4 tabindex="-1" id="audit-report-title">점검 #${r.id} ${state(r.status)}</h4><p class="audit-meta">${esc(r.provider)} · 요청 모델 ${esc(r.model)} · 실제 모델 ${esc(r.actual_model || '아직 미확인')}<br>시작 ${time(r.started_at)} · 종료 ${time(r.ended_at)}<br>기준 ${esc(r.base_branch || '미확인')} · ${esc(r.base_sha || '미확인')}<br>${esc(limitsText(r.limits))}<br>측정 비용 ${r.usage?.cost_measured ? `$${esc(r.usage.cost_usd)}` : '미계측'} · 입력 토큰 ${tokenHtml(r.usage?.input_tokens)} · 출력 토큰 ${tokenHtml(r.usage?.output_tokens)}</p>${r.stale ? `<p class="audit-notice" role="status">오래된 결과예요. ${esc(r.stale_reason)} 새 후보 발행 전에 다시 점검해 주세요.</p>` : ''}${r.error ? `<p class="error" role="alert">${esc(r.error)} 도구와 실행 조건을 확인하고 새 점검을 시작해 주세요.</p>` : ''}${active(r.status) ? `<p role="status">${esc(r.phase || states[r.status])} · 진행 상태를 자동으로 확인해요.</p><button type="button" id="audit-cancel" ${r.status === 'cancelling' || busy ? 'disabled' : ''}>${r.status === 'cancelling' ? '취소 중…' : '점검 취소'}</button>` : ''}
-      ${snapshot ? `<details class="audit-materials"><summary>기준 자료와 누락 · 문서 ${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).length}개</summary>${list(snapshot.warnings)}<ul>${snapshot.sources.filter(s => ['document','initial_spec'].includes(s.kind)).map(s => `<li>${esc(s.path || s.id)}<small class="dim">${esc(s.hash)}</small></li>`).join('')}</ul><ul>${(snapshot.omissions || []).map(o => `<li>${esc(o.source_id)} · ${esc(o.reason)}</li>`).join('')}</ul>${snapshot.omissions_truncated ? `<p>누락 ${snapshot.omitted_count}개 중 일부만 표시해요.</p>` : ''}</details>` : ''}
-      ${r.report && improve ? improveReport(r, publications) : r.report ? `<p class="audit-summary">${esc(r.report.summary)}</p><h4>요구사항별 판단</h4>${r.report.requirements.map(q => `<article class="audit-card"><h5>${esc(q.title)} <span class="audit-judgment">${esc(judgments[q.status])}</span></h5><p>${esc(q.assessment)}</p>${evidence(q.evidence, snapshot)}</article>`).join('') || '<div class="empty">판단할 요구사항 근거가 없어요.</div>'}<h4>후속 Issue 후보</h4><p class="dim">선택한 개발 후보를 새 Issue로 발행하고 관련 Issue를 본문에 기재해요. Plan 제안은 자동으로 승인하거나 실행하지 않아요.</p>${r.report.candidates.map(c => {
-        const published = publications.get(c.id), selectable = ['new_work', 'reuse_issue'].includes(c.disposition) && !published && !r.stale;
-        return `<article class="audit-card" data-candidate="${esc(c.id)}"><h5>${selectable ? `<label class="audit-choice"><input type="checkbox" data-candidate-id="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''} ${busy ? 'disabled' : ''}><span>${esc(c.title)}</span></label>` : esc(c.title)}</h5><p class="audit-meta">${esc(dispositions[c.disposition])} · ${esc(c.priority)} · 요구사항 ${c.requirement_ids.map(esc).join(', ')}</p>${published ? `<p>발행한 Issue ${link(published)}</p>` : ''}<p>${esc(c.gap)}</p><p><b>범위</b> ${esc(c.scope)}</p><b>완료 기준</b>${list(c.completion_criteria)}<b>선행 조건</b>${c.prerequisites.length ? list(c.prerequisites) : '<p>없어요.</p>'}${c.related_issues.length ? `<p>관련 Issue ${c.related_issues.map(link).join(' · ')}</p>` : ''}${evidence(c.evidence, snapshot)}<details><summary>Plan 초안</summary><pre class="document-source">${esc(c.plan_draft)}</pre></details>${c.disposition === 'human_confirmation' ? '<p class="dim">사람이 근거와 선행 조건을 확인한 후 다시 점검해 주세요.</p>' : ''}</article>`;
-      }).join('') || '<div class="empty">후속 후보가 없어요. 차이가 없거나 근거가 부족하면 후보를 만들지 않아요.</div>'}${r.report.candidates.some(c => ['new_work', 'reuse_issue'].includes(c.disposition) && !publications.has(c.id)) ? `<button type="button" id="audit-publish" ${busy || r.stale || !checked.size ? 'disabled' : ''}>${busy ? '발행 중…' : '선택한 후보 새 Issue로 발행'}</button>` : ''}` : ''}`;
-    detail.querySelectorAll('[data-candidate-id]').forEach(input => input.onchange = () => {
-      input.checked ? checked.add(input.dataset.candidateId) : checked.delete(input.dataset.candidateId);
-      detail.querySelector('#audit-publish').disabled = !checked.size;
-    });
-    detail.querySelectorAll('[data-suggestion-publish]').forEach(b => b.onclick = () => { checked.clear(); checked.add(b.dataset.suggestionPublish); publish(); });
-    detail.querySelectorAll('[data-suggestion-dismiss]').forEach(b => b.onclick = () => dismiss(b.dataset.suggestionDismiss));
-    detail.querySelectorAll('[data-suggestion-hold]').forEach(b => b.onclick = () => { message.textContent = '후보를 그대로 남겨 뒀어요. 나중에 다시 확인해 주세요.'; });
-    detail.querySelector('#audit-cancel')?.addEventListener('click', cancel);
-    detail.querySelector('#audit-publish')?.addEventListener('click', publish);
-    const diagnosticId = `DEV-AUDIT-${project.key}-${r.id}`;
-    const diagnostic = [
-      'Dev 목표 대비 현황점검 진단', `진단 번호: ${diagnosticId}`,
-      `프로젝트: ${project.key} · ${project.name}`, `점검 번호: #${r.id}`,
-      `요청 ID: ${r.request_id || '미기록'}`, `상태: ${states[r.status] || r.status}`,
-      `단계: ${r.phase || '미기록'}`, `오류: ${r.error || '없음'}`,
-      `도구: ${r.provider}`, `요청 모델: ${r.model || '미확인'}`, `실제 모델: ${r.actual_model || '미확인'}`,
-      `생성: ${r.created_at || '미계측'}`, `시작: ${r.started_at || '미계측'}`, `종료: ${r.ended_at || '미계측'}`,
-      `기준 브랜치: ${r.base_branch || '미확인'}`, `기준 커밋: ${r.base_sha || '미확인'}`,
-      limitsText(r.limits), `입력 토큰: ${formatTokens(r.usage?.input_tokens)} · 출력 토큰: ${formatTokens(r.usage?.output_tokens)}`,
-      `측정 비용: ${r.usage?.cost_measured ? `$${r.usage.cost_usd}` : '미계측'}`
-    ].join('\n');
-    const box = document.createElement('section'); box.className = 'audit-diagnostic';
-    box.innerHTML = `<div class="audit-toolbar"><span class="audit-meta">진단 번호 ${esc(diagnosticId)}</span><button type="button" id="audit-copy" title="진단 내용 복사하기" aria-label="점검 진단 내용 복사하기"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg> 진단 복사</button></div><p id="audit-copy-message" class="dim" role="status" aria-live="polite"></p><textarea id="audit-copy-text" aria-label="직접 복사할 점검 진단 내용" readonly hidden></textarea>`;
-    detail.querySelector('#audit-report-title').after(box);
-    const copy = box.querySelector('#audit-copy'), feedback = box.querySelector('#audit-copy-message'), manual = box.querySelector('#audit-copy-text');
-    manual.value = diagnostic;
-    copy.onclick = async () => {
-      copy.disabled = true;
-      try {
-        if(!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
-        await navigator.clipboard.writeText(diagnostic);
-        if(box.isConnected) feedback.textContent = '진단 내용을 복사했어요. Codex나 Claude에 붙여넣어 주세요.';
-      } catch {
-        if(box.isConnected){ feedback.textContent = '자동 복사를 못 했어요. 아래 내용을 선택해 직접 복사해 주세요.'; manual.hidden = false; manual.focus(); manual.select(); }
-      } finally { copy.disabled = false; }
-    };
-  }
-  async function select(id, focus = false){
-    const token = ++detailToken;
-    if(selected !== id){ checked.clear(); report = null; }
-    selected = id; drawHistory();
-    if(!report) detail.innerHTML = '<div class="usage-loading" role="status">보고서를 불러와요…<div class="usage-skeleton" aria-hidden="true"></div></div>';
-    const valid = () => current() && token === detailToken;
-    try {
-      const data = await api('GET', `${url}/${id}`, undefined, valid);
-      if(!valid()) return;
-      report = data; drawReport();
-      if(focus) detail.querySelector('#audit-report-title').focus();
-    } catch(e){ if(valid()) detail.innerHTML = `<p class="error" role="alert">${esc(e.message)} 새로고침으로 다시 시도해 주세요.</p>`; }
-  }
-  async function load(){
-    if(!current() || loading || busy) return;
-    clearTimeout(timer); loading = true; controls();
-    try {
-      const data = await api('GET', `${url}?kind=${kind}`, undefined, current);
-      if(!current()) return;
-      rows = data.audits.filter(r => (r.kind || 'goal') === kind); drawHistory();
-      if(selected === null && rows.length) selected = rows[0].id;
-      await Promise.all([loadPreflight(), selected !== null ? select(selected) : Promise.resolve()]);
-      if(!rows.length) detail.innerHTML = '<div class="empty">점검을 시작하면 여기서 보고서를 확인할 수 있어요.</div>';
-    } catch(e){ if(current()) message.textContent = e.message; }
-    finally {
-      if(current()){
-        loading = false; controls();
-        if(rows.some(r => active(r.status))) timer = setTimeout(load, 3000);
-      }
-    }
-  }
-  start.onclick = async () => {
-    if(busy || start.disabled) return;
-    busy = true; controls(); message.textContent = '';
-    try {
-      const data = await loadPreflight();
-      if(!current() || !data || !data.available || data.blocked_reason) return;
-      if(!request){
-        if(!await confirmDialog('유료 점검을 시작할까요?', {description:`${data.provider} · 적용 모델 ${data.applied_model}\n${limitsText(data.limits)}`, okText:'점검 시작'})) return;
-        request = {request_id:crypto.randomUUID(), provider:data.provider, model:data.applied_model, kind};
-      }
-      const result = await api('POST', url, request, current);
-      if(!current()) return;
-      selected = result.id; request = null; checked.clear(); report = null;
-      message.textContent = '점검을 시작했어요. 진행 상태를 확인해 주세요.';
-    } catch(e){
-      if(current()){
-        if(e.status >= 400 && e.status < 500) request = null;
-        message.textContent = `${e.message} ${request ? '응답을 받지 못했으면 같은 요청을 다시 보낼 수 있어요.' : '실행 조건을 확인하고 다시 시도해 주세요.'}`;
-      }
-    }
-    finally { if(current()){ busy = false; controls(); await load(); } }
-  };
-  async function cancel(){
-    if(busy) return;
-    busy = true; controls(); drawReport();
-    try { await api('POST', `${url}/${selected}/cancel`, {}, current); if(current()) message.textContent = '취소를 요청했어요. 프로세스가 종료될 때까지 기다려 주세요.'; }
-    catch(e){ if(current()) message.textContent = e.message; }
-    finally { if(current()){ busy = false; await load(); } }
-  }
-  async function publish(){
-    if(busy || !checked.size || report.stale) return;
-    busy = true; controls(); drawReport();
-    try {
-      const data = await api('POST', `${url}/${selected}/publish`, {candidate_ids:[...checked]}, current);
-      if(!current()) return;
-      // 발행 성공 뒤 상세 조회가 실패해도 링크와 선택 해제를 즉시 반영한다.
-      report.publications = [...(report.publications || []), ...data.publications];
-      checked.clear(); drawReport();
-      message.textContent = '선택한 후보를 발행했어요. 새 Issue에서 관련 작업과 Plan 제안을 확인해 주세요.';
-    } catch(e){ if(current()) message.textContent = `${e.message} 기존 Issue와 기준 자료를 확인하고 다시 점검해 주세요.`; }
-    finally { if(current()){ busy = false; await load(); } }
-  }
-  provider.onchange = () => { request = null; loadPreflight(); };
-  refresh.onclick = load;
-  history.innerHTML = '<div class="usage-loading">이력을 불러와요…<div class="audit-skeleton" aria-hidden="true"></div></div>';
-  load();
-}
-
 function bindProjectUsage(project){
   const panel = view.querySelector('.project-usage'), body = panel.querySelector('#usage-body');
   const refresh = panel.querySelector('#usage-refresh');
@@ -3409,83 +3004,6 @@ function bindProjectUsage(project){
   load();
 }
 
-// 응답이 늦게 도착해도 떠난 화면이나 다른 문서에 반영하지 않는다.
-function bindProjectDocuments(project){
-  const panel = view.querySelector('.project-docs');
-  const body = panel.querySelector('#docs-body'), requests = panel.querySelector('#docs-requests');
-  const message = panel.querySelector('#docs-message');
-  const url = `/api/projects/${encodeURIComponent(project.key)}/documents`;
-  const current = () => panel.isConnected;
-  const states = {failed:'실패 — Issue를 확인하고 다시 시도해 주세요', merged:'병합 완료', merge_pending:'병합 대기', in_progress:'진행 중'};
-  let selection = 0, requesting = false, deleting = false, loading = 0;
-  async function load(preferredPath){
-    const generation = ++loading; ++selection;
-    body.innerHTML = '<div class="skeleton" role="status">문서 목록을 불러오는 중이에요…</div>';
-    try {
-      const data = await api('GET', url, undefined, current);
-      if(!current() || generation !== loading) return;
-      requests.innerHTML = data.requests.map(r => `<p><a href="#/issue/${encodeURIComponent(r.ref)}">${esc(r.ref)}</a> · ${esc(states[r.state] || r.state)}</p>`).join('');
-      body.innerHTML = data.documents.length ? `<div class="doc-selection"><label>문서 선택<select id="doc-select">${data.documents.map(d => `<option value="${esc(d.path)}">${esc(d.path)} · ${d.status === 'available' ? '조회 가능' : d.status === 'missing' ? '아직 없어요' : '조회 불가'}</option>`).join('')}</select></label><button type="button" id="doc-delete" class="danger" hidden>문서 삭제</button></div><p class="dim" id="doc-purpose"></p><div id="doc-content"></div>` : '<div class="empty">아직 문서가 없어요. 설명을 저장하고 생성 Issue를 등록해 주세요.</div>';
-      const select = body.querySelector('#doc-select');
-      if(!select) return;
-      if(preferredPath && data.documents.some(d => d.path === preferredPath)) select.value = preferredPath;
-      const remove = body.querySelector('#doc-delete');
-      async function read(){
-        const token = ++selection, path = select.value;
-        const content = body.querySelector('#doc-content');
-        const entry = data.documents.find(d => d.path === path);
-        body.querySelector('#doc-purpose').textContent = entry?.purpose || '';
-        remove.hidden = !entry?.deletable;
-        content.innerHTML = '<div class="skeleton" role="status">문서를 불러오는 중이에요…</div>';
-        try {
-          const doc = await api('GET', `${url}/content?path=${encodeURIComponent(path)}`, undefined, current);
-          if(!current() || token !== selection) return;
-          content.innerHTML = doc.status === 'available' ? `<pre class="document-source" tabindex="0" aria-label="문서 원문">${esc(doc.content)}</pre>` : '<div class="empty">기준 브랜치에 아직 문서가 없어요. 생성 Issue의 진행 상태와 병합 여부를 확인해 주세요.</div>';
-        } catch(e){ if(current() && token === selection) content.innerHTML = `<div class="empty">${esc(e.message)} 새로고침으로 다시 시도해 주세요.</div>`; }
-      }
-      remove.onclick = async () => {
-        if(deleting) return;
-        const entry = data.documents.find(d => d.path === select.value);
-        if(!entry?.deletable || !entry.blob) return;
-        if(!await confirmDialog('문서를 지울까요?', {description:`${project.name} · ${entry.path}`, okText:'지우기', danger:true, focusCancel:true})) return;
-        deleting = true; remove.disabled = true;
-        ++selection;
-        try {
-          await api('DELETE', `${url}/content`, {path:entry.path, blob:entry.blob}, current, {notifyErrors:false});
-          if(!current()) return;
-          message.textContent = `${entry.path} 문서를 삭제했어요.`;
-          await load(body.querySelector('#doc-select')?.value || entry.path);
-        } catch(e) {
-          if(current()) message.textContent = `${e.message} 문서를 새로고침하고 다시 시도해 주세요.`;
-        } finally {
-          deleting = false;
-          if(remove.isConnected) remove.disabled = false;
-        }
-      };
-      select.onchange = read; await read();
-    } catch(e){ if(current() && generation === loading) body.innerHTML = `<div class="empty">${esc(e.message)} 새로고침으로 다시 시도해 주세요.</div>`; }
-  }
-  panel.querySelector('#docs-refresh').onclick = () => load(body.querySelector('#doc-select')?.value);
-  const buttons = [...panel.querySelectorAll('[data-doc-provider]')];
-  buttons.forEach(button => button.onclick = async () => {
-    if(requesting) return;
-    if(!project.description?.trim()) { message.textContent = '관리 탭에서 프로젝트 설명을 입력하고 저장해 주세요.'; return; }
-    if(project.archived) { message.textContent = '보관을 해제한 뒤 다시 시도해 주세요.'; return; }
-    if(!await confirmDialog('문서 생성을 요청할까요?', {description:'생성 Issue를 등록하고 유료 검토 대기열에 연결해요. 문서 작성은 Plan 승인 후 별도 실행해요.', okText:'생성 요청'})) return;
-    requesting = true; buttons.forEach(b => b.disabled = true);
-    const label = button.querySelector('span');
-    const original = label.textContent; label.textContent = '등록 중…';
-    try {
-      const result = await api('POST', `${url}/request`, {provider:button.dataset.docProvider}, current);
-      if(!current()) return;
-      message.innerHTML = `<a href="#/issue/${encodeURIComponent(result.ref)}">${esc(result.ref)}</a> · ${result.queue_error ? `Issue는 등록됐지만 검토 연결에 실패했어요. 같은 버튼으로 다시 시도해 주세요. ${esc(result.queue_error)}` : result.reviewed ? '검토된 Issue예요. Plan과 승인 상태를 확인해 주세요.' : result.reused ? '기존 생성 요청에 연결했어요.' : '생성 요청을 등록했어요.'}`;
-      await load();
-    } catch(e){ if(current()) message.textContent = `${e.message} 같은 버튼으로 다시 시도해 주세요.`; }
-    finally { requesting = false; buttons.forEach(b => b.disabled = false); label.textContent = original; }
-  });
-  load();
-}
-
 // ---- 시작 ----
 async function boot(){
   const res = await fetch('/api/auth/me');
@@ -3504,85 +3022,11 @@ async function boot(){
 boot();
 
 
-// QA 결과 카드(DEV-114) — 최신 회차의 항목·근거·재작업 n/5. 실패면 사람이 Task를 골라 재작업을 요청하고, 승인은 기존 전체 완료(사람 검사 확인 포함)를 쓴다.
-const QA_STATUS = {queued:'대기', running:'검사 중', passed:'통과', failed:'실패', stale:'stale — 다시 검사해야 해요', error:'판정 불가', timeout:'판정 불가(시간 초과)', orphaned:'판정 불가(중단)'};
-async function renderQa(it, box){
-  let qa;
-  try{ qa = await api('GET', `/api/issues/${encodeURIComponent(it.ref)}/qa`, undefined, () => box.isConnected, {notifyErrors: false}); }
-  catch(e){ if(box.isConnected) box.querySelector('p').textContent = e.message; return; }
-  if(!box.isConnected) return;
-  const r = qa.rounds[0], head = `<h2 id="qa-title">QA <span class="meta">재작업 ${qa.rework_count}/${qa.rework_limit}</span>${it.status==='in_review' && !it.parent_ref ? qaButton(qa.start || {reason:'QA 준비 상태를 확인하지 못했어요.'},it.ref,'qa-start') : ''}</h2>`;
-  const bindStart=()=>{
-    const button=box.querySelector('#qa-start');
-    if(!button)return;
-    button.onclick=async()=>{
-      if(button.disabled)return;
-      button.disabled=true;
-      try{ await requestQa(it.ref,()=>box.isConnected); if(box.isConnected)await renderIssue(it.ref); }
-      catch(e){ if(box.isConnected)toast(e.message); }
-      finally{ if(button.isConnected)button.disabled=false; }
-    };
-  };
-  if(!r){ box.innerHTML = `${head}<p class="dim">아직 QA 기록이 없어요. QA 검사를 누르면 검사해요.</p>`; bindStart(); return; }
-  const usage = [r.provider && `${esc(PROVIDER_NAME[r.provider] || r.provider)}${r.model ? ' · ' + esc(r.model) : ''}`, (r.input_tokens != null || r.output_tokens != null) && `토큰 ${tokenHtml(r.input_tokens)}/${tokenHtml(r.output_tokens)}`, r.cost_usd != null && `$${Number(r.cost_usd).toFixed(2)}`].filter(Boolean).join(' · ');
-  const ev = e => typeof e === 'string' ? e : [e.kind, e.path || e.command || e.ref, e.result || e.summary].filter(Boolean).join(' · ') || JSON.stringify(e);
-  const failedTasks = [...new Set(r.items.filter(i => i.verdict === 'fail').flatMap(i => i.task_refs))];
-  const canRework = r.status === 'failed' && !r.rework_batches.length && qa.rework_count < qa.rework_limit && it.children.length;
-  box.innerHTML = `${head}<p><b>${r.round_number}회차</b> · <span class="qa-status qa-${esc(r.status)}">${esc(QA_STATUS[r.status] || r.status)}</span>${usage ? ` <span class="dim">· ${usage}</span>` : ''}</p>
-    ${r.note ? `<p class="dim">${esc(r.note)}</p>` : ''}
-    ${r.items.length ? `<ul class="qa-items">${r.items.map(i => `<li><b>${i.verdict === 'pass' ? '통과' : '실패'}</b> ${esc(i.requirement_id)}${i.task_refs.length ? ` <span class="dim">${i.task_refs.map(esc).join(', ')}</span>` : ''}
-      ${i.evidence.length ? `<ul class="qa-evidence">${i.evidence.map(e => `<li><code>${esc(ev(e))}</code></li>`).join('')}</ul>` : ''}${i.suggestion ? `<p class="dim">제안: ${esc(i.suggestion)}</p>` : ''}</li>`).join('')}</ul>` : ''}
-    ${r.rework_batches.map(b => `<p class="dim">재작업 ${b.attempt}회 등록 — ${b.task_refs.map(esc).join(', ')}</p>`).join('')}
-    ${canRework ? `<form id="qa-rework"><fieldset><legend>재작업할 Task</legend>${it.children.filter(ch => ch.status !== 'closed').map(ch => `<label><input type="checkbox" value="${esc(ch.ref)}"${failedTasks.includes(ch.ref) ? ' checked' : ''}> ${esc(ch.ref)} ${esc(ch.title)}</label>`).join('')}</fieldset>
-      <div class="row-end"><button type="button" id="qa-approve">승인하고 전체 완료</button><button type="submit" class="primary">재작업 요청</button></div><p id="qa-rework-status" role="status" aria-live="polite"></p></form>` : ''}`;
-  bindStart();
-  const form = box.querySelector('#qa-rework');
-  if(!form) return;
-  // 승인은 기존 전체 완료 버튼을 그대로 눌러 확인창·사람 검사 확인을 거친다.
-  form.querySelector('#qa-approve').onclick = () => view.querySelector('aside .complete-tree')?.click();
-  form.onsubmit = async e => {
-    e.preventDefault();
-    const refs = [...form.querySelectorAll('input:checked')].map(i => i.value), status = form.querySelector('#qa-rework-status');
-    if(!refs.length){ status.textContent = '재작업할 Task를 하나 이상 골라 주세요.'; return; }
-    form.querySelectorAll('button').forEach(b => b.disabled = true); status.textContent = '요청 중…';
-    try{ await api('POST', `/api/issues/${encodeURIComponent(it.ref)}/qa/rework`, {qa_id: r.id, task_refs: refs}, () => box.isConnected, {notifyErrors: false}); toast('재작업을 요청했어요'); renderIssue(it.ref); }
-    catch(err){ if(box.isConnected){ status.textContent = err.message; form.querySelectorAll('button').forEach(b => b.disabled = false); } }
-  };
-}
-
 // ---- 프로젝트별 자동화 설정 — 이전 화면의 응답은 새 화면에 반영하지 않는다. ----
 let settingsSession = null;
 async function loadTokenSettings(){
   try{ tokenUnit = (await api('GET', '/api/settings/tokens', undefined, () => !!me, {notifyErrors:false})).unit; }
   catch(e){ tokenUnit = 'auto'; }
-}
-async function renderManualUsageSettings(){
-  const session = {};
-  settingsSession = session;
-  const current = () => settingsSession === session && location.hash.split('?')[0] === '#/settings/claude-code';
-  view.innerHTML = `<section class="panel management-card manual-usage-settings">${settingsHeader('claude-code')}<h3>대화형 Claude Code 사용량 기록</h3><p class="dim">연결하면 대화형 Claude Code의 토큰을 자동으로 기록해요. 대화 본문은 보내지 않아요. 이슈 연결은 마지막으로 다룬 Issue 기준의 대략값이에요.</p><p id="manual-connection" aria-live="polite" aria-busy="true">연결 상태를 불러와요…</p><p id="manual-received" class="dim"></p><button type="button" id="manual-toggle" disabled>연결</button><p id="manual-status" role="status"></p></section>`;
-  const button = view.querySelector('#manual-toggle'), status = view.querySelector('#manual-status');
-  let connected = false;
-  const paint = data => {
-    connected = data.connected;
-    view.querySelector('#manual-connection').textContent = connected ? '연결되어 있어요.' : '연결되어 있지 않아요.';
-    view.querySelector('#manual-received').textContent = `최근 수신: ${data.last_received_at ? fmtTime(data.last_received_at) : '아직 없어요'}`;
-    button.textContent = connected ? '연결 끊기' : '연결';
-  };
-  button.onclick = async () => {
-    button.disabled = true;
-    button.textContent = connected ? '연결 끊는 중…' : '연결 중…';
-    try{
-      const data = await api(connected ? 'DELETE' : 'POST', '/api/manual-usage/connection', undefined, current, {notifyErrors:false});
-      if(current()){ paint(data); status.textContent = connected ? '연결했어요.' : '연결을 끊었어요.'; }
-    }catch(e){ if(current()){ status.textContent = `${e.message} 다시 시도해 주세요.`; button.textContent = connected ? '연결 끊기' : '연결'; } }
-    finally{ if(current()) button.disabled = false; }
-  };
-  try{
-    const data = await api('GET', '/api/manual-usage/connection', undefined, current, {notifyErrors:false});
-    if(current()){ paint(data); button.disabled = false; }
-  }catch(e){ if(current()) status.textContent = `${e.message} 화면을 새로고침해 주세요.`; }
-  finally{ if(current()) view.querySelector('#manual-connection').setAttribute('aria-busy', 'false'); }
 }
 async function renderTokenSettings(){
   const session = {};
@@ -3603,13 +3047,10 @@ async function renderTokenSettings(){
     finally{ if(current()) select.disabled = false; }
   };
 }
-// [설정 필드, 목록 id, 제목, 설명, 실행에 쓰이는지] — 오케스트레이터·트러블슈터는 저장만 하고 아직 실행에 쓰지 않는다.
+// [설정 필드, 목록 id, 제목, 설명, 실행에 쓰이는지] — 오케스트레이터는 저장만 하고 아직 실행에 쓰지 않는다.
 const ROLE_CARDS = [
   ['orchestrator_provider_order','orchestrator-order','오케스트레이터','준비 중인 역할이에요. 순서는 저장되지만 아직 실행되지 않아요.',false],
   ['provider_order','provider-order','작업 에이전트','Auto 검토·실행을 이 순서로 맡겨요.',true],
-  ['troubleshooter_provider_order','troubleshooter-order','트러블슈터','실패 Task의 복구에 사용할 Agent예요. 요청당 CLI 1회·최대 10분이며 추가 이관은 하지 않아요.',true],
-  ['description_provider_order','description-order','Description 작성','프로젝트 Description 자동 작성을 이 순서로 맡겨요.',true],
-  ['qa_provider_order','qa-order','QA Agent','사람이 QA 검사를 요청한 최상위 In Review Issue를 이 순서로 검사해요. 구현한 provider와 다른 Agent를 골라요.',true],
 ];
 // 공통 제목과 서브탭을 설정 카드 안에 함께 그린다.
 function settingsHeader(tab){
@@ -3692,84 +3133,12 @@ async function renderQueueSettings(box, current){
   };
 }
 
-async function renderRegressionSettings(){
-  const session = {};
-  settingsSession = session;
-  const current = () => settingsSession === session && location.hash.split('?')[0] === '#/settings/regression';
-  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('regression')}<h3>회귀검사</h3><p class="dim">모든 프로젝트와 Claude·Codex에 공통 적용해요. 기본은 Auto예요. On은 항상 실행, Off는 생략, Auto는 계획 에이전트의 선택을 서버가 변경 범위로 확인해요. 검사 판단이 없는 기존 Task는 서버가 선택해요. 서버는 다음 검사부터, 에이전트 지시는 다음 실행부터 적용돼요.</p><div id="regression-body"></div><p id="regression-status" role="status" aria-live="polite"></p><label class="field regression-project"><span>프로젝트 (검사 파일 목록)</span><select id="regression-project"></select></label></section>`;
-  const body = view.querySelector('#regression-body'), status = view.querySelector('#regression-status'), picker = view.querySelector('#regression-project');
-  // 번호 표는 body 위에 오도록 select를 body 앞으로 옮긴다
-  view.querySelector('.regression-project').after(body, status);
-  let settings, busy = false, pk = '';
-  const modeButtons = (c, label) => `<div class="check-modes" role="group" aria-label="${esc(label)}">${['on','off','auto'].map(mode => `<button type="button" data-check="${esc(c.key)}" data-mode="${mode}" aria-pressed="${c.mode === mode}" ${busy ? 'disabled' : ''}>${mode === 'auto' ? 'Auto' : mode === 'on' ? 'On' : 'Off'}</button>`).join('')}</div>`;
-  function paint(){
-    const byKey = Object.fromEntries(settings.checks.map(c => [c.key, c]));
-    const files = settings.checks.filter(c => c.key.startsWith('file:'));
-    const fileList = `<details class="check-files"><summary>${esc(settings.project)} 검사 파일 ${files.length}개</summary>${files.length ? files.map(c => `<div class="setting-row check-file" data-file="${esc(c.path)}"><div><span class="check-no">${esc(c.number)}</span> <b>${esc(c.path)}</b> <span class="chip">${c.kind === 'js' ? 'JS' : 'py'}</span><p class="dim">${esc(c.description)}</p></div>${modeButtons(c, c.path)}</div>`).join('') : '<p class="dim">이 프로젝트에서 찾은 검사 파일이 없어요.</p>'}</details>`;
-    const lock = {always: '항상 · 끌 수 없어요', managed: '다른 설정을 따라요'};
-    body.innerHTML = [...settings.registry].sort((a, b) => a.number.localeCompare(b.number)).map(r => {
-      const c = r.kind === 'settable' ? byKey[r.key] : null;
-      return `<div class="setting-row check-proc" data-number="${esc(r.number)}"><div><span class="check-no">${esc(r.number)}</span> <b>${esc(r.name)}</b> <span class="dim">${esc(r.stage)}</span><p class="dim">${esc(r.description)}</p>${r.number === 'R08' ? fileList : ''}</div>${c ? modeButtons(c, `${r.number} ${r.name}`) : `<span class="check-lock dim">🔒 ${esc(lock[r.kind] || '')}</span>`}</div>`;
-    }).join('');
-  }
-  const url = () => '/api/settings/regression' + (pk ? '?project=' + encodeURIComponent(pk) : '');
-  async function load(){
-    try{ settings = await api('GET', url(), undefined, current); if(current()) paint(); }
-    catch(e){ if(current()) status.textContent = e.message; }
-  }
-  try{ if(!projects?.length) await loadProjects(); }catch(e){ /* 목록 없이도 dev 기준으로 보여준다 */ }
-  if(!current()) return;
-  picker.innerHTML = (projects || []).map(p => `<option value="${esc(p.key)}">${esc(p.key)} · ${esc(p.name)}</option>`).join('');
-  pk = picker.value || '';
-  picker.onchange = () => { pk = picker.value; status.textContent = ''; load(); };
-  await load();
-  body.onclick = async e => {
-    const button = e.target.closest('[data-check]');
-    if(!button || busy || !settings) return;
-    const key = button.dataset.check, mode = button.dataset.mode;
-    if(settings.checks.find(c => c.key === key).mode === mode) return;
-    busy = true; paint(); status.textContent = '저장 중…';
-    try{ settings = await api('PUT', url(), {checks: {[key]: mode}}, current); if(current()) status.textContent = '저장했어요.'; }
-    catch(err){ if(current()) status.textContent = `${err.message} 이전 설정을 유지했어요.`; }
-    finally{ busy = false; if(current()) paint(); }
-  };
-}
-
-// 서버 검사(완료 전·병합)를 프로젝트마다 몇 개씩 동시에 돌릴지(DEV-201). 비우면 기본값(dev 4·다른 프로젝트 1)을 쓴다.
-async function renderTestJobsSettings(box, current){
-  let s;
-  try { s = await api('GET', '/api/settings/test-jobs', undefined, current); }
-  catch(e){ if(current()) box.innerHTML = `<p class="error" role="alert">${esc(e.message)}</p>`; return; }
-  if(!current()) return;
-  const paint = () => {
-    box.innerHTML = `<div class="setting-row"><div><b id="test-jobs-label">동시 검사 수</b><p class="dim" id="test-jobs-help">Task 완료 전·병합 때 서버가 검사 파일을 프로젝트마다 몇 개씩 동시에 돌릴지예요(1~${s.max}). 비우면 기본값을 써요. 브라우저 검사는 늘 하나씩 돌아요. 늘리면 빨라지지만 홈서버 메모리를 더 써요.</p></div>
-      <form class="queue-limit test-jobs" aria-labelledby="test-jobs-label" novalidate>${s.projects.map(p => `<label class="queue-field">${esc(p.project)}<input type="number" class="test-jobs-${esc(p.project)}" data-project="${esc(p.project)}" min="1" max="${s.max}" step="1" value="${p.saved ?? ''}" placeholder="기본 ${p.default}" aria-describedby="test-jobs-help"></label>`).join('')}<button type="submit">저장</button></form></div>
-      <p id="test-jobs-status" class="dim" role="status" aria-live="polite"></p>`;
-    const form = box.querySelector('form'), status = box.querySelector('#test-jobs-status');
-    form.onsubmit = async e => {
-      e.preventDefault();
-      const changes = [...form.querySelectorAll('input[data-project]')].map(input => ({ project: input.dataset.project, value: input.value === '' ? null : Number(input.value) }))
-        .filter(c => c.value !== (s.projects.find(p => p.project === c.project).saved ?? null));
-      if(changes.some(c => c.value != null && (!Number.isInteger(c.value) || c.value < 1 || c.value > s.max))){ status.textContent = `1~${s.max} 사이의 정수로 입력하거나 비워 주세요.`; return; }
-      if(!changes.length){ status.textContent = '바뀐 값이 없어요.'; return; }
-      const button = form.querySelector('button');
-      button.disabled = true; button.textContent = '저장 중…'; status.textContent = '';
-      try{
-        for(const change of changes) s = await api('PUT', '/api/settings/test-jobs', change, current);
-        if(current()){ paint(); box.querySelector('#test-jobs-status').textContent = '저장했어요 — ' + s.projects.map(p => `${p.project} ${p.value}개${p.saved == null ? '(기본)' : ''}`).join(', ') + '. 다음 검사부터 적용돼요.'; }
-      }catch(err){ if(current()){ const message = err.message; try{ s = await api('GET', '/api/settings/test-jobs', undefined, current); }catch(_){} paint(); box.querySelector('#test-jobs-status').textContent = `${message} 저장된 값을 다시 불러왔어요.`; } }
-    };
-  };
-  paint();
-}
-
 async function renderSettings(){
   const session = {};
   settingsSession = session;
   const current = () => settingsSession === session && !document.getElementById('shell').hidden;
-  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><div id="test-jobs-settings"></div><h3>Auto 위임 설정</h3><p class="dim">모든 프로젝트에 같은 위임 설정을 적용해요. 프로젝트를 바꿔도 설정은 같아요.</p><div id="settings-body"></div></section>`;
+  view.innerHTML = `<section class="panel management-card auto-settings">${settingsHeader('auto')}<h3>대기열</h3><div id="queue-settings"></div><h3>Auto 위임 설정</h3><p class="dim">모든 프로젝트에 같은 위임 설정을 적용해요. 프로젝트를 바꿔도 설정은 같아요.</p><div id="settings-body"></div></section>`;
   void renderQueueSettings(view.querySelector('#queue-settings'), current);
-  void renderTestJobsSettings(view.querySelector('#test-jobs-settings'), current);
   const body = view.querySelector('#settings-body');
   body.innerHTML = '<div class="settings-skeleton" aria-label="설정을 불러오는 중" aria-busy="true"></div>';
   let settings;
@@ -3778,19 +3147,16 @@ async function renderSettings(){
   catch(e){ if(current()) body.innerHTML = `<p class="error" role="alert">${esc(e.message)} 다시 불러와 주세요.</p><button id="settings-retry" type="button">다시 불러오기</button>`;
     body.querySelector('#settings-retry')?.addEventListener('click', renderSettings); return; }
   if(!current()) return;
-  const delegationFields = ['auto_review','auto_plan_approve','auto_execute','auto_approve','auto_troubleshoot','auto_qa'];
-  body.innerHTML = `<div class="setting-row auto-master-row"><div><h3 id="auto-all-label">전체 · Auto</h3><p class="dim" id="auto-all-help">검토·계획 승인·실행·태스크 승인·트러블슈팅·QA 여섯 위임을 함께 켜고 꺼요. 유료 호출과 자동 승인이 발생할 수 있어요.</p><p class="dim" id="auto-all-hint"></p></div><button type="button" class="auto-switch" id="auto-all" role="switch" aria-labelledby="auto-all-label" aria-describedby="auto-all-help auto-all-hint" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>
+  const delegationFields = ['auto_review','auto_plan_approve','auto_execute','auto_approve'];
+  body.innerHTML = `<div class="setting-row auto-master-row"><div><h3 id="auto-all-label">전체 · Auto</h3><p class="dim" id="auto-all-help">검토·계획 승인·실행·태스크 승인 네 위임을 함께 켜고 꺼요. 유료 호출과 자동 승인이 발생할 수 있어요.</p><p class="dim" id="auto-all-hint"></p></div><button type="button" class="auto-switch" id="auto-all" role="switch" aria-labelledby="auto-all-label" aria-describedby="auto-all-help auto-all-hint" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>
     ${[['auto_review','Auto 검토 위임','사람이 등록한 Plan 없는 최상위 Backlog Issue를 검토해요. Goal과 기존 작업이 있는 Issue는 제외해요.'],
        ['auto_plan_approve','Auto 계획 승인','Manual 중 완료된 Plan도 포함해 성공한 최신 검토의 유효한 Plan을 구조 검사 후 승인해요. 의미적·기술적 오류 검출은 보장하지 않으며, 사람의 기존 결정과 Goal은 유지해요.'],
        ['auto_execute','Auto 실행 위임','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],
-       ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.'],
-       ['auto_troubleshoot','Auto 트러블슈팅','기본 꺼짐. 켠 이후의 코드·검사 실패를 원 실행당 1회 복구해요. 승인 Plan·기존 worktree 안에서 최대 10분 실행하며, OFF로 바꾸면 자동 미착수 대기를 취소해요. 실행 중 작업은 유지해요.'],
-       ['auto_qa','Auto QA','QA 사용이 켜져 있을 때 요청한 QA가 통과하면 Issue와 Task를 자동 Done, 실패 시 관련 Task를 재작업해요(최대 5회 후 보류). 이 위임이 꺼져 있으면 검사 결과만 남겨요. Goal·사람이 할 일이 남은 Issue는 자동 Done 하지 않아요.'],
-       ['qa_enabled','QA 사용','기본 꺼짐. 켜도 저절로 검사하지 않아요 — 이슈의 QA 검사 버튼으로 고른 것만 검사해요. OFF이면 QA 요청·대기·진행 중 호출을 모두 막아요.']].map(([field,label,help]) =>
+       ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.']].map(([field,label,help]) =>
       `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}
     <h3>Auto 에이전트 우선순위</h3>
     <div class="role-cards">${ROLE_CARDS.map(([field,id,title,help,ready]) =>
-      `<section class="role-card" aria-labelledby="${id}-title"><h4 id="${id}-title">${title}${ready ? '' : ' <span class="role-pending">준비 중</span>'}</h4><p class="dim">${esc(help)}</p><ol class="provider-order" id="${id}" data-field="${field}" aria-label="${title} 우선순위"></ol>${field === 'provider_order' ? `<div class="setting-row"><div><b id="token_exhaustion_fallback-label">토큰 소진 시 다음 에이전트로 이관</b><p class="dim" id="token_exhaustion_fallback-help">높은 우선순위 에이전트가 토큰 소진으로 실패하면 Auto 작업을 다음 에이전트가 이어받아요. 다음 에이전트의 유료 호출이 추가로 발생하며, Codex에는 금액 상한이 없어요.</p></div><button type="button" class="auto-switch" id="token_exhaustion_fallback" role="switch" aria-labelledby="token_exhaustion_fallback-label" aria-describedby="token_exhaustion_fallback-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>` : ''}</section>`).join('')}</div>
+      `<section class="role-card" aria-labelledby="${id}-title"><h4 id="${id}-title">${title}${ready ? '' : ' <span class="role-pending">준비 중</span>'}</h4><p class="dim">${esc(help)}</p><ol class="provider-order" id="${id}" data-field="${field}" aria-label="${title} 우선순위"></ol></section>`).join('')}</div>
     <p id="settings-status" role="status" aria-live="polite"></p>
     <aside class="settings-policy dim"><p>Auto를 켜면 클릭 없이 유료 검토·실행이 발생해요. Claude의 기존 비용 상한과 Codex의 시간 제한을 유지해요. Codex에는 금액 상한이 없어요.</p><p>Auto 계획 승인을 OFF로 바꾸면 이후 계획 승인만 중단해요. Auto 태스크 승인을 OFF로 바꾸면 이후 결과 승인만 중단해요. 완료된 Task·실행은 되돌리지 않아요. Auto 검토·실행을 OFF로 바꾸면 해당 자동 등록된 미착수 대기만 취소해요. 수동 대기와 실행 중 작업은 유지해요.</p><p>기존 auto_merge 정책은 별도로 적용돼요(기본 켜짐). 켜져 있는 프로젝트는 실행 후 병합·서버 재시작까지 이어질 수 있어요. 이 설정은 병합·배포 권한을 확대하지 않아요.</p></aside>`;
   let busy = false;
@@ -3803,7 +3169,7 @@ async function renderSettings(){
     master.disabled = busy || settings.auto_approve_available === false;
     master.querySelector('.switch-state').textContent = busy ? '저장 중…' : allOn ? '켜짐' : someOn ? '일부 켜짐' : '꺼짐';
     body.querySelector('#auto-all-hint').textContent = allOn ? '누르면 모두 꺼요.' : '누르면 모두 켜요.';
-    for(const field of [...delegationFields, 'qa_enabled', 'token_exhaustion_fallback']){
+    for(const field of delegationFields){
       const b = body.querySelector(`#${field}`), on = settings[field];
       b.setAttribute('aria-checked', String(!!on)); b.disabled = busy || (field === 'auto_approve' && settings.auto_approve_available === false);
       b.querySelector('.switch-state').textContent = on ? '켜짐' : '꺼짐';

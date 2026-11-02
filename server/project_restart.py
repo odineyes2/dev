@@ -75,7 +75,7 @@ def status(key):
     result = dict(row) if row else {'status': 'idle', 'mode': 'restart', 'phase': '재시작 기록이 없어요.', 'error': ''}
     result['log_tail'] = ''
     if result.get('log'):
-        from project_audit import _safe
+        from repo_snapshot import _safe
         try:
             with Path(result['log']).open('rb') as log:
                 log.seek(0, 2)
@@ -257,8 +257,8 @@ def _heartbeat(aid, stopped):
 
 
 def _restart(row):
-    import project_audit_runner
-    env = project_audit_runner._environment()
+    import repo_snapshot
+    env = repo_snapshot._environment()
     env.update(HOST='127.0.0.1', PORT=str(urlsplit(row['health_url']).port))
     if row['self_restart']:
         env.update(DEV_DATA_DIR=str(config.DATA_DIR.resolve()), DEV_DB_PATH=str(config.DB_PATH.resolve()))
@@ -322,8 +322,8 @@ def request(actor, key, mode='restart'):
 
 
 def launch(aid):
-    import project_audit_runner
-    env = project_audit_runner._environment()
+    import repo_snapshot
+    env = repo_snapshot._environment()
     env.update(DEV_DATA_DIR=str(config.DATA_DIR.resolve()), DEV_DB_PATH=str(config.DB_PATH.resolve()), PYTHONIOENCODING='utf-8')
     if os.environ.get('PM2_HOME'):
         env['PM2_HOME'] = os.environ['PM2_HOME']
@@ -348,7 +348,7 @@ def detach(aid):
 
 
 def _save(aid, state, phase, error=''):
-    from project_audit import _safe
+    from repo_snapshot import _safe
     with db.connect() as c:
         return c.execute("UPDATE project_app_restarts SET status=?,phase=?,error=?,updated_at=? WHERE id=? AND status IN ('waiting','restarting','checking')",
             (state, phase, _safe(error)[:4000], db.now_iso(), aid)).rowcount
@@ -357,9 +357,6 @@ def _save(aid, state, phase, error=''):
 def _busy(c, row):
     import jobs
     import rollback
-    import reproduce
-    if row['self_restart'] and reproduce.running(c):
-        return True
     lanes = jobs._active_lanes(c)
     key = c.execute('SELECT key FROM projects WHERE id=?', (row['project_id'],)).fetchone()['key']
     if (lanes if row['self_restart'] else any(lane[0] == key for lane in lanes)):

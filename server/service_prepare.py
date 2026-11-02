@@ -14,8 +14,8 @@ import automation
 import config
 import execute
 import issues
-import project_audit as audit
-import project_audit_runner as runner
+import repo_snapshot as audit
+import repo_snapshot as runner
 import review
 
 SCHEMA = Path(__file__).with_suffix('.schema.json')

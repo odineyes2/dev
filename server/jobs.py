@@ -169,7 +169,7 @@ def set_concurrency(actor: dict, value=_UNSET, *, total=_UNSET, execute=_UNSET, 
 
 
 def lane_kind(mode: str) -> str:
-    """줄의 모드가 세어지는 칸 — 실행(execute·initialization) 아니면 검토(review·audit·qa)."""
+    """줄의 모드가 세어지는 칸 — 실행(execute·initialization) 아니면 검토(review)."""
     return "execute" if mode in ("execute", "initialization") else "review"
 
 
@@ -196,7 +196,6 @@ def self_restart_state(c) -> dict | None:
     """dev 자신을 재시작할 병합과 기다리는 작업을 읽는다. 고아 정리·외부 요청은 하지 않는다."""
     from datetime import datetime, timezone
     import orchestrate
-    import reproduce
     record = next((m for m in _pending_merges(c)
                    if json.loads(m['cfg_json']).get('pm2_app') == SELF_PM2_APP), None)
     if record is None:
@@ -217,17 +216,9 @@ def self_restart_state(c) -> dict | None:
         f"SELECT {issues.ref_sql('i', 'p')} AS ref, r.mode, r.provider, r.started_at "
         "FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id "
         "WHERE r.status='running' AND r.id<>? ORDER BY r.id", (record['run_id'],))]
-    for table, mode, active, stamp in (
-            ('project_audits', 'audit', "'preparing','running','cancelling'", 'COALESCE(a.started_at,a.created_at)'),
-            ('project_initializations', 'initialization', "'running','cancelling'", 'a.created_at')):
-        busy.extend(dict(r) for r in c.execute(
-            f"SELECT p.key AS ref, '{mode}' AS mode, a.provider, {stamp} AS started_at "
-            f"FROM {table} a JOIN projects p ON p.id=a.project_id WHERE a.status IN ({active}) ORDER BY a.project_id"))
-    for row in c.execute("SELECT key,value FROM app_settings WHERE key LIKE ? "
-                         "AND json_extract(value,'$.status')='running' AND json_extract(value,'$.process')=? ORDER BY key",
-                         (reproduce.PREFIX + '%', reproduce.PROCESS)):
-        state = json.loads(row['value'])
-        busy.append({'ref': row['key'][len(reproduce.PREFIX):], 'mode': 'reproduce', 'provider': '', 'started_at': state.get('started_at')})
+    busy.extend(dict(r) for r in c.execute(
+        "SELECT p.key AS ref, 'initialization' AS mode, a.provider, a.created_at AS started_at "
+        "FROM project_initializations a JOIN projects p ON p.id=a.project_id WHERE a.status IN ('running','cancelling') ORDER BY a.project_id"))
     busy = [{**{k: r[k] for k in ('ref', 'mode', 'provider')}, 'minutes': minutes(r['started_at'])} for r in busy]
     phase = record['phase']
     phase = ('waiting' if busy else 'restarting') if phase == 'deployed' else (
@@ -257,30 +248,24 @@ def busy() -> bool:
 def start_block(c, project_key: str, mode: str, extra_lanes=frozenset()) -> str | None:
     """이 줄에서 지금 새로 시작하면 안 되는 이유. 없으면 None."""
     import project_restart
-    import reproduce
-    if reproduce.running(c):
-        return '실패 검사 재현이 끝난 뒤 시작해요.'
     block = project_restart.block(c, project_key)
     if block:
         return block
     if c.execute("SELECT 1 FROM project_services WHERE status='running'").fetchone():
         return '공용 터널의 서비스 연결이 끝나면 시작해요.'
     import orchestrate
-    import project_activity
     import rollback
     if any(r['project_key'] == project_key or
            orchestrate.settings(r['project_key']).get('pm2_app') == SELF_PM2_APP
            for r in rollback._records() if r['phase'] not in ('complete', 'failed')):
         return '롤백·운영 반영이 끝나면 시작해요.'
-    if project_activity.audit_active(c, project_key):
-        return '프로젝트 목표 대비 점검이 진행 중이에요. 끝난 뒤 시작해 주세요.'
     for m in _pending_merges(c):
         if orchestrate.settings(m["ref"].split("-")[0]).get("pm2_app") == SELF_PM2_APP:
             return f"{m['ref']} 병합 뒤 dev 재시작을 기다려요 — 재시작하면 도는 작업이 모두 끊겨서 그동안은 새로 시작하지 않아요."
     lanes = _active_lanes(c) | set(extra_lanes)
     if (project_key, 'initialization') in lanes and mode != 'initialization':
         return '프로젝트 초기 생성이 끝나면 시작해요.'
-    if mode in ('audit', 'initialization') and any(lane[0] == project_key for lane in lanes):
+    if mode == 'initialization' and any(lane[0] == project_key for lane in lanes):
         return '프로젝트 작업이 끝난 뒤 시작해 주세요.'
     if (project_key, mode) in lanes:
         merging = next((m["ref"] for m in _pending_merges(c) if mode == "execute" and m["ref"].split("-")[0] == project_key), None)
@@ -353,7 +338,6 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
     """줄에 넣고 착수를 예약한다. 시작 가능하면 {started}, 아니면 {queued, position}."""
     import auto_settings
     import execute
-    import project_docs
     if actor["kind"] != "human":
         raise issues.StoreError("검토·실행은 사람만 맡길 수 있어요.", 403)
     if attachment_ids is not None:
@@ -366,7 +350,7 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
         if mode != 'review' or type(plan_version) is not int:
             raise issues.StoreError('재검토할 계획서 판을 지정해 주세요.', 400)
     issue = issues.get_issue(ref)
-    provider = project_docs.resolve_provider(issue['id'], provider)
+    provider = provider or 'claude'
     if provider not in ("claude", "codex"):
         raise issues.StoreError("지원하지 않는 검토 도구예요.", 400)
     if mode not in ("review", "execute"):
@@ -750,12 +734,6 @@ def pump() -> None:
                 _note(j["id"], own or block)
                 continue
             try:
-                import troubleshoot
-                with db.connect() as c:
-                    recovery = troubleshoot.for_job(c, j['id'])
-                    if recovery and not troubleshoot.valid_job(c, j):
-                        troubleshoot.cancel_invalid(c, j)
-                        continue
                 if j['source'] == 'auto':
                     with db.connect() as c:
                         c.execute('BEGIN IMMEDIATE')
@@ -794,30 +772,21 @@ def pump() -> None:
                     if why:   # 선행·겹치는 파일 대기 — 뒤 항목을 먼저 본다
                         _set(j["id"], "queued", why)
                         continue
-                    if recovery:
-                        execute.start(actor, j['ref'], j['provider'], j['model'], troubleshoot_id=recovery['id'])
-                    else:
-                        execute.start(actor, j["ref"], j["provider"], j["model"])
+                    execute.start(actor, j["ref"], j["provider"], j["model"])
             except sqlite3.IntegrityError as e:
-                if j['source'] != 'auto' and not recovery:
+                if j['source'] != 'auto':
                     raise
                 with db.connect() as c:
                     c.execute('BEGIN IMMEDIATE')
                     automation.cancel_invalid(c, j, start_error=str(e) != '자동 위임 조건이 바뀌었어요')
                 continue
             except issues.StoreError as e:
-                if recovery:
-                    with db.connect() as c:
-                        troubleshoot.cancel_invalid(c, j, str(e))
-                elif j['source'] == 'auto' or e.status == 404:
+                if j['source'] == 'auto' or e.status == 404:
                     _set(j["id"], "skipped", str(e))
                 else:   # 저장소가 깨끗하지 않음 등 — 줄에서 기다린다
                     _set(j["id"], "queued", str(e))
                 continue
             _set(j["id"], "started")
-
-        import qa_runner
-        qa_runner.pump()
 
 
 def run_then_pump(fn, *args, lane: tuple | None = None) -> None:

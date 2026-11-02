@@ -42,44 +42,6 @@ def _add_tokens(row, run):
     row['partial'] = bool(row['unmeasured_run_count'] or row['running_run_count'])
 
 
-def manual_token_usage(c, issue_ids):
-    """Issue별 수동 사용량을 세션 중복 없이 묶음 집계한다."""
-    result = {}
-    if not _has_manual_usage(c):
-        return result
-    ids = list(issue_ids)
-    for start in range(0, len(ids), 900):
-        batch = ids[start:start + 900]
-        for row in c.execute(f"""SELECT issue_id,SUM(input_tokens) AS input_tokens,
-                SUM(output_tokens) AS output_tokens,COUNT(DISTINCT session_id) AS manual_session_count
-                FROM manual_usage WHERE issue_id IN ({','.join('?' * len(batch))}) GROUP BY issue_id""", batch):
-            result[row['issue_id']] = dict(row)
-    return result
-
-
-def _has_manual_usage(c):
-    """마이그레이션 전 DB에서는 수동 사용량을 빈 값으로 취급한다."""
-    return c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='manual_usage'").fetchone() is not None
-
-
-def _add_manual(target, source):
-    """수동 토큰만 더한다. 실행 횟수·시간·실제 비용은 바꾸지 않는다."""
-    for key in ('input_tokens', 'output_tokens'):
-        target[key] += source[key]
-    target['total_tokens'] = target['input_tokens'] + target['output_tokens']
-    target['manual_tokens'] = target.get('manual_tokens', 0) + source['input_tokens'] + source['output_tokens']
-    target['manual_session_count'] = target.get('manual_session_count', 0) + (source['manual_session_count'] if 'manual_session_count' in source.keys() else 0)
-
-
-def manual_sessions(c, issue_id):
-    """상세 화면에 필요한 세션별 모델·시각·토큰만 반환한다."""
-    if not _has_manual_usage(c):
-        return []
-    return [dict(row) for row in c.execute("""SELECT session_id,GROUP_CONCAT(DISTINCT model) AS model,strftime('%Y-%m-%dT%H:%M:%fZ',MIN(julianday(ts))) AS started_at,
-        strftime('%Y-%m-%dT%H:%M:%fZ',MAX(julianday(ts))) AS ended_at,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens
-        FROM manual_usage WHERE issue_id=? GROUP BY session_id ORDER BY MAX(julianday(ts)) DESC,session_id""", (issue_id,))]
-
-
 def issue_token_usage(c, issue_ids):
     """호출자의 읽기 스냅샷에서 지정 Issue 직접 실행분을 묶음 조회한다."""
     result = {iid: dict(input_tokens=0, output_tokens=0, total_tokens=0,
@@ -93,8 +55,6 @@ def issue_token_usage(c, issue_ids):
                 f"SELECT issue_id,status,input_tokens,output_tokens FROM runs WHERE issue_id IN ({','.join('?' * len(batch))})",
                 batch):
             _add_tokens(result[run['issue_id']], run)
-    for iid, manual in manual_token_usage(c, ids).items():
-        _add_manual(result[iid], manual)
     return result
 
 
@@ -121,18 +81,6 @@ def task_token_usage(c, parent_ids):
                 seen.add(run['task_id'])
             if run['status'] is not None:
                 _add_tokens(result[parent_id], run)
-    if not _has_manual_usage(c):
-        return result
-    for start in range(0, len(ids), 900):
-        batch = ids[start:start + 900]
-        for manual in c.execute(f"""SELECT t.parent_id,SUM(m.input_tokens) AS input_tokens,
-            SUM(m.output_tokens) AS output_tokens,COUNT(DISTINCT m.session_id) AS manual_session_count
-            FROM issues t JOIN manual_usage m ON m.issue_id=t.id
-            WHERE t.parent_id IN ({','.join('?' * len(batch))}) AND NOT EXISTS
-            (SELECT 1 FROM events e WHERE e.issue_id=t.id
-             AND json_extract(e.data_json,'$.superseded_by_plan') IS NOT NULL)
-            GROUP BY t.parent_id""", batch):
-            _add_manual(result[manual['parent_id']], manual)
     return result
 
 
@@ -209,30 +157,15 @@ def issue_summary(period, project=None, *, as_of=None):
 
         run_scope = (" AND (julianday(r.started_at)>=julianday(?) OR "
                      "julianday(r.ended_at)>julianday(?) OR r.status='running')") if since else ''
-        audit_scope = (" AND (julianday(started_at)>=julianday(?) OR "
-                       "julianday(ended_at)>julianday(?) OR status IN ('preparing','running','cancelling'))") if since else ''
         run_args = args + ((since.isoformat(), since.isoformat()) if since else ())
-        audit_args = run_args
         if historical:
             run_scope += ' AND julianday(r.started_at)<julianday(?)'
-            audit_scope += ' AND julianday(started_at)<julianday(?)'
             run_args += (until.isoformat(),)
-            audit_args += (until.isoformat(),)
         for run in c.execute('SELECT r.* FROM runs r JOIN issues i ON i.id=r.issue_id WHERE 1=1' +
                              (' AND i.project_id=?' if project_id is not None else '') + run_scope,
                              run_args):
             collect(run, run['status'] == 'running',
                     [token_count(run[k]) for k in ('input_tokens', 'output_tokens')])
-        for run in c.execute('SELECT started_at,ended_at,status,usage_json FROM project_audits WHERE 1=1' +
-                             scope + audit_scope, audit_args):
-            usage = json.loads(run['usage_json'])
-            collect(run, run['status'] in ('preparing', 'running', 'cancelling'),
-                    [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')])
-        for manual in c.execute('SELECT m.* FROM manual_usage m LEFT JOIN issues i ON i.id=m.issue_id WHERE 1=1' +
-                                (' AND i.project_id=?' if project_id is not None else ''), args):
-            ts = _time(manual['ts'])
-            if ts and (since is None or ts >= since) and (ts < until if historical else ts <= until):
-                _add_manual(summary, manual)
     summary['total_tokens'] = summary['input_tokens'] + summary['output_tokens']
     summary['partial'] = bool(summary['unmeasured_run_count'] or summary['running_run_count'] or
                               summary['unmeasured_duration_run_count'])
@@ -273,7 +206,7 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
         day = start_day + timedelta(days=offset)
         rows[day] = {'date': day.isoformat(), 'created_issue_count': 0,
                      'completed_issue_count': 0, **_empty(), 'partial': False,
-                     'by_kind': {k: {'tokens': 0, 'agent_seconds': 0} for k in ('issue', 'goal_audit', 'improve_audit')}}
+                     'by_kind': {k: {'tokens': 0, 'agent_seconds': 0} for k in ('issue',)}}
     ranking = {}
 
     def day_of(value):
@@ -349,9 +282,6 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
                 rows[created]['created_issue_count'] += 1
             if done in rows:
                 rows[done]['completed_issue_count'] += 1
-        overlap = (' AND julianday(started_at)<julianday(?) AND '
-                   '(julianday(started_at)>=julianday(?) OR julianday(ended_at)>julianday(?) '
-                   "OR status IN ('preparing','running','cancelling'))")
         run_overlap = (' AND julianday(r.started_at)<julianday(?) AND '
                        '(julianday(r.started_at)>=julianday(?) OR julianday(r.ended_at)>julianday(?) OR r.status=?)')
         bounds = (finish.isoformat(), begin.isoformat(), begin.isoformat())
@@ -367,38 +297,6 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
                         output_tokens=token_count(run['output_tokens']),
                         cache_write_tokens=run['cache_write_tokens'],
                         cache_read_tokens=run['cache_read_tokens'], cost_usd=run['cost_usd']))
-        for run in c.execute('SELECT kind,started_at,ended_at,status,usage_json FROM project_audits WHERE 1=1' +
-                             scope + overlap, args + bounds):
-            usage = json.loads(run['usage_json'])
-            audit_counts = [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')]
-            collect(run, audit_counts, run['status'] in ('preparing', 'running', 'cancelling'),
-                    estimate=api_pricing.estimate_cost(
-                        input_tokens=audit_counts[0], output_tokens=audit_counts[1],
-                        cost_usd=usage.get('cost_usd')), kind=run['kind'] + '_audit')
-        for manual in c.execute('SELECT m.* FROM manual_usage m LEFT JOIN issues i ON i.id=m.issue_id WHERE 1=1' +
-                                (' AND i.project_id=?' if project_id is not None else '') +
-                                ' AND julianday(m.ts)>=julianday(?) AND julianday(m.ts)<julianday(?)',
-                                args + (begin.isoformat(), finish.isoformat())):
-            day = day_of(manual['ts'])
-            if day not in rows:
-                continue
-            bucket = rows[day]
-            _add_manual(bucket, manual)
-            bucket['by_kind']['issue']['tokens'] += manual['input_tokens'] + manual['output_tokens']
-            if manual['issue_id'] is None:
-                bucket['unlinked_manual_tokens'] = bucket.get('unlinked_manual_tokens', 0) + manual['input_tokens'] + manual['output_tokens']
-            else:
-                rank = ranking.setdefault(manual['issue_id'], [0, 0])
-                rank[0] += manual['input_tokens']
-                rank[1] += manual['output_tokens']
-            estimate = api_pricing.estimate_cost(model=manual['model'], input_tokens=manual['input_tokens'],
-                output_tokens=manual['output_tokens'], cache_write_tokens=manual['cache_creation_tokens'],
-                cache_read_tokens=manual['cache_read_tokens'])
-            if estimate['cost_usd'] is None:
-                api_cost['unpriced_tokens'] += estimate['unpriced_tokens']
-            else:
-                api_cost['estimated_api_cost_usd'] += estimate['cost_usd']
-                api_cost['cost_approx_run_count'] += bool(estimate['approximate'])
         top = []
         if ranking:
             for start in range(0, len(ranking), 900):
@@ -420,12 +318,10 @@ def trends(from_date=None, to_date=None, project=None, *, as_of=None):
     summary['partial'] = any(row['partial'] for row in daily)
     summary.update(api_cost)
     summary['by_kind'] = {k: {field: sum(r['by_kind'][k][field] for r in daily)
-        for field in ('tokens', 'agent_seconds')} for k in ('issue', 'goal_audit', 'improve_audit')}
-    for key in ('manual_tokens', 'unlinked_manual_tokens'):
-        summary[key] = sum(row.get(key, 0) for row in daily)
+        for field in ('tokens', 'agent_seconds')} for k in ('issue',)}
     return dict(project=project.upper() if project else None, from_date=start_day.isoformat(),
                 to_date=end_day.isoformat(), as_of=now.isoformat(), days=daily, summary=summary,
-                top_issues=top[:10], note='현재 보존된 기록 기준이에요. 직접 실행 토큰과 실행 수는 시작일, 수동 토큰은 응답 시각 기준이에요. 시간은 서울 날짜별로 나눠요. 프로젝트 점검은 일별 합계에만 포함하고 작업 순위에서 제외해요. 병렬 실행 시간은 각각 합산해요.')
+                top_issues=top[:10], note='현재 보존된 기록 기준이에요. 직접 실행 토큰과 실행 수는 시작일 기준이에요. 시간은 서울 날짜별로 나눠요. 병렬 실행 시간은 각각 합산해요.')
 
 
 _STAGES = (
@@ -869,8 +765,6 @@ def project_usage(key, limit=50, offset=0, *, as_of=None):
             duration = _seconds(run['started_at'], as_of if run['status'] == 'running' else run['ended_at'])
             row['unmeasured_duration_run_count'] += duration is None
             row['agent_seconds'] += duration if duration is not None else 0
-        for iid, manual in manual_token_usage(c, by_id).items():
-            _add_manual(by_id[iid], manual)
         summary = _empty()
         summary.update(issue_count=len(rows), completed_issue_count=0, completed_elapsed_seconds=0,
                        unmeasured_completed_issue_count=0)
@@ -883,79 +777,9 @@ def project_usage(key, limit=50, offset=0, *, as_of=None):
                 summary['completed_issue_count'] += 1
                 summary['unmeasured_completed_issue_count'] += row['elapsed_seconds'] is None
                 summary['completed_elapsed_seconds'] += row['elapsed_seconds'] or 0
-        audits = []
-        audit_summary = _empty()
-        audit_summary.update(cost_usd=0, unmeasured_cost_run_count=0)
-        for record in c.execute('SELECT * FROM project_audits WHERE project_id=? ORDER BY id DESC', (project['id'],)):
-            run = dict(record)
-            usage = json.loads(run['usage_json'])
-            active = run['status'] in ('preparing', 'running', 'cancelling')
-            counts = [token_count(usage.get(k)) for k in ('input_tokens', 'output_tokens')]
-            cost = usage.get('cost_usd')
-            measured = type(cost) in (int, float) and math.isfinite(cost) and cost >= 0
-            duration = _seconds(run['started_at'], as_of if active else run['ended_at'])
-            audit_summary['run_count'] += 1
-            audit_summary['running_run_count'] += active
-            audit_summary['unmeasured_run_count'] += any(v is None for v in counts)
-            audit_summary['unmeasured_cost_run_count'] += not measured
-            audit_summary['cost_usd'] += cost if measured else 0
-            audit_summary['agent_seconds'] += duration or 0
-            audit_summary['unmeasured_duration_run_count'] += duration is None
-            for k, value in zip(('input_tokens', 'output_tokens'), counts):
-                audit_summary[k] += value or 0
-            audits.append({k: run[k] for k in ('id', 'provider', 'model', 'actual_model', 'status',
-                'started_at', 'ended_at')} | {'input_tokens': counts[0], 'output_tokens': counts[1],
-                'cost_usd': cost if measured else None, 'cost_measured': measured, 'agent_seconds': duration})
-        audit_summary['total_tokens'] = audit_summary['input_tokens'] + audit_summary['output_tokens']
-        audit_summary['partial'] = bool(audit_summary['unmeasured_run_count'] or audit_summary['running_run_count'] or
-                                        audit_summary['unmeasured_cost_run_count'])
-        for k in _empty():
-            summary[k] += audit_summary[k]
-        summary['partial'] = bool(summary['unmeasured_run_count'] or summary['running_run_count'] or audit_summary['partial'])
+        summary['partial'] = bool(summary['unmeasured_run_count'] or summary['running_run_count'])
         return dict(project=dict(project), as_of=as_of, summary=summary, issues=rows[offset:offset + limit],
-                    audits=audits[offset:offset + limit], audit_summary=audit_summary, audit_total=len(audits),
-                    audit_has_more=offset + limit < len(audits),
                     limit=limit, offset=offset, total=len(rows), has_more=offset + limit < len(rows),
                     notes=['실행 시간은 병렬 실행도 각각 합산해요.', 'orphaned는 서버가 기록한 종료 시각을 사용해요.',
                            '삭제된 이슈와 수집되지 않은 외부 실행은 포함하지 않아요.'])
 
-
-def improve_summary(from_date=None, to_date=None, project=None, *, as_of=None):
-    """기간별 개선 사용량과 기간 안 시작한 점검의 비용·발행 성과를 집계한다."""
-    period = trends(from_date, to_date, project, as_of=as_of)
-    seoul = ZoneInfo('Asia/Seoul')
-    begin = datetime.combine(date.fromisoformat(period['from_date']), time.min, seoul)
-    finish = datetime.combine(date.fromisoformat(period['to_date']) + timedelta(days=1), time.min, seoul)
-    now = _time(period['as_of'])
-    measured_usage = period['summary']['by_kind']['improve_audit']
-    result = dict(audit_count=0, total_tokens=measured_usage['tokens'],
-                  agent_seconds=measured_usage['agent_seconds'], cost_usd=0.0,
-                  unmeasured_cost_count=0, candidate_count=0,
-                  by_category={k: 0 for k in ('efficiency','risk','feature')},
-                  published_count=0, done_count=0, dismissed_count=0)
-    with db.connect() as c:
-        c.execute('BEGIN')
-        args = (begin.isoformat(), finish.isoformat(), now.isoformat())
-        scope = ''
-        if project:
-            scope = ' AND a.project_id=(SELECT id FROM projects WHERE key=?)'
-            args += (project.upper(),)
-        for row in c.execute("SELECT a.* FROM project_audits a WHERE a.kind='improve' AND julianday(COALESCE(a.started_at,a.created_at))>=julianday(?) AND julianday(COALESCE(a.started_at,a.created_at))<julianday(?) AND julianday(COALESCE(a.started_at,a.created_at))<=julianday(?)" + scope, args):
-            result['audit_count'] += 1
-            measured = json.loads(row['usage_json'])
-            cost = measured.get('cost_usd')
-            if type(cost) in (int,float) and math.isfinite(cost) and cost >= 0:
-                result['cost_usd'] += cost
-            else:
-                result['unmeasured_cost_count'] += 1
-            for candidate in c.execute('SELECT data_json FROM project_audit_candidates WHERE audit_id=?', (row['id'],)):
-                result['candidate_count'] += 1
-                result['by_category'][json.loads(candidate[0])['category']] += 1
-            result['dismissed_count'] += c.execute('SELECT COUNT(*) FROM project_audit_dismissals WHERE audit_id=?', (row['id'],)).fetchone()[0]
-        # 같은 Issue가 여러 점검에 연결돼도 발행·done 성과는 한 번만 센다.
-        cohort = " FROM project_audit_publications p JOIN project_audits a ON a.id=p.audit_id LEFT JOIN issues i ON i.id=p.issue_id WHERE a.kind='improve' AND p.mode='issue' AND julianday(COALESCE(a.started_at,a.created_at))>=julianday(?) AND julianday(COALESCE(a.started_at,a.created_at))<julianday(?) AND julianday(COALESCE(a.started_at,a.created_at))<=julianday(?)" + scope
-        counts = c.execute("SELECT COUNT(DISTINCT p.issue_ref),COUNT(DISTINCT CASE WHEN i.status='done' THEN p.issue_ref END)" + cohort, args).fetchone()
-        result['published_count'], result['done_count'] = counts
-    result['adoption_rate'] = result['published_count'] / result['candidate_count'] if result['candidate_count'] else 0
-    return dict(from_date=period['from_date'], to_date=period['to_date'], project=period['project'],
-                as_of=period['as_of'], summary=result)

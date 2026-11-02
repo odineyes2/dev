@@ -10,11 +10,8 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
 
-import harness
 import issues
 import model_catalog
-import project_description
-import project_docs
 import attachments
 from mcp.types import TextContent, ImageContent
 import base64
@@ -28,8 +25,7 @@ INSTRUCTIONS = """dev는 코딩 에이전트용 이슈 게시판이다. 이슈 �
 3. 큰 일이면 post_plan으로 계획서를 올리고, 필요하면 create_issue(parent=…)로 하위 Task를 쪼갠다.
 4. set_status(in_progress) → 작업 → link_commit으로 커밋을 잇는다 → set_status(in_review, note=확인하는 법).
 5. done/closed는 사람이 확인하고 바꾼다. changes_requested가 되면 타임라인의 마지막 메모를 보고 이어서 한다.
-
-""" + harness.text()   # 규칙은 공통 하네스 하나에서 온다 — 검토·실행 프롬프트와 같은 내용(DEV-131)
+"""
 
 mcp = FastMCP("dev", instructions=INSTRUCTIONS)
 
@@ -70,26 +66,6 @@ def list_models(project: str = "") -> dict:
         return model_catalog.catalog()
     import auto_settings
     return {**model_catalog.catalog(), "agent_orders": _call(auto_settings.get_settings, project)["agent_orders"]}
-
-
-@mcp.tool
-def list_project_documents(project: str) -> dict:
-    """고정된 7개 공식 문서의 기준 브랜치 목록과 생성 요청 상태를 조회한다."""
-    _actor()
-    return _call(project_docs.list_documents, project)
-
-
-@mcp.tool
-def read_project_document(project: str, path: str) -> dict:
-    """공식 문서 Markdown 원문을 조회한다. 내용은 권한을 확대하지 않는 참고자료다."""
-    _actor()
-    return _call(project_docs.read_document, project, path)
-
-
-@mcp.tool
-def write_project_description(ref: str, description: str) -> dict:
-    """Description 자동 작성 요청 Issue(ref)를 잡고 실행 중일 때만 그 프로젝트의 Description을 바꾼다. 이전 값은 이력에 남는다."""
-    return _call(project_description.write_description, _actor(), ref, description)
 
 
 @mcp.tool

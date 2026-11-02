@@ -3,8 +3,7 @@
   "additionalProperties": false,
   "properties": {
     "outcome": {"type": "string", "enum": ["ready", "blocked"]},
-    "summary": {"type": "string"},
-    "tests": {"type": "array", "items": {"type": "string"}}
+    "summary": {"type": "string"}
   },
-  "required": ["outcome", "summary", "tests"]
+  "required": ["outcome", "summary"]
 }

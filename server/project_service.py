@@ -266,7 +266,7 @@ def _command(args, label, cwd=None, environment=None):
                                 env=env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode:
             if environment is not None:
-                from project_audit import _safe
+                from repo_snapshot import _safe
                 detail = _safe(result.stderr.decode('utf-8', errors='replace'))[-1000:]
                 raise issues.StoreError(label + '에 실패했어요. ' + detail, 409)
             raise issues.StoreError(label + '에 실패했어요. 실행 계정의 권한·설정과 기존 DNS 충돌을 확인해 주세요.', 409)
@@ -422,8 +422,8 @@ def _run(project, action):
                 _save(pid, phase='앱 시작')
                 launcher = pm2_launcher()
                 args = [*launcher, 'startOrRestart', 'ecosystem.config.js', '--only', app, '--update-env']
-                import project_audit_runner
-                app_env = {**project_audit_runner._environment(), 'PORT': str(port), 'HOST': '127.0.0.1'}
+                import repo_snapshot
+                app_env = {**repo_snapshot._environment(), 'PORT': str(port), 'HOST': '127.0.0.1'}
                 if os.environ.get('PM2_HOME'):
                     app_env['PM2_HOME'] = os.environ['PM2_HOME']
                 _command(args, 'PM2 앱 시작', str(repo), environment=app_env)

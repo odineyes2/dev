@@ -3,10 +3,10 @@
 `<데이터폴더>/orchestrate.json`에서 프로젝트별로 조정한다. `auto_merge`는 기본 켜짐(끄려면 false) — 재시작은 `pm2_app`을 적은 프로젝트만 한다.
 
 순서: 작업 폴더 확인(base 체크아웃·깨끗) → 선행 Task 병합 확인 → 최신 base와 Task 커밋 고정
-→ 임시 detached worktree에서 `git merge --no-ff` → `tests/test_*.py` 전체 검사
-→ 원본 base·Task·작업 폴더가 그대로인지 확인 → 검사한 커밋을 `git merge --ff-only`로 운영에 반영.
-충돌·검사 실패는 운영 사본을 변경하지 않는다. 재시작·health 실패의 revert 복구는 유지한다.
-결과는 Task 상태로: 작업 폴더·선행 문제는 on_hold, 충돌·테스트 실패는 changes_requested, 성공은 그대로(in_review)에 댓글.
+→ 임시 detached worktree에서 `git merge --no-ff`(선언된 웹 빌드는 여기서 격리 빌드)
+→ 원본 base·Task·작업 폴더가 그대로인지 확인 → 시험 병합한 커밋을 `git merge --ff-only`로 운영에 반영.
+충돌·빌드 실패는 운영 사본을 변경하지 않는다. 재시작·health 실패의 revert 복구는 유지한다. 서버 검사는 없다(DEV-237).
+결과는 Task 상태로: 작업 폴더·선행 문제는 on_hold, 충돌·빌드 실패는 changes_requested, 성공은 그대로(in_review)에 댓글.
 
 병합 뒤 재시작(DEV-40-2): 바뀐 파일이 `restart_when` 패턴에 걸릴 때만 `restart_cmd`를 돌린다(화면 파일만이면 생략).
 `busy_url`이 있으면 그 응답 `{"busy": true}`가 풀릴 때까지 최대 `wait_minutes` 기다리고, 넘으면 재시작 없이 on_hold.
@@ -23,19 +23,11 @@
             "workers": [{"app": "moai-research-worker", "when": ["backend/research/*"]}],
             "worker_busy_cmd": "<실행 중 작업 수 조회 명령>"}}
 
-검사 규칙(DEV-212): 프로젝트의 `tests`에 [{"glob": 저장소 기준 패턴, "run": 명령, "timeout": 초(선택), "browser": 참/거짓(선택)}]를
-적으면 그 규칙으로 검사 파일을 찾아 돌린다. "item"(선택)은 검사 항목 하나가 끝난 출력 줄의 정규식(이름은 name 그룹)으로,
-진행 ⓘ에 "n개 항목 지남 — 마지막: …"을 보인다(DEV-213, 기본 규칙은 `OK — …`·unittest -v·node --test 줄). 명령의 {python}·{file}·{module}은 dev의 Python·검사 파일 경로·모듈 이름으로 채운다.
-없으면 기본 규칙(`test_runner.DEFAULT_RULES` — tests/test_*.py·tests/test_*.js·backend/tests/test_*.py). 예:
-    "XX": {"tests": [{"glob": "tests/*.test.ts", "run": ["npx", "vitest", "run", "{file}"]}]}
-잘못 적으면 서버 검사가 기본 규칙으로 몰래 돌지 않고 실패로 알린다.
 """
 import fnmatch
-import hashlib
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -50,8 +42,7 @@ import config
 import issues
 import project_build
 import restart_guard
-from execute import BASE_BRANCH, SECRET_ENV, _run_git, branch_name
-import test_runner
+from execute import BASE_BRANCH, _run_git, branch_name
 
 SETTINGS = config.DATA_DIR / "orchestrate.json"
 GIT_ID = ["-c", "user.name=dev orchestrator", "-c", "user.email=orchestrator@dev.local"]
@@ -116,10 +107,7 @@ def _busy(cfg, exclude_run: int | None = None) -> bool:
     if cfg.get("pm2_app") == jobs.SELF_PM2_APP:
         with db.connect() as c:
             import project_activity
-            import reproduce
             _reap_orphans(c)
-            if reproduce.running(c):
-                return True
             if project_activity.lanes(c):
                 return True
             if c.execute("SELECT 1 FROM runs WHERE status='running' AND id<>?", (exclude_run or 0,)).fetchone():
@@ -337,334 +325,6 @@ def _merged(repo, ref) -> bool:
     return _git(repo, "merge-base", "--is-ancestor", branch_name(ref), BASE_BRANCH).returncode == 0
 
 
-def run_test(repo, t, args=(), env=None, on_item=None):
-    """선택한 검사 하나를 기존 시간 제한과 출력 보존 규칙으로 실행한다(명령·시간 제한은 test_runner와 같다).
-    on_item은 검사 항목이 하나 끝날 때마다 부른다(진행 표시, DEV-213)."""
-    return test_runner.run(repo, t, args, {k: v for k, v in os.environ.items() if k not in SECRET_ENV} if env is None else env, on_item=on_item)
-
-
-TEST_JOBS_KEY = 'test_jobs:'   # app_settings 키 접두 — 프로젝트별 동시 검사 수(DEV-201)
-
-
-def test_jobs(project_key) -> int:
-    """서버 검사를 동시에 돌릴 파일 수(DEV-200). Settings 저장값 > orchestrate.json `test_jobs` > 기본(DEV 4·다른 프로젝트 1, 순차)."""
-    return test_jobs_info(project_key)['value']
-
-
-def test_jobs_info(project_key) -> dict:
-    """프로젝트의 동시 검사 수와 그 출처. 범위(1~CPU 수)를 벗어난 값은 잘라 쓴다."""
-    limit = os.cpu_count() or 1
-    clamp = lambda v: max(1, min(int(v), limit))  # noqa: E731
-    cfg = settings(project_key)
-    try:
-        default = clamp(cfg.get('test_jobs', 4 if project_key == 'DEV' else 1))
-    except (TypeError, ValueError):
-        default = 1
-    with db.connect() as c:
-        row = c.execute('SELECT value FROM app_settings WHERE key=?', (TEST_JOBS_KEY + project_key,)).fetchone()
-    try:
-        saved = clamp(row['value']) if row else None
-    except (TypeError, ValueError):
-        saved = None
-    return {'project': project_key, 'value': saved or default, 'default': default, 'saved': saved,
-            'source': 'Settings' if saved else ('orchestrate.json' if 'test_jobs' in cfg else '기본값')}
-
-
-def test_jobs_settings() -> dict:
-    """Settings 화면용 — 보관하지 않은 프로젝트마다 동시 검사 수."""
-    return {'max': os.cpu_count() or 1,
-            'projects': [{**test_jobs_info(p['key']), 'name': p['name']} for p in issues.list_projects() if not p.get('archived')]}
-
-
-def set_test_jobs(actor, project_key, value) -> dict:
-    """사람만 바꾼다. None이면 저장값을 지워 기본값으로 돌아간다."""
-    if actor['kind'] != 'human':
-        raise issues.StoreError('동시 검사 수는 사람만 바꿀 수 있어요.', 403)
-    if project_key not in {p['key'] for p in issues.list_projects()}:
-        raise issues.StoreError('없는 프로젝트예요.', 404)
-    limit = os.cpu_count() or 1
-    if value is not None and (type(value) is not int or not 1 <= value <= limit):
-        raise issues.StoreError(f'동시 검사 수는 1~{limit} 사이의 정수예요.', 400)
-    with db.connect() as c:
-        if value is None:
-            c.execute('DELETE FROM app_settings WHERE key=?', (TEST_JOBS_KEY + project_key,))
-        else:
-            c.execute('INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES(?,?,?,?) '
-                      'ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by',
-                      (TEST_JOBS_KEY + project_key, str(value), db.now_iso(), issues.actor_label(actor)))
-    return test_jobs_settings()
-
-
-FLAKY_MARK = '불안정한 검사 —'   # 같은 코드에서 통과·실패가 섞인 검사(troubleshoot가 이 글자로 flaky를 가른다)
-
-
-def slowest_line(durations: dict, top=5, wall=None) -> str:
-    """가장 오래 걸린 검사 상위 N개와 전체 시간을 한 줄로 만든다(DEV-160-2). 병렬이면 wall(벽시계 초)을 전체로 쓴다(DEV-200)."""
-    ranked = sorted(durations.items(), key=lambda kv: -kv[1])[:top]
-    total = sum(durations.values()) if wall is None else wall
-    whole = f'{total / 60:.1f}분' if total >= 60 else f'{total:.0f}초'
-    return '가장 오래 걸린 검사: ' + ' · '.join(f'{n} {s:.0f}초' for n, s in ranked) + f', 전체 {whole}'
-
-
-def run_tests(repo, stage='server_merge', ref=None, changed=None, focus=None) -> str | None:
-    """발견한 검사를 한 번씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다.
-    프로젝트가 이 단계에 격리 PostgreSQL을 켰으면 검사 동안만 띄워 넘긴다(DEV-183)."""
-    import isolated_pg
-    import run_progress
-    project = ref.split('-')[0] if ref else None
-    if not project:
-        return _run_tests(repo, stage, ref, changed, None, **({'focus': focus} if focus is not None else {}))
-    if isolated_pg.wanted(project, stage) is not None:   # 띄우는 동안 "준비 중: 임시 DB"(DEV-212) — 검사가 시작되면 n/N으로 바뀐다
-        run_progress.prepare(ref, '임시 DB', merge=stage == 'server_merge')
-    try:
-        with isolated_pg.cluster(project, stage, ref) as (extra, note):
-            if note:
-                issues.add_comment({'kind': 'human', 'name': 'system/isolated-pg'}, ref, f'⚠️ {stage}: {note}')
-            env = {**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, **extra} if extra else None
-            return _run_tests(repo, stage, ref, changed, env, **({'focus': focus} if focus is not None else {}))
-    finally:   # 검사 전에 끝나도(꺼진 단계·규칙 오류) 준비 표시를 남기지 않는다
-        run_progress.prepare_end(ref)
-        if stage == 'server_merge':
-            run_progress.merge_end(ref)
-
-
-def _run_tests(repo, stage, ref, changed, env, focus=None) -> str | None:
-    import regression
-    import run_progress
-    selection = regression.resolve(ref, repo if ref or changed is not None else None, changed)
-    policy = selection['checks']
-    if ref:
-        regression.save_record('regression-selection:' + ref + ':' + stage, selection)
-    if not policy[stage]['enabled']:
-        return None
-    if stage == 'server_completion' and ref and ref.startswith('MO-'):
-        from execute import prepare_checks
-        try:
-            run_progress.prepare(ref, '웹 빌드')   # 검사 전 준비를 진행 표시에 보인다(DEV-212)
-            prepare_checks(repo, {'project_key': 'MO'}, build=True)
-        except issues.StoreError as error:
-            return str(error)
-    failures = []
-    cached = regression.load_record('regression-cache:' + ref) if ref else {}
-    identity = regression.tree_identity(repo) if ref else None
-    results = {}
-    durations = {}   # 실제로 돌린 검사의 파일별 초(재사용·건너뜀은 없음)
-    # 지문이 어긋난 이유를 가리려고 지문의 재료(트리·regression.py·검사 파일)를 따로 남긴다.
-    old_meta = cached.pop('_meta', {}) if isinstance(cached.get('_meta'), dict) else {}
-    meta = {'tree': hashlib.sha256((identity or '').encode()).hexdigest(),
-            'reg': hashlib.sha256(Path(regression.__file__).read_bytes()).hexdigest(), 'files': {}}
-    miss = {}
-    changed_tests = set(selection.get('changed_tests') or [])
-    key = ref.split('-')[0] if ref else regression.project_key(repo)
-    rules_error = test_runner.rules(key)[1]
-    if rules_error:   # 사람이 적은 검사 규칙이 잘못되면 기본 규칙으로 몰래 돌리지 않고 실패로 알린다(DEV-212)
-        return rules_error
-    files = regression.test_files(repo, key)
-    focused = None
-    if focus and stage == 'server_completion':
-        focused, plans, edited = regression.focus_plan(repo, files, focus)
-        selection = {**selection, 'blocks': plans, 'focus': focus}
-        changed_tests = set(edited)
-    todo = []   # (검사, 지문) — 재사용·건너뜀이 아닌 것만 아래에서 한꺼번에 돌린다
-    for t in files:
-        if not policy.get('file:' + t.name, {'enabled': True})['enabled']:
-            results[t.name] = 'skipped'
-            continue
-        if focused is not None:
-            cached.pop(t.name, None)
-            if t.name not in focused:
-                results[t.name] = 'deferred'
-                continue
-        # 격리 PG가 있는 실행과 없는 실행(PG 검사 건너뜀)의 결과를 섞어 재사용하지 않는다.
-        stamp = regression.fingerprint(t, identity + (':isolated-pg' if env else '') if identity else identity) if ref else None
-        if ref:
-            meta['files'][t.name] = hashlib.sha256(t.read_bytes()).hexdigest()
-        if focused is None and stamp and cached.get(t.name) == stamp:
-            results[t.name] = 'reused'
-            continue
-        if ref:
-            if not identity:
-                miss[t.name] = '지문 없음 — git으로 작업 내용을 읽지 못함'
-            elif t.name not in cached:
-                miss[t.name] = '이전 결과 없음'
-            elif old_meta.get('reg') != meta['reg']:
-                miss[t.name] = 'regression.py가 바뀜'
-            elif old_meta.get('files', {}).get(t.name) != meta['files'][t.name]:
-                miss[t.name] = '검사 파일이 바뀜'
-            elif old_meta.get('tree') != meta['tree']:
-                miss[t.name] = '트리가 다름 — main이 바뀌어 병합 결과가 달라짐'
-            else:
-                miss[t.name] = '실행 환경(Python)이 다름'
-        todo.append((t, stamp))
-
-    def one(t):
-        run_progress.check_start(ref, t.name, test_runner.timeout_for(t))
-        ok = False
-        try:
-            runs, bad = _one(t)
-            ok = not bad
-            return runs, bad
-        finally:
-            run_progress.check_end(ref, t.name, ok)
-
-    def _one(t):
-        def item(name):
-            run_progress.check_item(ref, t.name, name)
-        # 블록 단위(DEV-231): 완료 검사는 고른·바뀐 블록만 `--only`로 돈다. 병합 검사(R07)는 늘 파일 전체다.
-        plan = (selection.get('blocks') or {}).get(t.name) if stage == 'server_completion' else None
-        args = ('--only', ','.join(plan['only'])) if plan and plan['only'] else ()
-        r = run_test(repo, t, env=env, on_item=item, **({'args': args} if args else {}))
-        _block_times(t, r)
-        # 불안정 검사 대책(DEV-160-3): 바뀐 검사는 완료 때 3번, 병합에서 실패한 검사는 2번 더 돌려 섞임을 가린다.
-        # 블록을 아는 검사는 바뀐 블록만 2번 더, 블록 밖이 바뀌어 블록을 정하지 못했으면 전체 1번만(R10이 병합에서 가린다).
-        runs, bad = [r], ([r] if r.returncode else [])
-        repeat = ()
-        if stage == 'server_completion' and t.name in changed_tests:
-            repeat = (('--only', ','.join(plan['repeat'])) if plan['repeat'] else None) if plan else ()
-        if stage == 'server_merge' and r.returncode:
-            repeat = ()
-        elif not (stage == 'server_completion' and t.name in changed_tests):
-            repeat = None
-        if repeat is not None:
-            for _ in range(2):
-                run_progress.check_start(ref, t.name, test_runner.timeout_for(t))   # 다시 돌리는 동안의 경과·항목을 처음부터
-                again = run_test(repo, t, env=env, on_item=item, **({'args': repeat} if repeat else {}))
-                _block_times(t, again)
-                runs.append(again)
-                if again.returncode:
-                    bad.append(again)
-        if stage == 'server_completion' and bad:
-            # 같은 코드로 실패·미완료 블록만 한 번 더 확인한다(DEV-236).
-            statuses = [test_runner.block_status(x) for x in bad]
-            catalog = test_runner.list_blocks(repo, t, env=env)
-            planned = plan['only'] if plan and plan['only'] else [b['id'] for b in catalog or []]
-            targets = {}
-            for first, marks in zip(bad, statuses):
-                scope = repeat[1].split(',') if first is not r and repeat else planned
-                for bid in scope:
-                    if marks.get(bid) == 'FAIL':
-                        targets[bid] = 'fail'
-                    elif first.returncode == 124 and marks and bid not in marks:
-                        targets.setdefault(bid, 'timeout')
-            if not targets:
-                targets = {None: 'timeout' if bad[0].returncode == 124 else 'fail'}
-            rerun_args = ('--only', ','.join(targets)) if None not in targets else ()
-            run_progress.check_start(ref, t.name, test_runner.timeout_for(t))
-            again = run_test(repo, t, env=env, on_item=item, **({'args': rerun_args} if rerun_args else {}))
-            _block_times(t, again)
-            marks = test_runner.block_status(again)
-            real = []
-            unknown_failure = again.returncode and all(marks.get(bid) == 'OK' for bid in targets)
-            for bid, first in targets.items():
-                outcome = ('pass' if marks.get(bid) == 'OK' else
-                           'fail' if marks.get(bid) == 'FAIL' else
-                           'timeout' if again.returncode == 124 else 'fail' if again.returncode else 'pass')
-                if unknown_failure:
-                    outcome = 'timeout' if again.returncode == 124 else 'fail'
-                edited = t.name in changed_tests and (not plan or plan.get('whole_once') or bid is None or bid in plan.get('repeat', []))
-                kind = 'real' if edited or outcome != 'pass' else 'timeout' if first == 'timeout' else 'flaky'
-                triage.append({'file': t.name, 'block': bid, 'first': first, 'rerun': outcome,
-                               'class': kind, 'related': True if edited else regression.failure_related(Path(repo), t, bid, selection)})
-                if kind == 'real':
-                    real.append(bid)
-            if not real:
-                bad = []
-            elif None not in real and len(real) < len(targets):
-                # 복구된 블록의 실패 출력을 재작업 지시에 섞지 않는다.
-                original = bad[0]
-                detail = []
-                for source in (again, *bad):
-                    for bid in real:
-                        snippet = test_runner.block_output(source, bid)
-                        if snippet and snippet not in detail:
-                            detail.append(snippet)
-                original.triage_output = '진짜 실패 블록: ' + ', '.join(real) + '\n' + '\n'.join(detail)
-                bad = [original]
-            # 바뀐 검사에 적용하던 R09 결과·FLAKY_MARK는 보존한다.
-        return runs, bad
-
-    triage = []
-
-    block_durations = {}   # 'test_ui.py#confirm' → 초(이번 실행의 마지막 값)
-
-    def _block_times(t, r):
-        for bid, sec in (getattr(r, 'blocks', None) or {}).items():
-            block_durations[t.name + '#' + bid] = sec
-    # 병렬(DEV-200): 격리 PG는 모든 검사가 한 클러스터를 같이 쓰므로 순차로 돌린다.
-    timing = regression.load_record('regression-durations:' + key)
-    started = time.monotonic()
-    # 실행 중 화면의 ⓘ에 n/N과 지금 도는 검사를 보인다(DEV-206) — 병합 검사도 같이(DEV-211)
-    run_progress.checks_begin(ref, len(todo), sum(v == 'reused' for v in results.values()),
-                              sum(v == 'skipped' for v in results.values()), merge=stage == 'server_merge')
-    try:
-        ran = test_runner.run_all([t for t, _ in todo], one, 1 if env else test_jobs(key), timing)
-    finally:
-        if stage == 'server_merge':
-            run_progress.merge_end(ref)
-    wall = round(time.monotonic() - started, 1)
-    for t, stamp in todo:   # 결과는 원래 순서대로 모은다
-        (runs, bad), durations[t.name] = ran[t]
-        results[t.name] = 'failed' if bad else 'passed'
-        if focused is None and not bad and stamp and not any(x['file'] == t.name for x in triage):
-            cached[t.name] = stamp
-        elif bad or any(x['file'] == t.name for x in triage):
-            cached.pop(t.name, None)
-        if bad:
-            r = bad[0]
-            detail = (f"검사: {t}\n작업 폴더: {repo}\nPython: {sys.executable}\n"
-                      f"종료 코드: {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n"
-                      f"\n--- stdout ---\n{r.stdout}\n--- stderr ---\n{r.stderr}")
-            logs = config.DATA_DIR / "merge-tests"
-            logs.mkdir(parents=True, exist_ok=True)
-            log = logs / f"{t.stem}-{time.time_ns()}.log"
-            log.write_text(detail, encoding="utf-8")
-            output = getattr(r, 'triage_output', r.stdout + r.stderr).strip() or "표준 출력과 오류 출력이 없어요."
-            flaky = ''
-            bad_count = sum(bool(x.returncode) for x in runs)
-            if (len(runs) > 1 and bad_count < len(runs)) or any(x['file'] == t.name and x['class'] == 'real' and x['rerun'] == 'pass' for x in triage):
-                flaky = f"{FLAKY_MARK} {t.name}가 같은 코드에서 {len(runs)}번 중 {bad_count}번 실패했어요 — 검사 코드의 기다리기·순서 가정을 먼저 확인해 주세요\n"
-            tag = f"{policy[stage].get('number', '')} {policy[stage]['name']} 실패 — {policy.get('file:' + t.name, {}).get('number', '')} "
-            failures.append(f"{flaky}{tag}{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
-    results = {t.name: results[t.name] for t in files if t.name in results}
-    # 블록 시간(DEV-231)은 지수 평균으로 같은 기록에 `파일#블록` 키로 남긴다(예상 소요·선정 근거).
-    blocks_avg = {k: round(timing[k] * 0.5 + s * 0.5, 1) if isinstance(timing.get(k), (int, float)) else s for k, s in block_durations.items()}
-    if durations or blocks_avg:   # 다음 병렬 실행이 오래 걸리는 검사부터 시작하게 파일별 시간을 프로젝트마다 남긴다
-        regression.save_record('regression-durations:' + key, {**timing, **durations, **blocks_avg})
-    if ref:
-        cached['_meta'] = meta
-        regression.save_record('regression-cache:' + ref, cached)
-        reused = sum(1 for v in results.values() if v == 'reused')
-        reason = next(iter(miss.values()), '') if not reused else ''
-        regression.save_record('regression-selection:' + ref + ':' + stage,
-                               {**selection, 'results': results, 'durations': durations, 'wall': wall, 'block_durations': block_durations,
-                                'triage': triage, 'cache': {'used': bool(reused), 'reused': reused, 'reason': reason}})
-        if triage:
-            regression.record_triage(key, ref, triage)
-            recovered = [x for x in triage if x['class'] != 'real']
-            if recovered:
-                issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref,
-                                   'ℹ️ 완료 검사 재실행 분류 — ' + regression.triage_line(recovered) +
-                                   ' — 복구된 항목은 재작업하지 않았어요, R07이 병합에서 다시 확인해요')
-        mapped = [f"{n}: {p['reason']}" for n, p in (selection.get('blocks') or {}).items() if p.get('reason') and results.get(n) in ('passed', 'failed')]
-        if stage == 'server_completion' and mapped:   # 대응표로 고른 이유(DEV-233-3)
-            issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref, 'ℹ️ 화면 변경 블록 선택 — ' + ' / '.join(mapped))
-        whole = [n for n, p in (selection.get('blocks') or {}).items() if p.get('whole_once') and not p.get('reason') and results.get(n) in ('passed', 'failed')]
-        if stage == 'server_completion' and whole:
-            issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref,
-                               f"ℹ️ {', '.join(whole)}: 블록을 정하지 못해 전체 1회 — 바뀐 줄이 블록 밖(main·공용 도우미)이라 반복하지 않았어요(R10이 병합에서 가려요)")
-        if stage == 'server_merge' and durations:
-            issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref, '⏱️ 병합 ' + slowest_line(durations, wall=wall))
-        if stage == 'server_merge' and miss and not reused and not reason.startswith('트리가 다름'):
-            done = regression.load_record('regression-selection:' + ref + ':server_completion').get('results')
-            if done:
-                issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref,
-                                   f'⚠️ 같은 코드인데 검사 결과를 재사용하지 못했어요 — 이유: {reason}')
-    recovered = [x for x in triage if x['class'] != 'real']
-    if failures and recovered:
-        failures.append('ℹ️ 재실행으로 복구된 항목: ' + regression.triage_line(recovered))
-    return '\n\n'.join(failures) or None
-
-
 def merge(repo: str, ref: str, after: list[str] = ()) -> tuple[str, str]:
     """시험 병합을 검사한 뒤 동일한 커밋을 반영한다. 병합·거절 롤백과 직렬화한다."""
     with _lock:
@@ -722,14 +382,6 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
                 return 'changes_requested', build_failure(error)
             if build_checkpoint:
                 build_checkpoint(str(build_dir), sha)
-            # 실제 웹 산출물 요청 검사는 시험 병합 사본에서도 같은 빌드 바이트로 실행한다.
-            import shutil
-            manifest = json.loads((Path(build_dir) / 'manifest.json').read_text(encoding='utf-8'))
-            for output in manifest['outputs']:
-                shutil.copytree(output['staged'], worktree / output['out'], dirs_exist_ok=True)
-        failed = run_tests(str(worktree), ref=ref if expected_task else None, changed=changed)
-        if failed:
-            return 'changes_requested', f'시험 병합의 선택된 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n```\n{failed}\n```'
         changed = _git(str(worktree), 'status', '--porcelain', '--untracked-files=no').stdout.strip()
         if _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip() != sha or changed:
             return 'changes_requested', ('검사 중 시험 병합 사본이 변경됐어요 — 검사 결과를 반영하지 않았어요. 검사가 커밋된 파일을 다시 쓰면 .gitignore에 넣거나 임시 폴더에 쓰게 고쳐 주세요.'
@@ -856,14 +508,7 @@ class MergeBatch:
 
 def retry_available(issue, record=None, reproduction_id=None):
     record = record if record is not None else completion(issue['ref'])
-    reviewed = False
-    if reproduction_id and issue['status'] == 'in_progress' and record:
-        import reproduce
-        checked = reproduce.result(issue['ref'])
-        event = next((e for e in reversed(issue.get('events', [])) if e['kind'] == 'status'), {})
-        reviewed = (checked.get('id') == reproduction_id and checked.get('status') == 'passed'
-                    and checked.get('source_sha') == record.get('task_sha')
-                    and event.get('data', {}).get('reproduction_id') == reproduction_id)
+    reviewed = False   # 실패 검사 재현(옛 R16)이 넘기던 경로 — 재현은 지웠다(DEV-237)
     allowed = reviewed if reproduction_id else issue['status'] in ('backlog', 'on_hold', 'changes_requested')
     return bool(issue.get('parent_ref') and allowed
                 and record and record['auto_merge'] and record['phase'] in ('held', 'failed') and not record['merge_sha'])
@@ -918,9 +563,6 @@ def manual_merge(actor, ref):
                     or c.execute("SELECT 1 FROM runs WHERE issue_id=? AND mode='execute'", (row['id'],)).fetchone()
                     or c.execute("SELECT 1 FROM jobs WHERE issue_id=? AND status='queued'", (row['id'],)).fetchone()):
                 raise issues.StoreError('Task 상태, 승인, 커밋 또는 실행 기록이 변경되었습니다.', 409)
-            import project_activity
-            if project_activity.audit_active(c, row['project_key']):
-                raise issues.StoreError('프로젝트 감사가 진행 중입니다.', 409)
             now = db.now_iso()
             note = '관리자가 연결한 수동 커밋. 에이전트 실행 없음.'
             run_id = c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,ended_at,provider,note) VALUES(?,'execute','ok',?,?,?,?,?)",
@@ -976,9 +618,6 @@ def retry_merge(actor, ref, *, reproduction_id=None):
         with db.connect() as c:
             c.execute('BEGIN IMMEDIATE')
             row = issues._find(c, ref)
-            import project_activity
-            if project_activity.audit_active(c, row['project_key']):
-                raise issues.StoreError('프로젝트 점검이 끝난 뒤 병합을 다시 시도해 주세요.', 409)
             current = c.execute('SELECT * FROM execution_completion WHERE run_id=?', (record['run_id'],)).fetchone()
             latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (row['id'],)).fetchone()[0]
             result = c.execute('SELECT plan_version FROM task_execution_results WHERE run_id=?', (record['run_id'],)).fetchone()
@@ -1098,8 +737,6 @@ def _finish(actor, record, status, note):
                            if status == 'merged' else '🔀 자동 병합: ' + note)
         c.execute('UPDATE execution_completion SET phase=?,updated_at=? WHERE run_id=?', (phase, db.now_iso(), record['run_id']))
         c.execute("UPDATE task_execution_results SET state=?,commit_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='commit'),status_event_id=(SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status') WHERE run_id=?", ('merged' if status == 'merged' else 'blocked',row['id'],row['id'],record['run_id']))
-        import reproduce
-        reproduce.followup_finished(c, record, status, note)
     if status == 'merged':
         _publish(actor, record)
     return status
@@ -1355,7 +992,7 @@ def merge_state(issue: dict, cfg: dict | None = None, batch: MergeBatch | None =
     batch = batch if batch is not None and issue.get('ref') in batch._loaded else None
     record = (batch.record(issue['ref']) if batch is not None else completion(issue['ref'])) if issue.get('ref') else None
     if record and record['auto_merge']:
-        labels = {'ready': '병합 검사 중', 'checking': '병합 검사 중', 'building': '웹 빌드 중', 'applying': '운영 반영 중', 'deployed': '산출물 교체 중', 'restart_requested': '재시작 확인 중', 'rollback_requested': '복구 중', 'rollback_applied': '복구 확인 중', 'complete': '병합됨'}
+        labels = {'ready': '병합 중', 'checking': '병합 중', 'building': '웹 빌드 중', 'applying': '운영 반영 중', 'deployed': '산출물 교체 중', 'restart_requested': '재시작 확인 중', 'rollback_requested': '복구 중', 'rollback_applied': '복구 확인 중', 'complete': '병합됨'}
         if record['phase'] in labels:
             return labels[record['phase']]
     for e in reversed(issue.get("events", [])):

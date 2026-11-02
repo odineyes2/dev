@@ -268,7 +268,7 @@ def _project_deletion(c, key):
         f"SELECT * FROM issue_deps WHERE issue_id IN ({target}) OR blocked_by_id IN ({target}) ORDER BY issue_id, blocked_by_id",
         (project["id"], project["id"]))]
     snapshot["dependencies"] = deps
-    for table in ("project_audits", "project_audit_candidates", "project_audit_publications", "project_app_restarts"):
+    for table in ("project_app_restarts",):
         snapshot[table] = [dict(r) for r in c.execute(
             f"SELECT * FROM {table} WHERE project_id=? ORDER BY rowid", (project["id"],))]
     ids = {r["id"] for r in rows}
@@ -278,8 +278,6 @@ def _project_deletion(c, key):
     service = c.execute('SELECT * FROM project_services WHERE project_id=?', (project['id'],)).fetchone()
     if service and (service['domain'] or service['backup_path'] or service['status'] == 'running'):
         blockers.append('서비스 연결을 해제한 뒤 프로젝트를 삭제해 주세요.')
-    if any(r['status'] in ('preparing', 'running', 'cancelling') for r in snapshot['project_audits']):
-        blockers.append('프로젝트 점검이 진행 중이에요.')
     if c.execute("SELECT 1 FROM project_initializations WHERE project_id=? AND status IN ('queued','running','cancelling')", (project['id'],)).fetchone():
         blockers.append('초기 프로젝트 생성이 진행 중이에요.')
     if any(_lease_active(r) for r in rows):
@@ -292,9 +290,9 @@ def _project_deletion(c, key):
     token = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return {"project": _project_row(project), "issue_count": len(rows),
             "external_dependency_count": sum(d["issue_id"] not in ids for d in deps),
-            "confirmation_required": bool(rows or snapshot["project_audits"]), "confirmation_token": token,
+            "confirmation_required": bool(rows), "confirmation_token": token,
             "can_delete": not blockers, "blockers": blockers,
-            "warning": "모든 Issue·Task와 계획서·댓글·결정·실행·대기열·점검 보고서·발행 링크 및 다른 프로젝트의 의존 연결도 함께 삭제돼요." if rows or snapshot['project_audits'] else ""}
+            "warning": "모든 Issue·Task와 계획서·댓글·결정·실행·대기열 및 다른 프로젝트의 의존 연결도 함께 삭제돼요." if rows else ""}
 
 
 def check_project_deletion(actor, key):
@@ -317,8 +315,6 @@ def delete_project(actor, key, confirmation_token=None):
         if state["confirmation_required"] and confirmation_token != state["confirmation_token"]:
             raise StoreError("프로젝트 내용이 있어요. 삭제 사전 확인을 다시 하고 동의해 주세요.", 409)
         pid = state["project"]["id"]
-        c.execute("DELETE FROM project_audit_publications WHERE project_id=?", (pid,))
-        c.execute("DELETE FROM project_audits WHERE project_id=?", (pid,))
         c.execute("DELETE FROM issues WHERE project_id=?", (pid,))
         c.execute("DELETE FROM projects WHERE id=?", (pid,))
     _cleanup_attachments()
@@ -441,10 +437,6 @@ def _list_action_context(c, rows):
                        f"WHERE (j.status='queued' OR (j.status='started' AND (r.id IS NULL OR r.status='running'))) "
                        f"AND j.issue_id IN ({marks})", ids):
         contexts[r["issue_id"]]["has_active_job"] = True
-    import qa
-    ready = qa.readiness(c, [r['id'] for r in rows if r['parent_id'] is None and r['status'] == 'in_review'])
-    for iid, start in ready.items():
-        contexts[iid]['qa'] = start
     return {r["id"]: {**contexts[r["id"]], "parent": contexts.get(r["parent_id"])} for r in rows}
 
 
@@ -591,8 +583,6 @@ def get_issue(ref) -> dict:
         for item in [d, *d['children']]:
             item['token_usage'] = tokens[item['id']]
             item['task_token_usage'] = task_tokens[item['id']]
-        from usage import manual_sessions
-        d['manual_sessions'] = manual_sessions(c, d['id'])
         d['superseded_children'] = [ch for ch in d['children'] if ch['superseded_by_plan']]
         d['children'] = [ch for ch in d['children'] if not ch['superseded_by_plan']]
         par = c.execute(_ISSUE_SELECT + " WHERE i.id=?", (row["parent_id"],)).fetchone() if row["parent_id"] else None
@@ -1048,9 +1038,7 @@ def complete_tree(actor, ref, note="", confirm_checks=False) -> list[dict]:
 
 def post_plan(actor, ref, body) -> dict:
     import execute
-    import regression
     body = _text(body, "계획서", required=True)
-    regression.parse_plan(body)
     with db.connect() as c:
         repo = c.execute("SELECT p.local_path FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id=?", (_find(c, ref)["id"],)).fetchone()[0]
     base = execute.base_sha(repo)   # 에이전트가 적는 값이 아니라 서버가 지금 base를 적는다
@@ -1077,7 +1065,7 @@ VERDICT_LABEL = {"approve": "승인", "approve_notes": "조건부 승인", "reje
 
 
 def parse_tasks(body: str) -> list[dict]:
-    """계획서의 `## Tasks` 절: `N. 제목 | 파일: … | 확인: … | 선행: 1, 2` 한 줄이 Task 하나."""
+    """계획서의 `## Tasks` 절: `N. 제목 | 파일: … | 선행: 1, 2` 한 줄이 Task 하나."""
     m = re.search(r"^#{1,6}[ \t]*Tasks?[ \t]*$", body or "", re.M)
     if not m:
         return []
@@ -1162,8 +1150,6 @@ def _task_body(ref, version, t, note) -> str:
     body = f"{ref} 계획서 v{version}의 Task {t['n']}."
     if t["files"]:
         body += f"\n\n**바꿀 파일**: {t['files']}"
-    if t["check"]:
-        body += f"\n\n**확인**: {t['check']}"
     if note.strip():
         body += f"\n\n**{ref}의 조건부 승인 메모(계획서보다 우선)**:\n{note.strip()}"
     return body

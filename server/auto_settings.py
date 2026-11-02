@@ -10,19 +10,10 @@ import model_catalog
 from issues import StoreError, actor_label
 
 PROVIDERS = ("claude", "codex")
-ORDER_FIELDS = ("provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "qa_provider_order")
-BOOL_FIELDS = ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "token_exhaustion_fallback", "auto_troubleshoot", "auto_qa", "qa_enabled")
+ORDER_FIELDS = ("provider_order", "orchestrator_provider_order")
+BOOL_FIELDS = ("auto_review", "auto_execute", "auto_approve", "auto_plan_approve")
 # agent_orders: {역할: [Agent id, …]} — 저장하면 그 역할의 provider 순서도 처음 나오는 provider 순으로 맞춘다.
-FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "troubleshooter_provider_order", "description_provider_order", "token_exhaustion_fallback", "agent_orders", "auto_troubleshoot", "auto_qa", "qa_provider_order", "qa_enabled"}
-
-
-def qa_enabled(c=None):
-    """QA 호출은 사람이 켠 전역 설정에서만 허용한다. 기본은 OFF다."""
-    if c is None:
-        with db.connect() as c:
-            return qa_enabled(c)
-    row = c.execute("SELECT value FROM app_settings WHERE key='qa_enabled'").fetchone()
-    return bool(row and row['value'] == 'true')
+FIELDS = {"auto_review", "auto_execute", "auto_approve", "auto_plan_approve", "provider_order", "orchestrator_provider_order", "agent_orders"}
 
 
 def _project(c, key):
@@ -57,18 +48,15 @@ def _settings(c, project):
     row = c.execute("SELECT * FROM global_auto_settings WHERE singleton=1", ()).fetchone()
     roles = c.execute("SELECT * FROM global_auto_role_settings WHERE singleton=1", ()).fetchone()
     result = _base_settings(row, roles, project)
-    result['qa_enabled'] = qa_enabled(c)
     candidates = _candidates(c)
     result["agent_orders"] = {f: _agent_order(c, project, f, result[f], candidates) for f in ORDER_FIELDS}
     return result
 
 
 def agent_for(c, issue_id, provider):
-    """이슈의 역할(Description 요청이면 description, 아니면 검토·실행) 순서에서 그 provider의 첫 Agent 모델. 없으면 None."""
+    """검토·실행 역할 순서에서 그 provider의 첫 Agent 모델. 없으면 None."""
     project = c.execute("SELECT p.id, p.key FROM projects p JOIN issues i ON i.project_id=p.id WHERE i.id=?", (issue_id,)).fetchone()
-    described = c.execute("SELECT 1 FROM project_description_requests WHERE issue_id=?", (issue_id,)).fetchone()
-    role = "description_provider_order" if described else "provider_order"
-    agent = next((a for a in _settings(c, project)["agent_orders"][role] if a["provider"] == provider), None)
+    agent = next((a for a in _settings(c, project)["agent_orders"]["provider_order"] if a["provider"] == provider), None)
     return agent
 
 
@@ -82,17 +70,11 @@ def _base_settings(row, roles, project):
     return {
         "project_key": project["key"] if project else None,
         "scope": "global",
-        "auto_qa": bool(row["auto_qa"]) if row else False,
-        "qa_provider_order": json.loads(roles["qa_provider_order_json"]) if roles else list(PROVIDERS),
         "auto_review": bool(row["auto_review"]) if row else False,
         "auto_execute": bool(row["auto_execute"]) if row else False,
-        "auto_troubleshoot": bool(row['auto_troubleshoot']) if row and 'auto_troubleshoot' in row.keys() else False,
         "auto_approve": bool(row["auto_approve"]) if row else False,
         "provider_order": json.loads(row["provider_order_json"]) if row else list(PROVIDERS),
         "orchestrator_provider_order": json.loads(roles["orchestrator_provider_order_json"]) if roles else list(PROVIDERS),
-        "troubleshooter_provider_order": json.loads(roles["troubleshooter_provider_order_json"]) if roles else list(PROVIDERS),
-        "description_provider_order": json.loads(roles["description_provider_order_json"]) if roles else list(PROVIDERS),
-        "token_exhaustion_fallback": bool(roles["token_exhaustion_fallback"]) if roles else False,
         "auto_plan_approve": bool(row["auto_plan_approve"]) if row else False,
         "auto_plan_approve_available": True,
         "auto_approve_available": True,
@@ -158,28 +140,10 @@ def update_settings(actor, key, changes):
             updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
             (1, updated["auto_review"], updated["auto_execute"], updated["auto_approve"],
              json.dumps(updated["provider_order"], separators=(",", ":")), who, now, updated["auto_plan_approve"]))
-        c.execute("""INSERT INTO global_auto_role_settings
-            (singleton,orchestrator_provider_order_json,troubleshooter_provider_order_json,token_exhaustion_fallback,
-             description_provider_order_json)
-            VALUES(?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET
-            orchestrator_provider_order_json=excluded.orchestrator_provider_order_json,
-            troubleshooter_provider_order_json=excluded.troubleshooter_provider_order_json,
-            token_exhaustion_fallback=excluded.token_exhaustion_fallback,
-            description_provider_order_json=excluded.description_provider_order_json""",
-            (1,
-             json.dumps(updated["orchestrator_provider_order"], separators=(",", ":")),
-             json.dumps(updated["troubleshooter_provider_order"], separators=(",", ":")),
-             updated["token_exhaustion_fallback"],
-             json.dumps(updated["description_provider_order"], separators=(",", ":"))))
-        c.execute('UPDATE global_auto_settings SET auto_troubleshoot=? WHERE singleton=1', (updated['auto_troubleshoot'],))
-        c.execute("UPDATE global_auto_settings SET auto_qa=? WHERE singleton=1", (updated["auto_qa"],))
-        if 'qa_enabled' in changes:
-            c.execute("""INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES('qa_enabled',?,?,?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
-                (json.dumps(updated['qa_enabled']), now, who))
-            if not updated['qa_enabled']:
-                c.execute("UPDATE qa_rounds SET status='stale',ended_at=?,note='QA가 비활성화되어 대기를 취소했어요.' WHERE status='queued'", (now,))
-        c.execute("UPDATE global_auto_role_settings SET qa_provider_order_json=? WHERE singleton=1", (json.dumps(updated["qa_provider_order"], separators=(",", ":")),))
+        c.execute("""INSERT INTO global_auto_role_settings(singleton,orchestrator_provider_order_json)
+            VALUES(?,?) ON CONFLICT(singleton) DO UPDATE SET
+            orchestrator_provider_order_json=excluded.orchestrator_provider_order_json""",
+            (1, json.dumps(updated["orchestrator_provider_order"], separators=(",", ":"))))
         after = _settings(c, project)
         c.execute("""INSERT INTO project_auto_settings_events
             (project_id,actor,before_json,after_json,created_at,plan_id_floor,scope)

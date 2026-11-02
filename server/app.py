@@ -17,20 +17,13 @@ import auth
 import config
 import db
 import timing
-import manual_usage
 from mcp_tools import mcp_app
 
 
 @asynccontextmanager
 async def lifespan(app):
     db.init()
-    import reproduce
-    reproduce.recover()
-    import qa_runner
-    qa_runner.recover()
     issues.repair_terminal_children()
-    import project_audit_runner
-    project_audit_runner.recover()
     import rollback
     rollback.start_recovery(startup=True)
     orchestrate.take_over()
@@ -76,10 +69,6 @@ async def _resolve_actor(request: Request) -> tuple[dict | None, str]:
 async def authenticate(request: Request, call_next):
     path = request.url.path
     request.state.actor = None
-    if path == "/api/manual-usage/ingest" and request.method == "POST":
-        if not await run_in_threadpool(manual_usage.authorized, request.headers.get("authorization", "")):
-            return JSONResponse({"detail": "수신 키가 필요해요."}, status_code=401)
-        return await call_next(request)
     bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
     if path == "/mcp" or path.startswith("/mcp/"):
         # MCP는 에이전트 키만 — 쿠키로는 받지 않는다(다른 사이트가 브라우저 쿠키로 도구를 부르지 못하게).
@@ -150,29 +139,6 @@ async def json_body(request: Request) -> dict:
     if not isinstance(body, dict):
         raise HTTPException(400, "JSON 객체가 필요해요.")
     return body
-
-
-@app.post("/api/manual-usage/ingest")
-async def api_manual_usage_ingest(request: Request):
-    return await run_in_threadpool(manual_usage.ingest, await json_body(request))
-
-
-@app.get('/api/manual-usage/connection')
-async def api_manual_usage_connection(request: Request):
-    human_only(request)
-    return await run_in_threadpool(manual_usage.connection_status)
-
-
-@app.post('/api/manual-usage/connection')
-async def api_manual_usage_connect(request: Request):
-    human_only(request)
-    return await run_in_threadpool(manual_usage.set_connection, True)
-
-
-@app.delete('/api/manual-usage/connection')
-async def api_manual_usage_disconnect(request: Request):
-    human_only(request)
-    return await run_in_threadpool(manual_usage.set_connection, False)
 
 
 @app.get("/api/health")
@@ -528,61 +494,6 @@ async def api_update_project(key: str, request: Request):
     return issues.update_project(actor(request), key.upper(), await json_body(request))
 
 
-@app.get('/api/projects/{key}/audits/preflight')
-def api_audit_preflight(key: str, request: Request, provider: str = 'claude', model: str | None = None):
-    import project_audit_runner
-    return project_audit_runner.preflight(human_only(request), key, provider, model)
-
-
-@app.get('/api/projects/{key}/audits')
-def api_audits(key: str, request: Request, kind: str | None = None):
-    import project_audit
-    return {'audits': project_audit.list_audits(project_audit.project_id(human_only(request), key), kind)}
-
-
-@app.post('/api/projects/{key}/audits')
-async def api_start_audit(key: str, request: Request):
-    import project_audit_runner
-    a = human_only(request)
-    b = await json_body(request)
-    return await run_in_threadpool(project_audit_runner.start, a, key, b.get('request_id'),
-                                   b.get('provider', 'claude'), b.get('model'), b.get('kind', 'goal'))
-
-
-@app.post('/api/projects/{key}/audits/{audit_id}/dismiss')
-async def api_dismiss_audit(key: str, audit_id: int, request: Request):
-    import project_audit
-    a = human_only(request)
-    b = await json_body(request)
-    return await run_in_threadpool(project_audit.dismiss, a, key, audit_id, b.get('candidate_id'), b.get('reason'))
-
-
-@app.get('/api/projects/{key}/audits/{audit_id}')
-def api_audit(key: str, audit_id: int, request: Request):
-    import project_audit
-    return project_audit.detail(human_only(request), key, audit_id)
-
-
-@app.post('/api/projects/{key}/audits/{audit_id}/cancel')
-def api_cancel_audit(key: str, audit_id: int, request: Request):
-    import project_audit_runner
-    return project_audit_runner.cancel(human_only(request), key, audit_id)
-
-
-@app.post('/api/projects/{key}/audits/{audit_id}/publish')
-async def api_publish_audit(key: str, audit_id: int, request: Request):
-    import project_audit
-    a = human_only(request)
-    b = await json_body(request)
-    return await run_in_threadpool(project_audit.publish, a, key, audit_id, b.get('candidate_ids'))
-
-
-@app.get("/api/projects/{key}/documents")
-def api_project_documents(key: str):
-    import project_docs
-    return project_docs.list_documents(key)
-
-
 @app.get("/api/projects/{key}/usage")
 def api_project_usage(key: str, limit: int = 50, offset: int = 0):
     import usage
@@ -600,13 +511,6 @@ def api_trends(from_date: str | None = Query(None, alias='from'),
                to_date: str | None = Query(None, alias='to'), project: str | None = None):
     import usage
     return usage.trends(from_date, to_date, project)
-
-
-@app.get('/api/trends/improve')
-def api_improve_summary(from_date: str | None = Query(None, alias='from'),
-                        to_date: str | None = Query(None, alias='to'), project: str | None = None):
-    import usage
-    return usage.improve_summary(from_date, to_date, project)
 
 
 @app.get("/api/trends/stages")
@@ -669,33 +573,6 @@ async def api_update_auto_settings(key: str, request: Request):
     return result
 
 
-@app.get("/api/projects/{key}/documents/content")
-def api_project_document(key: str, path: str):
-    import project_docs
-    return project_docs.read_document(key, path)
-
-
-@app.delete("/api/projects/{key}/documents/content")
-async def api_delete_project_document(key: str, request: Request):
-    import project_docs
-    human_only(request)
-    body = await json_body(request)
-    return await run_in_threadpool(project_docs.delete_document, key, body.get('path'), body.get('blob'))
-
-
-@app.post("/api/projects/{key}/documents/request")
-async def api_request_project_documents(key: str, request: Request):
-    import project_docs
-    b = await json_body(request)
-    return project_docs.request_documents(actor(request), key, b.get('provider'))
-
-
-@app.post("/api/projects/{key}/description/request")
-async def api_request_project_description(key: str, request: Request):
-    import project_description
-    return await run_in_threadpool(project_description.request_description, human_only(request), key)
-
-
 @app.get("/api/projects/{key}/delete-check")
 def api_project_delete_check(key: str, request: Request):
     return issues.check_project_deletion(actor(request), key)
@@ -712,31 +589,6 @@ async def api_delete_project(key: str, request: Request):
 def api_model_catalog():
     import model_catalog
     return model_catalog.catalog()
-
-
-@app.get("/api/harness")
-def api_harness(request: Request, project: str):
-    human_only(request)
-    import harness_view
-    return harness_view.build(project)
-
-
-@app.put("/api/harness/file")
-async def api_harness_save(request: Request):
-    human_only(request)
-    import harness_edit
-    body = await request.json()
-    if not isinstance(body, dict):
-        raise HTTPException(400, "본문 형식이 달라요.")
-    return await run_in_threadpool(harness_edit.save, str(body.get("scope") or ""), body.get("path"),
-                                   body.get("content"), str(body.get("base_sha") or ""))
-
-
-@app.get("/api/harness/history")
-def api_harness_history(request: Request, scope: str, path: str):
-    human_only(request)
-    import harness_edit
-    return harness_edit.history(scope, path)
 
 
 @app.get("/api/issue-types")
@@ -798,8 +650,6 @@ def api_issue(ref: str):
                                              "model": model, "model_name": names.get(model, model)}
     with timing.span("execute"):
         it["execute"] = execute.panel(it)   # Task의 "Claude에게 실행 맡기기"(DEV-23)
-        import troubleshoot
-        it['troubleshooting'] = troubleshoot.panel(it)
     with timing.span("job"):
         it["job"] = jobs.job_for(it["id"])   # 대기열 자리(DEV-43)
     with timing.span("merge"):
@@ -818,44 +668,9 @@ def api_issue(ref: str):
     return it
 
 
-@app.get("/api/issues/{ref}/qa")
-def api_qa(ref: str):
-    import qa
-    return qa.panel(ref)
-
-
-@app.post("/api/issues/{ref}/qa")
-def api_qa_request(ref: str, request: Request):
-    import qa
-    return qa.request(human_only(request), ref)
-
-
-@app.post("/api/issues/{ref}/qa/rework")
-async def api_qa_rework(ref: str, request: Request):
-    import qa
-    who = human_only(request)
-    b = await json_body(request)
-    if not isinstance(b.get("qa_id"), int) or not isinstance(b.get("task_refs"), list) or not all(isinstance(t, str) for t in b["task_refs"]):
-        raise HTTPException(400, "qa_id(정수)와 task_refs(문자열 목록)가 필요해요.")
-    return qa.request_rework(who, ref, b["qa_id"], b["task_refs"])
-
-
 @app.get("/api/issues/{ref}/runs")
 def api_runs(ref: str):
     return {"runs": review.list_runs(ref)}
-
-
-@app.get('/api/issues/{ref}/troubleshooting')
-def api_troubleshooting(ref: str):
-    import troubleshoot
-    return troubleshoot.panel(issues.get_issue(ref))
-
-
-@app.post('/api/issues/{ref}/troubleshoot', status_code=202)
-async def api_troubleshoot(ref: str, request: Request):
-    import troubleshoot
-    me = human_only(request)
-    return await run_in_threadpool(troubleshoot.request, me, ref, await json_body(request))
 
 
 @app.patch("/api/issues/{ref}")
@@ -962,21 +777,6 @@ async def api_register_repair(ref: str, request: Request):
     return await run_in_threadpool(execute.register_repair, actor(request), ref)
 
 
-@app.post('/api/issues/{ref}/reproduce-checks', status_code=202)
-async def api_reproduce_checks(ref: str, request: Request):
-    import reproduce
-    me = human_only(request)
-    body = await json_body(request)
-    return await run_in_threadpool(reproduce.start, me, ref, body.get('token'))
-
-
-@app.get('/api/issues/{ref}/reproduce-checks/log')
-def api_reproduction_log(ref: str, request: Request):
-    import reproduce
-    human_only(request)
-    return Response(reproduce.log(ref), media_type='text/plain', headers={'Cache-Control': 'no-store'})
-
-
 @app.get("/api/jobs")
 def api_jobs():
     with db.connect() as c:
@@ -1011,28 +811,6 @@ def api_queue_settings():
     return jobs.queue_settings()
 
 
-def _regression_project(project: str):
-    """?project=키 — 없으면 dev 기본. 모르는 프로젝트는 404."""
-    project = (project or '').strip().upper()
-    if project and project not in {p['key'] for p in issues.list_projects()}:
-        raise issues.StoreError('없는 프로젝트예요.', 404)
-    return project or None
-
-
-@app.get('/api/settings/regression')
-def api_regression_settings(project: str = ''):
-    import regression
-    return regression.settings(_regression_project(project))
-
-
-@app.put('/api/settings/regression')
-async def api_update_regression_settings(request: Request, project: str = ''):
-    import regression
-    me = human_only(request)
-    body = await json_body(request)
-    return await run_in_threadpool(regression.update, me, body.get('checks'), _regression_project(project))
-
-
 @app.put("/api/settings/queue")
 async def api_update_queue_settings(request: Request):
     me = human_only(request)
@@ -1041,19 +819,6 @@ async def api_update_queue_settings(request: Request):
     if "queue_concurrency" in b:
         fields["total"] = b["queue_concurrency"]
     return await run_in_threadpool(lambda: jobs.set_concurrency(me, **fields))
-
-
-@app.get("/api/settings/test-jobs")
-def api_test_jobs_settings(request: Request):
-    human_only(request)
-    return orchestrate.test_jobs_settings()
-
-
-@app.put("/api/settings/test-jobs")
-async def api_update_test_jobs(request: Request):
-    me = human_only(request)
-    b = await json_body(request)
-    return await run_in_threadpool(orchestrate.set_test_jobs, me, b.get("project"), b.get("value"))
 
 
 @app.post("/api/issues/{ref}/decision")

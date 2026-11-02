@@ -22,7 +22,6 @@ from pathlib import Path
 import config
 import db
 import issues
-import project_docs
 import prompts
 
 BASE_BRANCH = os.environ.get("DEV_EXEC_BASE") or "main"
@@ -37,8 +36,8 @@ WORKTREE_DIR = (config.REPO_ROOT.parent.resolve() / ".dev-worktrees" if _DATA.is
 # 그 옵션으로도 남는 사용자 전역 ~/.claude/CLAUDE.md(claudeMdExcludes), 대화형 세션의 자동 메모리. 규칙은 공통 하네스 + 프로젝트 AGENTS.md만.
 USER_ISOLATION = ["--setting-sources", "project", "--disable-slash-commands",
                   "--settings", json.dumps({"claudeMdExcludes": [(Path.home() / ".claude" / "CLAUDE.md").as_posix()], "autoMemoryEnabled": False})]
-ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(python tests/*)", "Bash(python -m unittest tests.*)", "Bash(python scripts/capture_ui.py --route *)", "Bash(git status:*)", "Bash(git diff:*)",
-                 "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(node --check:*)", "Bash(node --test tests/*)"] + [f"mcp__dev__{t}" for t in (
+ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git status:*)", "Bash(git diff:*)",
+                 "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)"] + [f"mcp__dev__{t}" for t in (
     "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "add_comment", "set_status", "link_commit", "claim_issue", "release_issue")]
 BLOCKED_TOOLS = ["WebFetch", "WebSearch", "NotebookEdit"] + [f"Bash({c}:*)" for c in (
     "git push", "git checkout", "git switch", "git reset", "git rebase", "git merge", "git worktree", "git branch", "git remote",
@@ -220,48 +219,6 @@ def with_notice(cmd: list[str], provider: str, notice: str) -> list[str]:
     return cmd[:2] + [notice + cmd[2]] + cmd[3:] if provider == "claude" else cmd[:-1] + [notice + cmd[-1]]
 
 
-def resume_reason(ref: str, run_id: int) -> str | None:
-    """토큰 소진 이관 전에 같은 Task worktree를 버리지 않고 이어받을 수 있는지 본다. 불명확하면 이유를 돌려준다."""
-    with db.connect() as c:
-        run = c.execute('SELECT task_start_sha FROM runs WHERE id=?', (run_id,)).fetchone()
-        if c.execute('SELECT 1 FROM execution_completion WHERE run_id=?', (run_id,)).fetchone():
-            return '이전 실행의 완료·병합 기록이 있어요.'
-    path = worktree_path(ref)
-    if not path.exists():
-        return 'Task worktree가 없어 이전 실행 결과를 확인할 수 없어요.'
-    if _run_git(path, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip() != branch_name(ref):
-        return 'Task worktree가 다른 브랜치에 있어요.'
-    start = run['task_start_sha'] if run else None
-    if not start or _run_git(path, 'merge-base', '--is-ancestor', start, 'HEAD').returncode:
-        return 'Task worktree의 커밋이 이전 실행 시작점에서 이어지지 않아요.'
-    return None
-
-
-def handoff_notice(ref: str, issue_id: int) -> str:
-    """토큰 소진 이관으로 앞 실행의 worktree를 이어받는 실행이면 그 사실과 앞 실행이 남긴 커밋·미커밋 변경을 알린다(DEV-199).
-    서버의 보존 커밋(refresh_worktree) 전에 불러야 미커밋 변경이 그대로 보인다. 이관 실행이 아니면 빈 문자열."""
-    with db.connect() as c:
-        latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (issue_id,)).fetchone()[0]
-        if not latest or not c.execute('SELECT 1 FROM provider_migration_attempts WHERE previous_run_id=?', (latest,)).fetchone():
-            return ""
-        run = c.execute('SELECT provider, task_start_sha FROM runs WHERE id=?', (latest,)).fetchone()
-    path = worktree_path(ref)
-    if not path.exists():
-        return ""
-    commits = _run_git(path, "log", "--format=%h %s", f"{run['task_start_sha']}..HEAD").stdout.splitlines() if run["task_start_sha"] else []
-    changes = [line for line in _run_git(path, "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
-               if line and not line[3:].startswith(CAPTURE_PATHS)]
-    shown = lambda lines: "\n".join(f"- {line}" for line in lines[:30]) + ("\n- …" if len(lines) > 30 else "")
-    head = f"먼저 알 것: 이 Task의 앞 실행({(run['provider'] or '').title()})이 사용 한도 소진으로 중간에 멈췄고, 그 worktree를 그대로 이어받았다.\n"
-    if not commits and not changes:
-        return head + "앞 실행이 남긴 커밋·변경은 없다 — Task를 처음부터 구현한다.\n\n"
-    return (head + (f"앞 실행이 남긴 커밋:\n{shown(commits)}\n" if commits else "")
-            + (f"커밋하지 않은 변경(git status):\n{shown(changes)}\n" if changes else "")
-            + "이 변경은 미완성일 수 있다. `git diff`·`git log -p`로 먼저 읽고 Task 기준으로 남은 일을 판단한다 — "
-            "Task에 맞게 된 부분은 다시 짜지 않고 이어서 구현하고, 덜 됐거나 Task와 어긋난 부분만 고친다. "
-            "앞 실행의 변경도 이번 Task의 결과로 보고 검사·커밋에 포함한다.\n\n")
-
-
 def safe_env(repo: str) -> dict:
     """자식 프로세스 환경 — 모든 remote의 pushurl을 죽은 주소로, 자격증명 도우미·토큰은 없앤다."""
     pairs = [(f"remote.{r}.pushurl", "disabled://no-push") for r in _git(repo, "remote").split()] + [("credential.helper", "")]
@@ -274,49 +231,6 @@ def safe_env(repo: str) -> dict:
 
 # 프로젝트별 ignore 설정과 무관하게 캡처 계약의 산출물을 제외한다.
 CAPTURE_PATHS = ('.ui-captures', 'tests/shots')
-# 전체 검사는 서버가 완료 등록 전에 수행한다. 에이전트는 관련 검사만 수행한다.
-def test_scope(ref: str) -> str:
-    import regression
-    policy = regression.resolve(ref, worktree_path(ref) if worktree_path(ref).exists() else None)['checks']
-    scope = ("Task의 '확인'에 명시된 검사와 이번에 직접 작성·수정한 검사만 실행한다. "
-            "공통 모듈을 import·참조한다는 이유로 다른 회귀 검사까지 확대하지 않는다. "
-            "전체 검사(tests/test_ui.py 포함)는 서버가 완료 등록 전에 돌리니 직접 돌리지 않는다. "
-            "재실행이면 이전 실행 이후 바뀐 부분과 관련된 검사만 다시 돌린다.") if policy['agent_related']['enabled'] else 'Settings의 판단으로 Task 관련 검사를 생략한다. 테스트 명령은 실행하지 않고 미실시로 기록한다.'
-    disabled = [key[5:] for key, item in policy.items() if key.startswith('file:') and not item['enabled']]
-    if disabled:
-        scope += ' Settings에서 꺼진 테스트 파일은 실행하지 않는다: ' + ', '.join(disabled) + '.'
-    scope += ' 전체 검사는 에이전트가 직접 실행하지 않는다. 서버도 Settings에서 켜진 단계·파일만 실행한다. 아래 필수 검사 지시보다 Settings의 꺼짐 설정이 우선하며, 꺼진 검사는 미실시로 기록하고 완료할 수 있다.'
-    scope += '\n이번 Task 검사 선택: ' + json.dumps({k: v for k, v in policy.items() if k.startswith('agent_') or k.startswith('file:')}, ensure_ascii=False)
-    return scope
-
-
-def api_test_instructions(ref=None):
-    import regression
-    return '새 HTTP 라우트를 만들면 실제 앱에 요청을 보내는 검사(TestClient 등)를 하나 둔다.' if regression.enabled('agent_api', ref) else 'Settings의 판단으로 새 API 요청 검사를 생략하고 미실시로 기록한다.'
-
-
-# 등록부(R02~R05)의 에이전트 실행 명령 — Claude 허용 도구(ALLOWED_TOOLS)와 Codex 지시문이 같은 목록을 쓴다.
-AGENT_COMMANDS = ('python tests/test_이름.py', 'python -m unittest tests.test_이름', 'node --test tests/test_이름.js', 'node --check 파일',
-                  'python scripts/capture_ui.py --route 경로')
-MOAI_COMMANDS = ('python -m unittest backend.tests.test_이름', 'npm --prefix apps/web run typecheck', 'npm --prefix apps/web run build')
-FAILURE_RULE = '필수 검사 실패·미실행이면 완료로 내지 않는다 — Claude는 on_hold, Codex는 outcome=blocked로 이유를 적는다.'
-
-
-def checks_instructions(ref):
-    """Claude·Codex에 똑같이 넣는 검사 지시 — 등록부 번호(R02·R03·R05)와 실행 명령, 실패 처리 한 규칙."""
-    import checks
-    names = {r['number']: r['name'] for r in checks.REGISTRY}
-    commands = AGENT_COMMANDS + (MOAI_COMMANDS if ref.startswith('MO-') else ())
-    return '\n'.join([
-        f"검사는 Settings 회귀검사 등록부의 번호 있는 항목만 한다. 완료·요약에는 번호로 적는다(예: R02 {names['R02']}).",
-        f"R02 {names['R02']}: " + test_scope(ref),
-        f"R03 {names['R03']}: " + api_test_instructions(ref),
-        f"R05 {names['R05']}: 바꾼 JS 파일은 `node --check 파일`로 확인한다.",
-        '검사 명령: ' + ', '.join(f'`{c}`' for c in commands) + '. (`python3`·경로 형태 `tests/x.py`를 -m에 쓰는 것은 막혀 있다.)',
-        FAILURE_RULE,
-    ]) + '\n'
-
-
 CODE_PATHSPEC = ('.',*(f':(top,exclude){p}/**' for p in CAPTURE_PATHS))
 
 
@@ -327,25 +241,14 @@ def reject_capture_changes(cwd, *revision):
         raise issues.StoreError('캡처 산출물(.ui-captures/, tests/shots/)을 커밋에서 제외해 주세요.', 409)
 
 
-def capture_instructions(viewer, ref=None):
-    import regression
-    reason = regression.capture_skip_reason(ref)
-    if reason:
-        return reason + ' 캡처를 실행하지 않고 미실시로 기록한다. 미실시 사유는 위 문장을 그대로 적는다.\n'
-    return prompts.render("capture.md", viewer=viewer)
-
-
 def prompt_for(ref: str, parent_ref: str | None) -> str:
     import review
-    return review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("Read", ref) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref, checks=checks_instructions(ref))
+    return review.preamble(ref, execution=True) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref)
 
 
 def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
     import review   # 검토 모드와 같은 claude 실행 파일·dev MCP 설정을 쓴다
     allowed = list(ALLOWED_TOOLS)
-    if ref.startswith('MO-'):
-        allowed += ['Bash(python -m unittest backend.tests.*)', 'Bash(python backend/tests/*)',
-                    'Bash(npm --prefix apps/web run typecheck)', 'Bash(npm --prefix apps/web run build)']
     return [review.claude_bin(), "-p", prompt_for(ref, parent_ref), "--permission-mode", "acceptEdits", *USER_ISOLATION,
             "--strict-mcp-config", "--mcp-config", mcp_config, "--allowedTools", *allowed, "--disallowedTools", *BLOCKED_TOOLS,
             "--max-budget-usd", str(BUDGET_USD), "--no-session-persistence", "--output-format", "stream-json", "--verbose"]
@@ -354,8 +257,7 @@ def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
 def codex_command_for(ref: str, parent_ref: str | None) -> list[str]:
     """코드 수정·검사는 worktree 안에서, 커밋과 결과 등록은 서버가 수행한다."""
     import review
-    prompt = review.preamble(ref, execution=True) + project_docs.reference_instructions(execution=True, ref=ref) + capture_instructions("이미지 보기 도구", ref) + prompts.render("execute_codex.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref,
-        checks=checks_instructions(ref))
+    prompt = review.preamble(ref, execution=True) + prompts.render("execute_codex.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref)
     cmd = review.codex_command(prompt, ["whoami", "get_issue", "list_projects", "read_attachment"], web="cached")
     return cmd[:-1] + ["--output-schema", str(Path(__file__).with_name("codex_execute.schema.json")),
                        cmd[-1]]
@@ -379,7 +281,7 @@ def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> str | N
     if not isinstance(result, dict) or result.get("outcome") != "ready":
         why = result.get("summary", "완료 결과가 없어요.") if isinstance(result, dict) else "완료 결과가 없어요."
         raise issues.StoreError(str(why), 409)
-    if not isinstance(result.get("summary"), str) or not result["summary"].strip() or not isinstance(result.get("tests"), list) or not all(isinstance(t, str) for t in result["tests"]):
+    if not isinstance(result.get("summary"), str) or not result["summary"].strip():
         raise issues.StoreError("실행 결과 형식이 올바르지 않아요.", 409)
     for message in reversed(messages[:-1]):
         try:
@@ -387,10 +289,8 @@ def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> str | N
         except ValueError:
             continue
         if (isinstance(previous, dict) and previous.get('outcome') == 'ready'
-                and isinstance(previous.get('summary'), str) and previous['summary'].strip()
-                and isinstance(previous.get('tests'), list) and all(isinstance(t, str) for t in previous['tests'])):
+                and isinstance(previous.get('summary'), str) and previous['summary'].strip()):
             result['summary'] = previous['summary'] + '\n\n재시도 보완:\n' + result['summary']
-            result['tests'] = list(dict.fromkeys(previous['tests'] + result['tests']))
             break
     if Path(cwd).resolve() != worktree_path(ref).resolve() or _git(cwd, "rev-parse", "--abbrev-ref", "HEAD") != branch_name(ref):
         raise issues.StoreError("Task worktree 또는 브랜치가 달라졌어요.", 409)
@@ -415,7 +315,7 @@ def finalize_codex(actor: dict, ref: str, cwd, out: str, run_id: int) -> str | N
                 raise issues.StoreError("커밋할 코드 변경이 없어요.", 409)
     sha = _git(cwd, "rev-parse", "HEAD")
     issues.link_commit(actor, ref, sha, message=message)
-    note = result["summary"] + "\n\n검사:\n" + "\n".join(result["tests"])
+    note = result["summary"]
     register_completion(actor, ref, cwd, run_id, note)
 
 
@@ -548,22 +448,15 @@ def _register_repair(actor, ref, rid, sha, ended_at=None):
     import orchestrate
     cwd = worktree_path(ref)
     try:
-        failed = orchestrate.run_tests(str(cwd), stage='server_completion', ref=ref)
-        if failed:
-            raise issues.StoreError(failed, 409)
         if _git(cwd, 'rev-parse', 'HEAD') != sha:
-            raise issues.StoreError('검사 중 수정 커밋이 바뀌었어요.', 409)
-        import regression
-        checks = regression.load_record('regression-selection:' + ref + ':server_completion').get('results', {})
+            raise issues.StoreError('등록 중 수정 커밋이 바뀌었어요.', 409)
         note = '수동 수정 커밋의 완료 등록을 마쳤어요. 에이전트 재호출 없음.'
-        if not any(result in ('passed', 'reused') for result in checks.values()):
-            note += '\n선택된 서버 검사 파일이 없어 자동 검사는 수행되지 않았어요. 관련 검사 근거는 Task 댓글에서 확인해 주세요.'
         register_completion(actor, ref, cwd, rid, note)
         if ended_at:
             with db.connect() as c:
                 c.execute('UPDATE runs SET ended_at=? WHERE id=?', (ended_at, rid))
     except Exception as error:
-        from project_audit import _safe
+        from repo_snapshot import _safe
         _repair_failed(actor, ref, rid, str(_safe(str(error)))[:4000], ended_at)
         return
     orchestrate.handle(actor, ref)
@@ -603,21 +496,6 @@ def register_completion(actor, ref, cwd, run_id, note):
     stray = out_of_scope(issue, _git(cwd, 'diff', '--name-only', f'{BASE_BRANCH}...HEAD').splitlines())   # 병합해 온 base 변경은 빼고 Task 변경만
     if stray:   # 막지는 않는다(새 검사 파일 등 정당한 추가가 있다) — 검토하는 사람이 보게 남긴다
         note += '\n\n⚠️ Task의 바꿀 파일 밖 변경: ' + ', '.join(f'`{f}`' for f in stray[:20]) + (' 외' if len(stray) > 20 else '')
-    import regression
-    off = regression.resolve(ref, cwd)['changed_tests_off']
-    if off:   # DEV-147 — 바뀐 검사는 항상 돌지만 사람이 Settings에서 끈 것만 예외다
-        note += '\n\n⚠️ Task가 추가·수정한 검사를 사람이 Settings에서 꺼서 돌리지 않았어요: ' + ', '.join(f'`{n}`' for n in off)
-    record = regression.load_record('regression-selection:' + ref + ':server_completion')
-    if record.get('triage'):
-        note += '\n\n🔁 완료 검사 재실행 분류: ' + regression.triage_line(record['triage'])
-    if record.get('durations'):
-        import orchestrate
-        note += '\n\n⏱️ 완료 ' + orchestrate.slowest_line(record['durations'], wall=record.get('wall'))
-    changed = _git(cwd, 'diff', '--name-only', f'{BASE_BRANCH}...HEAD').splitlines()
-    if any(p.startswith(('static/', 'src/components/', 'src/pages/')) or p.endswith(('.css', '.html', '.tsx', '.jsx', '.vue')) for p in changed) and regression.capture_planned_off(ref, cwd):
-        note += '\n\n⚠️ 화면 파일이 바뀌었지만 캡처를 하지 않았어요.'
-    if regression.enabled('server_api_warning', ref, cwd) and untested_routes(cwd):
-        note += '\n\n⚠️ 새 HTTP 라우트가 생겼는데 tests/에 실제 요청(`/api/…` 경로) 검사가 없어요 — 함수 직접 호출로는 라우트 등록·인증을 못 봐요(NS-60).'
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         row = issues._find(c, ref)
@@ -753,15 +631,6 @@ def out_of_scope(issue: dict, changed: list[str]) -> list[str]:
     return [p for p in changed if not ok(p)]
 
 
-def untested_routes(cwd) -> bool:
-    """Task가 라우트 데코레이터(@app.get 등)를 더했는데 tests/에 더한 줄 중 `/api/` 경로 요청이 없나(NS-60).
-    경로 문자열만 본다 — 기존 검사가 이미 부르는 경로를 재사용하면 오탐이지만 경고뿐이라 둔다."""
-    added = _git(cwd, 'diff', f'{BASE_BRANCH}...HEAD', '--', '.', ':!tests')
-    if not re.search(r"^\+\s*@\w+\.(?:get|post|put|patch|delete)\(", added, re.M):
-        return False
-    return not re.search(r"""^\+.*["'`]/api/""", _git(cwd, 'diff', f'{BASE_BRANCH}...HEAD', '--', 'tests', 'backend/tests'), re.M)
-
-
 def scope_reason(issue: dict, projects: list[dict] | None = None) -> str | None:
     """Task의 명시된 변경 파일에서 다른 등록 저장소 경로를 확인한다. 일반 본문 언급은 제외한다."""
     fields = re.findall(r"(?:\*\*)?(?:바꿀 파일|파일)(?:\*\*)?\s*:\s*([^\n|]+)", issue.get("body", ""))
@@ -786,37 +655,10 @@ def scope_reason(issue: dict, projects: list[dict] | None = None) -> str | None:
     return None
 
 
-def collect_execution_captures(actor, ref, run_id, cwd, baseline):
-    """첨부 실패는 경고로만 기록하며 구현 완료·실패 상태를 바꾸지 않는다."""
-    import attachments
-    import regression
-    try:
-        if not regression.enabled('agent_capture', ref):
-            return ''
-        added, warnings = attachments.collect_captures(ref, run_id, cwd, baseline)
-    except Exception as e:
-        added, warnings = 0, [f'{type(e).__name__}: {str(e)[:500]}']
-    if warnings:
-        message = '⚠️ 화면 캡처 수집 경고(구현 결과와 별도):\n' + '\n'.join(warnings[:20])
-        try:
-            issues.add_comment(actor, ref, message)
-        except Exception:
-            pass   # DB 장애도 실행 완료 결과를 덮지 않는다.
-        return message
-    return ''
-
-
 def _run_then_merge(actor, ref, log_path, run_id, cmd, worktree, env, timeout, label, provider="claude"):
-    """실행 스레드 — 검증된 완료 기록부터 운영 반영까지 오케스트레이터가 처리한다.
-    프로젝트가 켠 경우 실행 동안만 격리 PostgreSQL을 띄워 에이전트 검사에 넘긴다(DEV-183)."""
-    import isolated_pg, orchestrate, review
-    project = ref.split("-")[0]
-    with isolated_pg.cluster(project, "agent", ref) as (extra, note):
-        cmd = with_notice(cmd, provider, isolated_pg.agent_notice(extra, note, project))
-        if note:
-            issues.add_comment(actor, ref, f"⚠️ {note}")
-        result = review.run_headless(actor, ref, log_path, run_id, cmd, worktree,
-                                     {**env, **extra} if extra else env, timeout, label, provider)
+    """실행 스레드 — 검증된 완료 기록부터 운영 반영까지 오케스트레이터가 처리한다."""
+    import orchestrate, review
+    result = review.run_headless(actor, ref, log_path, run_id, cmd, worktree, env, timeout, label, provider)
     if result != "ok":
         return
     try:
@@ -825,50 +667,18 @@ def _run_then_merge(actor, ref, log_path, run_id, cmd, worktree, env, timeout, l
         issues.add_comment(actor, ref, f"⚠️ 자동 병합 중 오류: {e}")
 
 
-def prepare_checks(worktree, issue, *, build=False):
-    """모델 호출 전에 Moai의 검사·웹 의존성을 준비한다. 설치 실패는 재호출하지 않는다."""
-    if issue['project_key'] != 'MO':
-        return
-    import project_build, shutil, sys
-    commands = [[sys.executable, '-c', 'import fastapi, httpx']]
-    web = Path(worktree, 'apps/web')
-    if web.is_dir() and not (web / 'node_modules/next/dist/bin/next').is_file():
-        commands.append([shutil.which('npm') or 'npm', '--prefix', 'apps/web', 'ci', '--ignore-scripts', '--offline'])
-    if web.is_dir():
-        commands.append([shutil.which('npm') or 'npm', '--prefix', 'apps/web', 'run', 'build'] if build else
-                        [shutil.which('node') or 'node', 'apps/web/node_modules/typescript/bin/tsc', '--version'])
-    for command in commands:
-        try:
-            result = subprocess.run(command, cwd=worktree, env=project_build.environment(),
-                                    capture_output=True, timeout=300, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise issues.StoreError('모델 호출 전 검사 환경 준비 실패: ' + type(error).__name__, 409) from error
-        if result.returncode:
-            raise issues.StoreError(('완료 등록 전 웹 빌드 실패: ' if build else '모델 호출 전 검사 환경 준비 실패: ') +
-                                    ' '.join(command) + ' — 해당 명령의 의존성과 오류를 확인해 주세요.', 409)
-
-
-def start(actor: dict, ref: str, provider: str | None = None, model: str | None = None, *, troubleshoot_id=None) -> dict:
+def start(actor: dict, ref: str, provider: str | None = None, model: str | None = None) -> dict:
     """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
     import review
     import jobs
-    import project_docs
     if actor["kind"] != "human":
         raise issues.StoreError("실행은 사람만 맡길 수 있어요.", 403)
-    provider = project_docs.resolve_provider(issues.get_issue(ref)['id'], provider)
+    provider = provider or 'claude'
     if provider not in ("claude", "codex"):
         raise issues.StoreError("지원하지 않는 실행 도구예요.", 400)
     if provider == "codex" and not os.environ.get("DEV_CODEX_AGENT_KEY"):
         raise issues.StoreError("서버에 DEV_CODEX_AGENT_KEY를 설정해 주세요 — Codex용 dev Agent 키가 필요해요.", 409)
     issue = issues.get_issue(ref)   # 없으면 404
-    recovery = None
-    if troubleshoot_id is not None:
-        import troubleshoot
-        with db.connect() as c:
-            recovery = c.execute('SELECT * FROM troubleshoot_requests WHERE id=? AND issue_id=?', (troubleshoot_id, issue['id'])).fetchone()
-            job = next((j for j in jobs._rows(c) if recovery and j['id'] == recovery['job_id']), None)
-            if not job or provider != job['provider'] or model != job['model'] or not troubleshoot.valid_job(c, job):
-                raise issues.StoreError('트러블슈팅 조건이 바뀌었어요.', 409)
     ref = issue["ref"]
     parent = issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None
     why = blocked_reason(issue, parent)
@@ -883,15 +693,10 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
         raise issues.StoreError(busy, 409)
     repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
     worktree = prepare_worktree(repo, ref)
-    handoff = handoff_notice(ref, issue["id"])   # 보존 커밋 전에 — 앞 실행의 미커밋 변경을 그대로 보여 준다
     start_sha, conflicts = refresh_worktree(worktree, ref)
-    prepare_checks(worktree, issue)
     stale = stale_commits(repo, issue, parent)
-    notice = handoff + (conflict_notice(conflicts) if conflicts else "") + (stale_notice(stale, parent["approval"]["plan_version"]) if stale else "")
+    notice = (conflict_notice(conflicts) if conflicts else "") + (stale_notice(stale, parent["approval"]["plan_version"]) if stale else "")
     timeout = TIMEOUT_SEC
-    if recovery:
-        notice = troubleshoot.notice(recovery) + notice
-        timeout = min(TIMEOUT_SEC, troubleshoot.TIMEOUT_SEC)
     cmd = codex_command_for(ref, issue["parent_ref"]) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
     cmd = review.with_model(with_notice(cmd, provider, notice), provider, model)
     env = safe_env(repo)
@@ -935,8 +740,6 @@ def panel(issue: dict) -> dict | None:
     except issues.StoreError:
         branch = None
     import orchestrate
-    import regression
-    import reproduce
     completed = orchestrate.completion(issue['ref'])
     approval = issues.get_issue(issue['parent_ref']).get('approval')
     manual_merge_available = bool(issue['status'] == 'in_review' and not prior_run and not completed
@@ -948,8 +751,5 @@ def panel(issue: dict) -> dict | None:
             "retry_merge_available": orchestrate.retry_available(issue),
             "manual_merge_confirmable": orchestrate.manual_merge_confirmable(issue, completed),
             "repair_available": repair_available(issue) and not _eligibility_reason(issue, parent),
-            "reproduction": reproduce.panel(issue),
             "result_approval_blocked": bool(completed and completed['auto_merge'] and
-                (completed['phase'] != 'complete' or not completed['merge_sha'])),
-            "regression": regression.resolve(issue['ref'], worktree_path(issue['ref']) if worktree_path(issue['ref']).exists() else repo),
-            "regression_results": {stage: regression.load_record('regression-selection:' + issue['ref'] + ':' + stage) for stage in ('server_completion', 'server_merge')}}
+                (completed['phase'] != 'complete' or not completed['merge_sha']))}

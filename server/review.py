@@ -28,11 +28,8 @@ from pathlib import Path
 import config
 import db
 import filemap
-import harness
 import issues
 import notify
-import project_description
-import project_docs
 import prompts
 
 PROJECTS_DIR = Path(os.environ.get("DEV_REVIEW_CWD") or config.REPO_ROOT.parent)
@@ -41,8 +38,7 @@ TIMEOUT_SEC = float(os.environ.get("DEV_REVIEW_TIMEOUT_SEC") or 1200)
 LOG_DIR = config.DATA_DIR / "reviews"
 ALLOWED_TOOLS = ["Read", "Grep", "Glob"] + [f"mcp__dev__{t}" for t in (
     "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "post_plan", "add_comment", "set_status", "update_issue",
-    "claim_issue", "release_issue", "list_project_documents", "read_project_document", "list_issue_types", "classify_issue",
-    "write_project_description")]   # Description 요청 Issue에서만 동작한다(project_description.write_description)
+    "claim_issue", "release_issue", "list_issue_types", "classify_issue")]
 # Claude 검토는 허용 도메인만 조회하고 실행은 오프라인이다. Codex 검토·실행은 외부 문서를 조회할 수 있다.
 # 실행기는 파일을 쓰고 작업 폴더 밖도 읽을 수 있어 웹이 열리면 비밀값(.env·에이전트 키)이 새는 길이 된다.
 WEB_DOMAINS = ("docs.runpod.io", "graphql-spec.runpod.io", "api.runpod.io", "docs.comfy.org", "huggingface.co", "civitai.com",
@@ -161,8 +157,8 @@ def issue_section(ref: str) -> str:
 
 
 def preamble(ref: str, execution: bool = False) -> str:
-    """모든 검토·실행 프롬프트 앞머리 — 공통 하네스(DEV-131), 파일 지도(DEV-134), 간추린 이슈(DEV-137). 공급자별 문구 치환 밖에 둔다."""
-    return harness.prompt_section() + filemap.section(ref, execution) + issue_section(ref)
+    """모든 검토·실행 프롬프트 앞머리 — 파일 지도(DEV-134), 간추린 이슈(DEV-137). 공급자별 문구 치환 밖에 둔다."""
+    return filemap.section(ref, execution) + issue_section(ref)
 
 
 def prompt_for(ref: str, *, include_revision=True, head=True, provider="claude") -> str:
@@ -174,14 +170,10 @@ def prompt_for(ref: str, *, include_revision=True, head=True, provider="claude")
             revision = revision_prompt(issue)
         if 'goal' in issue['labels']:
             goal = '\n최종 목표(goal) Issue는 상태·제목·본문을 변경하지 않는다. 계획서와 댓글을 작성하고 점유만 해제한다. 아래 triage 전환 단계는 생략한다.\n'
-        described = project_description.request_provider(issue["id"])
     except Exception:   # 이슈를 못 읽으면 일반 검토 프롬프트를 쓴다
-        described = None
-    if described:
-        return (preamble(ref) if head else "") + project_docs.reference_instructions(ref=ref) + goal + revision + prompts.render(f"description_{provider}.md", ref=ref)
+        pass
     goal += revision
-    import regression
-    return (preamble(ref) if head else "") + project_docs.reference_instructions(ref=ref) + goal + regression.planning_instructions(ref) + prompts.render(f"review_{provider}.md", ref=ref, web_domains=", ".join(WEB_DOMAINS)) + in_flight_section(ref)
+    return (preamble(ref) if head else "") + goal + prompts.render(f"review_{provider}.md", ref=ref, web_domains=", ".join(WEB_DOMAINS)) + in_flight_section(ref)
 
 
 def command_for(ref: str) -> list[str]:
@@ -263,8 +255,6 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude", model: 
             row = issues._find(c, issue["ref"])
             if row["status"] != issue["status"]:
                 raise issues.StoreError("시작 전에 이슈 상태가 바뀌었어요 — 다시 맡겨 주세요.", 409)
-            if c.execute("SELECT 1 FROM troubleshoot_requests WHERE issue_id=? AND status='queued'", (row['id'],)).fetchone():
-                issues._guard_terminal_parent(c, row)
             run_id = c.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at, log_file, provider, model) VALUES(?, ?, 'running', ?, ?, ?, ?, ?)",
                                (issue["id"], mode, issues.actor_label(actor), db.now_iso(), log_path.name, provider, model)).lastrowid
             import jobs
@@ -277,8 +267,6 @@ def begin(actor: dict, issue: dict, mode: str, provider: str = "claude", model: 
                 restore = queued["previous_status"] if queued and row["status"] == "waiting" and waiting_owner else row["status"]
                 issues._set_status(c, actor, row, "in_progress", f"{provider.title()} 작업 착수", {"run_id": run_id, "restore_status": restore, "job_id": queued["id"] if queued else None, "model": model or ""})
             c.execute("UPDATE jobs SET status='started', started_at=?, run_id=? WHERE issue_id=? AND mode=? AND status='queued'", (db.now_iso(), run_id, row["id"], mode))
-            if queued:
-                c.execute("UPDATE troubleshoot_requests SET status='running',run_id=?,updated_at=? WHERE job_id=? AND status='queued'", (run_id, db.now_iso(), queued['id']))
     return log_path, run_id
 
 
@@ -493,28 +481,16 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     """claude를 돌리고 끝나면 runs 행을 채운다(검토·실행 공통). 실패·시간 초과는 이슈에 댓글."""
     name = "Codex" if provider == "codex" else "Claude Code"
     spent, earlier, earlier_out, held, blocked = {}, "", "", False, None
-    with db.connect() as c:
-        recovery = c.execute('SELECT 1 FROM troubleshoot_requests WHERE run_id=?', (run_id,)).fetchone()
-    capture_before, capture_warning = None, ''
-    if label == '실행':
-        import attachments
-        try:
-            capture_before = attachments.capture_baseline(cwd)
-        except Exception as e:
-            capture_warning = f'⚠️ 화면 캡처 기준 목록을 읽지 못했어요: {type(e).__name__}'
     import run_progress
     progress = {}   # 실행(Task)만 단계를 남긴다(DEV-206)
     if label == '실행':
         with db.connect() as c:
             row = c.execute('SELECT model FROM runs WHERE id=?', (run_id,)).fetchone()
         progress = {'provider': 'Codex' if provider == 'codex' else 'Claude', 'model': row['model'] if row else None, 'limit': timeout}
-    failed = ''
-    recheck_focus = None
-    for attempt in range(2 if label == "실행" and not recovery else 1):
+    for attempt in range(1):
         code, note, status, out, err = None, "", "ok", "", ""
         if progress:
-            run_progress.set_phase(ref, 'recovery' if recovery else 'rework' if attempt else 'implement', attempt=attempt + 1,
-                                   failed=run_progress.failed_names(failed), **progress)
+            run_progress.set_phase(ref, 'implement', **progress)
         try:
             # 프롬프트는 명령(cmd)에 보존하되 실행 때 stdin으로 보낸다 — Codex는 마지막 인자, Claude는 "-p" 다음 인자.
             # 파일 지도·하네스·부모 계획서가 길어져도 Windows 명령행 한도(32,767자, WinError 206)를 넘지 않는다.
@@ -555,29 +531,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         if now["status"] == "on_hold" and str(last.get("actor", "")).startswith("agent:"):   # 에이전트가 스스로 멈췄다(질문·외부 조건) — 실패가 아니라 사람 차례다
             held = True
             break
-        if provider == "codex" and re.search(r'"outcome"\s*:\s*"blocked"', text) or blocked:   # 막혔다고 답했으면 검사할 것이 없다
-            break
-        # 병합 때 처음 실패를 알면 사람이 다시 실행해야 한다 — 완료 등록 전에 Task worktree에서 전체 검사를 돌려 한 번 스스로 고치게 한다.
-        import orchestrate
-        run_progress.set_phase(ref, 'recheck' if attempt else 'checks', **progress)
-        failed = orchestrate.run_tests(str(cwd), stage='server_completion', ref=ref,
-                                        **({'focus': recheck_focus} if recheck_focus else {}))
-        if not failed:
-            break
-        if attempt or recovery:
-            status, note = "failed", "고친 뒤에도 검사가 실패했어요:\n" + failed[-1500:]
-            break
-        earlier = text + "\n\n--- 서버 전체 검사 실패 → 재시도 ---\n" + failed + "\n\n"
-        earlier_out = out
-        import regression
-        recheck_focus, related_note = regression.rework_context(cwd, ref)
-        retry = ("\n\n이전 실행의 결과가 이 worktree에 그대로 남아 있다. 서버가 tests/test_*.py 전체 검사를 돌렸더니 아래가 실패했다. "
-                 "실패한 검사에 관련된 원인만 고치고 해당 검사만 다시 확인한 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 마친다. 서버는 실패 항목과 재작업 변경만 다시 검사하고 전체는 병합 R07에서 확인한다. "
-                 "검사가 만든 파일을 커밋하지 말고 Task 범위 밖은 고치지 않는다.\n```\n" + failed[-6000:] + "\n```")
-        retry += related_note
-        if orchestrate.FLAKY_MARK in failed:   # 같은 코드에서 통과·실패가 섞였다 — 기능 코드가 아니라 검사 코드의 기다리기·순서 가정을 본다
-            retry += "\n\n⚠️ 위 검사는 같은 코드에서 통과와 실패가 섞였다. 기능 코드 대신 검사 코드의 기다리기(응답·화면 상태를 기다리는지)와 순서 가정(목록 순서 대신 id로 찾는지)을 먼저 고친다."
-        cmd = cmd[:2] + [cmd[2] + retry] + cmd[3:] if provider == "claude" else cmd[:-1] + [cmd[-1] + retry]
+        break
     run_progress.clear(ref)
     stats = spent
     exhausted = status != "timeout" and token_exhausted(out, err, provider)
@@ -592,11 +546,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             pass
     if provider == "codex" and label == "검토" and status == "ok":
         result = issues.get_issue(ref)
-        if project_description.request_provider(result["id"]):   # Description 요청은 계획서 대신 설명 저장 이력을 본다
-            with db.connect() as c:
-                if not c.execute("SELECT 1 FROM project_description_events WHERE issue_id=?", (result["id"],)).fetchone():
-                    status, note = "failed", "Description이 저장되지 않았어요 — dev MCP 호출 결과를 로그에서 확인해 주세요."
-        elif (result.get("plan") or {}).get("id", 0) <= baseline_plan_id:
+        if (result.get("plan") or {}).get("id", 0) <= baseline_plan_id:
             status, note = "failed", "새 계획서가 이슈에 등록되지 않았어요 — dev MCP 호출 결과를 로그에서 확인해 주세요."
         elif result.get("title_missing") and "goal" not in result.get("labels", []):
             status, note = "failed", "계획서는 등록됐지만 빈 제목이 채워지지 않았어요 — 로그를 확인해 주세요."
@@ -604,9 +554,6 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         result = issues.get_issue(ref)
         if not result["type_ids"] and "goal" not in result.get("labels", []):
             status, note = "failed", "자동 분류가 저장되지 않았어요 — 종류 선택과 MCP 호출 결과를 확인하고 검토를 다시 맡겨 주세요."
-    if label == '실행' and capture_before is not None:
-        import execute
-        capture_warning = execute.collect_execution_captures(actor, ref, run_id, cwd, capture_before)
     if provider == "codex" and label == "실행" and status == "ok" and not held:
         import execute
         try:
@@ -623,7 +570,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
                 held = True
             else:
                 status, note = 'failed', f'Claude 실행을 완료하지 못했어요 — {e}'
-    log_path.write_text(earlier + text + ('\n\n' + capture_warning if capture_warning else '') + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
+    log_path.write_text(earlier + text + (f"\n\n--- stderr ---\n{err}" if err else ""), encoding="utf-8")
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         # 완료 등록이 이 행을 먼저 ok로 바꾼다. 강제 재시작으로 orphaned가 된 경우만 덮지 않는다.
@@ -632,8 +579,6 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         finish_codex_status(c, actor, ref, run_id, status, label)
         c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=?, cache_write_tokens=?, cache_read_tokens=? WHERE id=? AND status IN ('running','ok')",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), stats.get("cache_write_tokens"), stats.get("cache_read_tokens"), run_id))
-        if exhausted and status != "ok" and not recovery:   # 복구는 추가 유료 호출·이관 없이 끝낸다
-            c.execute("INSERT OR IGNORE INTO provider_run_failures(run_id,failure_reason) VALUES(?,'token_exhausted')", (run_id,))
     if held:   # Claude는 on_hold 전환 때 이미 알림이 갔다
         if provider == "codex" or blocked:
             notify.send(ref, f"🚧 {name}가 진행할 수 없어 멈췄어요 — 확인해 주세요")

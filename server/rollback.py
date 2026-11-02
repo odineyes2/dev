@@ -73,13 +73,10 @@ def terminal_change(actor, ref, rejecting):
 
 
 def prepare(c, actor, root, rows, note):
-    """운영 사본은 검사 성공 전까지 건드리지 않는다. 반환값이 있으면 배포 확인이 남았다."""
-    import project_activity
+    """운영 사본은 준비가 끝나기 전까지 건드리지 않는다. 반환값이 있으면 배포 확인이 남았다."""
     import project_restart
     if project_restart.block(c, root['project_key']):
         raise RollbackError('앱 재시작이 끝난 뒤 다시 거절해 주세요.', 409)
-    if project_activity.audit_active(c, root['project_key']):
-        raise RollbackError('프로젝트 점검이 끝난 뒤 다시 거절해 주세요.', 409)
     for record in _records():
         if record['ref'] == root['ref'] and record['phase'] not in ('complete', 'failed'):
             return record
@@ -95,8 +92,6 @@ def prepare(c, actor, root, rows, note):
     merges = active_merges(repo, refs)
     if not merges:
         return None
-    if project_activity.audit_active(c):
-        raise RollbackError('프로젝트 점검이 끝난 뒤 다시 거절해 주세요.', 409)
     if orchestrate._git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip() != orchestrate.BASE_BRANCH:
         raise RollbackError('기준 브랜치가 아니라 롤백하지 않았어요.', 409)
     if orchestrate._git(repo, 'status', '--porcelain', '--untracked-files=no').stdout.strip():
@@ -123,10 +118,6 @@ def prepare(c, actor, root, rows, note):
             result = orchestrate._git(str(worktree), 'revert', '-m', '1', '--no-edit', sha)
             if result.returncode:
                 raise RollbackError(f'{ref} 롤백이 후속 변경과 충돌했어요 — 운영 코드는 유지했어요.\n' + (result.stdout + result.stderr)[-1500:], 409)
-        changed = orchestrate._git(str(worktree), 'diff', '--name-only', before, 'HEAD').stdout.splitlines()
-        failed = orchestrate.run_tests(str(worktree), stage='server_rollback', changed=changed)
-        if failed:
-            raise RollbackError('롤백 뒤 검사가 실패했어요 — 운영 코드는 유지했어요.\n' + failed, 409)
         record['head'] = orchestrate._git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()
         changed = orchestrate._git(str(worktree), 'diff', '--name-only', before, record['head']).stdout.split()
         cfg = {**orchestrate.DEFAULTS, **orchestrate.settings(root['project_key'])}

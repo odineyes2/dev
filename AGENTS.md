@@ -6,10 +6,9 @@
 파일마다 무엇이 있는지는 **자동 파일 지도**(`server/filemap.py`, 각 파일 첫 줄 설명)가 맡는다. 에이전트는 프롬프트로 받고, 대화형 세션은 `python server/filemap.py .`로 본다. 새 파일은 첫 줄에 역할을 적는다. 여기는 파일 하나만 봐서는 안 보이는 동작·불변식만 적는다.
 
 ### 에이전트에게 주는 것
-- 프롬프트 순서: 공통 하네스(`harness/COMMON.md`, `harness.py`) → 파일 지도(`filemap.py`, 실행은 Task worktree 기준) → 코드 속 프롬프트(`harness/prompts/*.md`를 `prompts.py`가 자리표시 `{ref}` 등으로 채움) + 코드가 상황에 따라 덧붙이는 조각(문서 안내·검사 범위·진행 중 이슈·낡은 계획 알림·재검토 메모). 앞 둘은 `review.preamble()`.
-- 하네스·프롬프트 파일은 실행마다 읽어 다음 검토·실행부터 반영된다. MCP 안내문(`mcp_tools.INSTRUCTIONS` = 작업 흐름 + COMMON)은 재시작 뒤 반영.
+- 프롬프트 순서: 파일 지도(`filemap.py`, 실행은 Task worktree 기준) → 간추린 이슈 → 코드 속 프롬프트(`harness/prompts/*.md`를 `prompts.py`가 자리표시 `{ref}` 등으로 채움) + 코드가 상황에 따라 덧붙이는 조각(진행 중 이슈·낡은 계획 알림·재검토 메모). 앞 둘은 `review.preamble()`.
+- 프롬프트 파일은 실행마다 읽어 다음 검토·실행부터 반영된다. MCP 안내문(`mcp_tools.INSTRUCTIONS` = 작업 흐름)은 재시작 뒤 반영.
 - 프로젝트별 규칙은 각 저장소 AGENTS.md(CLAUDE.md는 `@AGENTS.md`만). 허용·차단 도구·한도 같은 코드 속 설정값은 코드에 둔다(보안 경계 — 화면에서 못 고친다).
-- Harness 탭(`harness_view.py`·`harness_edit.py`): 조회는 실제 조립 함수(`prompt_for`·`command_for`)를 그대로 불러 보여주고, 편집은 허용 목록 파일만 base 브랜치에 그 파일만 커밋한다(push 없음). 실행 중 Task·읽은 뒤 바뀐 파일·자리표시 오류(`prompts.problems`)는 거절.
 
 ### 저장소·권한
 - `db.py` — 마이그레이션은 MIGRATIONS 뒤에 덧붙이기만(PRAGMA user_version). 쓰는 프로세스는 app 하나(WAL·짧은 연결). 상태 변경·댓글·계획서·커밋 연결은 모두 events 한 줄(타임라인 = 감사 기록).
@@ -18,44 +17,35 @@
 
 ### 검토·실행·병합
 - `review.py` "Claude에게 검토 맡기기"(헤드리스 `claude -p --restricted`, 읽기·웹 일부만) — 프롬프트 끝에 같은 프로젝트의 진행 중인 이슈와 남은 Task 파일, 계획서만 있고 아직 실행 전인 이슈의 계획 Task 파일(거절 제외)을 붙여 계획이 겹침을 알고 쓰게 한다(`in_flight_section`·`_planned` — 실행 대기열 예약과는 따로). 실행마다 `runs` 한 줄(상태·토큰·비용·로그), 원본 이벤트(도구 호출·턴별 사용량)는 `data/reviews/<로그>.events.jsonl.gz`(요약 `python scripts/run_usage.py --last 3`). 서버가 뜰 때 남은 running은 orphaned로.
-- `execute.py` "Claude/Codex에게 실행 맡기기"(Task 전용) — `~/Projects/.dev-worktrees/<ref>`(저장소 밖이라 dev 규칙 파일이 다른 프로젝트 Task에 섞이지 않는다, 검사는 임시 데이터 폴더 안) worktree + `relay/<ref>` 브랜치에서 헤드리스로 구현. Claude 허용 목록은 Bash의 `python tests/*`·읽기성 git·add·commit과 Moai의 `backend.tests` 검사·지정 npm 타입 검사/빌드이고, Claude는 사용자 개인 설정(플러그인·훅·스킬·~/.claude/CLAUDE.md·자동 메모리)을 받지 않는다(`USER_ISOLATION`). Codex는 danger-full-access로 OS sandbox 없이 실행하고 커밋·결과 등록은 서버가 한다. push 불가(pushurl 덮기·토큰 제거), 비용·시간 상한. Claude 실행기는 `rm`·`git rm`을 못 해 삭제 Task는 대화에서 직접 한다.
+- `execute.py` "Claude/Codex에게 실행 맡기기"(Task 전용) — `~/Projects/.dev-worktrees/<ref>`(저장소 밖이라 dev 규칙 파일이 다른 프로젝트 Task에 섞이지 않는다) worktree + `relay/<ref>` 브랜치에서 헤드리스로 구현. Claude 허용 목록은 Bash의 읽기성 git·add·commit이고, Claude는 사용자 개인 설정(플러그인·훅·스킬·~/.claude/CLAUDE.md·자동 메모리)을 받지 않는다(`USER_ISOLATION`). Codex는 danger-full-access로 OS sandbox 없이 실행하고 커밋·결과 등록은 서버가 한다. push 불가(pushurl 덮기·토큰 제거), 비용·시간 상한. Claude 실행기는 `rm`·`git rm`을 못 해 삭제 Task는 대화에서 직접 한다.
   - 시작 조건: 부모 계획서 승인·선행 Task done·저장소가 base 브랜치에서 깨끗. 이어 쓰는 worktree가 base보다 뒤처졌으면 서버가 먼저 base를 병합하고(커밋 안 된 변경은 보존 커밋), 충돌이면 프롬프트에 해결 지시를 붙인다 — 병합 중·충돌 표시가 남으면 완료를 거부한다(`refresh_worktree`·`merge_unfinished`).
   - 계획서 판은 올라올 때의 base 커밋을 `plans.base_sha`에 남기고, 그 뒤 다른 이슈가 Task 파일을 바꿨으면 그 커밋 목록과 "가정 확인, 깨졌으면 사람에게 묻기"를 프롬프트 앞에 붙인다(`stale_commits`).
-  - 토큰 소진 이관으로 앞 실행의 worktree를 이어받는 실행이면 앞 실행이 남긴 커밋·미커밋 변경과 "미완성일 수 있으니 Task 기준으로 이어서"를 프롬프트 앞에 붙인다(`handoff_notice` — 서버 보존 커밋 전에 계산, DEV-199).
-  - 격리 PostgreSQL(DEV-183, `isolated_pg.py`): `data/orchestrate.json`의 프로젝트 `isolated_pg`가 켠 단계(agent·server_completion·server_merge)마다 `<데이터폴더>/pg-clusters/`에 빈 클러스터를 127.0.0.1 빈 포트로 띄워 접속 주소를 환경 변수로 넘기고 끝나면 지운다. 이전 dev 프로세스가 남긴 클러스터는 다음 시작 전에 정리한다. 띄우지 못하면 막지 않고 "격리 PG 없음"을 프롬프트·댓글에 남긴다.
-  - 완료 등록 전에 서버가 Task worktree에서 전체 검사를 돌려 실패하면 한 번 스스로 고치게 한다. 환경변수 `DEV_EXEC_BASE`(main)·`DEV_EXEC_BUDGET_USD`(2)·`DEV_EXEC_TIMEOUT_SEC`(1800).
-  - 실행 단계(구현·전체 검사 n/N·재작업·다시 검사)는 `run_progress`(메모리)에 남고 이슈 API의 `run_progress`로 화면 ⓘ에 보인다. 시간 제한·검사 제한을 넘기면 "멈춘 것 같아요"(DEV-206). In Progress 이슈는 `in_progress_seconds`(도는 실행 시작, 없으면 마지막 In Progress 전환부터)로 상태 칸에 hh:mm를 보이고 화면이 30초마다 더한다(DEV-208).
-- `orchestrate.py` 자동 병합 — 최신 base와 Task SHA를 고정하고 `<데이터폴더>/merge-worktrees/`의 임시 detached worktree에서 시험 병합한다. `tests/test_*.py` 전체 검사 통과 후 원본 base·Task·tracked 변경이 그대로인지 확인하여 검사한 커밋만 `--ff-only` 반영한다. 충돌·검사 실패는 changes_requested이며 운영 main에 merge/revert를 남기지 않는다. 검사 중 원본 변경은 on_hold이며 최신 상태로 재시도한다. 병합 뒤 재시작은 `data/orchestrate.json`의 `pm2_app`·`restart_when`이 있는 프로젝트만(busy·health 확인), push는 하지 않는다.
-- `jobs.py` 검토·실행 대기열 — 줄은 (프로젝트, 검토|실행)마다 하나이고 각 줄은 하나씩 차례로(실행 줄은 병합까지 바쁨). 동시에 바쁜 줄은 Settings의 3단 상한을 함께 지킨다 — 전체(`app_settings.queue_concurrency`, 기본 2)와 실행·검토 칸별(`queue_concurrency_execute`·`_review`, 없으면 무제한; 병합 중·초기 생성은 실행 칸, audit·qa는 검토 칸, 낮춰도 도는 작업은 안 끊음), dev 자신을 재시작할 병합이 진행 중이면 어느 줄도 새로 시작하지 않는다(`start_block`·`orchestrate._busy`). 펌프는 넣을 때·스레드가 끝난 뒤·서버 시작·60초 주기. 꺼내는 순서는 진행 중인 부모의 실행 → 그 밖의 실행 → 검토이고, 진행 중인 부모가 남은 Task로 쓸 파일과 겹치는 다른 부모의 Task는 기다린다 — 그 부모가 사람을 기다리면(on_hold·changes_requested) 예약을 푼다(`jobs.schedule`). 넣기(enqueue)는 사람만.
+  - 검사는 없다(DEV-237에서 검사 장치를 모두 지움, 새 검사 방식은 별도로 만든다). 환경변수 `DEV_EXEC_BASE`(main)·`DEV_EXEC_BUDGET_USD`(2)·`DEV_EXEC_TIMEOUT_SEC`(1800).
+  - 실행 단계(구현)는 `run_progress`(메모리)에 남고 이슈 API의 `run_progress`로 화면 ⓘ에 보인다. 시간 제한을 넘기면 "멈춘 것 같아요"(DEV-206). In Progress 이슈는 `in_progress_seconds`(도는 실행 시작, 없으면 마지막 In Progress 전환부터)로 상태 칸에 hh:mm를 보이고 화면이 30초마다 더한다(DEV-208).
+- `orchestrate.py` 자동 병합 — 최신 base와 Task SHA를 고정하고 `<데이터폴더>/merge-worktrees/`의 임시 detached worktree에서 시험 병합한다(선언된 웹 빌드는 이때 격리 빌드). 원본 base·Task·tracked 변경이 그대로인지 확인하여 시험 병합한 커밋만 `--ff-only` 반영한다. 충돌은 changes_requested이며 운영 main에 merge/revert를 남기지 않는다. 병합 중 원본 변경은 on_hold이며 최신 상태로 재시도한다. 병합 뒤 재시작은 `data/orchestrate.json`의 `pm2_app`·`restart_when`이 있는 프로젝트만(busy·health 확인), push는 하지 않는다.
+- `jobs.py` 검토·실행 대기열 — 줄은 (프로젝트, 검토|실행)마다 하나이고 각 줄은 하나씩 차례로(실행 줄은 병합까지 바쁨). 동시에 바쁜 줄은 Settings의 3단 상한을 함께 지킨다 — 전체(`app_settings.queue_concurrency`, 기본 2)와 실행·검토 칸별(`queue_concurrency_execute`·`_review`, 없으면 무제한; 병합 중·초기 생성은 실행 칸, 낮춰도 도는 작업은 안 끊음), dev 자신을 재시작할 병합이 진행 중이면 어느 줄도 새로 시작하지 않는다(`start_block`·`orchestrate._busy`). 펌프는 넣을 때·스레드가 끝난 뒤·서버 시작·60초 주기. 꺼내는 순서는 진행 중인 부모의 실행 → 그 밖의 실행 → 검토이고, 진행 중인 부모가 남은 Task로 쓸 파일과 겹치는 다른 부모의 Task는 기다린다 — 그 부모가 사람을 기다리면(on_hold·changes_requested) 예약을 푼다(`jobs.schedule`). 넣기(enqueue)는 사람만.
 - `automation.py`·`auto_settings.py` — Auto 검토·계획 승인·실행·Task 승인은 Settings의 전역 위임이 켜졌을 때만 대기열에 넣는다(자동 검토는 backlog 이슈만, 잡힌 이슈·goal은 제외).
-- `regression.py` — 검사 선택은 사람 설정 > 실제 고위험 변경 > 승인 계획의 `## 검사 선택` JSON > 변경 범위 기본값 순. 실행 프롬프트의 검사 범위와 서버의 완료 전·병합 검사가 같은 결정을 쓴다. 서버는 기본으로 `tests/`와 `backend/tests/`(Moai)를 모두 찾고, 프로젝트가 orchestrate.json `tests`에 규칙(glob·run)을 적으면 그 규칙으로 찾고 돌린다(`test_runner.rules`, DEV-212 — 검사 전 준비는 진행 표시에 "준비 중: 임시 DB·웹 빌드"). 규칙의 `item` 정규식으로 도는 검사 파일 안의 항목 줄을 세어 ⓘ에 "n개 항목 지남"을 보인다(DEV-213 — 기본은 `OK — …`·unittest `-v`·node --test). Task가 추가·수정한 검사 파일은 계획 선택과 관계없이 켜지고 완료 전·병합 검사도 켠다(사람이 Off한 것만 예외, 완료 메모에 ⚠️). 다른 프로젝트에는 dev 자신의 `file:` 키를 쓰지 않고 그 프로젝트 검사 파일만 계획 안내·선택에 쓴다. 사람의 파일 On/Off는 프로젝트별(`regression:file:<프로젝트>:<이름>`)이라 같은 이름이어도 번지지 않는다. 모든 절차는 `checks.py` 등록부의 고정 번호(R01~R23)를, 검사 파일(`tests/test_*.py`·`test_*.js`, JS는 `node --test`)은 DB `check_files`의 `T-<프로젝트>-###` 번호를 받는다(지운 번호는 재사용 안 함).
-- Moai(MO) — 모델 호출 전에 Python 검사 의존성·로컬 npm 캐시 설치·TypeScript 실행기를 확인하되 코드 타입 오류는 모델이 고치도록 준비 검사에서 컴파일하지 않는다. 완료 등록 전에 타입 검사·실제 웹 빌드가 실패하면 완료를 막고, 병합은 격리 빌드 산출물로 백엔드 검사를 한다. 운영 웹 교체·복원·릴리스 확인은 `project_build`(검사한 커밋 격리 빌드 → rename 교체, 실패 시 복원)와 orchestrate를 쓴다. MO 기본 빌드 선언은 프로젝트별 명시 설정을 덮지 않는다(지금 `MO.build=[]`).
+- Moai(MO) — 운영 웹 교체·복원·릴리스 확인은 `project_build`(검사한 커밋 격리 빌드 → rename 교체, 실패 시 복원)와 orchestrate를 쓴다. MO 기본 빌드 선언은 프로젝트별 명시 설정을 덮지 않는다(지금 `MO.build=[]`).
 
 ### 실패 뒤 처리
-- 수정 커밋 재등록(DEV-197): REST·MCP `register_repair`는 사람 또는 활성 claim을 가진 담당 에이전트가 호출한다. 에이전트는 Task HEAD를 자기 actor로 연결해야 한다. 기존 부모 승인·실행 소유권·서버 검사·자동 병합을 그대로 검증하며 모델을 재호출하지 않는다.
-- `rollback.py` — 계획서 거절·Closed가 된 이슈의 병합을 검사 후 revert하고 재시작까지 확인한 뒤 닫는다(아직 적용된 병합은 first-parent 이력으로 계산).
-- 수동 반영 확인(DEV-148) — 자동 병합이 보류·실패로 남은 Task를 사람·Claude가 직접 main에 넣었으면 `orchestrate.confirm_manual_merge`(화면 "수동 반영 확인"·MCP `confirm_manual_merge`)로 병합 완료를 기록한다. 서버가 Task 커밋이 main에 있는지 git으로 확인해야만 바뀌고, 검사·재시작·알림은 하지 않는다. 이걸 안 하면 결과 승인이 계속 막힌다.
-- `troubleshoot.py` — 실패한 승인 Task를 같은 대기열에서 한 번 복구 실행한다(원 실행 기록 보존, 추가 호출 1회·짧은 시간 상한).
-- `reproduce.py` 실패 검사 재현 — 관리자 POST `/api/issues/{ref}/reproduce-checks`가 고정된 Task 커밋의 detached 사본에서 그 검사만 돌린다(UI 검사는 traceback의 check 함수를 그 함수가 닿는 블록의 `--only <블록>`으로 — 블록 표 이전 커밋은 단일 검사 `--x-only` 분기로 — 대조, 고를 수 없으면 전체 UI 검사로 대체하지 않는다). 결과는 `app_settings`의 `regression-reproduce:<ref>`, 로그는 `data/check-reproductions/<id>/log.txt`. 시작 시 Task In Progress, 실패 시 Changes Requested, 통과하면 In Progress로 기존 병합 처리기에 넘겨 병합·운영 반영 확인 뒤에만 In Review. 상태·커밋이 바뀌면 결과가 새 작업을 덮지 않고, 재시작 중단·자동 병합 OFF·승인 변경·정보 부족은 On Hold. 미반영 Task의 완료 승인은 UI·서버에서 막고, 재현 중에는 새 Agent 착수와 Dev 자동 재시작을 기다리게 한다. 확인: `python tests/test_reproduce.py`·`test_reproduce_followup.py`·`python tests/test_ui.py --reproduce-only`.
-- `qa.py`·`qa_runner.py` — 최상위 In Review Issue의 QA. 판정 대상 스냅샷과 요구 항목(본문 줄·Plan 확인 항목)을 고정하고 서버가 명령을 검증·실행한다. Auto QA가 켜졌을 때만 결과를 상태에 반영한다(기본 OFF).
+- 수정 커밋 재등록(DEV-197): REST·MCP `register_repair`는 사람 또는 활성 claim을 가진 담당 에이전트가 호출한다. 에이전트는 Task HEAD를 자기 actor로 연결해야 한다. 기존 부모 승인·실행 소유권·자동 병합을 그대로 검증하며 모델을 재호출하지 않는다.
+- `rollback.py` — 계획서 거절·Closed가 된 이슈의 병합을 revert하고 재시작까지 확인한 뒤 닫는다(아직 적용된 병합은 first-parent 이력으로 계산).
+- 수동 반영 확인(DEV-148) — 자동 병합이 보류·실패로 남은 Task를 사람·Claude가 직접 main에 넣었으면 `orchestrate.confirm_manual_merge`(화면 "수동 반영 확인"·MCP `confirm_manual_merge`)로 병합 완료를 기록한다. 서버가 Task 커밋이 main에 있는지 git으로 확인해야만 바뀌고, 재시작·알림은 하지 않는다. 이걸 안 하면 결과 승인이 계속 막힌다.
 
 ### 프로젝트 관리
-- `project_init`(기획서 → 새 저장소·개발 초안), `project_docs`(공식 문서 7종 요청, 실행 중엔 worktree에서 읽음), `project_description`(Description 자동 작성 Issue), `project_audit`·`_runner`(기준 SHA 고정·읽기 전용 점검), `project_service`·`service_prepare`(서비스 연결·공용 터널 변경은 한 번에 하나), `project_restart`(pm2 재시작 — dev 자기 재시작은 별도 프로세스가 health까지 확인. 도우미는 중계 프로세스(`--detach`)를 거쳐 띄워 pm2가 dev 트리를 끌 때 같이 죽지 않는다(DEV-207). 에이전트 재시작 예약(DEV-198)은 같은 `project_app_restarts` 기록에 `reservation_ref·until`을 두어 waiting으로 착수를 막고, 소유자의 finish 뒤에야 도우미가 돈다 — 만료는 `_recover`가 failed로 풀고, 띠에는 phase `reserved`로 보인다).
+- `project_init`(기획서 → 새 저장소·개발 초안), `repo_snapshot`(기준 SHA 고정 저장소 스냅샷·민감값 가리기), `project_service`·`service_prepare`(서비스 연결·공용 터널 변경은 한 번에 하나), `project_restart`(pm2 재시작 — dev 자기 재시작은 별도 프로세스가 health까지 확인. 도우미는 중계 프로세스(`--detach`)를 거쳐 띄워 pm2가 dev 트리를 끌 때 같이 죽지 않는다(DEV-207). 에이전트 재시작 예약(DEV-198)은 같은 `project_app_restarts` 기록에 `reservation_ref·until`을 두어 waiting으로 착수를 막고, 소유자의 finish 뒤에야 도우미가 돈다 — 만료는 `_recover`가 failed로 풀고, 띠에는 phase `reserved`로 보인다).
 
-### 화면·검사·운영
+### 화면·운영
 - `static/` 화면(빌드 없음, 정적 파일. Cloudflare가 CSS/JS를 4시간 캐시해 index.html이 `?v=내용해시`로 부른다).
-- 전체 검사(대화에서 고친 코드를 main에 넣기 전): `python scripts/run_tests.py [-j N] [--all] [이름 일부…]`(DEV-200). 서버와 같은 명령으로 동시에 돌리고(기본 4, 브라우저 검사는 한 자리), 검사가 실제로 읽은 파일(`scripts/test_trace/sitecustomize.py`의 audit hook)이 그대로면 지난 통과를 재사용한다 — 실패·JS·저장소에서 외부 프로그램을 띄운 검사·파일 목록 변경·러너 변경은 다시 돈다. 결과·실패 로그는 `.test-cache/`. 검사 하나의 시간 제한은 600초, 브라우저 검사는 1200초(`test_runner.timeout_for`, DEV-209 — 병렬 부하에서 test_ui.py가 600초를 넘는다). `test_runner.run`이 출력을 따로 읽어, 시간 초과면 프로세스 트리째 끄고 검사가 남긴 고아 자식이 파이프를 붙잡아도 30초 뒤 돌아온다(DEV-205) — 검사가 띄우는 보조 서버는 stdout·stderr를 DEVNULL로. 서버 완료·병합 검사는 `test_runner.run_all`로 같은 병렬 규칙을 쓰되 재사용은 지금처럼 트리 전체 지문만(`orchestrate.test_jobs`: Settings의 프로젝트별 "동시 검사 수"(app_settings `test_jobs:<프로젝트>`, DEV-201) > orchestrate.json `test_jobs` > 기본 DEV 4·다른 프로젝트 1, 격리 PG 단계는 순차).
-- `tests/` 검사(`python tests/test_x.py`, 임시 데이터 폴더). 화면 검사는 `python tests/test_ui.py --only <블록,…>`(옛 `--<이름>-only`도 블록으로 풀린다, 목록은 `--list-blocks`·`--list-aliases`). `tests/test_ui.py`는 6천 줄이 넘으니 통째로 읽지 않는다 — 새 화면 검사는 위쪽에 `def check_<이름>(page, shots)`를 두고 `BLOCKS` 표(`grep -n "^BLOCKS"`)에 `_block('<이름>', '<제목>', check_<이름>)` 한 줄을 더한다(인자 없는 전체 실행도 이 표를 돈다). 블록은 서로 겹치지 않고(검사 함수 하나는 한 블록에서만) 어떤 순서로도 통과해야 한다 — 블록 사이에 DB는 로그인 직후 상태로, 가로채기·저장소·뷰포트·테마는 처음으로 돌아가니(`reset_between_blocks`) 쓸 데이터는 블록 안에서 만든다. 확인: `python tests/test_ui_blocks.py`(DEV-233). 기존 예는 `check_attachments`. 관리 화면 검사는 경로별 활성 탭·프로젝트 식별·로딩 완료를 확인한 뒤 포커스를 검증하고, 실패 시 경로·포커스 요소·활성 탭·busy 수만 기록한다(입력값·비밀 제외). boot는 프로젝트·Agent 초기 데이터 준비 뒤에 화면을 공개하고 숨겨진 로그인/초기화 화면에서는 hash 라우팅을 하지 않는다. `--management-delay-probe`(응답 보류·탭 전환·초기화 지연), `--management-layout-only`.
 - `ecosystem.config.js` pm2 앱 `dev`(127.0.0.1:8300, Cloudflare 터널이 dev.lomebrote.com으로 연결).
 
 ## 규칙
 - 이슈 번호: 최상위는 `NS-17`, 그 아래 Task는 `NS-17-1`(만들 때의 부모 번호에 묶여 부모를 바꾸거나 지워도 그대로, DB `sub_of`·`sub_number`). 이전에 만든 Task(DEV-30~35 등)는 옛 번호 그대로.
-- 공통 규칙(사람의 결정, 읽기·고치기, git·커밋, 검사, 비밀값, 말투)은 `harness/COMMON.md`. 아래는 dev에만 해당하는 것.
 - 자동 병합: `data/orchestrate.json`에서 `auto_merge`가 꺼지지 않은(기본 켜짐) 프로젝트는 오케스트레이터(`server/orchestrate.py`)가 통과한 Task를 병합·재시작하고, 하위가 다 들어가면 상위 이슈를 in_review로 올린다.
 - 운영 재시작: `npx pm2 restart ecosystem.config.js --only dev --update-env`
 - Claude 웹 정책: 검토는 WebSearch + `review.WEB_DOMAINS`의 도메인만 WebFetch, 비밀 파일 읽기 금지(`review.BLOCKED_TOOLS`). Claude 실행은 오프라인이다. Codex 검토·실행은 `web_search="cached"`이며 필요한 외부 문서 조회·명령 실행·의존성 설치를 허용한다. 비밀값을 외부로 보내거나 운영 서비스를 임의로 변경하지 않는다.
 - 사람 로그인은 nightshift가 맡는다(`ns_session` 쿠키 → nightshift `/api/auth/me`, admin만). dev는 nightshift DB를 열지 않는다.
-- Codex 정책(2026-10-09 사용자 결정): 검토·실행·프로젝트 생성은 OS sandbox 없이 실행한다. 실행 에이전트는 Task 필수·관련 검사만 수행하고 서버가 전체 검사를 한 번씩 실행한다. 실패 시 수정 재시도에서도 에이전트는 실패한 검사만 확인한다. 선택적 종류 분류 실패는 검토 성공을 막지 않는다.
+- Codex 정책(2026-10-09 사용자 결정): 검토·실행·프로젝트 생성은 OS sandbox 없이 실행한다. 선택적 종류 분류 실패는 검토 성공을 막지 않는다.
 
 ## 스타일
-- 화면 용어는 영어 표준(Issue/Plan/Task). 디자인은 `docs/DESIGN.md`(nightshift·Moai와 같은 패밀리룩 — 고칠 때 그쪽 DESIGN.md도 맞춘다), 말투는 공통 하네스.
+- 화면 용어는 영어 표준(Issue/Plan/Task). 디자인은 `docs/DESIGN.md`(nightshift·Moai와 같은 패밀리룩 — 고칠 때 그쪽 DESIGN.md도 맞춘다). 코드 주석·문서는 한국어("~한다"), 화면 문구는 존댓말("~해요").

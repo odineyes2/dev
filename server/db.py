@@ -1131,6 +1131,45 @@ CREATE INDEX IF NOT EXISTS execution_completion_ref ON execution_completion(ref,
 """)
 
 
+# 검사 장치·공식 문서·트러블슈터·QA·점검·수동 사용량·provider 전환·설명 자동 작성을 지운다(DEV-237).
+# runs의 트리거가 troubleshoot_requests를 읽으므로 트리거를 먼저 바꾼다.
+MIGRATIONS.append("""
+DROP TRIGGER IF EXISTS troubleshoot_run_gate;
+DROP TRIGGER IF EXISTS auto_run_gate;
+CREATE TRIGGER auto_run_gate BEFORE INSERT ON runs
+WHEN EXISTS(SELECT 1 FROM jobs j WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto')
+BEGIN
+ SELECT RAISE(ABORT,'자동 위임 조건이 바뀌었어요') WHERE NOT EXISTS(
+ SELECT 1 FROM jobs j JOIN issues i ON i.id=j.issue_id JOIN projects p ON p.id=i.project_id JOIN global_auto_settings s ON s.singleton=1
+ WHERE j.issue_id=NEW.issue_id AND j.mode=NEW.mode AND j.status='queued' AND j.source='auto'
+ AND p.archived=0 AND i.status='waiting' AND i.claimed_by IS NULL
+ AND NOT EXISTS(SELECT 1 FROM json_each(i.labels_json) WHERE value='goal')
+ AND ((NEW.mode='review' AND s.auto_review=1 AND i.parent_id IS NULL AND NOT EXISTS(SELECT 1 FROM plans WHERE issue_id=i.id))
+ OR (NEW.mode='execute' AND s.auto_execute=1 AND j.approval_version=(SELECT MAX(version) FROM plans WHERE issue_id=i.parent_id)
+ AND EXISTS(SELECT 1 FROM decisions d WHERE d.id=(SELECT MAX(id) FROM decisions WHERE issue_id=i.parent_id AND gate='plan') AND d.plan_version=j.approval_version AND d.verdict IN ('approve','approve_notes') AND d.actor LIKE 'human:%')
+ AND NOT EXISTS(SELECT 1 FROM issue_deps dep JOIN issues b ON b.id=dep.blocked_by_id WHERE dep.issue_id=i.id AND b.status<>'done'))));
+END;
+DROP TABLE IF EXISTS troubleshoot_requests;
+DROP TABLE IF EXISTS qa_items;
+DROP TABLE IF EXISTS qa_rework_batches;
+DROP TABLE IF EXISTS qa_rounds;
+DROP TABLE IF EXISTS project_audit_dismissals;
+DROP TABLE IF EXISTS project_audit_publications;
+DROP TABLE IF EXISTS project_audit_candidates;
+DROP TABLE IF EXISTS project_audit_requirements;
+DROP TABLE IF EXISTS project_audits;
+DROP TABLE IF EXISTS manual_usage;
+DROP TABLE IF EXISTS provider_migration_attempts;
+DROP TABLE IF EXISTS provider_migration_chains;
+DROP TABLE IF EXISTS provider_run_failures;
+DROP TABLE IF EXISTS project_doc_requests;
+DROP TABLE IF EXISTS project_description_events;
+DROP TABLE IF EXISTS project_description_requests;
+DROP TABLE IF EXISTS check_files;
+DELETE FROM app_settings WHERE key LIKE 'regression%' OR key LIKE 'test_jobs:%' OR key='qa_enabled';
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
