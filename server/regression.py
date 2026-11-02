@@ -210,7 +210,8 @@ def _block_instructions(issue, repo):
     if not parts:
         return ''
     return ('블록을 지원하는 검사 파일은 `"file:test_ui.py#confirm": true`처럼 블록만 고를 수 있다 — 고른 블록만 한 번에 돈다'
-            '(병합 검사는 파일 전체). 화면을 바꾸는 Task는 파일 전체 대신 관련 블록을 고른다. 블록 목록: ' + ' / '.join(parts) + '\n')
+            '(병합 검사는 파일 전체). 화면 변경은 서버가 블록↔화면 대응표로 블록을 고르니(정할 수 없으면 파일 전체 1회), '
+            '꼭 필요한 블록만 더 적는다 — 블록을 하나라도 적으면 대응표를 쓰지 않는다. 블록 목록: ' + ' / '.join(parts) + '\n')
 
 
 def _plan_task(issue, body):
@@ -372,31 +373,7 @@ def resolve(ref=None, repo=None, changed=None):
         for key, item in checks.items():
             if item['mode'] == 'auto':
                 item.update(enabled=True, reason='Task 문맥 없는 직접 검사')
-    # 블록 선택(DEV-231) — 계획의 `file:x.py#블록` 키와 Task가 바꾼 블록. 블록을 모르는 파일은 지금처럼 파일 단위다.
-    blocks = {}
-    picks = {}
-    for key, on in choice.get('checks', {}).items():
-        if key.startswith('file:') and '#' in key and on is True:
-            name, block = key[5:].split('#', 1)
-            picks.setdefault(name, []).append(block)
-    if repo and Path(repo).is_dir() and (picks or changed_tests):
-        for path in test_files(repo, pk):
-            if path.name not in picks and path.name not in changed_tests:
-                continue
-            listed = blocks_of(repo, path)
-            if not listed:
-                continue
-            lines = None
-            if path.name in changed_tests:
-                lines = changed_lines(repo, Path(path).relative_to(repo).as_posix() if Path(path).is_relative_to(repo) else path.name)
-                lines = set() if lines is None else lines   # 새 파일·읽기 실패는 블록을 정하지 못한 것으로 본다
-            plan = block_plan(listed, lines, picks.get(path.name, ()))
-            if not plan['only'] and not plan['whole_once']:
-                continue
-            blocks[path.name] = plan
-            item = checks.get('file:' + path.name)
-            if item and item['mode'] == 'auto' and plan['selected'] and not item['enabled']:
-                item.update(enabled=True, reason='계획 에이전트가 블록을 고름: ' + ', '.join(plan['selected']))
+    blocks = select_blocks(repo, pk, choice, changed, changed_tests, checks)
     human_off = []
     for name in sorted(changed_tests):
         item = checks.get('file:' + name)
@@ -447,6 +424,168 @@ def blocks_of(repo, t):
         return saved['blocks']
     blocks = test_runner.list_blocks(str(repo), t)
     save_record(key, {'file': Path(t).name, 'blocks': blocks})
+    return blocks
+
+
+def aliases_of(repo, t):
+    """검사 파일의 옛 블록 이름 → 블록 id 목록(`--list-aliases`, DEV-233). 파일 내용 지문으로 캐시하고, 모르면 {}."""
+    import test_runner
+    try:
+        text = Path(t).read_bytes()
+    except OSError:
+        return {}
+    if b'--list-aliases' not in text:
+        return {}
+    key = 'regression-aliases:' + hashlib.sha256(text).hexdigest()
+    saved = load_record(key)
+    if 'aliases' in saved:
+        return saved['aliases']
+    try:
+        r = subprocess.run(test_runner.command(str(repo), t) + ['--list-aliases'], cwd=repo, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', timeout=60)
+        data = json.loads(next((x for x in reversed(r.stdout.splitlines()) if x.strip()), '')).get('aliases') if r.returncode == 0 else None
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        data = None
+    ok = isinstance(data, dict) and all(isinstance(v, list) and all(isinstance(x, str) for x in v) for v in data.values())
+    aliases = data if ok else {}
+    save_record(key, {'file': Path(t).name, 'aliases': aliases})
+    return aliases
+
+
+UI_MAP_NAME = 'ui_block_map.json'   # 검사 파일 옆의 블록↔화면 대응표(DEV-233-2)
+UI_MAP_WHOLE = ('static/index.html', 'static/family.css', 'static/font-settings.js')   # 공용 부분 — 바뀌면 블록을 정하지 않는다
+UI_MAP_DRIFT = 0.3   # 대응표를 만든 뒤 파일의 이름이 이만큼 넘게 바뀌었으면 대응표를 믿지 않는다
+
+
+def _ui_map_tool():
+    path = str(Path(__file__).resolve().parents[1] / 'scripts')
+    if path not in sys.path:
+        sys.path.append(path)
+    import ui_block_map
+    return ui_block_map
+
+
+def _all_names(tool, rel, text):
+    if rel.endswith('.js'):
+        return {s[2] for s in tool.js_segments(text)[0]}
+    return {s[2] for s in tool._css_lines(text, tool.css_rules(text)[0])}
+
+
+def ui_map_pick(repo, changed, ui_map):
+    """화면 파일 변경 → 대응표로 test_ui 블록 고르기(DEV-233-3).
+    돌려주는 것: (블록 id 목록, 이유). 블록 목록이 None이면 대응표로 정할 수 없어 파일 전체 1회다."""
+    import difflib
+    import execute
+    statics = [p for p in changed if p.startswith('static/')]
+    if not statics:
+        return [], ''
+    if not isinstance(ui_map, dict) or not isinstance(ui_map.get('blocks'), dict):
+        return None, '대응표 없음'
+    tool = _ui_map_tool()
+    shas = ui_map.get('generated_from') or {}
+    picked, reasons = [], []
+    for rel in statics:
+        if rel in UI_MAP_WHOLE or not rel.endswith(('.js', '.css')) or rel not in shas:
+            return None, f'{rel} 변경 — 대응표로 나눌 수 없는 파일'
+        try:
+            text = (Path(repo) / rel).read_text(encoding='utf-8')
+        except (OSError, UnicodeError):
+            return None, f'{rel} 읽기 실패(지운 파일)'
+        lines = changed_lines(repo, rel)
+        if lines is None:
+            return None, f'{rel} 새 파일이거나 바뀐 줄을 읽지 못함'
+        found = tool.changed_names(rel, text, lines)
+        if found['unknown']:
+            return None, f'{rel} {found["unknown"][0]}줄 — 함수·규칙 경계를 모름'
+        if tool.TOP in found['names']:
+            return None, f'{rel} 최상위 코드({tool.TOP}) 변경'
+        kind = 'js' if rel.endswith('.js') else 'css'
+        users = {}
+        for bid, entry in ui_map['blocks'].items():
+            for name in ((entry or {}).get(kind) or {}).get(rel, ()):
+                users.setdefault(name, []).append(bid)
+        new = [n for n in found['names'] if n not in users]
+        if new:
+            return None, f'{rel} `{new[0]}` — 대응표에 없는 새 이름'
+        # 대응표를 만든 뒤 base의 그 파일이 많이 바뀌었으면(이 Task 변경 제외) 대응표가 낡은 것으로 본다
+        base = execute._run_git(str(repo), 'show', f'{execute.BASE_BRANCH}:{rel}')
+        if base.returncode:
+            return None, f'{rel} base에 없는 파일'
+        if tool.blob_sha(base.stdout.encode('utf-8')) != shas[rel]:
+            old = execute._run_git(str(repo), 'cat-file', '-p', shas[rel])
+            if old.returncode:
+                return None, f'{rel} 대응표 기준 파일을 찾지 못함'
+            drift = set()
+            for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old.stdout.split('\n'), base.stdout.split('\n'), autojunk=False).get_opcodes():
+                if tag != 'equal':
+                    drift.update(range(j1 + 1, j2 + 1) if j2 > j1 else (max(j1, 1),))
+            moved = tool.changed_names(rel, base.stdout, drift)
+            total = _all_names(tool, rel, base.stdout)
+            if moved['unknown'] or not total or len(moved['names']) / len(total) > UI_MAP_DRIFT:
+                return None, f'{rel} 대응표를 만든 뒤 {len(moved["names"])}/{len(total)}개 이름이 바뀜(30% 초과)'
+        for name in found['names']:
+            hit = users[name]
+            partial = [b for b in hit if not (ui_map['blocks'][b] or {}).get('complete')]
+            if partial:
+                return None, f'{rel} `{name}` — 대응표 불완전 블록({partial[0]})이 씀'
+            picked += [b for b in hit if b not in picked]
+            reasons.append(f'{Path(rel).name} `{name}` → {", ".join(hit)}')
+    return picked, '; '.join(reasons)
+
+
+def select_blocks(repo, pk, choice, changed, changed_tests, checks):
+    """블록 선택(DEV-231) — 계획의 `file:x.py#블록` 키(옛 이름은 별칭으로 풀림)와 Task가 바꾼 블록.
+    계획이 블록을 고르지 않은 화면 변경은 검사 파일 옆 대응표로 고른다(DEV-233-3). 블록을 모르는 파일은 지금처럼 파일 단위다."""
+    blocks, picks = {}, {}
+    for key, on in choice.get('checks', {}).items():
+        if key.startswith('file:') and '#' in key and on is True:
+            name, block = key[5:].split('#', 1)
+            picks.setdefault(name, []).append(block)
+    ui = any(p.startswith('static/') for p in changed)
+    if not (repo and Path(repo).is_dir() and (picks or changed_tests or ui)):
+        return blocks
+    for path in test_files(repo, pk):
+        ui_map = Path(path).parent / UI_MAP_NAME if ui and path.name not in picks else None
+        if ui_map is not None and not ui_map.is_file():
+            ui_map = None
+        if path.name not in picks and path.name not in changed_tests and ui_map is None:
+            continue
+        item = checks.get('file:' + path.name)
+        if ui_map is not None and path.name not in changed_tests and not (item and item['enabled']):
+            continue   # 꺼진 검사를 대응표가 켜지 않는다
+        listed = blocks_of(repo, path)
+        if not listed:
+            continue
+        ids = {b['id'] for b in listed}
+        wanted = []
+        for b in picks.get(path.name, ()):
+            for x in ([b] if b in ids else aliases_of(repo, path).get(b, [b])):
+                if x not in wanted:
+                    wanted.append(x)
+        mapped, why = [], ''
+        if ui_map is not None:
+            try:
+                data = json.loads(ui_map.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                data = None
+            mapped, why = ui_map_pick(repo, changed, data)
+            wanted += [b for b in (mapped or ()) if b not in wanted]
+        lines = None
+        if path.name in changed_tests:
+            lines = changed_lines(repo, Path(path).relative_to(repo).as_posix() if Path(path).is_relative_to(repo) else path.name)
+            lines = set() if lines is None else lines   # 새 파일·읽기 실패는 블록을 정하지 못한 것으로 본다
+        plan = block_plan(listed, lines, wanted)
+        if mapped is None:   # 대응표로 정할 수 없는 화면 변경 — 파일 전체 1회
+            plan = {**plan, 'only': [], 'repeat': [], 'whole_once': True}
+        if why:
+            plan['reason'] = ('대응표: ' if mapped is not None else '대응표로 정할 수 없어 전체 1회: ') + why
+        if not plan['only'] and not plan['whole_once']:
+            continue
+        blocks[path.name] = plan
+        if item and item['mode'] == 'auto' and plan['selected'] and not item['enabled']:
+            item.update(enabled=True, reason='계획 에이전트가 블록을 고름: ' + ', '.join(plan['selected']))
+        elif item and item['enabled'] and plan.get('reason'):
+            item['reason'] += ' — ' + plan['reason']
     return blocks
 
 
