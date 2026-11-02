@@ -1079,6 +1079,7 @@ with db.connect() as c:   # 위 ORD 등록이 착수되지 않게 비우고 펌�
 jobs._threads = {}
 with patch.object(review, 'start', side_effect=lambda *a: None) as rs:
     jobs.enqueue(admin, mi['ref'], 'review', 'claude')
+    jobs.settle()
 assert rs.call_args.args[2:] == ('claude', 'claude-sonnet-5-5')
 with db.connect() as c:
     assert tuple(c.execute('SELECT provider, model FROM jobs WHERE issue_id=?', (mi['id'],)).fetchone()) == ('claude', 'claude-sonnet-5-5')

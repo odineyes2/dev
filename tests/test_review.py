@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 import app as A, auth, review  # noqa: E402
+import jobs
 
 # 누락과 실제 0을 구분하고 캐시 입력을 포함한다.
 for value in (None, -1, 1.5, '10', True):
@@ -45,17 +46,21 @@ with TestClient(A.app) as c:
     key = c.post("/api/agents", json={"name": "a"}, headers=H).json()["key"]
     c.cookies.clear()
     assert c.post("/api/issues/NS-1/review", headers={"Authorization": f"Bearer {key}"}).status_code == 403   # 에이전트는 못 맡김
+    jobs.settle()
     c.cookies.set("ns_session", "adm")
     assert c.post("/api/issues/NS-9/review", headers=H).status_code == 404
+    jobs.settle()
 
     behave.update(sleep="2", code="0")
     r = c.post("/api/issues/NS-1/review", headers=H)
+    jobs.settle()
     assert r.status_code == 200 and r.json()["ref"] == "NS-1", r.text
     it = c.get("/api/issues/NS-1").json()
     assert it["review_running"] and it["review_busy"] and "검토를 맡겼어요" in it["events"][-1]["body"]
     other = c.get("/api/issues/NS-2").json()
     assert other["review_busy"] and not other["review_running"]
     q = c.post("/api/issues/NS-2/review", headers=H).json()   # 한 번에 하나 — 바쁘면 줄에 선다(DEV-43)
+    jobs.settle()
     assert q["queued"] and q["position"] == 1 and c.get("/api/issues/NS-2").json()["job"]["id"] == q["job_id"], q
     assert c.delete(f"/api/jobs/{q['job_id']}", headers=H).status_code == 200 and c.get("/api/jobs").json()["jobs"] == []
     for _ in range(60):
@@ -73,6 +78,7 @@ with TestClient(A.app) as c:
     # JSON 출력 — 토큰·비용을 기록하고, 로그에는 result 글만
     behave.update(sleep="0", code="0", json=True)
     c.post("/api/issues/NS-1/review", headers=H)
+    jobs.settle()
     for _ in range(60):
         if not review.running_ref():
             break
@@ -87,6 +93,7 @@ with TestClient(A.app) as c:
     # 실패 — 종료 코드를 댓글로
     behave.update(sleep="0", code="3")
     c.post("/api/issues/NS-2/review", headers=H)
+    jobs.settle()
     for _ in range(60):
         if not review.running_ref():
             break
@@ -101,6 +108,7 @@ with TestClient(A.app) as c:
     behave.update(sleep="5", code="0")
     review.TIMEOUT_SEC = 1
     c.post("/api/issues/NS-2/review", headers=H)
+    jobs.settle()
     for _ in range(60):
         if not review.running_ref():
             break
@@ -113,6 +121,7 @@ with TestClient(A.app) as c:
     fake.write_text("print('no classification')", "utf-8")
     behave.update(sleep="0", code="0")
     c.post("/api/issues/NS-3/review", headers=H)
+    jobs.settle()
     for _ in range(60):
         if not review.running_ref():
             break
@@ -122,6 +131,7 @@ with TestClient(A.app) as c:
     # 사람 선택이 있으면 분류 호출 없이도 검토 완료로 처리한다.
     c.patch("/api/issues/NS-3", json={"type_ids": [3, 4]}, headers=H)
     c.post("/api/issues/NS-3/review", headers=H)
+    jobs.settle()
     for _ in range(60):
         if not review.running_ref():
             break

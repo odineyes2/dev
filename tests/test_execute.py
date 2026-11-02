@@ -138,19 +138,27 @@ issues.create_issue(me, "EX", "미승인 Task", parent="EX-2")
 with TestClient(A.app) as c:
     c.cookies.set("ns_session", "adm")
     key = c.post("/api/agents", json={"name": "a"}, headers=H).json()["key"]
+    jobs.settle()
     post = lambda ref: c.post(f"/api/issues/{ref}/execute", headers=H)
     assert c.post("/api/issues/EX-1-1/execute", headers={"Authorization": f"Bearer {key}"}).status_code == 403
+    jobs.settle()
     assert post("EX-9").status_code == 404
+    jobs.settle()
     assert "Task" in post("EX-1").json()["detail"]                    # 부모(Task 아님)
+    jobs.settle()
     assert "승인되지 않았어요" in post("EX-2-1").json()["detail"]          # 계획서 미승인
+    jobs.settle()
     r = post("EX-1-2"); assert r.status_code == 200 and r.json()["queued"] and "EX-1-1" in r.json()["note"], r.text   # 선행 미완료 → 줄에서 대기
+    jobs.settle()
     assert not execute.worktree_path("EX-1-2").exists() and review.list_runs("EX-1-2") == []
     assert issues.get_issue('EX-1-2')['status'] == 'waiting'
 
     r = post("EX-1-1"); assert r.status_code == 200 and r.json()["started"], r.text   # 앞의 대기 항목이 막혀도 뒤 항목은 돈다
+    jobs.settle()
     assert execute.worktree_path("EX-1-1").is_dir() and review.running_ref() == "EX-1-1"
     assert issues.get_issue('EX-1-1')['status'] == 'in_progress'
     assert post("EX-1-2").json()["job_id"] == jobs.list_jobs()[0]["id"] and len(jobs.list_jobs()) == 1   # 중복으로 안 넣음
+    jobs.settle()
     for terminal in ('done', 'closed'):
         assert "실행 중" in rejects(issues.set_status, me, "EX-1-1", terminal)
     assert issues.get_issue('EX-1-1')['status'] == 'in_progress'
@@ -177,12 +185,14 @@ with TestClient(A.app) as c:
     behave.update(sleep="0", code="3")
     issues.set_status(me, "EX-1-2", "changes_requested", "고쳐 주세요")
     post("EX-1-2"); wait_idle()
+    jobs.settle()
     last = review.list_runs("EX-1-2")[0]
     assert last["status"] == "failed" and last["exit_code"] == 3
     assert issues.get_issue('EX-1-2')['status'] == 'changes_requested'
     assert "실행 작업이 끝나지 못했어요" in issues.get_issue("EX-1-2")["events"][-1]["body"]
     assert len(review.list_runs("EX-1-2")) == 2 and execute.worktree_path("EX-1-2").is_dir()   # 같은 worktree에서 이어서
     assert post("EX-1-1").status_code == 409                            # done인 Task는 다시 못 맡김
+    jobs.settle()
 # Claude 경로도 구현 종료 시에는 진행 중이며 병합 검사 후에만 검토 상태가 된다.
 from unittest.mock import patch
 orchestrate.SETTINGS.write_text('{"EX":{"auto_merge":true}}')

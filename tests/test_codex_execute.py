@@ -58,26 +58,35 @@ try:
         c.cookies.set('ns_session', 'adm')
         post = lambda ref, provider='codex': c.post(f'/api/issues/{ref}/execute', json={'provider': provider}, headers=base.H)
         assert post('EX-1-2', 'other').status_code == 400
+        base.jobs.settle()
         assert post('EX-1').status_code == 409
+        base.jobs.settle()
         assert post('EX-2-1').status_code == 409
+        base.jobs.settle()
         issues.create_project(base.me, 'OTHER', 'Other project', local_path=str(base.tmp / 'other'))
         cross = issues.create_issue(base.me, 'EX', 'Cross repository task',
                                     body='**바꿀 파일**: other/static/style.css', parent='EX-1')
         rejected = post(cross['ref'])
+        base.jobs.settle()
         assert rejected.status_code == 409 and 'OTHER' in rejected.json()['detail'], rejected.text
         assert not review.list_runs(cross['ref']) and not execute.worktree_path(cross['ref']).exists()
         assert post('EX-1-2').json()['started']
+        base.jobs.settle()
         assert issues.get_issue('EX-1-2')['status'] == 'in_progress'
         assert post('EX-1-2').json()['started'] and len(review.list_runs('EX-1-2')) == 3
+        base.jobs.settle()
         assert post('EX-1-2', 'claude').status_code == 409
+        base.jobs.settle()
         assert execute.blocked_reason(issues.get_issue('EX-1-2'), issues.get_issue('EX-1'))
         current = review.list_runs('EX-1-2')[0]['id']
         assert execute.completion_blocked_reason(issues.get_issue('EX-1-2'), current + 1)
         task = issues.create_issue(base.me, 'EX', 'Another task', parent='EX-1')
         queued = post(task['ref']).json()
+        base.jobs.settle()
         assert queued['queued'] and jobs.list_jobs()[0]['provider'] == 'codex'
         assert issues.get_issue(task['ref'])['status'] == 'waiting'
         assert post(task['ref']).json()['job_id'] == queued['job_id']
+        base.jobs.settle()
         jobs.cancel(base.me, queued['job_id'])
         base.wait_idle()
         run = review.list_runs('EX-1-2')[0]
@@ -98,6 +107,7 @@ try:
         head = base.git(wt, 'rev-parse', 'HEAD').stdout
         fake.write_text(output_script({'outcome': 'blocked', 'summary': 'Tests failed', 'tests': []}, False), 'utf-8')
         assert post('EX-1-2').json()['started']
+        base.jobs.settle()
         base.wait_idle()
         # 막힘(blocked)은 실패가 아니라 사람 차례 — on_hold로 두고 이유를 남긴다(backlog로 되돌려 같은 이유로 다시 돌지 않게, NS-31-1).
         assert review.list_runs('EX-1-2')[0]['status'] == 'ok'
@@ -107,13 +117,16 @@ try:
         issues.set_status(base.me, 'EX-1-2', 'changes_requested', 'retry')
         fake.write_text(output_script(result, False), 'utf-8')
         post('EX-1-2'); base.wait_idle()
+        base.jobs.settle()
         assert review.list_runs('EX-1-2')[0]['status'] == 'failed'
         assert '코드 변경' in review.list_runs('EX-1-2')[0]['note']
         assert merged == ['EX-1-2']
         # 대기 후 착수와 실패 복구, 시간 초과 후 재시도를 확인한다.
         fake.write_text('import sys\nsys.exit(1)\n', 'utf-8')   # 진짜 실패는 착수 전 상태로 복구
         post('EX-1-2')
+        base.jobs.settle()
         queued = post(task['ref']).json()
+        base.jobs.settle()
         assert queued['queued'] and issues.get_issue(task['ref'])['status'] == 'waiting'
         base.wait_idle()
         task_issue = issues.get_issue(task['ref'])
@@ -123,6 +136,7 @@ try:
         execute.TIMEOUT_SEC = .1
         fake.write_text('import time\ntime.sleep(3)\n', 'utf-8')
         post(task['ref']); base.wait_idle()
+        base.jobs.settle()
         assert review.list_runs(task['ref'])[0]['status'] == 'timeout'
         assert issues.get_issue(task['ref'])['status'] == 'backlog'
         execute.TIMEOUT_SEC = timeout_before
@@ -131,6 +145,7 @@ try:
         for manual in ('on_hold', 'in_progress'):
             issues.set_status(base.me, task['ref'], 'backlog')
             post(task['ref'])
+            base.jobs.settle()
             issues.set_status(base.me, task['ref'], 'on_hold')
             issues.set_status(base.me, task['ref'], manual)
             base.wait_idle()
@@ -140,6 +155,7 @@ try:
         # 실행 도중 부모 계획서가 바뀌면 완료 검증에서 거절한다.
         issues.set_status(base.me, task['ref'], 'backlog')
         post(task['ref'])
+        base.jobs.settle()
         issues.post_plan(base.me, 'EX-1', 'Updated approval required')
         base.wait_idle()
         assert review.list_runs(task['ref'])[0]['status'] == 'failed'
@@ -147,16 +163,19 @@ try:
         assert issues.get_issue(task['ref'])['status'] == 'backlog'
         issues.decide(base.me, 'EX-1', 'approve', '', plan_version=2)
         post(task['ref']); base.wait_idle()
+        base.jobs.settle()
         assert review.list_runs(task['ref'])[0]['status'] == 'ok'
         assert issues.get_issue(task['ref'])['status'] == 'in_review'
         del os.environ['DEV_CODEX_AGENT_KEY']
         missing = post('EX-1-2').json()
-        assert missing['queued'] and 'DEV_CODEX_AGENT_KEY' in missing['note']
+        base.jobs.settle()
+        assert missing['started'] and 'DEV_CODEX_AGENT_KEY' in jobs.job_for(issues.get_issue('EX-1-2')['id'])['note']
         assert issues.get_issue('EX-1-2')['status'] == 'waiting'
         jobs.cancel(base.me, missing['job_id'])
         assert issues.get_issue('EX-1-2')['status'] == 'changes_requested'
         c.cookies.clear()
         assert c.post('/api/issues/EX-1-2/execute', json={'provider': 'codex'}, headers={'Authorization': 'Bearer ' + base.key}).status_code == 403
+        base.jobs.settle()
 finally:
     orchestrate.handle = original_handle
 

@@ -24,6 +24,11 @@ PERIOD_SEC = 60
 DEFAULT_CONCURRENCY, MAX_CONCURRENCY = 2, 6
 SELF_PM2_APP = os.environ.get("DEV_PM2_APP") or "dev"   # 이 앱을 재시작하는 병합은 모든 줄의 작업을 끊는다
 _lock = threading.Lock()
+_kick_guard = threading.Lock()
+_kick_thread = None
+_kick_again = False
+_kick_runner = None
+_kick_jobs: set[int] = set()
 _threads: dict[tuple, int] = {}   # 줄별 맡긴 작업 스레드 수 — 실행 줄은 runs가 끝난 뒤 병합까지 이 수로 "도는 중"을 본다
 
 
@@ -234,13 +239,13 @@ def self_restart_state(c) -> dict | None:
             'process_id': orchestrate.PROCESS_ID, 'revision': orchestrate.BOOT_SHA}
 
 
-def _active_lanes(c) -> set[tuple]:
+def _active_lanes(c, extra_lanes=frozenset()) -> set[tuple]:
     """지금 바쁜 줄 — 도는 runs, 병합·반영 중인 실행, 아직 끝나지 않은 작업 스레드."""
     lanes = {(r["key"], r["mode"]) for r in c.execute(
         "SELECT p.key, r.mode FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id WHERE r.status='running'")}
     lanes |= {(m["ref"].split("-")[0], "execute") for m in _pending_merges(c)}
     import project_activity
-    return lanes | project_activity.lanes(c) | {lane for lane, n in _threads.items() if n and lane}
+    return lanes | set(extra_lanes) | project_activity.lanes(c) | {lane for lane, n in _threads.items() if n and lane}
 
 
 def busy() -> bool:
@@ -249,7 +254,7 @@ def busy() -> bool:
         return bool(_active_lanes(c))
 
 
-def start_block(c, project_key: str, mode: str) -> str | None:
+def start_block(c, project_key: str, mode: str, extra_lanes=frozenset()) -> str | None:
     """이 줄에서 지금 새로 시작하면 안 되는 이유. 없으면 None."""
     import project_restart
     import reproduce
@@ -272,7 +277,7 @@ def start_block(c, project_key: str, mode: str) -> str | None:
     for m in _pending_merges(c):
         if orchestrate.settings(m["ref"].split("-")[0]).get("pm2_app") == SELF_PM2_APP:
             return f"{m['ref']} 병합 뒤 dev 재시작을 기다려요 — 재시작하면 도는 작업이 모두 끊겨서 그동안은 새로 시작하지 않아요."
-    lanes = _active_lanes(c)
+    lanes = _active_lanes(c) | set(extra_lanes)
     if (project_key, 'initialization') in lanes and mode != 'initialization':
         return '프로젝트 초기 생성이 끝나면 시작해요.'
     if mode in ('audit', 'initialization') and any(lane[0] == project_key for lane in lanes):
@@ -345,7 +350,7 @@ def reconcile():
 
 
 def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, note=None, plan_version=None, attachment_ids=None) -> dict:
-    """줄에 넣고 펌프를 돌린다. 바로 시작하면 {started}, 아니면 {queued, position}."""
+    """줄에 넣고 착수를 예약한다. 시작 가능하면 {started}, 아니면 {queued, position}."""
     import auto_settings
     import execute
     import project_docs
@@ -415,15 +420,110 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
             issues._event(c, issue['id'], actor, 'comment', note,
                           {'plan_revision_request': True, 'plan_version': plan_version, 'job_id': j['id'], 'provider': provider, 'attachment_ids': attachment_ids or []})
         _waiting(c, j)
-    pump()
-    job = next((j for j in list_jobs() if j["issue_id"] == issue["id"] and j["mode"] == mode), None)
-    if job is None:
-        with db.connect() as c:
-            ended = c.execute("SELECT status,note FROM jobs WHERE id=?", (j["id"],)).fetchone()
-        if ended and ended["status"] == "skipped":
-            raise issues.StoreError(ended["note"], 409)
-        return {"started": True, "ref": ref}
-    return {"queued": True, "ref": ref, "job_id": job["id"], "position": job["position"], "note": job["note"]}
+    with db.connect() as c:
+        started, reason = _would_start(c, dict(j))
+    if reason:
+        _note(j['id'], reason)
+    job = next((item for item in list_jobs() if item['id'] == j['id']), None)
+    result = ({"started": True, "ref": ref, "job_id": j['id']} if started or job is None else
+              {"queued": True, "ref": ref, "job_id": j['id'], "position": job['position'], "note": reason or job['note']})
+    kick(j['id'])
+    return result
+
+
+def _would_start(c, job):
+    """앞 항목이 차지할 줄까지 반영하여 착수 가능 여부만 읽는다."""
+    import execute
+    stalled_jobs = set()
+    ordered, waits = schedule(c, _rows(c), stalled_jobs=stalled_jobs)
+    lanes = set()
+    for item in ordered:
+        reason = None
+        if item['mode'] == 'review':
+            init = c.execute("SELECT r.status,r.error FROM project_initializations r JOIN issues i ON i.project_id=r.project_id WHERE i.id=?", (item['issue_id'],)).fetchone()
+            if init and init['status'] != 'complete':
+                reason = ('초기 프로젝트 생성 완료를 기다려요.' if init['status'] in ('queued', 'running') else
+                          '초기 생성을 완료한 뒤 검토할 수 있어요. ' + init['error'])
+            deps = c.execute("SELECT 1 FROM issue_deps d JOIN issues i ON i.id=d.blocked_by_id JOIN issues own ON own.id=d.issue_id WHERE d.issue_id=? AND own.parent_id IS NULL AND i.status!='done'", (item['issue_id'],)).fetchone()
+            if deps and not reason:
+                refs = [r[0] for r in c.execute(f"SELECT {issues.ref_sql('i', 'p')} FROM issue_deps d JOIN issues i ON i.id=d.blocked_by_id JOIN projects p ON p.id=i.project_id WHERE d.issue_id=? AND i.status!='done' ORDER BY i.id", (item['issue_id'],))]
+                reason = f"선행 Issue({', '.join(refs)})가 done이 되어야 해요."
+        block = start_block(c, item['ref'].split('-')[0], item['mode'], extra_lanes=lanes)
+        if item['mode'] == 'execute':
+            issue = issues.get_issue(item['ref'])
+            parent = issues.get_issue(issue['parent_ref']) if issue['parent_ref'] else None
+            reason = (waits.get(item['id']) if item['id'] in stalled_jobs else None) or execute.blocked_reason(issue, parent) or execute.predecessor_merge_reason(issue) or waits.get(item['id'])
+        reason = reason or block
+        if item['id'] == job['id']:
+            return not reason, reason
+        if not reason:
+            lanes.add((item['ref'].split('-')[0], item['mode']))
+    return True, None
+
+
+def _start_notice(job_id, error=None):
+    """착수 실패 댓글을 항목마다 한 번 남긴다."""
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        job = c.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+        if not job or (job['status'] != 'skipped' and not (error and job['status'] == 'queued')):
+            return
+        if c.execute("SELECT 1 FROM events WHERE issue_id=? AND json_extract(data_json,'$.job_id')=? AND json_extract(data_json,'$.start_skipped')=1", (job['issue_id'], job_id)).fetchone():
+            return
+        if error:
+            c.execute("UPDATE jobs SET note=? WHERE id=? AND status='queued'", (error, job_id))
+        issues._event(c, job['issue_id'], _actor(job['actor']), 'comment',
+                      f"⏭ 맡긴 {'검토' if job['mode'] == 'review' else '실행'}을 시작하지 못했어요 — {error or job['note']}",
+                      {'job_id': job_id, 'start_skipped': True})
+
+
+def kick(job_id=None):
+    """펌프 하나만 뒤에서 돌리고 추가 요청은 다음 순회로 모은다."""
+    global _kick_thread, _kick_again, _kick_runner
+    with _kick_guard:
+        _kick_runner = pump   # 부른 시점의 펌프를 쓴다(검사가 pump를 바꿔 둔 범위 밖에서 진짜 펌프가 돌지 않게).
+        if job_id is not None:
+            _kick_jobs.add(job_id)
+        _kick_again = True
+        if _kick_thread is not None:
+            return
+        def loop():
+            global _kick_thread, _kick_again
+            while True:
+                with _kick_guard:
+                    _kick_again = False
+                    pending = set(_kick_jobs)
+                    _kick_jobs.clear()
+                    runner = _kick_runner
+                error = None
+                try:
+                    runner()
+                except Exception:
+                    import logging
+                    logging.exception('jobs.kick 착수 오류')
+                    error = '착수 중 오류가 났어요 — 서버 로그를 확인해 주세요.'
+                for ident in pending:
+                    _start_notice(ident, error)
+                with _kick_guard:
+                    if not _kick_again:
+                        _kick_thread = None
+                        return
+        _kick_thread = threading.Thread(target=loop, daemon=True, name='jobs-kick')
+        _kick_thread.start()
+
+
+def settle(timeout=30):
+    """현재 착수 펌프가 끝날 때까지 기다린다."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with _kick_guard:
+            worker = _kick_thread
+        if worker is None:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('대기열 착수가 끝나지 않았어요.')
+        worker.join(remaining)
 
 
 def cancel(actor: dict, job_id: int) -> dict:
@@ -481,6 +581,8 @@ def _set(job_id: int, status: str, note: str = "") -> None:
         c.execute("BEGIN IMMEDIATE")
         j = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not j:  # 시작 준비 중 이슈가 지워지면 대기 항목도 함께 사라진다.
+            return
+        if j["status"] not in ("queued", "started"):  # 착수 준비 중 취소·보관된 항목은 되살리지 않는다.
             return
         run = c.execute("SELECT id FROM runs WHERE issue_id=? AND mode=? ORDER BY id DESC LIMIT 1", (j["issue_id"], j["mode"])).fetchone() if status == "started" else None
         c.execute("UPDATE jobs SET status=?, note=?, started_at=?, run_id=? WHERE id=?",
