@@ -5868,6 +5868,144 @@ def check_harness(page, shots):
     page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-add')
 
 
+# 블록 표(DEV-231) — (id, 제목, 줄 범위를 줄 함수 이름, 실행). 서버가 `--list-blocks`로 읽고 `--only id1,id2`로
+# 준비(서버·브라우저·로그인)를 한 번만 한 뒤 고른 블록을 차례로 돌린다. 블록마다 `OK: block:<id>`를 찍는다.
+# 기존 `--<id>-only` 옵션은 아래 if 줄에서 지금처럼 동작한다(재현 R16이 그 줄을 읽는다).
+# 앞 준비가 긴 옛 흐름(목록 준비 뒤 블록 등)은 그 옵션으로 별도 프로세스에서 돈다(legacy).
+def legacy(option):
+    r = subprocess.run([sys.executable, __file__, option], cwd=ROOT, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    assert r.returncode == 0, (option, r.stdout[-3000:], r.stderr[-3000:])
+
+
+def _projects_page():
+    page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+
+
+def _checks(*fns):
+    """검사 함수를 차례로 부른다 — 인자는 이름(page·shots·answers·asked)으로 넘긴다."""
+    import inspect
+    names = {'page': page, 'shots': shots, 'answers': answers, 'asked': asked}
+    for fn in fns:
+        fn(**{k: names[k] for k in inspect.signature(fn).parameters if k in names})
+
+
+def _block(id, title, *fns, source=None, run=None):
+    return (id, title, source or fns[0].__name__, run or (lambda: _checks(*fns)))
+
+
+from functools import partial
+BLOCKS = [
+    _block('confirm', 'confirm dialog', source='block_confirm', run=lambda: block_confirm()),
+    _block('login', 'login screen and authentication', check_login_screen, run=lambda: None),
+    _block('nav-shortcut', 'nav shortcuts', check_nav_shortcuts),
+    _block('delegate-confirm', 'delegate confirm', check_delegate_confirm),
+    _block('complete-summary', 'complete summary', check_complete_summary),
+    _block('decision-layout', 'decision layout', check_decision_layout),
+    _block('task-alignment', 'Task button alignment', check_task_action_alignment),
+    _block('result-attach', 'result attach', check_result_attach),
+    _block('queue-limit', 'queue limit', check_queue_limit),
+    _block('test-jobs', 'test jobs', check_test_jobs),
+    _block('queue-edges', 'queue edges', check_queue_edges),
+    _block('self-restart-banner', 'self restart banner', check_self_restart_banner),
+    _block('list-spacing', 'List spacing', check_list_spacing),
+    _block('issue-table', 'Issue table', check_issue_table),
+    _block('suggestions', 'suggestions', check_suggestions),
+    _block('suggestions-regression', 'suggestions and regression numbers', check_suggestions, check_regression_numbers),
+    _block('trends', 'Trend', check_trends),
+    _block('trend-issues', 'Trend issues', check_trend_issues),
+    _block('trend-stages', 'Trend stages', check_trend_stages),
+    _block('issue-summary', 'Issue summary', check_issue_summary),
+    _block('rating', 'Rating', check_rating),
+    _block('manual-usage', 'Manual usage', check_manual_usage),
+    _block('progress-clock', 'Progress clock', check_progress_clock),
+    _block('issue-tokens', 'Issue tokens', check_issue_tokens),
+    _block('auto-master', 'Auto master and related settings', check_auto_master, check_auto_settings),
+    _block('settings-navigation', 'Settings navigation', check_settings_navigation),
+    _block('global-agent-orders', 'global Agent role orders', check_global_agent_orders),
+    _block('publication', 'publication notices', check_published_notice),
+    _block('manual-actions', 'manual actions', check_board_actions),
+    _block('global-auto', 'global auto settings, publication and manual actions', check_auto_master, check_auto_settings,
+           check_global_agent_orders, check_published_notice, check_board_actions),
+    _block('free-port', 'free port', check_free_port),
+    _block('service-diagnostic', 'service diagnostic', check_service_diagnostic, run=lambda: legacy('--service-diagnostic-only')),
+    _block('fonts', 'fonts and Settings navigation', check_font_settings, check_settings_navigation),
+    _block('project-genres', 'project genres', check_project_initialization),
+    _block('project-wizard', 'project wizard', check_project_row, check_project_flows, check_project_initialization,
+           run=lambda: (_projects_page(), _checks(check_project_row, check_project_flows, check_project_initialization))),
+    _block('project-registration', 'project registration', check_project_row, check_project_navigation, check_project_flows,
+           check_project_documents, check_project_usage, check_project_audits, check_project_initialization,
+           run=lambda: (_projects_page(), _checks(check_project_row, check_project_navigation, check_project_flows, check_project_documents,
+                                                  check_project_usage, check_project_audits, check_project_initialization))),
+    _block('project-documents', 'project documents', check_project_documents,
+           run=lambda: (_projects_page(), _checks(check_project_documents))),
+    _block('harness', 'harness', check_harness),
+    _block('management-agents', 'management agents', check_management_agents),
+    _block('management-delay-probe', 'management delay probe', check_management_delay_probe),
+    _block('management-layout', 'management layout', check_management_layout),
+    _block('management-projects', 'management projects', check_project_row, check_project_documents, check_project_usage, check_project_audits,
+           run=lambda: (_projects_page(), _checks(check_project_row, check_project_documents, check_project_usage, check_project_audits))),
+    _block('management', 'management UI', check_management_layout, run=lambda: legacy('--management-only')),
+    _block('new-issue-fields', 'new issue fields', check_new_issue_fields),
+    _block('new-issue-dependencies', 'new issue dependencies', check_new_issue_dependencies),
+    _block('chat-connections', 'chat connections', check_chat_connections),
+    _block('jobs-scroll', 'jobs list scroll', check_jobs_list_scroll),
+    _block('list-sort', 'list sort', check_list_sort),
+    _block('initialization', 'project initialization', check_project_initialization),
+    _block('usage', 'project usage', check_project_usage),
+    _block('reproduce', 'failed check reproduction', check_reproduce),
+    _block('register-repair', 'register repair', check_register_repair),
+    _block('manual-merge', 'manual merge', check_manual_merge),
+    _block('troubleshooter', 'troubleshooter', check_troubleshooter),
+    _block('restart', 'app restart UI', check_project_restart),
+    _block('audits', 'project audits', check_project_audits, run=lambda: legacy('--audits-only')),
+    _block('fab', 'fab', partial(check_fab, alignment_only=True), source='check_fab'),
+    _block('page-gutter', 'page gutter', check_page_gutter),
+    _block('regression-numbers', 'regression numbers', check_regression_numbers),
+    _block('composer-chain', 'composer chain', check_composer_chain),
+    _block('composer-close', 'composer close', check_composer_close),
+    _block('attachments', 'attachments', check_attachments),
+    _block('new-attachment-images', 'new attachment images', check_new_attachment_images),
+    _block('composer-images', 'composer images', check_composer_images),
+    _block('progress', 'progress refresh', check_progress_refresh),
+    _block('progress-note', 'progress note', check_progress_note),
+    _block('qa-start', 'QA start', check_qa_start),
+    _block('board-actions', 'board actions', check_board_actions),
+    # 아래는 옛 흐름에서 목록 준비(QA·계정 메뉴·Settings 검사) 뒤에 도는 블록이라 옛 옵션으로 따로 돈다.
+    _block('detail-side', 'detail side', check_sticky_tabbar, run=lambda: legacy('--detail-side-only')),
+    _block('issue-types', 'issue types', check_issue_types, run=lambda: legacy('--issue-types-only')),
+    _block('edit-saving', 'edit saving', check_edit_saving, run=lambda: legacy('--edit-saving-only')),
+    _block('rollback', 'rollback waiting', check_rollback_waiting, run=lambda: legacy('--rollback-only')),
+    _block('account-menu', 'account menu', check_account_menu, run=lambda: legacy('--account-menu-only')),
+    _block('list-loading', 'list loading', check_list_loading, run=lambda: legacy('--list-loading-only')),
+    _block('project-flows', 'project flows', check_project_flows, run=lambda: legacy('--project-flows-only')),
+]
+BLOCK_INDEX = {b[0]: b for b in BLOCKS}
+
+
+def block_lines():
+    """함수 이름 → [시작, 끝] 줄(main 안에 정의한 block_* 함수 포함)."""
+    import ast
+    tree = ast.parse(Path(__file__).read_text(encoding='utf-8'))
+    return {n.name: [n.lineno, n.end_lineno] for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+
+
+if '--list-blocks' in sys.argv:
+    lines = block_lines()
+    print(json.dumps([{'id': i, 'title': t, 'lines': lines[s]} for i, t, s, _ in BLOCKS], ensure_ascii=False)); sys.exit(0)
+ONLY = [x for x in (sys.argv[sys.argv.index('--only') + 1] if '--only' in sys.argv[:-1] else '').split(',') if x]
+if '--only' in sys.argv and (not ONLY or any(x not in BLOCK_INDEX for x in ONLY)):
+    sys.exit('모르는 블록이에요: ' + ','.join(x for x in ONLY if x not in BLOCK_INDEX) + ' (python tests/test_ui.py --list-blocks)')
+
+
+def reset_between_blocks():
+    """블록 사이에 남는 상태(답·뷰포트·테마·화면)를 로그인 직후처럼 되돌린다."""
+    answers.clear(); asked.clear()
+    page.unroute('**/*')
+    page.emulate_media(color_scheme='light'); page.set_viewport_size({'width': 1300, 'height': 850})
+    page.evaluate("localStorage.removeItem('dev.theme')")
+    page.goto(BASE + '/#/'); page.reload(); page.wait_for_selector('#shell:not([hidden])')
+
+
 tmp = Path(tempfile.mkdtemp())
 (tmp / "fake_ns.py").write_text(FAKE_NS, "utf-8")
 (tmp / "capture_app.py").write_text(BOOTSTRAP, "utf-8")
@@ -5907,10 +6045,10 @@ try:
             answer = answers.pop(0) if answers else "모바일도 확인해 주세요"
             return answer if options.get('input') else answer is not None
         page.expose_function('testConfirmAnswer', confirm_answer)
-        if '--confirm-only' not in sys.argv:
+        if '--confirm-only' not in sys.argv and ONLY != ['confirm']:
             page.add_init_script("window.addEventListener('DOMContentLoaded', () => { window.realConfirmDialog = window.confirmDialog; window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); });")
         page.evaluate("() => { window.realConfirmDialog = window.confirmDialog; window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); }")
-        if '--confirm-only' in sys.argv:
+        def block_confirm():   # 확인창 모달 자체 — 끝나면 기존 흐름의 확인창 대답으로 되돌린다
             page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
             page.goto(BASE + '/#/')
             page.wait_for_selector('#project-filter')
@@ -6001,7 +6139,22 @@ try:
                     page.click('#dep-cancel')
                     expect(editor).not_to_be_visible()
             assert not errs, errs
-            print('OK: confirm dialog'); sys.exit(0)
+            page.evaluate("() => { window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); }")
+            print('OK: confirm dialog')
+        if ONLY:
+            for n, block_id in enumerate(ONLY):
+                if n:
+                    reset_between_blocks()
+                try:
+                    BLOCK_INDEX[block_id][3]()
+                except SystemExit as e:   # 옛 블록 함수가 sys.exit(0)으로 끝나는 경우
+                    if e.code not in (0, None):
+                        raise
+                assert not errs, (block_id, errs)
+                print(f'OK: block:{block_id}', flush=True)
+            sys.exit(0)
+        if '--confirm-only' in sys.argv:
+            block_confirm(); sys.exit(0)
         if '--login-only' in sys.argv:
             assert not errs, errs
             print('OK: login screen and authentication'); sys.exit(0)
