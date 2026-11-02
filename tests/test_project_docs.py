@@ -32,6 +32,7 @@ denied(lambda: project_docs.request_documents({'kind': 'agent', 'id': 1}, 'DOC',
 with patch.object(jobs, 'start_block', return_value='바쁨'):
     for provider in ('codex', 'claude'):
         request = project_docs.request_documents(me, 'doc', provider)
+        jobs.settle()
         ref = request['ref']
         parent = issues.get_issue(ref)
         assert parent['project_key'] == 'DOC' and parent['parent_ref'] is None
@@ -40,14 +41,17 @@ with patch.object(jobs, 'start_block', return_value='바쁨'):
         assert all(path in parent['body'] and purpose in parent['body'] for path, purpose in project_docs.DOCUMENTS)
         assert jobs.list_jobs()[-1]['provider'] == provider
         assert project_docs.request_documents(me, 'DOC', provider)['ref'] == ref
+        jobs.settle()
         issues.update_issue(me, ref, {'type_ids': [1]})
         assert project_docs.request_documents(me, 'DOC', provider)['ref'] == ref
+        jobs.settle()
         assert issues.get_issue(ref)['type_ids'] == [1, 2]
         task = issues.create_issue(me, 'DOC', '문서 생성', parent=ref, body='바꿀 파일: docs/project/01_PRD.md, AGENTS.md')
         denied(lambda: jobs.enqueue(me, task['ref'], 'execute'), 409)
         issues.post_plan(me, ref, '대상 worktree에서 문서 작성')
         issues.decide(me, ref, 'approve', plan_version=1)
         result = jobs.enqueue(me, task['ref'], 'execute')
+        jobs.settle()
         assert next(j for j in jobs.list_jobs() if j['id'] == result['job_id'])['provider'] == provider
         other = 'claude' if provider == 'codex' else 'codex'
         denied(lambda: jobs.enqueue(me, task['ref'], 'execute', other), 409)
@@ -65,6 +69,7 @@ with patch.object(jobs, 'start_block', return_value='바쁨'):
             prepare.assert_called_once_with('/target', task['ref'])
             assert launch.call_args.args[3] == provider
         assert project_docs.request_documents(me, 'DOC', provider)['reviewed']
+        jobs.settle()
 
 # 문서 Task도 기존 다른 저장소 변경 차단을 그대로 적용한다.
 issues.create_project(me, 'OTHER', '다른 저장소', '', '/other-repo')
@@ -77,11 +82,13 @@ with patch.object(jobs, 'start_block', return_value='바쁨'):
 issues.create_project(me, 'RETRY', '재시도', '', '/retry', '원래 설명')
 with patch.object(jobs, 'enqueue', side_effect=RuntimeError('queue failed')):
     failed = project_docs.request_documents(me, 'RETRY', 'codex')
+    jobs.settle()
 assert failed['retryable'] and failed['queue_error'] == 'queue failed'
 assert issues.get_issue(failed['ref'])['type_ids'] == [2]
 issues.update_project(me, 'RETRY', {'description': '새 설명'})
 with patch.object(jobs, 'start_block', return_value='바쁨'):
     retry = project_docs.request_documents(me, 'RETRY', 'codex')
+    jobs.settle()
 assert retry['ref'] == failed['ref'] and retry['reused'] and 'job' in retry
 assert '원래 설명' in issues.get_issue(retry['ref'])['body']
 with db.connect() as c:
@@ -93,6 +100,7 @@ issues.create_project(me, 'RACE', '동시', '', '/race', '설명')
 with patch.object(jobs, 'enqueue', return_value={'queued': True}):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: project_docs.request_documents(me, 'RACE', 'codex'), range(8)))
+        jobs.settle()
 assert len({r['ref'] for r in results}) == 1
 with db.connect() as c:
     assert c.execute('SELECT COUNT(*) FROM issue_type_links WHERE issue_id=? AND type_id=2',
@@ -100,6 +108,7 @@ with db.connect() as c:
 issues.set_status(me, results[0]['ref'], 'done')
 with patch.object(jobs, 'enqueue', return_value={'queued': True}):
     assert project_docs.request_documents(me, 'RACE', 'codex')['ref'] != results[0]['ref']
+    jobs.settle()
 
 # 일반 종류 선택은 공식 요청이나 유료 작업을 시작하지 않는다.
 with db.connect() as c:
@@ -141,10 +150,13 @@ with patch.object(db.config, 'DB_PATH', Path(tempfile.mkdtemp()) / 'legacy.db'):
         assert [tuple(r) for r in c.execute('SELECT provider,description FROM project_doc_requests ORDER BY issue_id')] == [('codex', '과거 설명'), ('claude', '과거 설명')]
     with patch.object(jobs, 'enqueue', return_value={'queued': True}):
         assert project_docs.request_documents(me, 'OLD', 'codex')['ref'] == old['ref']
+        jobs.settle()
         new = project_docs.request_documents(me, 'OLD', 'claude')
+        jobs.settle()
         assert new['ref'] == existing['ref']
         issues.set_status(me, existing['ref'], 'done')
         new = project_docs.request_documents(me, 'OLD', 'claude')
+        jobs.settle()
         assert issues.get_issue(new['ref'])['type_ids'] == [2]
 
 # REST는 인증된 사람의 요청을 연결하고, 도구를 생략한 후속 실행은 저장된 도구를 따른다.
@@ -214,6 +226,7 @@ assert listing['documents'][0]['status'] == 'available'
 assert listing['documents'][1]['status'] == 'unavailable'
 with patch.object(jobs, 'start_block', return_value='바쁨'):
     request = project_docs.request_documents(me, 'READ', 'codex')
+    jobs.settle()
 assert project_docs.list_documents('READ')['requests'][0]['state'] == 'in_progress'
 issues.set_status(me, request['ref'], 'in_review')
 assert project_docs.list_documents('READ')['requests'][0]['state'] == 'merge_pending'
@@ -224,6 +237,7 @@ assert project_docs.list_documents('RETRY')['requests'][0]['url'].startswith('#/
 issues.create_project(me, 'FAIL', '실패', '', str(repo), '설명')
 with patch.object(jobs, 'enqueue', side_effect=RuntimeError('queue failed')):
     project_docs.request_documents(me, 'FAIL', 'claude')
+    jobs.settle()
 assert project_docs.list_documents('FAIL')['requests'][0]['state'] == 'failed'
 # 상위 경로 링크도 저장소 밖을 따라가지 않는다.
 git('update-index', '--force-remove', project_docs.DOCUMENTS[0][0])

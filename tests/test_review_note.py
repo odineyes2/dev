@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import app as A, auth, automation, auto_settings, db, issues, jobs, review
 
 jobs.pump = lambda: None
+jobs.start_block = lambda *args, **kwargs: '검사 중 대기'
 jobs.start_timer = lambda: None
 auth._client = httpx.AsyncClient(transport=httpx.MockTransport(
     lambda req: httpx.Response(200, json={'user': {'id': 1, 'username': 'admin', 'role': 'admin'}})))
