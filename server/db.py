@@ -1125,6 +1125,12 @@ ALTER TABLE project_initializations ADD COLUMN genre TEXT NOT NULL DEFAULT '';
 """)
 
 
+# 완료 기록의 ref·최신 실행 조회를 인덱스로 처리한다.
+MIGRATIONS.append("""
+CREATE INDEX IF NOT EXISTS execution_completion_ref ON execution_completion(ref, run_id);
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
