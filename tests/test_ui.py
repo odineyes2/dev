@@ -9,6 +9,69 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits, improve_fixture
 
 
+def check_qa_start(page, shots):
+    """사람이 선택한 QA의 목록·상세·확인과 시작 요청을 검사한다."""
+    headers = {'X-Requested-With':'dev'}
+    assert page.request.post(BASE+'/api/projects', headers=headers, data={'key':'QAU', 'name':'QA 담당'}).ok
+    rows = []
+    for title in ('준비됨', '시작 불가', '검사 중', '실패 결과'):
+        row = page.request.post(BASE+'/api/issues', headers=headers, data={'project':'QAU','title':title}).json()
+        assert page.request.post(BASE+'/api/issues/'+row['ref']+'/status', headers=headers, data={'status':'in_review'}).ok
+        rows.append(row)
+    task = page.request.post(BASE+'/api/issues', headers=headers, data={'project':'QAU','parent':rows[0]['ref'],'title':'Task'}).json()
+    assert page.request.post(BASE+'/api/issues/'+task['ref']+'/status', headers=headers, data={'status':'in_review'}).ok
+    start = {'reason':'','active':False,'latest':None,'agent':{'name':'QA 담당','provider':'codex','model':'gpt-6.1-sol'},'rework_count':2,'rework_limit':5}
+    variants = [start, dict(start,reason='구현 이력이 없어요.'), dict(start,active=True), dict(start,latest={'status':'failed','fail_count':2})]
+    by_ref = dict(zip([r['ref'] for r in rows], variants))
+    posted = []
+    def listing(route):
+        data = route.fetch().json()
+        for item in data['issues']:
+            if item['ref'] in by_ref:
+                item['action_context']['qa'] = by_ref[item['ref']]
+        route.fulfill(json=data)
+    def panel(route):
+        if route.request.method == 'POST':
+            posted.append(route.request.url)
+        route.fulfill(json={'rounds':[], 'start':start, 'rework_count':2,'rework_limit':5,'created':True})
+    page.route('**/api/issues?*', listing)
+    page.route('**/api/issues/*/qa', panel)
+    try:
+        page.evaluate("localStorage.setItem('dev.project','QAU')")
+        page.goto(BASE+'/#/'); page.reload()
+        page.wait_for_selector('#list-body[aria-busy="false"]')
+        page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
+        for row, variant, label in zip(rows, variants, ('QA 검사','QA 검사','QA 중','QA 실패 2건')):
+            line = page.locator('tr[data-ref="'+row['ref']+'"]')
+            expect(line.locator('[data-action="qa"]')).to_have_text(label)
+            assert line.locator('[data-action]').evaluate_all('(els)=>els.map(e=>e.dataset.action)') == ['qa','complete-tree']
+        expect(page.locator('tr[data-ref="'+task['ref']+'"] [data-action="qa"]')).to_have_count(0)
+        blocked = page.locator('tr[data-ref="'+rows[1]['ref']+'"] [data-action="qa"]')
+        expect(blocked).to_have_attribute('title',variants[1]['reason'])
+        blocked.click(force=True); expect(page.locator('#toast')).to_contain_text(variants[1]['reason'])
+        page.locator('tr[data-ref="'+rows[0]['ref']+'"] [data-action="qa"]').click()
+        dialog = page.locator('.confirm-dialog')
+        expect(dialog).to_contain_text('QA 담당'); expect(dialog).to_contain_text('유료 호출'); expect(dialog).to_contain_text('재작업 2/5')
+        dialog.locator('.confirm-ok').click()
+        expect(page.locator('.confirm-dialog')).to_have_count(0)
+        expect(page.locator('#toast')).to_contain_text('QA를 요청했어요')
+        assert len(posted) == 1
+        for status, label in [('passed','QA 통과'), ('inconclusive','QA 판정 불가'), ('orphaned','QA 판정 불가'), ('stale','QA 검사')]:
+            assert label in page.evaluate('(status)=>qaButton({latest:{status}}, "QAU-1")', status)
+        page.goto(BASE+'/#/issue/'+rows[0]['ref'])
+        expect(page.locator('#qa-start')).to_have_text('QA 검사')
+        page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
+        page.click('#qa-start'); expect(page.locator('.confirm-dialog')).to_contain_text('QA 담당')
+        page.locator('.confirm-cancel').click()
+    finally:
+        page.evaluate('() => { window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); }')
+        page.unroute('**/api/issues?*', listing)
+        page.unroute('**/api/issues/*/qa', panel)
+        token = page.request.get(BASE+'/api/projects/QAU/delete-check').json()['confirmation_token']
+        assert page.request.delete(BASE+'/api/projects/QAU', headers=headers, data={'confirmation_token':token}).ok
+        page.evaluate("localStorage.removeItem('dev.project')")
+
+
 def assert_dialog_actions(row):
     """버튼이 같은 줄·같은 너비로 하단 양끝을 채우는지 확인한다."""
     bounds = row.evaluate("""e => ({row:e.getBoundingClientRect().toJSON(),
@@ -5533,7 +5596,7 @@ def check_issue_tokens(page, shots):
     assert page.evaluate("formatTokens(0)") == '0'
     assert page.evaluate("formatTokens(null)") == '미측정'
     def qa_round(route):
-        route.fulfill(json={'rework_count':0, 'rework_limit':5, 'rounds':[
+        route.fulfill(json={'start':{'reason':'검사 준비 중이에요.'}, 'rework_count':0, 'rework_limit':5, 'rounds':[
             {'round_number':1, 'status':'passed', 'provider':'codex', 'model':'test',
              'input_tokens':6100000, 'output_tokens':0, 'cost_usd':None,
              'items':[], 'rework_batches':[], 'note':''}]})
@@ -6245,10 +6308,15 @@ try:
             check_progress_note(page, shots)
             assert not errs, errs
             print('OK: progress note'); sys.exit(0)
+        if '--qa-start-only' in sys.argv:
+            check_qa_start(page, shots)
+            assert not errs, errs
+            print('OK: QA start'); sys.exit(0)
         if '--board-actions-only' in sys.argv:
             check_board_actions(page, shots, answers, asked)
             assert not errs, errs
             print('OK: board actions'); sys.exit(0)
+        check_qa_start(page, shots)
         check_account_menu(page, shots)
         check_settings_navigation(page, shots)
         page.goto(BASE + '/#/'); page.wait_for_selector('#list-body[aria-busy="false"]')

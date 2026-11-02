@@ -69,11 +69,13 @@ def seed_fixture(request, base, fixture):
         return
     post('/api/projects', {'key': 'DEV', 'name': 'UI 캡처', 'description': '임시 화면 확인용 프로젝트',
                           **({'service_domain': 'app.example.com', 'service_port': 8400, 'service_app': 'myapp'} if fixture == 'project-service' else {})})
-    if fixture == 'detail':
+    if fixture in ('detail', 'qa'):
         issue = post('/api/issues', {'project': 'DEV', 'title': '화면 확인용 Issue',
                                    'body': '임시 데이터로 Description, Plan, Tasks를 확인한다.'})
         post('/api/issues/' + issue['ref'] + '/plans', {'body': '화면 확인용 Plan'})
         post('/api/issues', {'project': 'DEV', 'parent': issue['ref'], 'title': '화면 확인용 Task'})
+        if fixture == 'qa':
+            post('/api/issues/' + issue['ref'] + '/status', {'status':'in_review'})
 
 
 def wait_screen(page, route):
@@ -138,6 +140,16 @@ def capture(route='#/', fixture='empty'):
                     raise RuntimeError(f'테스트 로그인 실패 ({response.status})')
                 stage = 'fixture'
                 seed_fixture(context.request, base, fixture)
+                if fixture == 'qa':
+                    start = {'reason':'', 'active':False, 'latest':None, 'agent':{'name':'검사 Agent', 'provider':'codex', 'model':'gpt-6.1-sol'}, 'rework_count':0, 'rework_limit':5}
+                    def listing(route):
+                        data = route.fetch().json()
+                        for item in data['issues']:
+                            if not item.get('parent_ref'):
+                                item['action_context']['qa'] = start
+                        route.fulfill(json=data)
+                    page.route('**/api/issues?*', listing)
+                    page.route('**/api/issues/DEV-1/qa', lambda route: route.fulfill(json={'rounds':[], 'start':start, 'rework_count':0, 'rework_limit':5}))
                 for theme in ('light', 'dark'):
                     for width, height in ((1300, 850), (390, 800)):
                         stage = f'route/{theme}/{width}'
@@ -149,6 +161,8 @@ def capture(route='#/', fixture='empty'):
                             page.evaluate("s => {localStorage.setItem('dev.theme',s);document.documentElement.dataset.theme=s}", theme)
                             page.goto(base + '/' + route)
                             wait_screen(page, route)
+                            if fixture == 'qa' and route == '#/board':
+                                page.locator('.card[data-ref="DEV-1"]').evaluate("e => { const board=e.closest('.kanban'); board.scrollLeft += e.getBoundingClientRect().left-board.getBoundingClientRect().left; }")
                             if fixture == 'project-service':
                                 page.select_option('#p-service-provider', 'none')
                                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -224,7 +238,7 @@ def capture(route='#/', fixture='empty'):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--route', default='#/', help='harness, issue/DEV-1처럼 #/ 없이 쓴다(Git Bash가 #/를 경로로 바꾼다)')
-    parser.add_argument('--fixture', choices=('empty', 'detail', 'projects-empty', 'projects-input', 'project-service'), default='empty', help='detail fixture의 Issue는 DEV-1이다')
+    parser.add_argument('--fixture', choices=('empty', 'detail', 'projects-empty', 'projects-input', 'project-service', 'qa'), default='empty', help='detail fixture의 Issue는 DEV-1이다')
     args = parser.parse_args()
     try:
         directory, manifest = capture(args.route, args.fixture)
