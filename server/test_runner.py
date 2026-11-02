@@ -164,10 +164,28 @@ def run(repo, t, args=(), env=None, on_item=None):
                  ' — 검사가 띄운 보조 서버를 정리하지 않았는지 확인해 주세요.')
     result = subprocess.CompletedProcess(proc.args, code, ''.join(list(out)), ''.join(list(err)) + note)
     result.blocks = dict(blocks)
+    result.block_status = block_status(result)
     return result
 
 
 BLOCK_MARK = re.compile(r'^\s*OK:\s*block:(?P<id>[\w.-]+)')   # 블록 하나가 끝난 줄(DEV-231)
+
+
+def block_status(result):
+    """통과·실패 블록 표식을 출력 전체에서 모은다."""
+    return {m[2]: m[1] for m in re.finditer(r'^\s*(OK|FAIL):\s*block:([\w.-]+)',
+                                           result.stdout + '\n' + result.stderr, re.MULTILINE)}
+
+
+def block_output(result, bid):
+    """블록 종료 표식 앞의 출력을 골라 복구된 블록의 오류를 제외한다."""
+    output = result.stdout + '\n' + result.stderr
+    start = 0
+    for mark in re.finditer(r'^\s*(OK|FAIL):\s*block:([\w.-]+)[^\n]*', output, re.MULTILINE):
+        if mark[2] == bid and mark[1] == 'FAIL':
+            return output[start:mark.end()].strip()
+        start = mark.end()
+    return ''
 
 
 def list_blocks(repo, t, env=None):

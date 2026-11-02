@@ -608,6 +608,8 @@ def register_completion(actor, ref, cwd, run_id, note):
     if off:   # DEV-147 — 바뀐 검사는 항상 돌지만 사람이 Settings에서 끈 것만 예외다
         note += '\n\n⚠️ Task가 추가·수정한 검사를 사람이 Settings에서 꺼서 돌리지 않았어요: ' + ', '.join(f'`{n}`' for n in off)
     record = regression.load_record('regression-selection:' + ref + ':server_completion')
+    if record.get('triage'):
+        note += '\n\n🔁 완료 검사 재실행 분류: ' + regression.triage_line(record['triage'])
     if record.get('durations'):
         import orchestrate
         note += '\n\n⏱️ 완료 ' + orchestrate.slowest_line(record['durations'], wall=record.get('wall'))

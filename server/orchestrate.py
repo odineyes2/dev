@@ -523,7 +523,57 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
                 runs.append(again)
                 if again.returncode:
                     bad.append(again)
+        if stage == 'server_completion' and bad:
+            # 같은 코드로 실패·미완료 블록만 한 번 더 확인한다(DEV-236).
+            statuses = [test_runner.block_status(x) for x in bad]
+            catalog = test_runner.list_blocks(repo, t, env=env)
+            planned = plan['only'] if plan and plan['only'] else [b['id'] for b in catalog or []]
+            targets = {}
+            for first, marks in zip(bad, statuses):
+                scope = repeat[1].split(',') if first is not r and repeat else planned
+                for bid in scope:
+                    if marks.get(bid) == 'FAIL':
+                        targets[bid] = 'fail'
+                    elif first.returncode == 124 and marks and bid not in marks:
+                        targets.setdefault(bid, 'timeout')
+            if not targets:
+                targets = {None: 'timeout' if bad[0].returncode == 124 else 'fail'}
+            rerun_args = ('--only', ','.join(targets)) if None not in targets else ()
+            run_progress.check_start(ref, t.name, test_runner.timeout_for(t))
+            again = run_test(repo, t, env=env, on_item=item, **({'args': rerun_args} if rerun_args else {}))
+            _block_times(t, again)
+            marks = test_runner.block_status(again)
+            real = []
+            unknown_failure = again.returncode and all(marks.get(bid) == 'OK' for bid in targets)
+            for bid, first in targets.items():
+                outcome = ('pass' if marks.get(bid) == 'OK' else
+                           'fail' if marks.get(bid) == 'FAIL' else
+                           'timeout' if again.returncode == 124 else 'fail' if again.returncode else 'pass')
+                if unknown_failure:
+                    outcome = 'timeout' if again.returncode == 124 else 'fail'
+                edited = t.name in changed_tests and (not plan or plan.get('whole_once') or bid is None or bid in plan.get('repeat', []))
+                kind = 'real' if edited or outcome != 'pass' else 'timeout' if first == 'timeout' else 'flaky'
+                triage.append({'file': t.name, 'block': bid, 'first': first, 'rerun': outcome,
+                               'class': kind, 'related': True if edited else None})
+                if kind == 'real':
+                    real.append(bid)
+            if not real:
+                bad = []
+            elif None not in real and len(real) < len(targets):
+                # 복구된 블록의 실패 출력을 재작업 지시에 섞지 않는다.
+                original = bad[0]
+                detail = []
+                for source in (again, *bad):
+                    for bid in real:
+                        snippet = test_runner.block_output(source, bid)
+                        if snippet and snippet not in detail:
+                            detail.append(snippet)
+                original.triage_output = '진짜 실패 블록: ' + ', '.join(real) + '\n' + '\n'.join(detail)
+                bad = [original]
+            # 바뀐 검사에 적용하던 R09 결과·FLAKY_MARK는 보존한다.
         return runs, bad
+
+    triage = []
 
     block_durations = {}   # 'test_ui.py#confirm' → 초(이번 실행의 마지막 값)
 
@@ -545,9 +595,9 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
     for t, stamp in todo:   # 결과는 원래 순서대로 모은다
         (runs, bad), durations[t.name] = ran[t]
         results[t.name] = 'failed' if bad else 'passed'
-        if not bad and stamp:
+        if not bad and stamp and not any(x['file'] == t.name for x in triage):
             cached[t.name] = stamp
-        elif bad:
+        elif bad or any(x['file'] == t.name for x in triage):
             cached.pop(t.name, None)
         if bad:
             r = bad[0]
@@ -558,10 +608,11 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
             logs.mkdir(parents=True, exist_ok=True)
             log = logs / f"{t.stem}-{time.time_ns()}.log"
             log.write_text(detail, encoding="utf-8")
-            output = (r.stdout + r.stderr).strip() or "표준 출력과 오류 출력이 없어요."
+            output = getattr(r, 'triage_output', r.stdout + r.stderr).strip() or "표준 출력과 오류 출력이 없어요."
             flaky = ''
-            if len(runs) > 1 and len(bad) < len(runs):
-                flaky = f"{FLAKY_MARK} {t.name}가 같은 코드에서 {len(runs)}번 중 {len(bad)}번 실패했어요 — 검사 코드의 기다리기·순서 가정을 먼저 확인해 주세요\n"
+            bad_count = sum(bool(x.returncode) for x in runs)
+            if (len(runs) > 1 and bad_count < len(runs)) or any(x['file'] == t.name and x['class'] == 'real' and x['rerun'] == 'pass' for x in triage):
+                flaky = f"{FLAKY_MARK} {t.name}가 같은 코드에서 {len(runs)}번 중 {bad_count}번 실패했어요 — 검사 코드의 기다리기·순서 가정을 먼저 확인해 주세요\n"
             tag = f"{policy[stage].get('number', '')} {policy[stage]['name']} 실패 — {policy.get('file:' + t.name, {}).get('number', '')} "
             failures.append(f"{flaky}{tag}{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
     results = {t.name: results[t.name] for t in files if t.name in results}
@@ -576,7 +627,14 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
         reason = next(iter(miss.values()), '') if not reused else ''
         regression.save_record('regression-selection:' + ref + ':' + stage,
                                {**selection, 'results': results, 'durations': durations, 'wall': wall, 'block_durations': block_durations,
-                                'cache': {'used': bool(reused), 'reused': reused, 'reason': reason}})
+                                'triage': triage, 'cache': {'used': bool(reused), 'reused': reused, 'reason': reason}})
+        if triage:
+            regression.record_triage(key, ref, triage)
+            recovered = [x for x in triage if x['class'] != 'real']
+            if recovered:
+                issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref,
+                                   'ℹ️ 완료 검사 재실행 분류 — ' + regression.triage_line(recovered) +
+                                   ' — 복구된 항목은 재작업하지 않았어요, R07이 병합에서 다시 확인해요')
         mapped = [f"{n}: {p['reason']}" for n, p in (selection.get('blocks') or {}).items() if p.get('reason') and results.get(n) in ('passed', 'failed')]
         if stage == 'server_completion' and mapped:   # 대응표로 고른 이유(DEV-233-3)
             issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref, 'ℹ️ 화면 변경 블록 선택 — ' + ' / '.join(mapped))
@@ -591,6 +649,9 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
             if done:
                 issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref,
                                    f'⚠️ 같은 코드인데 검사 결과를 재사용하지 못했어요 — 이유: {reason}')
+    recovered = [x for x in triage if x['class'] != 'real']
+    if failures and recovered:
+        failures.append('ℹ️ 재실행으로 복구된 항목: ' + regression.triage_line(recovered))
     return '\n\n'.join(failures) or None
 
 

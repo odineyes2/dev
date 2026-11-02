@@ -53,12 +53,12 @@ reset()
 repo = make_repo(FLAKY)
 out = orchestrate.run_tests(str(repo), stage='server_completion', ref=new_ref(repo, 'FA'), changed=CHANGED)
 assert out and orchestrate.FLAKY_MARK in out and '3번 중 2번 실패' in out and '기다리기·순서' in out, out
-assert counter.read_text() == '3'
+assert counter.read_text() == '4'
 
-# 2. 바뀌지 않은 검사는 완료 때 1번만 돌린다
+# 2. 바뀌지 않은 검사는 재실행 통과하면 완료를 막지 않는다
 reset()
 out = orchestrate.run_tests(str(repo), stage='server_completion', ref=new_ref(repo, 'FB'), changed=[])
-assert out and orchestrate.FLAKY_MARK not in out and counter.read_text() == '1', out
+assert out is None and counter.read_text() == '2', out
 
 # 3. 늘 실패하면 코드 실패(불안정 표시 없음), 늘 통과하면 한 번만
 repo = make_repo(ALWAYS)
