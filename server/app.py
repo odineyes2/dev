@@ -761,9 +761,11 @@ def api_issues(project: str = "", status: str = "", assignee: int | None = None,
     limit = max(1, min(limit, 2000))
     items = issues.list_issues(project or None, status or None, assignee, parent or None, q or None, limit + 1, offset,
                                approved=approved, sort=sort)
+    batch = orchestrate.MergeBatch(items[:limit])
+    queued = jobs.jobs_by_issue()
     for it in items[:limit]:
-        it['merge_state'] = orchestrate.merge_state(it)
-        it['job'] = jobs.job_for(it['id'])
+        it['merge_state'] = orchestrate.merge_state(it, batch=batch)
+        it['job'] = queued.get(it['id'])
         it['run_progress'] = run_progress.for_issue(it)   # 실행 단계(DEV-206)·병합 검사 진행(DEV-211)
     run_progress.elapsed(items[:limit])   # In Progress 경과 시간(DEV-208)
     return {"issues": items[:limit], "has_more": len(items) > limit}
@@ -807,8 +809,9 @@ def api_issue(ref: str):
         evs = issues.events_for(ch["id"] for ch in it["children"])   # Task마다 다시 읽지 않고 한 번에(DEV-42-2)
         cfg = orchestrate.settings(it["project_key"]) if it["children"] else None
         queued = {j["issue_id"]: j for j in jobs.list_jobs() if j["mode"] == "execute"} if it["children"] else {}
+        batch = orchestrate.MergeBatch(it["children"])
         for ch in it["children"]:
-            ch["merge_state"] = orchestrate.merge_state({**ch, "events": evs[ch["id"]]}, cfg)
+            ch["merge_state"] = orchestrate.merge_state({**ch, "events": evs[ch["id"]]}, cfg, batch=batch)
             ch["job"] = queued.get(ch["id"])   # 줄에 선 Task는 표에서 "실행 대기 중"(DEV-45)
             ch["run_progress"] = run_progress.for_issue(ch)
         run_progress.elapsed([it, *it["children"]])   # In Progress 경과 시간(DEV-208)

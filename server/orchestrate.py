@@ -707,6 +707,54 @@ def completion(ref):
         return dict(r) if r else None
 
 
+def completions(refs) -> dict:
+    """최신 실행의 후처리를 같은 연결에서 500개씩 묶어 읽는다."""
+    refs = list(dict.fromkeys(refs))
+    out = {}
+    if not refs:
+        return out
+    with db.connect() as c:
+        for start in range(0, len(refs), 500):
+            chunk = refs[start:start + 500]
+            marks = ','.join('?' for _ in chunk)
+            rows = c.execute(f"SELECT e.* FROM execution_completion e WHERE e.ref IN ({marks}) "
+                             "AND e.run_id=(SELECT MAX(id) FROM runs WHERE issue_id=e.issue_id)", chunk)
+            for row in rows:
+                out.setdefault(row['ref'], dict(row))
+    return out
+
+
+class MergeBatch:
+    """한 요청 안에서 완료 기록·설정·저장소별 병합 브랜치를 재사용한다."""
+
+    def __init__(self, items):
+        self._loaded = {it['ref'] for it in items if it.get('ref')}
+        self.records = completions(self._loaded)
+        self._settings = {}
+        self._repos = None
+        self._merged = {}
+
+    def record(self, ref):
+        return self.records.get(ref) if ref in self._loaded else completion(ref)
+
+    def settings(self, key):
+        if key not in self._settings:
+            self._settings[key] = settings(key)
+        return self._settings[key]
+
+    def repo(self, key):
+        if self._repos is None:
+            self._repos = {p['key']: p['local_path'] for p in issues.list_projects()}
+        return self._repos.get(key, '')
+
+    def merged(self, repo, ref):
+        if repo not in self._merged:
+            result = _git(repo, 'for-each-ref', f'--merged={BASE_BRANCH}',
+                          '--format=%(refname:short)', 'refs/heads/relay/')
+            self._merged[repo] = set(result.stdout.splitlines()) if result.returncode == 0 else set()
+        return branch_name(ref) in self._merged[repo]
+
+
 def retry_available(issue, record=None, reproduction_id=None):
     record = record if record is not None else completion(issue['ref'])
     reviewed = False
@@ -1202,10 +1250,11 @@ def promote_parent(actor: dict, ref: str) -> bool:
     return True
 
 
-def merge_state(issue: dict, cfg: dict | None = None) -> str | None:
+def merge_state(issue: dict, cfg: dict | None = None, batch: MergeBatch | None = None) -> str | None:
     """Task 줄의 상태 문구(DEV-40-3) — 오케스트레이터가 타임라인에 남긴 마지막 흔적으로 판단한다. 해당 없으면 None.
     cfg를 주면 settings()를 다시 읽지 않는다(Task 여러 개를 한 번에 볼 때)."""
-    record = completion(issue['ref']) if issue.get('ref') else None
+    batch = batch if batch is not None and issue.get('ref') in batch._loaded else None
+    record = (batch.record(issue['ref']) if batch is not None else completion(issue['ref'])) if issue.get('ref') else None
     if record and record['auto_merge']:
         labels = {'ready': '병합 검사 중', 'checking': '병합 검사 중', 'building': '웹 빌드 중', 'applying': '운영 반영 중', 'deployed': '산출물 교체 중', 'restart_requested': '재시작 확인 중', 'rollback_requested': '복구 중', 'rollback_applied': '복구 확인 중', 'complete': '병합됨'}
         if record['phase'] in labels:
@@ -1222,8 +1271,8 @@ def merge_state(issue: dict, cfg: dict | None = None) -> str | None:
             return "병합됨"
         if e["kind"] == "status" and b.startswith("🔀 자동 병합"):
             return "되돌림" if "revert" in b else "병합 대기" if e["data"].get("to") == "on_hold" else None
-    if issue.get("status") == "in_review" and issue.get("parent_ref") and (cfg or settings(issue["project_key"])).get("auto_merge"):
+    if issue.get("status") == "in_review" and issue.get("parent_ref") and (cfg or (batch.settings(issue["project_key"]) if batch is not None else settings(issue["project_key"]))).get("auto_merge"):
         # 타임라인 흔적이 없어도(수동 병합·완료 기록 실패 뒤 병합, NS-32-2) 실제로 base에 들어갔으면 병합됨이다.
-        repo = next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
-        return "병합됨" if repo and issue.get("ref") and _merged(repo, issue["ref"]) else "병합 대기"
+        repo = batch.repo(issue["project_key"]) if batch is not None else next((p["local_path"] for p in issues.list_projects() if p["key"] == issue["project_key"]), "")
+        return "병합됨" if repo and issue.get("ref") and (batch.merged(repo, issue["ref"]) if batch is not None else _merged(repo, issue["ref"])) else "병합 대기"
     return None

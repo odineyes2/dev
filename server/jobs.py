@@ -90,6 +90,14 @@ def list_in_progress() -> list[dict]:
             "WHERE i.status='in_progress' ORDER BY i.updated_at, i.id")]
 
 
+def jobs_by_issue() -> dict:
+    """대기열을 한 번 읽고 이슈마다 첫 항목과 순번을 보존한다."""
+    out = {}
+    for job in list_jobs():
+        out.setdefault(job['issue_id'], job)
+    return out
+
+
 def job_for(issue_id: int) -> dict | None:
     """화면용 — 이 이슈의 대기 항목(순번 포함)."""
     return next((j for j in list_jobs() if j["issue_id"] == issue_id), None)
