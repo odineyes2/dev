@@ -497,7 +497,13 @@ def check_progress_clock(page, shots):
         route.fulfill(json=data)
     page.route('**/api/issues?*', listing)
     try:
+        # 목록 필터는 해시 쿼리가 아니라 저장된 선택을 쓴다. 새 프로젝트도 다시 읽는다.
+        page.evaluate("localStorage.setItem('dev.project', 'PCL')")
         page.goto(BASE + '/#/?project=PCL')
+        with page.expect_response(lambda response: '/api/issues?' in response.url
+                                  and 'project=PCL' in response.url and response.ok):
+            page.reload()
+        expect(page.locator('#project-filter')).to_have_value('PCL')
         run_clock = page.locator(f'tr[data-ref="{running}"] .progress-clock')
         expect(run_clock).to_have_text(re.compile(r'^3:25:4\d$'))   # 60분이 넘으면 h:mm:ss
         expect(page.locator(f'tr[data-ref="{running}"] .progress-short')).to_have_text('재작업 중 (2차)')
