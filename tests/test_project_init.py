@@ -64,6 +64,8 @@ class InitializationTest(unittest.TestCase):
         self.projects = root / 'Projects'
         self.projects.mkdir()
         self.addCleanup(patch.stopall)
+        # 착수 펌프가 임시 DB와 패치를 모두 쓰고 난 뒤 정리한다(LIFO).
+        self.addCleanup(jobs.settle)
         patch.object(pi, 'ROOT', self.projects).start()
         # 병렬 회귀검사의 프로세스 시작 지연이 검사 대상 오류를 가리지 않게 한다.
         run = pi.subprocess.run
@@ -253,6 +255,7 @@ class InitializationTest(unittest.TestCase):
             c.execute("UPDATE project_initializations SET status='failed'")
         with patch.object(review, 'start') as start:
             result = jobs.enqueue(H, 'NEW-1', 'review', 'codex')
+            jobs.settle()
             self.assertTrue(result['queued'])
             self.assertEqual(pi.status('NEW')['status'], 'queued')
             start.assert_not_called()
@@ -267,6 +270,7 @@ class InitializationTest(unittest.TestCase):
         pi.cancel(H, 'NEW')
         with patch.object(review, 'start') as start:
             self.assertTrue(jobs.enqueue(H, 'NEW-1', 'review', 'codex')['queued'])
+            jobs.settle()
             start.assert_not_called()
         self.assertEqual(pi.status('NEW')['status'], 'cancelled')
 
@@ -564,6 +568,7 @@ else {res.statusCode=404;res.end();}
         goal = issues.create_issue(H, 'NEW', '별도 검토')
         with patch.object(jobs, 'start_block', return_value='검사 중 대기'):
             job = jobs.enqueue(H, goal['ref'], 'review', 'codex')
+            jobs.settle()
         jobs.cancel(H, job['job_id'])
         self.assertEqual(pi.status('NEW')['status'], 'queued')
 

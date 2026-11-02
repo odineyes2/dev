@@ -80,17 +80,23 @@ with TestClient(A.app) as c:
         c.post('/api/issues', json={'project': 'CX', 'title': str(n)}, headers=H)
     c.post('/api/issues', json={'project': 'CX', 'title': '', 'body': 'Fill title and post a plan'}, headers=H)
     assert c.post('/api/issues/CX-1/review', json={'provider': 'other'}, headers=H).status_code == 400
+    jobs.settle()
     assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()['started']
+    jobs.settle()
     assert issues.get_issue('CX-1')['status'] == 'in_progress'
     start = [e for e in issues.get_issue('CX-1')['events'] if e['kind'] == 'status'][-1]
     assert start['data']['from'] == 'waiting' and start['data']['restore_status'] == 'backlog' and start['data']['run_id'] == review.list_runs('CX-1')[0]['id']
     assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()['started']
+    jobs.settle()
     assert len(review.list_runs('CX-1')) == 1
     queued = c.post('/api/issues/CX-2/review', json={'provider': 'codex'}, headers=H).json()
+    jobs.settle()
     assert queued['queued'] and jobs.list_jobs()[0]['provider'] == 'codex'
     assert issues.get_issue('CX-2')['status'] == 'waiting'
     assert c.post('/api/issues/CX-2/review', json={'provider': 'claude'}, headers=H).status_code == 409
+    jobs.settle()
     assert c.post('/api/issues/CX-2/review', json={'provider': 'codex'}, headers=H).json()['job_id'] == queued['job_id']
+    jobs.settle()
     wait_idle()
     for ref in ('CX-1', 'CX-2'):
         run = review.list_runs(ref)[0]
@@ -101,6 +107,7 @@ with TestClient(A.app) as c:
         assert issue['status'] == 'triage'
         assert any(e['kind'] == 'status' and e['data']['to'] == 'in_progress' for e in issue['events'])
     c.post('/api/issues/CX-4/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     wait_idle()
     filled = c.get('/api/issues/CX-4').json()
     assert filled['title'] == 'Reviewed title' and filled['plan']
@@ -108,28 +115,33 @@ with TestClient(A.app) as c:
     c.post('/api/issues', json={'project': 'CX', 'title': '', 'body': 'Missing title'}, headers=H)
     fake.write_text(success_script.split("issue = issues.get_issue")[0] + 'print(' + repr(events) + ')\n', 'utf-8')
     c.post('/api/issues/CX-5/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     wait_idle()
     assert review.list_runs('CX-5')[0]['status'] == 'failed'
     assert '빈 제목' in review.list_runs('CX-5')[0]['note']
     fake.write_text('import sys\nprint("failed")\nsys.exit(3)\n', 'utf-8')
     c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     wait_idle()
     assert review.list_runs('CX-3')[0]['status'] == 'failed'
     assert issues.get_issue('CX-3')['status'] == 'backlog'
     assert 'Codex' in c.get('/api/issues/CX-3').json()['events'][-1]['body']
     fake.write_text('print(' + repr(events) + ')\n', 'utf-8')
     c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     wait_idle()
     assert review.list_runs('CX-1')[0]['status'] == 'failed'
     assert '새 계획서' in review.list_runs('CX-1')[0]['note']
     assert issues.get_issue('CX-1')['status'] == 'triage'
     fake.write_text('print(\'{"type":"turn.failed","error":{"message":"failed"}}\')\n', 'utf-8')
     c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     wait_idle()
     assert review.list_runs('CX-3')[0]['status'] == 'failed'
     fake.write_text('import time\ntime.sleep(3)\n', 'utf-8')
     review.TIMEOUT_SEC = .1
     c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     wait_idle()
     assert review.list_runs('CX-3')[0]['status'] == 'timeout'
     assert issues.get_issue('CX-3')['status'] == 'backlog'
@@ -139,6 +151,7 @@ with TestClient(A.app) as c:
     human = {'kind': 'human', 'name': 'admin'}
     for manual in ('on_hold', 'in_progress'):
         c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
+        jobs.settle()
         issues.set_status(human, 'CX-3', 'on_hold')
         issues.set_status(human, 'CX-3', manual)
         wait_idle()
@@ -164,6 +177,7 @@ with TestClient(A.app) as c:
     assert issues.get_issue('CX-3')['status'] == 'backlog' and review.running_ref() is None
     fake.write_text(success_script + 'print(' + repr(events) + ')\n', 'utf-8')
     c.post('/api/issues/CX-3/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     issues.set_status(human, 'CX-3', 'on_hold')
     wait_idle()
     assert review.list_runs('CX-3')[0]['status'] == 'ok'
@@ -173,24 +187,28 @@ with TestClient(A.app) as c:
     no_classification = success_script.split("current = issues.get_issue")[0]
     fake.write_text(no_classification + 'print(' + repr(events) + ')\n', 'utf-8')
     c.post('/api/issues/' + retry_ref + '/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     wait_idle()
     assert review.list_runs(retry_ref)[0]['status'] == 'ok'
     assert issues.get_issue(retry_ref)['status'] == 'triage'
     fake.write_text(success_script + 'print(' + repr(events) + ')\n', 'utf-8')
     c.post('/api/issues/' + retry_ref + '/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     wait_idle()
     assert review.list_runs(retry_ref)[0]['status'] == 'ok'
     assert len(review.list_runs(retry_ref)) == 2
     # 사람이 정한 복수 종류는 재검토에서도 출처와 선택을 보존한다.
     issues.update_issue(human, retry_ref, {'type_ids': [3, 4]})
     c.post('/api/issues/' + retry_ref + '/review', json={'provider': 'codex'}, headers=H)
+    jobs.settle()
     wait_idle()
     selected = issues.get_issue(retry_ref)
     assert selected['type_ids'] == [3, 4] and all(t['source'] == 'human' for t in selected['types'])
     assert review.list_runs(retry_ref)[0]['status'] == 'ok'
     del os.environ['DEV_CODEX_AGENT_KEY']
     result = c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers=H).json()
-    assert result['queued'] and 'DEV_CODEX_AGENT_KEY' in result['note']
+    jobs.settle()
+    assert result['started'] and 'DEV_CODEX_AGENT_KEY' in jobs.job_for(issues.get_issue('CX-1')['id'])['note']
     assert issues.get_issue('CX-1')['status'] == 'waiting'
     assert len(review.list_runs('CX-1')) == 2
     db.init()
@@ -200,6 +218,7 @@ with TestClient(A.app) as c:
     key = c.post('/api/agents', json={'name': 'codex-test'}, headers=H).json()['key']
     c.cookies.clear()
     assert c.post('/api/issues/CX-1/review', json={'provider': 'codex'}, headers={'Authorization': 'Bearer ' + key}).status_code == 403
+    jobs.settle()
 # 다중 턴은 한 번씩 누적하고 누락된 턴을 실제 0으로 꾸미지 않는다.
 import json
 assert review.codex_failure('{"type":"error","message":"Reconnecting"}\n{"type":"turn.completed"}') is None

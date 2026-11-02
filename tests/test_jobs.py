@@ -8,7 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 import db, issues, jobs, review  # noqa: E402
 
 fake = Path(tempfile.mkdtemp()) / "fake_claude.py"
-fake.write_text("import time\ntime.sleep(0.5)\nprint('ok')\n", "utf-8")
+release = fake.with_name('release')
+# 중복·취소 확인이 끝날 때까지 첫 검토를 유지해 실행 속도에 기대지 않는다.
+fake.write_text("import time\nfrom pathlib import Path\n"
+                "while not Path(__file__).with_name('release').exists():\n    time.sleep(0.05)\n"
+                "time.sleep(0.5)\nprint('ok')\n", "utf-8")
 review.command_for = lambda ref: [sys.executable, str(fake)]
 
 
@@ -30,17 +34,22 @@ for t in ("하나", "둘", "셋", "넷"):
 
 try:
     jobs.enqueue({"kind": "agent", "id": 1}, "JQ-1", "review")
+    jobs.settle()
     raise AssertionError("에이전트는 못 넣어요")
 except issues.StoreError as e:
     assert e.status == 403
 
 assert jobs.enqueue(me, "JQ-1", "review")["started"]          # 아무것도 안 돌면 바로 시작
+jobs.settle()
 assert issues.get_issue('JQ-1')['status'] == 'in_progress'   # 대기열에서 실제 착수하면 진행 중이다.
 r2 = jobs.enqueue(me, "JQ-2", "review"); r3 = jobs.enqueue(me, "JQ-3", "review"); r4 = jobs.enqueue(me, "JQ-4", "review")
+jobs.settle()
 assert issues.get_issue("JQ-2")["status"] == "waiting"
 assert (r2["position"], r3["position"], r4["position"]) == (1, 2, 3), (r2, r3, r4)
 assert jobs.enqueue(me, "JQ-2", "review")["job_id"] == r2["job_id"] and len(jobs.list_jobs()) == 3   # 중복 클릭은 하나만
+jobs.settle()
 assert jobs.enqueue(me, "JQ-1", "review")["started"] and len(jobs.list_jobs()) == 3                # 도는 중인 것도 다시 안 넣음
+jobs.settle()
 jobs.cancel(me, r3["job_id"])                                                                      # 취소한 것은 안 돎
 with db.connect() as c:
     assert c.execute('SELECT cancellation_reason,cancellation_event_id FROM jobs WHERE id=?', (r3['job_id'],)).fetchone()[:] == ('human_cancel', None)
@@ -49,6 +58,7 @@ try:
     jobs.cancel(me, r3["job_id"]); raise AssertionError("두 번은 못 취소")
 except issues.StoreError as e:
     assert e.status == 404
+release.touch()
 wait_idle()
 
 runs = {ref: review.list_runs(ref) for ref in ("JQ-1", "JQ-2", "JQ-3", "JQ-4")}
@@ -64,9 +74,11 @@ blocker = issues.create_issue(me, "DP", "blocker", type_ids=[1])
 dependent = issues.create_issue(me, "DP", "dependent", type_ids=[1], blocked_by=[blocker["ref"]])
 free = issues.create_issue(me, "DP", "free", type_ids=[1])
 blocked_job = jobs.enqueue(me, dependent["ref"], "review")
+jobs.settle()
 assert blocked_job["queued"] and blocker["ref"] in blocked_job["note"], blocked_job
 assert issues.get_issue(dependent["ref"])["status"] == "waiting" and not review.list_runs(dependent["ref"])
 assert jobs.enqueue(me, free["ref"], "review")["started"]
+jobs.settle()
 for _ in range(100):
     if review.list_runs(free["ref"]) and review.list_runs(free["ref"])[0]["status"] == "ok":
         break
@@ -91,6 +103,7 @@ assert review.list_runs("JQ-3")[0]["status"] == "ok"
 
 # 지워진 이슈의 대기 항목은 같이 사라진다
 jobs.enqueue(me, "JQ-4", "review"); jobs.enqueue(me, "JQ-2", "review")
+jobs.settle()
 issues.delete_issue(me, "JQ-2")
 wait_idle()
 
@@ -119,6 +132,7 @@ with TestClient(A.app) as c:
     assert [len(review.list_runs(ref)) for ref in ("JQ-5", "JQ-6", task["ref"], r.json()["ref"])] == [0, 0, 0, 0]
     c.cookies.set("ns_session", "adm")
     assert c.post("/api/issues/JQ-5/review", headers=H).json()["started"]
+    jobs.settle()
     # 게시판 대기열(DEV-91) — 도는 in_progress 이슈는 실행 정보와 함께, 다른 상태 이슈는 빠지고 jobs 키는 그대로
     issues.set_status(me, "JQ-6", "in_review")
     listed = c.get("/api/jobs").json()
@@ -143,6 +157,7 @@ ref = task['ref']
 def queued(mode='review', provider='claude'):
     with patch.object(jobs, 'start_block', return_value='바쁨'):
         result = jobs.enqueue(me, ref, mode, provider)
+        jobs.settle()
     assert issues.get_issue(ref)['status'] == 'waiting'
     return result['job_id']
 
@@ -255,6 +270,7 @@ goal = issues.create_issue(me, 'WT', 'goal', labels=['goal'])
 for provider in ('claude', 'codex'):
     with patch.object(jobs, 'start_block', return_value='대기'):
         jid = jobs.enqueue(me, goal['ref'], 'review', provider)['job_id']
+        jobs.settle()
     with patch.object(review, 'start') as start:
         jobs.pump()
         start.assert_called_once()
@@ -263,6 +279,7 @@ for provider in ('claude', 'codex'):
     assert issues.get_issue(goal['ref'])['status'] == 'backlog' and not jobs.list_jobs()
 with patch.object(jobs, 'start_block', return_value='대기'):
     jobs.enqueue(me, goal['ref'], 'review', 'codex')
+    jobs.settle()
 with patch.object(jobs, 'start_block', return_value=None):
     _, run_id = review.begin(me, issues.get_issue(goal['ref']), 'review', 'codex')
 with db.connect() as c:
@@ -289,6 +306,7 @@ with db.connect() as c:
 self_restart = patch.object(orchestrate, 'settings', return_value={'auto_merge': True, 'pm2_app': jobs.SELF_PM2_APP})
 with self_restart, patch.object(orchestrate, 'recover'), patch.object(review, 'start') as start:
     result = jobs.enqueue(me, next_issue['ref'], 'review')
+    jobs.settle()
     assert result['queued'] and '재시작' in result['note'], result
     jobs.pump(); start.assert_not_called()
     try:
@@ -345,6 +363,7 @@ issues.create_project(me, 'MV', 'move', '', '/unused')
 mv = [issues.create_issue(me, 'MV', t, type_ids=[1])['ref'] for t in ('a', 'b', 'c', 'd')]
 with patch.object(jobs, 'start_block', return_value='바쁨'):
     ja, jb, jc = (jobs.enqueue(me, r, 'review')['job_id'] for r in mv[:3])
+    jobs.settle()
 order = lambda: [j['id'] for j in jobs.list_jobs()]
 assert order() == [ja, jb, jc]
 assert [(j['prev_id'], j['next_id']) for j in jobs.list_jobs()] == [(None, jb), (ja, jc), (jb, None)]
@@ -365,6 +384,7 @@ db.init(); jobs.reconcile()
 assert order() == [jc, ja, jb]   # 재시작 후에도 유지
 with patch.object(jobs, 'start_block', return_value='바쁨'):
     jd = jobs.enqueue(me, mv[3], 'review')['job_id']
+    jobs.settle()
 assert order() == [jc, ja, jb, jd]   # 새 등록은 맨 뒤
 jobs.cancel(me, ja)
 try:
@@ -381,6 +401,7 @@ with db.connect() as c:
     c.execute('INSERT INTO issue_deps VALUES(?,?)', (blocked['id'], blocker['id']))
 with patch.object(jobs, 'start_block', return_value='바쁨'):
     jx = jobs.enqueue(me, blocked['ref'], 'execute')['job_id']
+    jobs.settle()
 for neighbor in (jd, jc, jb):
     jobs.move(me, jx, 'up', neighbor)
 assert order() == [jx, jb, jc, jd]
@@ -397,6 +418,7 @@ jobs.cancel(me, jx)
 with TestClient(A.app) as c:
     with patch.object(jobs, 'start_block', return_value='바쁨'):
         ids = [jobs.enqueue(me, r, 'review')['job_id'] for r in mv[:2]]
+        jobs.settle()
     c.cookies.set('ns_session', 'adm')
     assert c.post(f'/api/jobs/{ids[1]}/move', json={'direction': 'up', 'neighbor_id': ids[0]}, headers=H).json()['moved']
     assert order() == [ids[1], ids[0]]
@@ -432,10 +454,14 @@ la, la2, lb, lc = (issues.create_issue(me, k, t, type_ids=[1])['ref'] for k, t i
 fake.write_text("import time\ntime.sleep(1.5)\nprint('ok')\n", "utf-8")
 assert jobs.concurrency() == jobs.DEFAULT_CONCURRENCY == 2
 assert jobs.enqueue(me, la, 'review')['started']
+jobs.settle()
 assert jobs.enqueue(me, lb, 'review')['started']   # 다른 프로젝트 줄은 기다리지 않는다
+jobs.settle()
 r = jobs.enqueue(me, la2, 'review')
+jobs.settle()
 assert r['queued'] and 'LA 검토 줄' in r['note'], r   # 같은 줄은 하나씩
 r = jobs.enqueue(me, lc, 'review')
+jobs.settle()
 assert r['queued'] and '상한(2개)' in r['note'], r     # 빈 줄이어도 전체 상한
 wait_idle()
 assert all(review.list_runs(x)[0]['status'] == 'ok' for x in (la, la2, lb, lc))
@@ -525,6 +551,7 @@ for terminal in ('done', 'closed'):
     for mode in ('review', 'execute'):
         try:
             jobs.enqueue(me, child['ref'], mode)
+            jobs.settle()
             raise AssertionError('terminal parent enqueued')
         except issues.StoreError as exc:
             assert exc.status == 409 and '부모' in str(exc)
@@ -543,6 +570,7 @@ issues.decide(me, later['ref'], 'approve', plan_version=1)
 later_task = issues.create_issue(me, 'PB', 'later task', parent=later['ref'])
 with patch.object(jobs, 'start_block', return_value='바쁨'):
     queued_later = jobs.enqueue(me, later_task['ref'], 'execute')
+    jobs.settle()
 assert queued_later['queued'] and earlier['ref'] in queued_later['note']
 jobs.pump()
 assert jobs.list_jobs()[0]['id'] == queued_later['job_id']
