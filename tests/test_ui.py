@@ -274,7 +274,8 @@ def check_complete_summary(page, shots):
             dialog.locator('.confirm-cancel').click()
             assert page.request.get(BASE + f'/api/issues/{root}').json()['status'] == 'in_review'
             page.goto(BASE + '/#/')
-            expect(page.locator(f'[data-action="complete-tree"][data-ref="{leaf}"]')).to_be_visible()
+            # 병렬 전체 검사 부하에서는 목록이 5초 안에 안 그려질 때가 있다.
+            expect(page.locator(f'[data-action="complete-tree"][data-ref="{leaf}"]')).to_be_visible(timeout=20000)
             page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
             page.click(f'[data-action="complete-tree"][data-ref="{leaf}"]')
             expect(dialog.locator('.confirm-body')).to_have_text('확인한 작업\n제목 표시와 검사를 마쳤어요.\n안내를 확인해요.\n넷째 줄\n다섯째 줄')
