@@ -146,7 +146,8 @@ with patch.object(test_runner, 'PIPE_GRACE_SEC', 2), patch.object(test_runner, '
     r = test_runner.run(str(repo), repo / 'tests' / 'test_orphan.py', env=env)
     took = time.monotonic() - start
     orphan = int(r.stdout.split()[1])
-    assert r.returncode == 0 and took < 4 and '보조 서버' in r.stderr, (r.returncode, took, r.stderr)
+    # Windows 병렬 검사 부하의 프로세스 시작 시간을 허용하되 자식의 120초 대기는 잡는다.
+    assert r.returncode == 0 and took < 10 and '보조 서버' in r.stderr, (r.returncode, took, r.stderr)
     start = time.monotonic()
     r = test_runner.run(str(repo), repo / 'tests' / 'test_slow.py', env=env)
     took = time.monotonic() - start

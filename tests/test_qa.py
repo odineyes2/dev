@@ -114,7 +114,8 @@ def latest(root):
     with db.connect() as c:
         return dict(c.execute('SELECT * FROM qa_rounds WHERE issue_id=? ORDER BY id DESC LIMIT 1',(root['id'],)).fetchone())
 def prepare(root):
-    qa.sync()
+    with patch.object(jobs, 'pump'):
+        qa.request(human, root['ref'])
     row = latest(root)
     with db.connect() as c:
         agent = qa.select_agent(c,json.loads(row['snapshot_json']))
@@ -146,7 +147,7 @@ assert usage_row['input_tokens'] == 6 and usage_row['output_tokens'] == 8
 logs = db.config.DATA_DIR / 'qa-evidence' / str(row['id'])
 assert 'real local failure' in (logs / 'check-1.log').read_text()
 assert not git('worktree','list','--porcelain').count('detached')
-qa.sync(); qa.sync()
+assert not hasattr(qa, "sync")
 assert len(qa.panel(root['ref'])['rounds']) == 1
 
 passed,_ = make_issue('passed')
@@ -230,7 +231,7 @@ with tempfile.TemporaryDirectory() as temp:
 
 # 재시작은 과금 재실행 없이 orphaned로 종료하고 Issue 상태를 유지한다.
 orphan,_ = make_issue('orphan'); prepare(orphan)
-qa_runner.recover(); qa_runner.recover(); qa.sync()
+qa_runner.recover(); qa_runner.recover()
 assert latest(orphan)['status'] == 'orphaned'
 assert issues.get_issue(orphan['ref'])['status'] == 'in_review'
 assert review.list_runs(orphan['ref'])[0]['status'] == 'orphaned'
@@ -256,6 +257,8 @@ def held_worker(row):
 with db.connect() as c:
     c.execute("INSERT OR REPLACE INTO app_settings VALUES('queue_concurrency','1',?,'human:admin')",(db.now_iso(),))
 with patch.object(qa_runner,'run',side_effect=held_worker), patch.object(jobs,'pump'):
+    qa.request(human, queued['ref'])
+    qa.request(human, another['ref'])
     qa_runner.pump()
     if not entered.wait(3):
         with db.connect() as c:
@@ -347,7 +350,7 @@ for attempt in range(1, 6):
     assert row['status'] == 'failed' and statuses(limit) == ['in_review','changes_requested'], statuses(limit)
     qa.apply(row['id'])   # 중복 반영은 횟수를 늘리지 않는다
     assert qa.panel(limit['ref'])['rework_count'] == attempt
-    qa.sync(); assert latest(limit)['id'] == row['id']   # 묶음이 끝나기 전엔 재검사하지 않는다
+    assert latest(limit)['id'] == row['id']   # 묶음이 끝나기 전엔 재검사하지 않는다
     # 재작업 실행이 병합돼 in_review가 되면 위임으로 Done 처리하고 묶음을 닫는다.
     with db.connect() as c:
         c.execute("INSERT INTO runs(issue_id,mode,status,actor,started_at,provider) VALUES(?,'execute','ok','human:admin','9999','codex')", (task['id'],))
@@ -402,7 +405,7 @@ with db.connect() as c:
     count = c.execute('SELECT COUNT(*) FROM qa_rounds').fetchone()[0]
     assert qa._delegation(c,'QR') is None
 with patch.object(qa_runner.subprocess,'Popen') as spawn, patch.object(qa_runner,'analyze') as analyze:
-    qa.sync(); qa_runner.pump(); qa_runner.run(queued_row)
+    qa_runner.pump(); qa_runner.run(queued_row)
     assert not spawn.called and not analyze.called
 with db.connect() as c:
     assert c.execute('SELECT COUNT(*) FROM qa_rounds').fetchone()[0] == count
@@ -415,7 +418,10 @@ with tempfile.TemporaryDirectory() as temp:
 auto_settings.update_settings(human,None,{'auto_qa':True})
 assert not auto_settings.qa_enabled()   # 전체 위임만 켜도 QA 호출은 계속 OFF다.
 auto_settings.update_settings(human,None,{'qa_enabled':True})
-qa.sync()
+with db.connect() as c:
+    assert not c.execute('SELECT 1 FROM qa_rounds WHERE issue_id=?', (off_root['id'],)).fetchone()
+with patch.object(jobs, 'pump'):
+    qa.request(human, off_root['ref'])
 assert latest(off_root)['status'] == 'queued'
 with tempfile.TemporaryDirectory() as temp:
     folder = Path(temp)
@@ -435,3 +441,62 @@ with tempfile.TemporaryDirectory() as temp:
     assert spawned[0].poll() is not None
 assert auto_settings.get_settings()['qa_enabled'] is False
 print('OK QA global gate: default OFF, persistence, queued cancellation, no calls while OFF, running model terminated')
+
+# 사람 요청 API와 목록 준비 상태를 실제 HTTP로 검증한다.
+auto_settings.update_settings(human,None,{'qa_enabled':True,'auto_qa':False})
+api_root, api_task = make_issue('manual start API')
+missing = issues.create_issue(human,'QR','no execution')
+issues.set_status(human,missing['ref'],'in_review')
+not_review = issues.create_issue(human,'QR','not review')
+with db.connect() as c:
+    count = c.execute('SELECT COUNT(*) FROM qa_rounds').fetchone()[0]
+with patch.object(qa_runner, 'run'), patch.object(jobs, 'start_block', return_value=True):
+    qa_runner.pump()
+    jobs.pump()
+with db.connect() as c:
+    assert c.execute('SELECT COUNT(*) FROM qa_rounds').fetchone()[0] == count
+with patch.object(jobs,'pump'), TestClient(app.app) as client:
+    url = '/api/issues/' + api_root['ref'] + '/qa'
+    client.headers['x-requested-with'] = 'dev'
+    assert client.post(url).status_code == 401
+    assert client.post(url,headers=headers).status_code == 403
+    client.cookies.set('ns_session','temporary')
+    with patch.object(auth,'nightshift_user',return_value={'role':'admin','username':'admin'}):
+        assert client.post('/api/issues/QR-999999/qa').status_code == 404
+        assert client.post('/api/issues/'+api_task['ref']+'/qa').status_code == 400
+        assert client.post('/api/issues/'+not_review['ref']+'/qa').status_code == 409
+        assert client.post('/api/issues/'+missing['ref']+'/qa').status_code == 409
+        assert client.post('/api/issues/'+mixed['ref']+'/qa').status_code == 409
+        auto_settings.update_settings(human,None,{'qa_enabled':False})
+        response = client.post(url)
+        assert response.status_code == 409 and 'Settings' in response.json()['detail']
+        auto_settings.update_settings(human,None,{'qa_enabled':True})
+        with patch.object(qa,'snapshot',side_effect=OSError('fixture')):
+            assert client.post(url).status_code == 409
+        response = client.post(url)
+        assert response.status_code == 200, response.text
+        first = response.json()
+        assert first['created'] and first['start']['active']
+        again = client.post(url).json()
+        assert not again['created'] and again['round_id'] == first['round_id']
+        with db.connect() as c:
+            assert c.execute('SELECT COUNT(*) FROM qa_rounds WHERE issue_id=?',(api_root['id'],)).fetchone()[0] == 1
+            c.execute("UPDATE qa_rounds SET status='passed' WHERE id=?", (first['round_id'],))
+        assert client.post(url).json()['round_id'] == first['round_id']
+        with db.connect() as c:
+            c.execute("UPDATE qa_rounds SET status='inconclusive' WHERE id=?", (first['round_id'],))
+        retry = client.post(url).json()
+        assert retry['created'] and retry['round_id'] != first['round_id']
+        with db.connect() as c:
+            row = c.execute('SELECT * FROM qa_rounds WHERE id=?',(retry['round_id'],)).fetchone()
+            assert '#' in row['snapshot_key'] and qa.valid(c,row)
+            c.execute("UPDATE qa_rounds SET status='failed' WHERE id=?", (row['id'],))
+            c.execute("INSERT INTO qa_items VALUES(?,'fixture','fail','[{}]','[]','')", (row['id'],))
+        items = {i['id']:i for i in client.get('/api/issues?project=QR').json()['issues']}
+        start = items[api_root['id']]['action_context']['qa']
+        assert start['agent']['provider'] == 'claude' and start['latest']['fail_count'] == 1
+        assert 'qa' not in items[api_task['id']]['action_context']
+        assert 'qa' not in items[not_review['id']]['action_context']
+        assert items[missing['id']]['action_context']['qa']['reason']
+        assert client.get(url).json()['start'] == start
+print('OK human QA start HTTP: permissions, readiness, duplicate, retry and list state')
