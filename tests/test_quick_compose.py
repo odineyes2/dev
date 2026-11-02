@@ -45,7 +45,7 @@ with TestClient(A.app) as c:
 # 화면 정적 검사 — 백틱은 입력 요소에서 무시, 한글 조합 중 Enter는 보내지 않음, Shift+Enter는 줄바꿈, 바로 발행
 root = Path(__file__).resolve().parent.parent / "static"
 js, html = (root / "app.js").read_text(encoding="utf-8"), (root / "index.html").read_text(encoding="utf-8")
-for needle in ["e.key !== '`'", "['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)", "t.isContentEditable",
+for needle in ["const nav = NAV_KEYS[e.code];", "!composer.hidden", "e.repeat || e.isComposing", "e.key !== '`'", "['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)", "t.isContentEditable",
                "e.isComposing || e.keyCode === 229", "e.key !== 'Enter' || e.shiftKey",
                "api('POST', '/api/issues', { project: document.getElementById('cmp-project').value",
                "assignee_agent_id: agent ? Number(agent)", "if(!composerAllowed()) closeComposer(true);",
