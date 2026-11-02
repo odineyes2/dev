@@ -66,15 +66,15 @@ assert sha1 in note and "재시작하지 않았어요" in note and "목록 화�
 assert note.startswith("**⚠️ 직접 확인할 것**\n- **" + t2 + "**: " + WARN), note   # 잘리지 않고 맨 위
 assert not orchestrate.promote_parent(me, t2)   # 이미 올라가 있으면 다시 안 함
 
-# 서버가 올린 최상위 상태도 수동 상태와 같은 영속 QA 대기에 한 번만 들어간다.
+# 서버가 최상위를 In Review로 올려도 QA 회차를 자동으로 만들지 않는다.
 import qa
 with db.connect() as c:
     # 기본 OFF인 QA를 이 검사의 임시 DB에서만 켠다.
     c.execute("INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES('qa_enabled','true',?,'human:admin')", (db.now_iso(),))
-qa.sync(); qa.sync()
+assert not hasattr(qa, "sync")
 with db.connect() as c:
     rounds = c.execute('SELECT status FROM qa_rounds WHERE issue_id=?',(par['id'],)).fetchall()
-assert len(rounds) == 1 and rounds[0]['status'] == 'queued'
+assert len(rounds) == 0
 assert issues.get_issue(p)['status'] == 'in_review'
 
 # Task 줄 상태 문구

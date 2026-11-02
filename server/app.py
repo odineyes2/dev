@@ -824,6 +824,12 @@ def api_qa(ref: str):
     return qa.panel(ref)
 
 
+@app.post("/api/issues/{ref}/qa")
+def api_qa_request(ref: str, request: Request):
+    import qa
+    return qa.request(human_only(request), ref)
+
+
 @app.post("/api/issues/{ref}/qa/rework")
 async def api_qa_rework(ref: str, request: Request):
     import qa

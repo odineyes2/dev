@@ -1,4 +1,4 @@
-"""최상위 In Review Issue의 QA(DEV-114) — 판정 대상 스냅샷·요구 항목 고정, 회차·결과 저장과 대기열 연결. 명령 실행은 qa_runner.
+"""최상위 In Review Issue의 QA(DEV-114) — 스냅샷·요구 항목 고정, 사람이 요청한 회차만 대기열에 연결한다. 명령 실행은 qa_runner.
 (처음 커밋 때 인코딩이 깨져 '?'만 남았던 설명을 다시 썼다.)"""
 import json
 import hashlib
@@ -64,50 +64,120 @@ def key(value):
     return hashlib.sha256(_json(value).encode('utf-8')).hexdigest()
 
 
-def sync():
-    """수동·서버 상태 전환을 같은 영속 대기 항목으로 수집한다."""
-    with db.connect() as c:
-        import auto_settings
-        if not auto_settings.qa_enabled(c):
-            return
-        # 재작업 묶음이 끝나기 전에는 중간 상태를 다시 검사하지 않는다.
-        refs = [r[0] for r in c.execute("""SELECT id FROM issues i WHERE parent_id IS NULL AND status='in_review'
-            AND NOT EXISTS(SELECT 1 FROM qa_rework_batches b WHERE b.issue_id=i.id AND b.status='registered')""")]
-    for issue_id in refs:
+def readiness(c, issue_ids):
+    """같은 읽기 연결에서 준비 상태를 묶음 조회한다. git은 호출하지 않는다."""
+    import auto_settings
+    ids = list(dict.fromkeys(issue_ids))
+    if not ids:
+        return {}
+    marks = ','.join('?' * len(ids))
+    roots = list(c.execute(f"SELECT id FROM issues WHERE id IN ({marks}) AND parent_id IS NULL AND status='in_review'", ids))
+    if not roots:
+        return {}
+    settings = auto_settings._settings(c, {'key': ''})
+    enabled = auto_settings.qa_enabled(c)
+    families = {}
+    for r in c.execute(f"""WITH RECURSIVE family(root,id) AS (
+        SELECT id,id FROM issues WHERE id IN ({marks}) AND parent_id IS NULL AND status='in_review'
+        UNION ALL SELECT f.root,i.id FROM issues i JOIN family f ON i.parent_id=f.id)
+        SELECT f.root,i.id,{issues._SUPERSEDED} AS superseded_by_plan,r.issue_id,r.provider
+        FROM family f JOIN issues i ON i.id=f.id LEFT JOIN runs r ON r.id=(
+            SELECT MAX(id) FROM runs WHERE issue_id=i.id AND mode='execute')""", ids):
+        if not r['superseded_by_plan']:
+            families.setdefault(r['root'], []).append(dict(r))
+    latest = {r['issue_id']: dict(r) for r in c.execute(f"""SELECT q.issue_id,q.id,q.round_number,q.status,
+        (SELECT COUNT(*) FROM qa_items WHERE qa_id=q.id AND verdict='fail') AS fail_count
+        FROM qa_rounds q WHERE q.issue_id IN ({marks}) AND q.id=(SELECT MAX(id) FROM qa_rounds WHERE issue_id=q.issue_id)""", ids)}
+    batches = {r['issue_id']: dict(r) for r in c.execute(f"""SELECT issue_id,
+        SUM(status IN ('registered','complete')) AS count,MAX(status='registered') AS pending
+        FROM qa_rework_batches WHERE issue_id IN ({marks}) GROUP BY issue_id""", ids)}
+    result = {}
+    for root in roots:
+        iid = root['id']
+        family = families.get(iid, [])
+        batch = batches.get(iid, {})
+        agent, why = None, ''
         try:
-            with db.connect() as c:
-                c.execute('BEGIN IMMEDIATE')
-                if not auto_settings.qa_enabled(c):
-                    return
-                value = snapshot(c, issue_id)
-                c.execute("INSERT OR IGNORE INTO qa_rounds(issue_id,round_number,snapshot_key,snapshot_json,created_at) VALUES(?,(SELECT COALESCE(MAX(round_number),0)+1 FROM qa_rounds WHERE issue_id=?),?,?,?)",
-                          (issue_id, issue_id, key(value), _json(value), db.now_iso()))
-        except (ValueError, OSError, subprocess.SubprocessError) as e:
-            # 잘못된 저장소는 유료 호출 없이 판정 불가로 기록한다.
-            with db.connect() as c:
-                row = c.execute('SELECT status FROM issues WHERE id=?', (issue_id,)).fetchone()
-                event = c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status'", (issue_id,)).fetchone()[0]
-                if row and row['status'] == 'in_review':
-                    c.execute("INSERT OR IGNORE INTO qa_rounds(issue_id,round_number,snapshot_key,snapshot_json,status,note,created_at,ended_at) VALUES(?,(SELECT COALESCE(MAX(round_number),0)+1 FROM qa_rounds WHERE issue_id=?),?,'{}','inconclusive',?,?,?)",
-                              (issue_id, issue_id, f'unavailable:{event}', '검사 저장소를 준비하지 못했어요. Local path와 기준 브랜치를 확인해 주세요.', db.now_iso(), db.now_iso()))
+            agent = _choose_agent([r for r in family if r['issue_id'] is not None],
+                                  {r['id'] for r in family if r['id'] != iid}, settings)
+        except ValueError as e:
+            why = str(e)
+        reason = ('Settings에서 QA 사용을 켜 주세요.' if not enabled else
+                  'QA 재작업이 끝난 뒤 다시 요청해 주세요.' if batch.get('pending') else why)
+        recent = latest.get(iid)
+        if recent:
+            recent.pop('issue_id', None)
+        result[iid] = {'latest': recent, 'reason': reason, 'agent': agent,
+                       'active': bool(recent and recent['status'] in ('queued','running')),
+                       'rework_count': batch.get('count', 0), 'rework_limit': REWORK_LIMIT}
+    return result
+
+
+def request(actor, ref):
+    """사람이 고른 Issue만 영속 QA 대기에 넣는다. 중복은 기존 회차를 반환한다."""
+    if actor.get('kind') != 'human':
+        raise issues.StoreError('사람만 QA를 요청할 수 있어요.', 403)
+    created = False
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        root = issues._find(c, ref)
+        iid = root['id']
+        if root['parent_id'] is not None:
+            raise issues.StoreError('QA는 최상위 Issue에만 있어요.', 400)
+        if root['status'] != 'in_review':
+            raise issues.StoreError('최상위 In Review Issue만 QA할 수 있어요.', 409)
+        existing = c.execute("SELECT id FROM qa_rounds WHERE issue_id=? AND status IN ('queued','running') ORDER BY id DESC LIMIT 1", (iid,)).fetchone()
+        if not existing:
+            start = readiness(c, [iid])[iid]
+            if start['reason']:
+                raise issues.StoreError(start['reason'], 409)
+            try:
+                value = snapshot(c, iid)
+            except (ValueError, OSError, subprocess.SubprocessError):
+                raise issues.StoreError('검사 저장소를 준비하지 못했어요. Local path와 기준 브랜치를 확인해 주세요.', 409)
+            try:
+                agent = select_agent(c, value)
+            except ValueError as e:
+                raise issues.StoreError(str(e), 409)
+            k = key(value)
+            existing = c.execute("SELECT id FROM qa_rounds WHERE issue_id=? AND (snapshot_key=? OR snapshot_key LIKE ?) AND status IN ('passed','failed') ORDER BY id DESC LIMIT 1", (iid,k,k+'#%')).fetchone()
+            if not existing:
+                n = c.execute('SELECT COALESCE(MAX(round_number),0)+1 FROM qa_rounds WHERE issue_id=?', (iid,)).fetchone()[0]
+                used = c.execute('SELECT 1 FROM qa_rounds WHERE issue_id=? AND snapshot_key=?', (iid,k)).fetchone()
+                qid = c.execute('INSERT INTO qa_rounds(issue_id,round_number,snapshot_key,snapshot_json,created_at) VALUES(?,?,?,?,?)',
+                                (iid,n,f'{k}#{n}' if used else k,_json(value),db.now_iso())).lastrowid
+                issues._event(c,iid,actor,'comment',f"QA {n}회를 요청했어요 — {agent['name']}", {'qa_id':qid,'source':'human'})
+                created = True
+        if existing:
+            qid = existing['id']
+    import jobs
+    try:
+        jobs.pump()
+    except Exception:
+        pass  # 영속 대기는 다음 pump에서 다시 시작한다.
+    return {'created': created, 'round_id': qid, **panel(ref)}
 
 
 def valid(c, row):
     try:
-        return key(snapshot(c, row['issue_id'])) == row['snapshot_key']
+        return key(snapshot(c, row['issue_id'])) == row['snapshot_key'].split('#')[0]
     except (ValueError, OSError, subprocess.SubprocessError):
         return False
 
 
 def select_agent(c, value):
     import auto_settings
-    providers = {r['provider'] for r in value['implementations']}
-    task_ids = {r['id'] for r in value['family'][1:]}
-    known = {r['issue_id'] for r in value['implementations']}
+    settings = auto_settings._settings(c, {'key': value['project_key']})
+    return _choose_agent(value['implementations'], {r['id'] for r in value['family'][1:]}, settings)
+
+
+def _choose_agent(implementations, task_ids, settings):
+    """준비 상태와 실행 시 같은 독립 provider 판단을 쓴다."""
+    providers = {r['provider'] for r in implementations}
+    known = {r['issue_id'] for r in implementations}
     if not providers or task_ids - known:
         raise ValueError('구현 provider 이력이 없어요. 구현 실행 이력을 확인한 뒤 새 QA 회차를 요청해 주세요.')
-    choices = auto_settings._settings(c, {'key': value['project_key']})['agent_orders']['qa_provider_order']
-    agent = next((a for a in choices if a['provider'] not in providers), None)
+    agent = next((a for a in settings['agent_orders']['qa_provider_order'] if a['provider'] not in providers), None)
     if not agent:
         raise ValueError('전체 구현자와 독립적인 QA Agent가 없어요. 다른 provider의 활성 Agent를 준비해 주세요.')
     return agent
@@ -382,4 +452,5 @@ def panel(ref):
             entry['rework_batches'] = batches
             rounds.append(entry)
         count = c.execute("SELECT COUNT(*) FROM qa_rework_batches WHERE issue_id=? AND status IN ('registered','complete')", (issue['id'],)).fetchone()[0]
-    return {'issue_ref': issue['ref'], 'rounds': rounds, 'rework_count': count, 'rework_limit': 5}
+        start = readiness(c, [issue['id']]).get(issue['id'], {'reason': '최상위 In Review Issue만 QA할 수 있어요.'})
+    return {'start': start, 'issue_ref': issue['ref'], 'rounds': rounds, 'rework_count': count, 'rework_limit': 5}

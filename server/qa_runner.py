@@ -355,7 +355,6 @@ def pump():
     import jobs
     if not auto_settings.qa_enabled():
         return
-    qa.sync()
     with db.connect() as c:
         queued = [dict(r) for r in c.execute("SELECT * FROM qa_rounds WHERE status='queued' ORDER BY id")]
     for row in queued:

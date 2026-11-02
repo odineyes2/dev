@@ -441,6 +441,10 @@ def _list_action_context(c, rows):
                        f"WHERE (j.status='queued' OR (j.status='started' AND (r.id IS NULL OR r.status='running'))) "
                        f"AND j.issue_id IN ({marks})", ids):
         contexts[r["issue_id"]]["has_active_job"] = True
+    import qa
+    ready = qa.readiness(c, [r['id'] for r in rows if r['parent_id'] is None and r['status'] == 'in_review'])
+    for iid, start in ready.items():
+        contexts[iid]['qa'] = start
     return {r["id"]: {**contexts[r["id"]], "parent": contexts.get(r["parent_id"])} for r in rows}
 
 
