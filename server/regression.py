@@ -15,17 +15,30 @@ import issues
 CHECKS = tuple((r['key'], '서버' if r['stage'].startswith('서버') else '에이전트', r['name'], r['description'])
                for r in registry.REGISTRY if r['mode'] == 'settable')
 DEV_KEY = 'DEV'
+_DOC_CACHE = {}
 
 
 def _file_doc(path):
-    if path.suffix == '.js':
-        text = path.read_text(encoding='utf-8', errors='replace')
-        m = re.search(r'^\s*(?://|/\*+)\s*(.+?)\s*(?:\*/)?\s*$', text, re.M)
-        return m[1] if m else '개별 회귀 검사'
     try:
-        return (ast.get_docstring(ast.parse(path.read_text(encoding='utf-8'))) or '개별 회귀 검사').splitlines()[0]
-    except (OSError, SyntaxError, UnicodeError):
+        path = path.resolve()
+        stat = path.stat()
+    except OSError:
         return '개별 회귀 검사'
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cached = _DOC_CACHE.get(path)
+    if cached is not None and cached[:2] == signature:
+        return cached[2]
+    try:
+        if path.suffix == '.js':
+            text = path.read_text(encoding='utf-8', errors='replace')
+            m = re.search(r'^\s*(?://|/\*+)\s*(.+?)\s*(?:\*/)?\s*$', text, re.M)
+            doc = m[1] if m else '개별 회귀 검사'
+        else:
+            doc = (ast.get_docstring(ast.parse(path.read_text(encoding='utf-8'))) or '개별 회귀 검사').splitlines()[0]
+    except (OSError, SyntaxError, UnicodeError):
+        doc = '개별 회귀 검사'
+    _DOC_CACHE[path] = (*signature, doc)
+    return doc
 
 
 def catalog(project=None):
@@ -158,12 +171,13 @@ def _project_repo(ref):
 def planning_instructions(ref=None):
     """계획 에이전트용 검사 선택 안내. 개별 파일 키는 그 이슈 프로젝트의 검사 파일만 보여 준다(DEV-147 — Moai 계획에 dev 검사 목록이 섞였다)."""
     issue, repo = _project_repo(ref) if ref else (None, None)
-    rows = [r for r in settings()['checks'] if not r['key'].startswith('file:')]
+    checks = settings()['checks']
+    rows = [r for r in checks if not r['key'].startswith('file:')]
     if issue and not _is_dev(repo, issue):
         files = ', '.join(f"file:{p.name}={Path(p).relative_to(repo).as_posix()}" for p in test_files(repo, issue['project_key'])) if repo and Path(repo).is_dir() else ''
         keys = ', '.join(r['key'] + '=' + r['mode'] for r in rows) + ('. 이 프로젝트의 검사 파일(키=경로): ' + files if files else '. 이 프로젝트에는 찾은 검사 파일이 없다')
     else:
-        keys = ', '.join(row['key'] + '=' + row['mode'] for row in settings()['checks'])
+        keys = ', '.join(row['key'] + '=' + row['mode'] for row in checks)
     return ('\n계획서에 `## 검사 선택` 절과 json 코드 블록을 추가한다. Task 번호별로 검사 수준과 선택 이유, '
             'Auto 항목의 필요 여부를 적는다. 형식: '
             '{"1":{"level":"light","reason":"문구만 변경","checks":{"agent_capture":true,"agent_api":false}}}. '
