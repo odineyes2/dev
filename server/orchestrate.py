@@ -406,14 +406,14 @@ def slowest_line(durations: dict, top=5, wall=None) -> str:
     return '가장 오래 걸린 검사: ' + ' · '.join(f'{n} {s:.0f}초' for n, s in ranked) + f', 전체 {whole}'
 
 
-def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
+def run_tests(repo, stage='server_merge', ref=None, changed=None, focus=None) -> str | None:
     """발견한 검사를 한 번씩 돌리고 실패 시 종료 코드와 전체 출력을 보존한다.
     프로젝트가 이 단계에 격리 PostgreSQL을 켰으면 검사 동안만 띄워 넘긴다(DEV-183)."""
     import isolated_pg
     import run_progress
     project = ref.split('-')[0] if ref else None
     if not project:
-        return _run_tests(repo, stage, ref, changed, None)
+        return _run_tests(repo, stage, ref, changed, None, **({'focus': focus} if focus is not None else {}))
     if isolated_pg.wanted(project, stage) is not None:   # 띄우는 동안 "준비 중: 임시 DB"(DEV-212) — 검사가 시작되면 n/N으로 바뀐다
         run_progress.prepare(ref, '임시 DB', merge=stage == 'server_merge')
     try:
@@ -421,14 +421,14 @@ def run_tests(repo, stage='server_merge', ref=None, changed=None) -> str | None:
             if note:
                 issues.add_comment({'kind': 'human', 'name': 'system/isolated-pg'}, ref, f'⚠️ {stage}: {note}')
             env = {**{k: v for k, v in os.environ.items() if k not in SECRET_ENV}, **extra} if extra else None
-            return _run_tests(repo, stage, ref, changed, env)
+            return _run_tests(repo, stage, ref, changed, env, **({'focus': focus} if focus is not None else {}))
     finally:   # 검사 전에 끝나도(꺼진 단계·규칙 오류) 준비 표시를 남기지 않는다
         run_progress.prepare_end(ref)
         if stage == 'server_merge':
             run_progress.merge_end(ref)
 
 
-def _run_tests(repo, stage, ref, changed, env) -> str | None:
+def _run_tests(repo, stage, ref, changed, env, focus=None) -> str | None:
     import regression
     import run_progress
     selection = regression.resolve(ref, repo if ref or changed is not None else None, changed)
@@ -460,16 +460,26 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
     if rules_error:   # 사람이 적은 검사 규칙이 잘못되면 기본 규칙으로 몰래 돌리지 않고 실패로 알린다(DEV-212)
         return rules_error
     files = regression.test_files(repo, key)
+    focused = None
+    if focus and stage == 'server_completion':
+        focused, plans, edited = regression.focus_plan(repo, files, focus)
+        selection = {**selection, 'blocks': plans, 'focus': focus}
+        changed_tests = set(edited)
     todo = []   # (검사, 지문) — 재사용·건너뜀이 아닌 것만 아래에서 한꺼번에 돌린다
     for t in files:
         if not policy.get('file:' + t.name, {'enabled': True})['enabled']:
             results[t.name] = 'skipped'
             continue
+        if focused is not None:
+            cached.pop(t.name, None)
+            if t.name not in focused:
+                results[t.name] = 'deferred'
+                continue
         # 격리 PG가 있는 실행과 없는 실행(PG 검사 건너뜀)의 결과를 섞어 재사용하지 않는다.
         stamp = regression.fingerprint(t, identity + (':isolated-pg' if env else '') if identity else identity) if ref else None
         if ref:
             meta['files'][t.name] = hashlib.sha256(t.read_bytes()).hexdigest()
-        if stamp and cached.get(t.name) == stamp:
+        if focused is None and stamp and cached.get(t.name) == stamp:
             results[t.name] = 'reused'
             continue
         if ref:
@@ -554,7 +564,7 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
                 edited = t.name in changed_tests and (not plan or plan.get('whole_once') or bid is None or bid in plan.get('repeat', []))
                 kind = 'real' if edited or outcome != 'pass' else 'timeout' if first == 'timeout' else 'flaky'
                 triage.append({'file': t.name, 'block': bid, 'first': first, 'rerun': outcome,
-                               'class': kind, 'related': True if edited else None})
+                               'class': kind, 'related': True if edited else regression.failure_related(Path(repo), t, bid, selection)})
                 if kind == 'real':
                     real.append(bid)
             if not real:
@@ -595,7 +605,7 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
     for t, stamp in todo:   # 결과는 원래 순서대로 모은다
         (runs, bad), durations[t.name] = ran[t]
         results[t.name] = 'failed' if bad else 'passed'
-        if not bad and stamp and not any(x['file'] == t.name for x in triage):
+        if focused is None and not bad and stamp and not any(x['file'] == t.name for x in triage):
             cached[t.name] = stamp
         elif bad or any(x['file'] == t.name for x in triage):
             cached.pop(t.name, None)

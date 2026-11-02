@@ -471,7 +471,7 @@ def _all_names(tool, rel, text):
     return {s[2] for s in tool._css_lines(text, tool.css_rules(text)[0])}
 
 
-def ui_map_pick(repo, changed, ui_map):
+def ui_map_pick(repo, changed, ui_map, since=None):
     """화면 파일 변경 → 대응표로 test_ui 블록 고르기(DEV-233-3).
     돌려주는 것: (블록 id 목록, 이유). 블록 목록이 None이면 대응표로 정할 수 없어 파일 전체 1회다."""
     import difflib
@@ -491,7 +491,7 @@ def ui_map_pick(repo, changed, ui_map):
             text = (Path(repo) / rel).read_text(encoding='utf-8')
         except (OSError, UnicodeError):
             return None, f'{rel} 읽기 실패(지운 파일)'
-        lines = changed_lines(repo, rel)
+        lines = changed_lines(repo, rel, since)
         if lines is None:
             return None, f'{rel} 새 파일이거나 바뀐 줄을 읽지 못함'
         found = tool.changed_names(rel, text, lines)
@@ -589,11 +589,11 @@ def select_blocks(repo, pk, choice, changed, changed_tests, checks):
     return blocks
 
 
-def changed_lines(repo, rel):
+def changed_lines(repo, rel, since=None):
     """Task가 바꾼 검사 파일의 새 쪽 줄 번호들(base...HEAD와 커밋 전 변경). 새 파일·읽기 실패는 None(전체로 본다)."""
     import execute
     lines = set()
-    for args in ((f'{execute.BASE_BRANCH}...HEAD',), ('HEAD',)):
+    for args in (((since,),) if since else ((f'{execute.BASE_BRANCH}...HEAD',), ('HEAD',))):
         r = execute._run_git(str(repo), 'diff', '-U0', *args, '--', rel)
         if r.returncode:
             return None
@@ -624,6 +624,95 @@ def block_plan(blocks, changed=None, selected=()):
         return {'only': [], 'repeat': [], 'whole_once': True, 'changed': hit, 'selected': picked}
     only = picked + [i for i in hit if i not in picked]
     return {'only': only, 'repeat': hit, 'whole_once': False, 'changed': hit, 'selected': picked}
+
+
+def failure_related(repo, path, block, selection):
+    """대응표가 확실한 화면 변경만 실패와 무관하다고 판단한다."""
+    plan = (selection.get('blocks') or {}).get(path.name) or {}
+    if path.name in selection.get('changed_tests', ()):
+        if block is None or plan.get('whole_once') or not plan or block in plan.get('repeat', ()):
+            return True
+    changed = selection.get('changed_files') or []
+    tests = {p.relative_to(repo).as_posix() for p in test_files(repo, selection.get('project'))}
+    if block is None or not changed or any(p not in tests and not p.startswith('static/') for p in changed):
+        return None
+    try:
+        data = json.loads((path.parent / UI_MAP_NAME).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    entries = data.get('blocks') if isinstance(data, dict) else None
+    entry = entries.get(block) if isinstance(entries, dict) else None
+    if not isinstance(entry, dict) or not entry.get('complete') or not any(p.startswith('static/') for p in changed):
+        return None
+    picked, _ = ui_map_pick(repo, changed, data)
+    return None if picked is None else block in picked
+
+
+def focus_plan(repo, files, focus):
+    """실패 항목과 재작업 변경만 합치고 재작업 검사 블록에 R09를 적용한다."""
+    import execute
+    since = focus['since']
+    diff = execute._run_git(str(repo), 'diff', '--name-only', since)
+    added = execute._run_git(str(repo), 'ls-files', '--others', '--exclude-standard')
+    # 변경 목록을 못 읽으면 좁히지 않고 모든 파일을 검사한다.
+    if diff.returncode or added.returncode:
+        return {p.name: None for p in files}, {}, []
+    changed = set(diff.stdout.splitlines() + added.stdout.splitlines())
+    wanted = dict(focus['files'])
+    plans, edited = {}, []
+    for path in files:
+        rel = path.relative_to(repo).as_posix()
+        listed = blocks_of(repo, path)
+        targets = wanted.get(path.name, [])
+        touched = rel in changed
+        if touched:
+            edited.append(path.name)
+        mapped = []
+        map_path = path.parent / UI_MAP_NAME
+        if (listed and map_path.is_file() or path.name == 'test_ui.py') and any(p.startswith('static/') for p in changed):
+            try:
+                data = json.loads(map_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                data = None
+            mapped, _ = ui_map_pick(repo, changed, data, since)
+        if path.name not in wanted and not touched and not mapped and mapped is not None:
+            continue
+        lines = changed_lines(repo, rel, since) if touched else None
+        plan = block_plan(listed or [], (lines or set()) if touched else None, (targets or []) + (mapped or []))
+        if not listed or targets is None or mapped is None:
+            plan.update(only=[], repeat=[], whole_once=True)
+        wanted[path.name] = plan['only'] or None
+        plans[path.name] = plan
+    return wanted, plans, edited
+
+
+def rework_context(repo, ref):
+    """재작업 직전 HEAD·진짜 실패 목록과 관련 없음 안내를 고정한다."""
+    import execute
+    rows = load_record('regression-selection:' + ref + ':server_completion').get('triage', [])
+    files, unrelated = {}, []
+    for row in rows:
+        if row['class'] != 'real':
+            continue
+        name, block = row['file'], row['block']
+        if block is None:
+            files[name] = None
+        elif name not in files or files[name] is not None:
+            files.setdefault(name, []).append(block)
+        if row.get('related') is False:
+            unrelated.append(name + ('#' + block if block else ''))
+    focus = None
+    if files:
+        head = execute._run_git(str(repo), 'rev-parse', 'HEAD')
+        if not head.returncode:
+            focus = {'since': head.stdout.strip(), 'files': files}
+    note = ''
+    if unrelated:
+        note = ('\n아래 실패 중 ' + ', '.join(unrelated) + '는 이 Task가 바꾼 파일과 관련이 없어 보인다'
+                '(대응표: 이 블록은 바뀐 함수·선택자를 쓰지 않는다). 기능 코드를 바꾸기 전에 검사 코드의 기다리기'
+                '(다른 화면으로 이동한 직후 앞 화면 요소를 잡는 경합)와 base에서도 실패하는지를 먼저 본다. '
+                '관련이 없으면 고치지 말고 그 판단을 완료 메모에 적는다.')
+    return focus, note
 
 
 def work_tree_hash(repo):

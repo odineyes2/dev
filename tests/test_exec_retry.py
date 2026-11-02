@@ -40,7 +40,7 @@ def run(results):
 status, prompts, registered = run(["test_x.py: 종료 코드 1", None])
 assert status == "ok" and registered and len(prompts) == 2, (status, prompts)
 assert prompts[0] == "원래 지시" and prompts[1].startswith("원래 지시") and "test_x.py: 종료 코드 1" in prompts[1]
-assert '전체 검사는 서버가 다시 수행한다' in prompts[1]
+assert '전체는 병합 R07에서 확인한다' in prompts[1]
 with patch.object(orchestrate, 'settings', return_value={'auto_merge': False}):
     assert '전체 검사' in execute.test_scope(task) and '직접 돌리지 않는다' in execute.test_scope(task)
 assert '직접 작성·수정한 검사만' in execute.test_scope(task)

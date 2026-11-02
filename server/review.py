@@ -509,6 +509,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             row = c.execute('SELECT model FROM runs WHERE id=?', (run_id,)).fetchone()
         progress = {'provider': 'Codex' if provider == 'codex' else 'Claude', 'model': row['model'] if row else None, 'limit': timeout}
     failed = ''
+    recheck_focus = None
     for attempt in range(2 if label == "실행" and not recovery else 1):
         code, note, status, out, err = None, "", "ok", "", ""
         if progress:
@@ -559,17 +560,21 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         # 병합 때 처음 실패를 알면 사람이 다시 실행해야 한다 — 완료 등록 전에 Task worktree에서 전체 검사를 돌려 한 번 스스로 고치게 한다.
         import orchestrate
         run_progress.set_phase(ref, 'recheck' if attempt else 'checks', **progress)
-        failed = orchestrate.run_tests(str(cwd), stage='server_completion', ref=ref)
+        failed = orchestrate.run_tests(str(cwd), stage='server_completion', ref=ref,
+                                        **({'focus': recheck_focus} if recheck_focus else {}))
         if not failed:
             break
         if attempt or recovery:
-            status, note = "failed", "고친 뒤에도 전체 검사가 실패했어요:\n" + failed[-1500:]
+            status, note = "failed", "고친 뒤에도 검사가 실패했어요:\n" + failed[-1500:]
             break
         earlier = text + "\n\n--- 서버 전체 검사 실패 → 재시도 ---\n" + failed + "\n\n"
         earlier_out = out
+        import regression
+        recheck_focus, related_note = regression.rework_context(cwd, ref)
         retry = ("\n\n이전 실행의 결과가 이 worktree에 그대로 남아 있다. 서버가 tests/test_*.py 전체 검사를 돌렸더니 아래가 실패했다. "
-                 "실패한 검사에 관련된 원인만 고치고 해당 검사만 다시 확인한 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 마친다. 전체 검사는 서버가 다시 수행한다. "
+                 "실패한 검사에 관련된 원인만 고치고 해당 검사만 다시 확인한 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 마친다. 서버는 실패 항목과 재작업 변경만 다시 검사하고 전체는 병합 R07에서 확인한다. "
                  "검사가 만든 파일을 커밋하지 말고 Task 범위 밖은 고치지 않는다.\n```\n" + failed[-6000:] + "\n```")
+        retry += related_note
         if orchestrate.FLAKY_MARK in failed:   # 같은 코드에서 통과·실패가 섞였다 — 기능 코드가 아니라 검사 코드의 기다리기·순서 가정을 본다
             retry += "\n\n⚠️ 위 검사는 같은 코드에서 통과와 실패가 섞였다. 기능 코드 대신 검사 코드의 기다리기(응답·화면 상태를 기다리는지)와 순서 가정(목록 순서 대신 id로 찾는지)을 먼저 고친다."
         cmd = cmd[:2] + [cmd[2] + retry] + cmd[3:] if provider == "claude" else cmd[:-1] + [cmd[-1] + retry]
