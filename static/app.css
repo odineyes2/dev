@@ -1027,3 +1027,8 @@ table.harness-map td:nth-child(1){ width:22%; } table.harness-map td:nth-child(2
 .template-card ul{ padding-left:var(--sp-4); margin:var(--sp-2) 0 0; }
 #p-step-heading{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-3); }
 #p-register-mode{ margin-top:var(--sp-4); }
+
+/* QA 라벨은 기존 버튼 높이와 간격 토큰을 사용한다. */
+.issue-actions button.qa-action{ width:auto; padding:0 var(--sp-2); }
+#qa-title{ display:flex; align-items:center; flex-wrap:wrap; gap:var(--sp-2); }
+#qa-start{ margin-left:auto; }

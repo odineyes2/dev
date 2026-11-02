@@ -633,10 +633,27 @@ function actionKind(i){
   return i.status==='backlog' && !c.plan_version && !c.has_children ? 'review' : '';
 }
 function actionOff(kind,s,i){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='task-approve' ? s.auto_approve===true : kind==='decision' && i.status==='triage' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
+// 목록과 상세 카드가 준비 상태와 확인 절차를 공유한다.
+function qaButton(start, ref, id=''){
+  const latest=start.latest, label=start.active?'QA 중':latest?.status==='passed'?'QA 통과':latest?.status==='failed'?`QA 실패 ${latest.fail_count}건`:['inconclusive','orphaned'].includes(latest?.status)?'QA 판정 불가':'QA 검사';
+  return `<button type="button" ${id?`id="${id}"`:''} class="qa-action" data-action="qa" data-ref="${esc(ref)}" aria-disabled="${!!(start.active || start.reason)}" title="${esc(start.reason || label)}">${label}</button>`;
+}
+async function requestQa(ref,current){
+  const panel=await api('GET',`/api/issues/${encodeURIComponent(ref)}/qa`,undefined,current);
+  if(!current())return;
+  const start=panel.start;
+  if(start.active || start.reason){toast(start.active?'QA 중이에요.':start.reason);return;}
+  const a=start.agent;
+  if(!a){toast('QA Agent를 확인하지 못했어요.');return;}
+  if(!await confirmDialog(`${ref}을(를) QA 검사할까요?`,{description:`검사할 Agent: ${a.name} (${a.provider} · ${a.model})\n유료 호출이에요 — 이 서버에 로그인된 ${a.provider} 계정 사용량에서 나가요.\n재작업 ${start.rework_count}/${start.rework_limit}`,okText:'QA 검사'}))return;
+  if(!current())return;
+  const result=await api('POST',`/api/issues/${encodeURIComponent(ref)}/qa`,{},current);
+  if(current())toast(result.created?'QA를 요청했어요':'이미 있는 QA 회차를 보여 드려요');
+}
 function actionHtml(i){
   const kind=actionKind(i); if(!kind) return '';
   const settings=actionSession?.settings;
-  return `<div class="issue-actions" aria-label="Action">${(['review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
+  return `<div class="issue-actions" aria-label="Action">${kind==='complete-tree' && !i.parent_ref && i.action_context.qa ? qaButton(i.action_context.qa,i.ref) : ''}${(['review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
     const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':kind==='task-approve'?'승인':'전체 완료';
     return `<button type="button" draggable="false" data-action="${kind}" data-ref="${esc(i.ref)}" data-provider="${provider}" title="${label}" aria-label="${label}" aria-disabled="${!settings || !!actionOff(kind,settings,i)}">${provider?`<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider==='claude'?'claude':'openai'}"/></svg>`:`<svg class="ico" aria-hidden="true"><use href="#i-${({decision:'clipboard-check','task-approve':'check','complete-tree':'check-check'})[kind]}"/></svg>`}</button>`;
   }).join('')}</div>`;
@@ -664,7 +681,14 @@ function bindActions(container,session,refresh){
       e.stopPropagation();
       const i=session.items.get(b.dataset.ref),kind=b.dataset.action,provider=b.dataset.provider;
       const current=()=>actionSession===session && session.current();
-      if(!current() || pendingActions.has(i.ref) || actionKind(i)!==kind) return;
+      if(!current() || pendingActions.has(i.ref) || (kind==='qa' ? actionKind(i)!=='complete-tree' || !!i.parent_ref : actionKind(i)!==kind)) return;
+      if(kind==='qa'){
+        if(i.action_context.qa?.reason || i.action_context.qa?.active){toast(i.action_context.qa.reason || 'QA 중이에요.');return;}
+        pendingActions.add(i.ref);
+        try{await requestQa(i.ref,current);}catch(e){if(current())toast(e.message);}
+        finally{pendingActions.delete(i.ref);if(current())await refresh();}
+        return;
+      }
       const settings=session.settings;
       if(!settings){toast('Auto 설정을 확인하지 못했어요. 새로고침해 다시 조회해 주세요.');return;}
       if(actionOff(kind,settings,i)){toast('Auto 모드에서는 해당 버튼이 비활성화됩니다.');return;}
@@ -3487,8 +3511,19 @@ async function renderQa(it, box){
   try{ qa = await api('GET', `/api/issues/${encodeURIComponent(it.ref)}/qa`, undefined, () => box.isConnected, {notifyErrors: false}); }
   catch(e){ if(box.isConnected) box.querySelector('p').textContent = e.message; return; }
   if(!box.isConnected) return;
-  const r = qa.rounds[0], head = `<h2 id="qa-title">QA <span class="meta">재작업 ${qa.rework_count}/${qa.rework_limit}</span></h2>`;
-  if(!r){ box.innerHTML = `${head}<p class="dim">아직 QA 기록이 없어요. In Review가 되면 검사해요.</p>`; return; }
+  const r = qa.rounds[0], head = `<h2 id="qa-title">QA <span class="meta">재작업 ${qa.rework_count}/${qa.rework_limit}</span>${it.status==='in_review' && !it.parent_ref ? qaButton(qa.start || {reason:'QA 준비 상태를 확인하지 못했어요.'},it.ref,'qa-start') : ''}</h2>`;
+  const bindStart=()=>{
+    const button=box.querySelector('#qa-start');
+    if(!button)return;
+    button.onclick=async()=>{
+      if(button.disabled)return;
+      button.disabled=true;
+      try{ await requestQa(it.ref,()=>box.isConnected); if(box.isConnected)await renderIssue(it.ref); }
+      catch(e){ if(box.isConnected)toast(e.message); }
+      finally{ if(button.isConnected)button.disabled=false; }
+    };
+  };
+  if(!r){ box.innerHTML = `${head}<p class="dim">아직 QA 기록이 없어요. QA 검사를 누르면 검사해요.</p>`; bindStart(); return; }
   const usage = [r.provider && `${esc(PROVIDER_NAME[r.provider] || r.provider)}${r.model ? ' · ' + esc(r.model) : ''}`, (r.input_tokens != null || r.output_tokens != null) && `토큰 ${tokenHtml(r.input_tokens)}/${tokenHtml(r.output_tokens)}`, r.cost_usd != null && `$${Number(r.cost_usd).toFixed(2)}`].filter(Boolean).join(' · ');
   const ev = e => typeof e === 'string' ? e : [e.kind, e.path || e.command || e.ref, e.result || e.summary].filter(Boolean).join(' · ') || JSON.stringify(e);
   const failedTasks = [...new Set(r.items.filter(i => i.verdict === 'fail').flatMap(i => i.task_refs))];
@@ -3500,6 +3535,7 @@ async function renderQa(it, box){
     ${r.rework_batches.map(b => `<p class="dim">재작업 ${b.attempt}회 등록 — ${b.task_refs.map(esc).join(', ')}</p>`).join('')}
     ${canRework ? `<form id="qa-rework"><fieldset><legend>재작업할 Task</legend>${it.children.filter(ch => ch.status !== 'closed').map(ch => `<label><input type="checkbox" value="${esc(ch.ref)}"${failedTasks.includes(ch.ref) ? ' checked' : ''}> ${esc(ch.ref)} ${esc(ch.title)}</label>`).join('')}</fieldset>
       <div class="row-end"><button type="button" id="qa-approve">승인하고 전체 완료</button><button type="submit" class="primary">재작업 요청</button></div><p id="qa-rework-status" role="status" aria-live="polite"></p></form>` : ''}`;
+  bindStart();
   const form = box.querySelector('#qa-rework');
   if(!form) return;
   // 승인은 기존 전체 완료 버튼을 그대로 눌러 확인창·사람 검사 확인을 거친다.
@@ -3573,7 +3609,7 @@ const ROLE_CARDS = [
   ['provider_order','provider-order','작업 에이전트','Auto 검토·실행을 이 순서로 맡겨요.',true],
   ['troubleshooter_provider_order','troubleshooter-order','트러블슈터','실패 Task의 복구에 사용할 Agent예요. 요청당 CLI 1회·최대 10분이며 추가 이관은 하지 않아요.',true],
   ['description_provider_order','description-order','Description 작성','프로젝트 Description 자동 작성을 이 순서로 맡겨요.',true],
-  ['qa_provider_order','qa-order','QA Agent','In Review가 된 최상위 Issue를 이 순서로 검사해요. 구현한 provider와 다른 Agent를 골라요.',true],
+  ['qa_provider_order','qa-order','QA Agent','사람이 QA 검사를 요청한 최상위 In Review Issue를 이 순서로 검사해요. 구현한 provider와 다른 Agent를 골라요.',true],
 ];
 // 공통 제목과 서브탭을 설정 카드 안에 함께 그린다.
 function settingsHeader(tab){
@@ -3749,8 +3785,8 @@ async function renderSettings(){
        ['auto_execute','Auto 실행 위임','최신 부모 Plan이 승인되고 선행 조건을 충족한 Backlog Task를 실행해요. Auto 태스크 승인만 ON이면 결과 승인만 해요.'],
        ['auto_approve','Auto 태스크 승인','In Review Task의 결과를 자동 승인하여 완료해요. 최신 부모 Plan의 사람 승인이 필요하며, 자동 병합이 켜져 있으면 병합·배포 성공을 기다려요. Goal과 상위 Issue는 완료하지 않아요.'],
        ['auto_troubleshoot','Auto 트러블슈팅','기본 꺼짐. 켠 이후의 코드·검사 실패를 원 실행당 1회 복구해요. 승인 Plan·기존 worktree 안에서 최대 10분 실행하며, OFF로 바꾸면 자동 미착수 대기를 취소해요. 실행 중 작업은 유지해요.'],
-       ['auto_qa','Auto QA','QA 활성화가 켜져 있을 때 QA 통과 시 Issue와 Task를 자동 Done, 실패 시 관련 Task를 재작업해요(최대 5회 후 보류). 이 위임이 꺼져 있으면 검사 결과만 남겨요. Goal·사람이 할 일이 남은 Issue는 자동 Done 하지 않아요.'],
-       ['qa_enabled','QA 활성화','기본 꺼짐. OFF이면 모든 프로젝트의 QA 대기 등록·에이전트 호출을 막고 실행 중인 QA 모델 호출도 중단해요. 전체 · Auto와 별도로 켜야 해요.']].map(([field,label,help]) =>
+       ['auto_qa','Auto QA','QA 사용이 켜져 있을 때 요청한 QA가 통과하면 Issue와 Task를 자동 Done, 실패 시 관련 Task를 재작업해요(최대 5회 후 보류). 이 위임이 꺼져 있으면 검사 결과만 남겨요. Goal·사람이 할 일이 남은 Issue는 자동 Done 하지 않아요.'],
+       ['qa_enabled','QA 사용','기본 꺼짐. 켜도 저절로 검사하지 않아요 — 이슈의 QA 검사 버튼으로 고른 것만 검사해요. OFF이면 QA 요청·대기·진행 중 호출을 모두 막아요.']].map(([field,label,help]) =>
       `<div class="setting-row"><div><b id="${field}-label">${label}</b><p class="dim" id="${field}-help">${esc(help)}</p></div><button type="button" class="auto-switch" id="${field}" role="switch" aria-labelledby="${field}-label" aria-describedby="${field}-help" aria-checked="false"><span class="switch-track" aria-hidden="true"></span><span class="switch-state">꺼짐</span></button></div>`).join('')}
     <h3>Auto 에이전트 우선순위</h3>
     <div class="role-cards">${ROLE_CARDS.map(([field,id,title,help,ready]) =>
