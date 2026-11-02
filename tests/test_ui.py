@@ -4661,7 +4661,10 @@ def check_result_attach(page, shots):
     def fresh():
         ref = page.request.post(BASE + '/api/issues', data={'project': 'RATT', 'title': '수정 요청 첨부'}, headers=H).json()['ref']
         page.request.post(f'{BASE}/api/issues/{ref}/status', data={'status': 'in_review'}, headers=H)
-        page.goto(BASE + f'/#/issue/{ref}'); page.wait_for_selector('#request-changes')
+        page.goto(BASE + f'/#/issue/{ref}')
+        # 앞 이슈 화면의 버튼을 잡지 않도록 새 이슈로 다시 그려진 뒤에 누른다
+        page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim() === ref", arg=ref)
+        page.wait_for_selector('#request-changes')
         return ref
     # 취소 → 올라간 첨부가 삭제된다
     fresh(); page.click('#request-changes'); expect(page.locator('#result-attach')).to_be_visible()
@@ -5868,17 +5871,37 @@ def check_harness(page, shots):
     page.goto(BASE + '/#/projects'); page.reload(); page.wait_for_selector('#project-add')
 
 
-# 블록 표(DEV-231) — (id, 제목, 줄 범위를 줄 함수 이름, 실행). 서버가 `--list-blocks`로 읽고 `--only id1,id2`로
-# 준비(서버·브라우저·로그인)를 한 번만 한 뒤 고른 블록을 차례로 돌린다. 블록마다 `OK: block:<id>`를 찍는다.
-# 기존 `--<id>-only` 옵션은 아래 if 줄에서 지금처럼 동작한다(재현 R16이 그 줄을 읽는다).
-# 앞 준비가 긴 옛 흐름(목록 준비 뒤 블록 등)은 그 옵션으로 별도 프로세스에서 돈다(legacy).
-def legacy(option):
-    r = subprocess.run([sys.executable, __file__, option], cwd=ROOT, capture_output=True, text=True, encoding='utf-8', errors='replace')
-    assert r.returncode == 0, (option, r.stdout[-3000:], r.stderr[-3000:])
-
-
+# 블록 표(DEV-231·DEV-233) — 블록은 서로 겹치지 않는 단위(검사 함수 하나, 또는 상태를 이어 쓰는 흐름 하나)다.
+# 서버가 `--list-blocks`로 읽고 `--only id1,id2`로 준비(서버·브라우저·로그인)를 한 번만 한 뒤 고른 블록을 차례로 돌린다.
+# 인자 없는 전체 실행도 이 표를 처음부터 끝까지 돈다. 블록마다 `OK: block:<id>`(실패면 `FAIL: block:<id>`)를 찍는다.
+# 블록은 어떤 순서·조합으로 돌려도 통과해야 한다 — 쓸 데이터는 블록 안에서 만들고, 화면 상태는 reset_between_blocks가 되돌린다.
+# 옛 묶음 이름(ALIASES)과 옛 `--<이름>-only` 옵션(FLAGS)은 블록 목록으로 풀린다(재현 R16·옛 선택 기록 호환).
 def _projects_page():
     page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
+
+
+def _list_page():
+    page.goto(BASE + '/#/'); page.wait_for_selector('#list-body[aria-busy="false"]')
+
+
+def _project(key):
+    """블록이 쓸 프로젝트 하나를 만들고 화면 목록에도 반영한다."""
+    assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'}, data={'key': key, 'name': key}).ok
+    page.reload(); page.wait_for_selector('#shell:not([hidden])')
+
+
+def _drop_projects(*keys):
+    """블록이 쓸 프로젝트를 지워 처음 상태에서 시작한다(키를 안 주면 모두). 이슈 번호를 단언하는 블록이 앞 블록의 데이터에 묶이지 않게 한다."""
+    H = {'X-Requested-With': 'dev'}
+    keys = keys or [p['key'] for p in page.request.get(BASE + '/api/projects').json()['projects']]
+    for key in keys:
+        check = page.request.get(BASE + f'/api/projects/{key}/delete-check', headers=H)
+        if check.status == 404:
+            continue
+        token = check.json().get('confirmation_token')
+        r = page.request.delete(BASE + f'/api/projects/{key}', headers=H, data={'confirmation_token': token} if token else None)
+        assert r.ok or r.status == 404, (key, r.status, r.text())
+    page.evaluate("localStorage.removeItem('dev.project')")
 
 
 def _checks(*fns):
@@ -5889,97 +5912,116 @@ def _checks(*fns):
         fn(**{k: names[k] for k in inspect.signature(fn).parameters if k in names})
 
 
-def _block(id, title, *fns, source=None, run=None):
-    return (id, title, source or fns[0].__name__, run or (lambda: _checks(*fns)))
+def _block(id, title, fn=None, source=None, run=None, before=None):
+    """(id, 제목, 줄 범위를 줄 함수 이름, 실행). before는 검사 함수 앞의 화면 준비."""
+    def go():
+        if before:
+            before()
+        _checks(fn)
+    return (id, title, source or fn.__name__, run or go)
 
 
-from functools import partial
 BLOCKS = [
-    _block('confirm', 'confirm dialog', source='block_confirm', run=lambda: block_confirm()),
-    _block('login', 'login screen and authentication', check_login_screen, run=lambda: None),
-    _block('nav-shortcut', 'nav shortcuts', check_nav_shortcuts),
+    _block('login', 'login screen and authentication', source='block_login', run=lambda: block_login(again=True)),
+    _block('qa-start', 'QA start', check_qa_start),
+    _block('account-menu', 'account menu', check_account_menu),
+    _block('settings-navigation', 'Settings navigation', check_settings_navigation),
+    _block('jobs-scroll', 'jobs list scroll', check_jobs_list_scroll, before=_list_page),
+    _block('list-sort', 'list sort', check_list_sort, before=_list_page),
+    _block('list-loading', 'list loading', check_list_loading, before=lambda: (_list_page(), page.evaluate('loadList()'))),
+    _block('new-without-project', 'New issue without a project', source='block_new_without_project', run=lambda: block_new_without_project()),
+    _block('font-settings', 'font settings', check_font_settings),
+    _block('project-row', 'project row', check_project_row, before=_projects_page),
+    _block('project-flows', 'project flows', check_project_flows, before=_projects_page),
+    _block('project-documents', 'project documents', check_project_documents, before=_projects_page),
+    _block('usage', 'project usage', check_project_usage, before=_projects_page),
+    _block('free-port', 'free port', check_free_port),
+    _block('service-diagnostic', 'service diagnostic', source='block_service_diagnostic', run=lambda: block_service_diagnostic()),
+    _block('audits', 'project audits', source='block_audits', run=lambda: block_audits()),
+    _block('suggestions', 'suggestions', check_suggestions),
+    _block('auto-master', 'Auto master switch', check_auto_master),
+    _block('auto-settings', 'Auto settings', check_auto_settings),
+    _block('regression-numbers', 'regression numbers', check_regression_numbers),
     _block('delegate-confirm', 'delegate confirm', check_delegate_confirm),
     _block('complete-summary', 'complete summary', check_complete_summary),
     _block('decision-layout', 'decision layout', check_decision_layout),
-    _block('task-alignment', 'Task button alignment', check_task_action_alignment),
-    _block('result-attach', 'result attach', check_result_attach),
-    _block('queue-limit', 'queue limit', check_queue_limit),
-    _block('test-jobs', 'test jobs', check_test_jobs),
-    _block('queue-edges', 'queue edges', check_queue_edges),
-    _block('self-restart-banner', 'self restart banner', check_self_restart_banner),
-    _block('list-spacing', 'List spacing', check_list_spacing),
-    _block('issue-table', 'Issue table', check_issue_table),
-    _block('suggestions', 'suggestions', check_suggestions),
-    _block('suggestions-regression', 'suggestions and regression numbers', check_suggestions, check_regression_numbers),
-    _block('trends', 'Trend', check_trends),
-    _block('trend-issues', 'Trend issues', check_trend_issues),
-    _block('trend-stages', 'Trend stages', check_trend_stages),
-    _block('issue-summary', 'Issue summary', check_issue_summary),
-    _block('rating', 'Rating', check_rating),
-    _block('manual-usage', 'Manual usage', check_manual_usage),
-    _block('progress-clock', 'Progress clock', check_progress_clock),
-    _block('issue-tokens', 'Issue tokens', check_issue_tokens),
-    _block('auto-master', 'Auto master and related settings', check_auto_master, check_auto_settings),
-    _block('settings-navigation', 'Settings navigation', check_settings_navigation),
-    _block('global-agent-orders', 'global Agent role orders', check_global_agent_orders),
-    _block('publication', 'publication notices', check_published_notice),
-    _block('manual-actions', 'manual actions', check_board_actions),
-    _block('global-auto', 'global auto settings, publication and manual actions', check_auto_master, check_auto_settings,
-           check_global_agent_orders, check_published_notice, check_board_actions),
-    _block('free-port', 'free port', check_free_port),
-    _block('service-diagnostic', 'service diagnostic', check_service_diagnostic, run=lambda: legacy('--service-diagnostic-only')),
-    _block('fonts', 'fonts and Settings navigation', check_font_settings, check_settings_navigation),
-    _block('project-genres', 'project genres', check_project_initialization),
-    _block('project-wizard', 'project wizard', check_project_row, check_project_flows, check_project_initialization,
-           run=lambda: (_projects_page(), _checks(check_project_row, check_project_flows, check_project_initialization))),
-    _block('project-registration', 'project registration', check_project_row, check_project_navigation, check_project_flows,
-           check_project_documents, check_project_usage, check_project_audits, check_project_initialization,
-           run=lambda: (_projects_page(), _checks(check_project_row, check_project_navigation, check_project_flows, check_project_documents,
-                                                  check_project_usage, check_project_audits, check_project_initialization))),
-    _block('project-documents', 'project documents', check_project_documents,
-           run=lambda: (_projects_page(), _checks(check_project_documents))),
-    _block('harness', 'harness', check_harness),
-    _block('management-agents', 'management agents', check_management_agents),
-    _block('management-delay-probe', 'management delay probe', check_management_delay_probe),
-    _block('management-layout', 'management layout', check_management_layout),
-    _block('management-projects', 'management projects', check_project_row, check_project_documents, check_project_usage, check_project_audits,
-           run=lambda: (_projects_page(), _checks(check_project_row, check_project_documents, check_project_usage, check_project_audits))),
-    _block('management', 'management UI', check_management_layout, run=lambda: legacy('--management-only')),
-    _block('new-issue-fields', 'new issue fields', check_new_issue_fields),
-    _block('new-issue-dependencies', 'new issue dependencies', check_new_issue_dependencies),
-    _block('chat-connections', 'chat connections', check_chat_connections),
-    _block('jobs-scroll', 'jobs list scroll', check_jobs_list_scroll),
-    _block('list-sort', 'list sort', check_list_sort),
-    _block('initialization', 'project initialization', check_project_initialization),
-    _block('usage', 'project usage', check_project_usage),
-    _block('reproduce', 'failed check reproduction', check_reproduce),
-    _block('register-repair', 'register repair', check_register_repair),
-    _block('manual-merge', 'manual merge', check_manual_merge),
-    _block('troubleshooter', 'troubleshooter', check_troubleshooter),
-    _block('restart', 'app restart UI', check_project_restart),
-    _block('audits', 'project audits', check_project_audits, run=lambda: legacy('--audits-only')),
-    _block('fab', 'fab', partial(check_fab, alignment_only=True), source='check_fab'),
-    _block('page-gutter', 'page gutter', check_page_gutter),
-    _block('regression-numbers', 'regression numbers', check_regression_numbers),
-    _block('composer-chain', 'composer chain', check_composer_chain),
-    _block('composer-close', 'composer close', check_composer_close),
     _block('attachments', 'attachments', check_attachments),
     _block('new-attachment-images', 'new attachment images', check_new_attachment_images),
     _block('composer-images', 'composer images', check_composer_images),
+    _block('nav-shortcut', 'nav shortcuts', check_nav_shortcuts),
+    _block('composer-chain', 'composer chain', check_composer_chain),
+    _block('composer-close', 'composer close', check_composer_close),
+    _block('queue-edges', 'queue edges', check_queue_edges),
+    _block('test-jobs', 'test jobs', check_test_jobs),
+    _block('publication', 'publication notices', check_published_notice),
+    _block('board-actions', 'board actions', check_board_actions),
+    _block('harness', 'harness', check_harness),
+    _block('page-gutter', 'page gutter', check_page_gutter),
+    _block('trend-issues', 'Trend issues', check_trend_issues),
+    _block('board-flow', 'NS·DEV issue flow (plan·Task·list·board·agents·theme·queue·execute)', source='block_board_flow', run=lambda: block_board_flow()),
+    _block('edit-saving', 'edit saving', source='block_edit_saving', run=lambda: block_edit_saving()),
+    _block('rollback', 'rollback waiting', source='block_rollback', run=lambda: block_rollback()),
+    _block('result-attach', 'result attach', check_result_attach),
+    _block('sticky-tabbar', 'detail side sticky tab bar', check_sticky_tabbar, before=_list_page),
+    _block('fab', 'fab', check_fab, before=lambda: _project('FAB')),   # 새 이슈 폼은 프로젝트가 있어야 열린다
+    _block('issue-tokens', 'Issue tokens', check_issue_tokens),
+    _block('manual-usage', 'Manual usage', check_manual_usage),
+    _block('progress-clock', 'Progress clock', check_progress_clock),
+    _block('issue-types', 'issue types', check_issue_types, before=_list_page),
+    _block('rating', 'Rating', check_rating),
     _block('progress', 'progress refresh', check_progress_refresh),
     _block('progress-note', 'progress note', check_progress_note),
-    _block('qa-start', 'QA start', check_qa_start),
-    _block('board-actions', 'board actions', check_board_actions),
-    # 아래는 옛 흐름에서 목록 준비(QA·계정 메뉴·Settings 검사) 뒤에 도는 블록이라 옛 옵션으로 따로 돈다.
-    _block('detail-side', 'detail side', check_sticky_tabbar, run=lambda: legacy('--detail-side-only')),
-    _block('issue-types', 'issue types', check_issue_types, run=lambda: legacy('--issue-types-only')),
-    _block('edit-saving', 'edit saving', check_edit_saving, run=lambda: legacy('--edit-saving-only')),
-    _block('rollback', 'rollback waiting', check_rollback_waiting, run=lambda: legacy('--rollback-only')),
-    _block('account-menu', 'account menu', check_account_menu, run=lambda: legacy('--account-menu-only')),
-    _block('list-loading', 'list loading', check_list_loading, run=lambda: legacy('--list-loading-only')),
-    _block('project-flows', 'project flows', check_project_flows, run=lambda: legacy('--project-flows-only')),
+    _block('reproduce', 'failed check reproduction', check_reproduce),
+    _block('management-agents', 'management agents', check_management_agents),
+    _block('management-delay-probe', 'management delay probe', check_management_delay_probe),
+    _block('management-layout', 'management layout', check_management_layout),
+    _block('troubleshooter', 'troubleshooter', check_troubleshooter),
+    _block('global-agent-orders', 'global Agent role orders', check_global_agent_orders),
+    _block('self-restart-banner', 'self restart banner', check_self_restart_banner),
+    _block('issue-table', 'Issue table', check_issue_table),
+    _block('list-spacing', 'List spacing', check_list_spacing),
+    _block('new-issue-dependencies', 'new issue dependencies', check_new_issue_dependencies),
+    _block('task-alignment', 'Task button alignment', check_task_action_alignment),
+    # 아래는 옛 전체 흐름에 없던(옛 옵션으로만 돌던) 블록이다.
+    _block('confirm', 'confirm dialog', source='block_confirm', run=lambda: block_confirm()),
+    _block('queue-limit', 'queue limit', check_queue_limit),
+    _block('trends', 'Trend', check_trends),
+    _block('trend-stages', 'Trend stages', check_trend_stages),
+    _block('issue-summary', 'Issue summary', check_issue_summary),
+    _block('project-navigation', 'project navigation', check_project_navigation, before=_projects_page),
+    _block('initialization', 'project initialization', check_project_initialization),
+    _block('new-issue-fields', 'new issue fields', check_new_issue_fields),
+    _block('register-repair', 'register repair', check_register_repair),
+    _block('manual-merge', 'manual merge', check_manual_merge),
+    _block('restart', 'app restart UI', check_project_restart),
 ]
 BLOCK_INDEX = {b[0]: b for b in BLOCKS}
+# 옛 묶음 블록 이름 → 지금 블록들(DEV-231 블록 표의 겹치던 묶음).
+ALIASES = {
+    'suggestions-regression': ['suggestions', 'regression-numbers'],
+    'manual-actions': ['board-actions'],
+    'global-auto': ['auto-master', 'auto-settings', 'global-agent-orders', 'publication', 'board-actions'],
+    'fonts': ['font-settings', 'settings-navigation'],
+    'project-genres': ['initialization'],
+    'project-wizard': ['project-row', 'project-flows', 'initialization'],
+    'project-registration': ['project-row', 'project-navigation', 'project-flows', 'project-documents', 'usage', 'audits', 'initialization'],
+    'management-projects': ['project-row', 'project-documents', 'usage', 'audits'],
+    'management': ['project-row', 'management-layout', 'management-agents', 'settings-navigation', 'auto-settings', 'project-documents', 'usage', 'audits'],
+    'detail-side': ['sticky-tabbar', 'new-issue-fields'],
+    'chat-connections': ['management-agents'],   # check_management_agents가 check_chat_connections를 부른다
+}
+# 옛 `--<이름>-only` 옵션 중 이름이 블록 id·묶음 이름과 다른 것.
+FLAGS = {'--management-delay-probe': ['management-delay-probe'], '--auto-master-only': ['auto-master', 'auto-settings']}
+
+
+def expand(names):
+    """블록 id·묶음 이름 목록을 겹치지 않는 블록 id 목록으로(처음 나온 순서)."""
+    out = []
+    for name in names:
+        for b in ALIASES.get(name, [name]):
+            if b not in out:
+                out.append(b)
+    return out
 
 
 def block_lines():
@@ -5989,21 +6031,56 @@ def block_lines():
     return {n.name: [n.lineno, n.end_lineno] for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
 
 
-if '--list-blocks' in sys.argv:
+if '--list-blocks' in sys.argv:   # 서버(test_runner.list_blocks)가 읽는 모양 — [{"id","title","lines"}]
     lines = block_lines()
-    print(json.dumps([{'id': i, 'title': t, 'lines': lines[s]} for i, t, s, _ in BLOCKS], ensure_ascii=False)); sys.exit(0)
+    print(json.dumps([{'id': i, 'title': t, 'lines': lines[s]} for i, t, s, _ in BLOCKS])); sys.exit(0)   # ASCII JSON — 콘솔 인코딩과 무관하게 서버가 UTF-8로 읽는다
+if '--list-aliases' in sys.argv:   # 옛 묶음 이름·옛 옵션 → 블록 목록(재현 R16·옛 선택 기록 호환)
+    print(json.dumps({'aliases': ALIASES, 'flags': {**{f'--{k}-only': [k] for k in BLOCK_INDEX},
+                                                    **{f'--{k}-only': v for k, v in ALIASES.items()}, **FLAGS}})); sys.exit(0)
 ONLY = [x for x in (sys.argv[sys.argv.index('--only') + 1] if '--only' in sys.argv[:-1] else '').split(',') if x]
-if '--only' in sys.argv and (not ONLY or any(x not in BLOCK_INDEX for x in ONLY)):
-    sys.exit('모르는 블록이에요: ' + ','.join(x for x in ONLY if x not in BLOCK_INDEX) + ' (python tests/test_ui.py --list-blocks)')
+if '--only' in sys.argv and (not ONLY or any(x not in BLOCK_INDEX and x not in ALIASES for x in ONLY)):
+    sys.exit('모르는 블록이에요: ' + ','.join(x for x in ONLY if x not in BLOCK_INDEX and x not in ALIASES) + ' (python tests/test_ui.py --list-blocks)')
+for flag in sys.argv[1:]:   # 옛 단일 검사 옵션
+    if flag in FLAGS or flag.startswith('--') and flag.endswith('-only') and (flag[2:-5] in BLOCK_INDEX or flag[2:-5] in ALIASES):
+        ONLY = FLAGS.get(flag) or [flag[2:-5]]
+        break
+else:
+    if any(a.startswith('--') and a.endswith('-only') and a != '--only' for a in sys.argv[1:]):
+        sys.exit('모르는 옵션이에요: ' + ' '.join(sys.argv[1:]) + ' (python tests/test_ui.py --list-blocks)')
+ONLY = expand(ONLY)
+if '--resolve' in sys.argv:   # 인자가 어떤 블록으로 풀리는지만 보인다(브라우저 없이, ASCII JSON)
+    print(json.dumps(ONLY or [b[0] for b in BLOCKS])); sys.exit(0)
+
+
+def snapshot_db():
+    """첫 로그인 직후의 테스트 서버 DB를 메모리에 떠 둔다(블록마다 이 상태에서 시작한다)."""
+    import sqlite3
+    global DB_BASELINE
+    DB_BASELINE = sqlite3.connect(':memory:')
+    with sqlite3.connect(tmp / 'data' / 'dev.db', timeout=30) as live:
+        live.backup(DB_BASELINE)
+
+
+def restore_db():
+    """테스트 서버 DB를 로그인 직후 상태로 되돌린다 — SQLite 백업 API라 서버의 짧은 연결과 잠금을 지킨다."""
+    import sqlite3
+    live = sqlite3.connect(tmp / 'data' / 'dev.db', timeout=30)
+    try:
+        DB_BASELINE.backup(live)
+    finally:
+        live.close()
 
 
 def reset_between_blocks():
-    """블록 사이에 남는 상태(답·뷰포트·테마·화면)를 로그인 직후처럼 되돌린다."""
+    """블록 사이에 남는 상태(DB·답·가로채기·뷰포트·테마·화면 설정)를 로그인 직후처럼 되돌린다."""
     answers.clear(); asked.clear()
-    page.unroute('**/*')
+    page.unroute_all(behavior='ignoreErrors')   # 블록이 남긴 가짜 응답(page.route)을 패턴과 관계없이 모두 걷는다
+    page.context.unroute_all(behavior='ignoreErrors')
+    restore_db()
     page.emulate_media(color_scheme='light'); page.set_viewport_size({'width': 1300, 'height': 850})
-    page.evaluate("localStorage.removeItem('dev.theme')")
-    page.goto(BASE + '/#/'); page.reload(); page.wait_for_selector('#shell:not([hidden])')
+    page.evaluate("localStorage.clear(); sessionStorage.clear()")   # 앞 블록이 남긴 화면 설정(테마·프로젝트·기간 등)
+    # 로그인 직후처럼 해시 없는 주소에 둔다 — 블록이 `/#/`로 가면 hashchange로 화면을 새로 그린다(같은 주소면 다시 그리지 않는다)
+    page.goto(BASE + '/'); page.reload(); page.wait_for_selector('#shell:not([hidden])')
 
 
 tmp = Path(tempfile.mkdtemp())
@@ -6014,6 +6091,7 @@ env = child_environment(tmp, ns_port, dev_port)
 procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "fake_ns:app", "--port", str(ns_port)], cwd=tmp, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
          subprocess.Popen([sys.executable, str(tmp / "capture_app.py"), str(ROOT / "server"), str(ns_port), str(dev_port)], cwd=tmp, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)]
 BASE = f"http://127.0.0.1:{dev_port}"
+H = {"X-Requested-With": "dev"}   # 요청 머리 — 옛 전체 흐름의 H를 쓰던 검사 함수(check_edit_saving 등)용
 shots = ROOT / "tests" / "shots"; shots.mkdir(exist_ok=True)
 try:
     wait_port(ns_port); wait_port(dev_port)
@@ -6028,17 +6106,25 @@ try:
             a = answers.pop(0) if answers else "모바일도 확인해 주세요"
             d.dismiss() if a is None else d.accept(a) if d.type == "prompt" else d.accept()
         page.on("dialog", on_dialog)
-        page.goto(BASE)
-        page.wait_for_selector("#login-form")
-        check_login_screen(page, shots)
-        assert page.locator('#open-jupyter').get_attribute('hidden') is not None
-        page.fill("#login-username", "admin"); page.fill("#login-password", "nope"); page.click("#login-form button")
-        page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
-        assert page.locator('#login-error').is_visible()
-        assert page.locator('#login-error').bounding_box()['y'] > page.locator('#login-form button').bounding_box()['y']
-        page.screenshot(path=str(shots / 'login_error_light_1300.png'), full_page=True)
-        page.fill("#login-password", "pw"); page.click("#login-form button")
-        page.wait_for_selector("#shell:not([hidden])")
+        def block_login(again=False):
+            """로그인 화면 구조·틀린 비밀번호 안내·로그인. again이면 먼저 로그아웃한다(로그아웃 뒤 Jupyter 링크 숨김 포함)."""
+            if again:
+                page.goto(BASE + '/#/'); page.wait_for_selector('#shell:not([hidden])')
+                page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
+            else:
+                page.goto(BASE)
+            page.wait_for_selector("#login-form")
+            check_login_screen(page, shots)
+            assert page.locator('#open-jupyter').get_attribute('hidden') is not None
+            page.fill("#login-username", "admin"); page.fill("#login-password", "nope"); page.click("#login-form button")
+            page.wait_for_function("document.getElementById('login-error').textContent.includes('올바르지')")
+            assert page.locator('#login-error').is_visible()
+            assert page.locator('#login-error').bounding_box()['y'] > page.locator('#login-form button').bounding_box()['y']
+            page.screenshot(path=str(shots / 'login_error_light_1300.png'), full_page=True)
+            page.fill("#login-password", "pw"); page.click("#login-form button")
+            page.wait_for_selector("#shell:not([hidden])")
+        block_login()
+        snapshot_db()
         # 기존 화면 흐름 검사는 문구와 취소 응답을 기록한다. 모달 자체는 --confirm-only에서 검사한다.
         def confirm_answer(message, options):
             asked.append(message + '\n' + options.get('description', '') + '\n' + options.get('summary', '') + '\n' + options.get('body', '') + '\n' + '\n'.join(x.get('ref', '') + ' ' + x.get('title', '') for x in options.get('items', [])))
@@ -6141,1049 +6227,697 @@ try:
             assert not errs, errs
             page.evaluate("() => { window.confirmDialog = (message, options = {}) => window.testConfirmAnswer(message, options); }")
             print('OK: confirm dialog')
-        if ONLY:
-            for n, block_id in enumerate(ONLY):
-                if n:
-                    reset_between_blocks()
-                try:
-                    BLOCK_INDEX[block_id][3]()
-                except SystemExit as e:   # 옛 블록 함수가 sys.exit(0)으로 끝나는 경우
-                    if e.code not in (0, None):
-                        raise
-                assert not errs, (block_id, errs)
-                print(f'OK: block:{block_id}', flush=True)
-            sys.exit(0)
-        if '--confirm-only' in sys.argv:
-            block_confirm(); sys.exit(0)
-        if '--login-only' in sys.argv:
-            assert not errs, errs
-            print('OK: login screen and authentication'); sys.exit(0)
-        if '--nav-shortcut-only' in sys.argv:
-            check_nav_shortcuts(page, shots)
-            assert not errs, errs
-            print('OK: nav shortcuts'); sys.exit(0)
-        if '--delegate-confirm-only' in sys.argv:
-            check_delegate_confirm(page, shots)
-            assert not errs, errs
-            print('OK: delegate confirm'); sys.exit(0)
-        if '--complete-summary-only' in sys.argv:
-            check_complete_summary(page, shots)
-            assert not errs, errs
-            print('OK: complete summary'); sys.exit(0)
-        if '--decision-layout-only' in sys.argv:
-            check_decision_layout(page, shots)
-            assert not errs, errs
-            print('OK: decision layout'); sys.exit(0)
-        if '--task-alignment-only' in sys.argv:
-            check_task_action_alignment(page, shots)
-            assert not errs, errs
-            print('OK: Task button alignment'); sys.exit(0)
-        if '--result-attach-only' in sys.argv:
-            check_result_attach(page, shots)
-            assert not errs, errs
-            print('OK: result attach'); sys.exit(0)
-        if '--queue-limit-only' in sys.argv:
-            check_queue_limit(page, shots)
-            assert not errs, errs
-            print('OK: queue limit'); sys.exit(0)
-        if '--test-jobs-only' in sys.argv:
-            check_test_jobs(page, shots)
-            assert not errs, errs
-            print('OK: test jobs'); sys.exit(0)
-        if '--queue-edges-only' in sys.argv:
-            check_queue_edges(page, shots)
-            assert not errs, errs
-            print('OK: queue edges'); sys.exit(0)
-        if '--self-restart-banner-only' in sys.argv:
-            check_self_restart_banner(page, shots)
-            assert not errs, errs
-            print('OK: self restart banner'); sys.exit(0)
-        if '--list-spacing-only' in sys.argv:
-            check_list_spacing(page, shots)
-            assert not errs, errs
-            print('OK: List spacing'); sys.exit(0)
-        if '--issue-table-only' in sys.argv:
-            check_issue_table(page, shots)
-            assert not errs, errs
-            print('OK: Issue table'); sys.exit(0)
-        if '--suggestions-regression-only' in sys.argv:
-            check_suggestions(page, shots)
-            check_regression_numbers(page, shots)
-            assert not errs, errs
-            print('OK: suggestions and regression numbers'); sys.exit(0)
-        if '--suggestions-only' in sys.argv:
-            check_suggestions(page, shots)
-            assert not errs, errs
-            print('OK: suggestions'); sys.exit(0)
-        if '--trends-only' in sys.argv:
-            check_trends(page)
-            assert not errs, errs
-            print('OK: Trend'); sys.exit(0)
-        if '--trend-issues-only' in sys.argv:
-            check_trend_issues(page, shots)
-            assert not errs, errs
-            print('OK: Trend issues'); sys.exit(0)
-        if '--trend-stages-only' in sys.argv:
-            check_trend_stages(page, shots)
-            assert not errs, errs
-            print('OK: Trend stages'); sys.exit(0)
-        if '--issue-summary-only' in sys.argv:
-            check_issue_summary(page)
-            assert not errs, errs
-            print('OK: Issue summary'); sys.exit(0)
-        if '--rating-only' in sys.argv:
-            check_rating(page, shots)
-            assert not errs, errs
-            print('OK: Rating'); sys.exit(0)
-        if '--manual-usage-only' in sys.argv:
-            check_manual_usage(page, shots)
-            assert not errs, errs
-            print('OK: Manual usage'); sys.exit(0)
-        if '--progress-clock-only' in sys.argv:
-            check_progress_clock(page, shots)
-            assert not errs, errs
-            print('OK: Progress clock'); sys.exit(0)
-        if '--issue-tokens-only' in sys.argv:
-            check_issue_tokens(page, shots)
-            assert not errs, errs
-            print('OK: Issue tokens'); sys.exit(0)
-        if '--auto-master-only' in sys.argv:
-            check_auto_master(page)
-            check_auto_settings(page, shots)
-            assert not errs, errs
-            print('OK: Auto master and related settings'); sys.exit(0)
-        if '--settings-navigation-only' in sys.argv:
-            check_settings_navigation(page, shots)
-            assert not errs, errs
-            print('OK: Settings navigation'); sys.exit(0)
-        if '--global-agent-orders-only' in sys.argv:
-            check_global_agent_orders(page, shots)
-            assert not errs, errs
-            print('OK: global Agent role orders'); sys.exit(0)
-        if '--publication-only' in sys.argv:
-            check_published_notice(page, shots)
-            assert not errs, errs
-            print('OK: publication notices'); sys.exit(0)
-        if '--manual-actions-only' in sys.argv:
-            check_board_actions(page, shots, answers, asked)
-            assert not errs, errs
-            print('OK: manual actions'); sys.exit(0)
-        if '--global-auto-only' in sys.argv:
-            check_auto_master(page)
-            check_auto_settings(page, shots)
-            check_global_agent_orders(page, shots)
-            check_published_notice(page, shots)
-            check_board_actions(page, shots, answers, asked)
-            assert not errs, errs
-            print('OK: global auto settings, publication and manual actions'); sys.exit(0)
-        if '--free-port-only' in sys.argv:
-            check_free_port(page, shots)
-            assert not errs, errs
-            print('OK: free port'); sys.exit(0)
-        if '--service-diagnostic-only' in sys.argv:
+        def block_new_without_project():
+            """프로젝트가 하나도 없으면 New issue가 프로젝트부터 만들라고 안내한다."""
+            _drop_projects()
+            page.reload(); page.wait_for_selector('#shell:not([hidden])')
+            page.goto(BASE + "/#/new")
+            page.wait_for_selector("text=먼저")
+
+        def block_service_diagnostic():
+            """서비스 진단 — 진단 뒤에도 NS 프로젝트를 새로 만들어 첫 Issue를 발행할 수 있다."""
             check_service_diagnostic(page, shots)
-            # 진단 검사 뒤 기존 NS 새 Issue 흐름의 프로젝트와 번호를 유지한다.
+            _drop_projects('NS')
             assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
                                      data={'key': 'NS', 'name': 'nightshift'}).ok
             page.reload(); page.wait_for_selector('#shell:not([hidden])')
             page.goto(BASE + '/#/new'); page.wait_for_selector('#n-title')
-            assert page.input_value('#n-project') == 'NS'
+            page.select_option('#n-project', 'NS')
             page.fill('#n-title', '진단 검사 후 새 Issue')
             page.click('#new-form button[type=submit]')
             page.wait_for_selector("h1#title:text('진단 검사 후 새 Issue')")
             assert page.url.endswith('#/issue/NS-1')
-            assert not errs, errs
-            print('OK: service diagnostic'); sys.exit(0)
-        if '--fonts-only' in sys.argv:
-            check_font_settings(page, shots)
-            check_settings_navigation(page, shots)
-            assert not errs, errs
-            print('OK: fonts and Settings navigation'); sys.exit(0)
-        if '--project-genres-only' in sys.argv:
-            check_project_initialization(page, shots)
-            assert not errs, errs
-            print('OK: project genres'); sys.exit(0)
-        if '--project-wizard-only' in sys.argv:
-            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
-            check_project_row(page, shots)
-            check_project_flows(page, shots, answers, asked)
-            check_project_initialization(page, shots)
-            assert not errs, errs
-            print('OK: project wizard'); sys.exit(0)
-        if '--project-registration-only' in sys.argv:
-            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
-            check_project_row(page, shots)
-            check_project_navigation(page)
-            check_project_flows(page, shots, answers, asked)
-            check_project_documents(page, shots, answers, asked)
-            check_project_usage(page, shots)
+            _drop_projects('NS')
+
+        def block_audits():
+            """프로젝트 점검 — 점검 뒤에도 NS 프로젝트를 새로 만들어 첫 Issue를 발행할 수 있다."""
             check_project_audits(page, shots)
-            check_project_initialization(page, shots)
-            assert not errs, errs
-            print('OK: project registration'); sys.exit(0)
-        if '--project-documents-only' in sys.argv:
-            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
-            check_project_documents(page, shots, answers, asked)
-            assert not errs, errs
-            print('OK: project documents'); sys.exit(0)
-        if '--harness-only' in sys.argv:
-            check_harness(page, shots)
-            assert not errs, errs
-            print('OK: harness'); sys.exit(0)
-        if '--management-agents-only' in sys.argv:
-            check_management_agents(page, shots)
-            assert not errs, errs
-            print('OK: management agents'); sys.exit(0)
-        if '--management-delay-probe' in sys.argv:
-            check_management_delay_probe(page)
-            assert not errs, errs
-            sys.exit(0)
-        if '--management-layout-only' in sys.argv:
-            check_management_layout(page, shots)
-            assert not errs, errs
-            print('OK: management layout'); sys.exit(0)
-        if '--management-projects-only' in sys.argv:
-            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
-            check_project_row(page, shots)
-            check_project_documents(page, shots, answers, asked)
-            check_project_usage(page, shots)
-            check_project_audits(page, shots)
-            assert not errs, errs
-            print('OK: management projects'); sys.exit(0)
-        if '--management-only' in sys.argv:
-            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
-            check_project_row(page, shots)
-            check_management_layout(page, shots)
-            check_management_agents(page, shots)
-            check_settings_navigation(page, shots)
-            check_auto_settings(page, shots)
-            page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
-            check_project_documents(page, shots, answers, asked)
-            check_project_usage(page, shots)
-            check_project_audits(page, shots)
-            assert not errs, errs
-            print('OK: management UI'); sys.exit(0)
-        if '--new-issue-fields-only' in sys.argv:
-            check_new_issue_fields(page)
-            assert not errs, errs
-            print('OK: new issue fields'); sys.exit(0)
-        if '--new-issue-dependencies-only' in sys.argv:
-            check_new_issue_dependencies(page, shots)
-            assert not errs, errs
-            print('OK: new issue dependencies'); sys.exit(0)
-        if '--chat-connections-only' in sys.argv:
-            check_chat_connections(page, shots)
-            assert not errs, errs
-            print('OK: chat connections'); sys.exit(0)
-        if '--jobs-scroll-only' in sys.argv:
-            check_jobs_list_scroll(page, shots)
-            assert not errs, errs
-            print('OK: jobs list scroll'); sys.exit(0)
-        if '--list-sort-only' in sys.argv:
-            check_list_sort(page, shots)
-            assert not errs, errs
-            print('OK: list sort'); sys.exit(0)
-        if '--initialization-only' in sys.argv:
-            check_project_initialization(page, shots)
-            assert not errs, errs
-            print('OK: project initialization'); sys.exit(0)
-        if '--usage-only' in sys.argv:
-            check_project_usage(page, shots)
-            assert not errs, errs
-            print('OK: project usage'); sys.exit(0)
-        if '--reproduce-only' in sys.argv:
-            check_reproduce(page, shots)
-            assert not errs, errs
-            print('OK: failed check reproduction'); sys.exit(0)
-        if '--register-repair-only' in sys.argv:
-            check_register_repair(page, shots)
-            assert not errs, errs
-            sys.exit(0)
-        if '--manual-merge-only' in sys.argv:
-            check_manual_merge(page, shots, answers, asked)
-            assert not errs, errs
-            sys.exit(0)
-        if '--troubleshooter-only' in sys.argv:
-            check_troubleshooter(page, shots)
-            assert not errs, errs
-            sys.exit(0)
-        if '--restart-only' in sys.argv:
-            check_project_restart(page, shots)
-            assert not errs, errs
-            print('OK: app restart UI'); sys.exit(0)
-        if '--audits-only' in sys.argv:
-            check_project_audits(page, shots)
-            # 전체 흐름에서 점검 검사 다음에 생성하는 첫 NS Issue의 프로젝트·번호를 유지한다.
+            _drop_projects('NS')
             assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'},
                                      data={'key': 'NS', 'name': '점검 이후 발행 검사'}).ok
             page.reload(); page.wait_for_selector('[data-project-link="NS"]')
             page.goto(BASE + '/#/new'); page.wait_for_selector('#new-form')
-            assert page.input_value('#n-project') == 'NS'
+            page.select_option('#n-project', 'NS')
             page.fill('#n-title', '점검 이후 첫 Issue')
             page.click('#new-form button[type=submit]')
             page.wait_for_selector('h1#title:text("점검 이후 첫 Issue")')
             assert page.url.endswith('#/issue/NS-1')
-            assert not errs, errs
-            print('OK: project audits'); sys.exit(0)
-        if '--fab-only' in sys.argv:
-            check_fab(page, alignment_only=True)
-            assert not errs, errs
-            print('OK: fab'); sys.exit(0)
-        if '--page-gutter-only' in sys.argv:
-            check_page_gutter(page, shots)
-            assert not errs, errs
-            print('OK: page gutter'); sys.exit(0)
-        if '--regression-numbers-only' in sys.argv:
-            check_regression_numbers(page, shots)
-            assert not errs, errs
-            print('OK: regression numbers'); sys.exit(0)
-        if '--composer-chain-only' in sys.argv:
-            check_composer_chain(page, shots)
-            assert not errs, errs
-            print('OK: composer chain'); sys.exit(0)
-        if '--composer-close-only' in sys.argv:
-            check_composer_close(page, shots)
-            assert not errs, errs
-            print('OK: composer close'); sys.exit(0)
-        if '--attachments-only' in sys.argv:
-            check_attachments(page, shots)
-            assert not errs, errs
-            print('OK: attachments'); sys.exit(0)
-        if '--new-attachment-images-only' in sys.argv:
-            check_new_attachment_images(page, shots)
-            assert not errs, errs
-            print('OK: new attachment images'); sys.exit(0)
-        if '--composer-images-only' in sys.argv:
-            check_composer_images(page, shots)
-            assert not errs, errs
-            print('OK: composer images'); sys.exit(0)
-        if '--progress-only' in sys.argv:
-            check_progress_refresh(page, shots)
-            assert not errs, errs
-            print('OK: progress refresh'); sys.exit(0)
-        if '--progress-note-only' in sys.argv:
-            check_progress_note(page, shots)
-            assert not errs, errs
-            print('OK: progress note'); sys.exit(0)
-        if '--qa-start-only' in sys.argv:
-            check_qa_start(page, shots)
-            assert not errs, errs
-            print('OK: QA start'); sys.exit(0)
-        if '--board-actions-only' in sys.argv:
-            check_board_actions(page, shots, answers, asked)
-            assert not errs, errs
-            print('OK: board actions'); sys.exit(0)
-        check_qa_start(page, shots)
-        check_account_menu(page, shots)
-        check_settings_navigation(page, shots)
-        page.goto(BASE + '/#/'); page.wait_for_selector('#list-body[aria-busy="false"]')
-        if '--detail-side-only' in sys.argv:
-            check_sticky_tabbar(page, shots)
-            check_new_issue_fields(page)
-            assert not errs, errs
-            print('OK: detail side'); sys.exit(0)
-        if '--issue-types-only' in sys.argv:
-            check_issue_types(page, shots)
-            assert not errs, errs
-            print('OK: issue types')
-            sys.exit(0)
-        if '--edit-saving-only' in sys.argv or '--rollback-only' in sys.argv:
-            H = {'X-Requested-With': 'dev'}
-            page.wait_for_selector('#list-body[aria-busy="false"]')
+            _drop_projects('NS')
+
+        def _previous_issue():
+            """편집 저장·롤백 블록의 준비 — 이 블록만의 NS 프로젝트와 이전 화면 이슈를 만들어 연다."""
+            _drop_projects('NS')
+            _list_page()
             assert page.request.post(BASE + '/api/projects', data={'key': 'NS', 'name': '저장 검사'}, headers=H).ok
             previous = page.request.post(BASE + '/api/issues', data={'project': 'NS', 'title': '이전 화면'}, headers=H).json()['ref']
             page.goto(BASE + f'/#/issue/{previous}')
             page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim() === ref", arg=previous)
-            if '--rollback-only' in sys.argv:
-                check_rollback_waiting(page, shots)
-            else:
-                check_edit_saving(page, shots)
-            assert not errs, errs
-            print('OK: edit saving')
-            sys.exit(0)
-        if '--account-menu-only' in sys.argv:
-            assert not errs, errs
-            print('OK: account menu')
-            sys.exit(0)
-        if '--project-flows-only' not in sys.argv:
-            check_jobs_list_scroll(page, shots)
-            check_list_sort(page, shots)
-            page.evaluate('loadList()')
-            check_list_loading(page, shots)
-        if '--list-loading-only' in sys.argv:
-            assert not errs, errs
-            print('OK: list loading')
-            sys.exit(0)
 
-        # 프로젝트 없이 New issue → 안내
-        page.goto(BASE + "/#/new")
-        page.wait_for_selector("text=먼저")
-        page.goto(BASE + "/#/projects")
-        if len(sys.argv) == 1:
-            check_font_settings(page, shots)
-        check_project_row(page, shots)
-        check_project_flows(page, shots, answers, asked)
-        check_project_documents(page, shots, answers, asked)
-        check_project_usage(page, shots)
-        check_free_port(page, shots)
-        check_service_diagnostic(page, shots)
-        check_project_audits(page, shots)
-        check_suggestions(page, shots)
-        check_auto_master(page)
-        check_auto_settings(page, shots)
-        check_regression_numbers(page, shots)
-        check_delegate_confirm(page, shots)
-        check_complete_summary(page, shots)
-        check_decision_layout(page, shots)
-        check_attachments(page, shots)
-        check_new_attachment_images(page, shots)
-        check_composer_images(page, shots)
-        check_nav_shortcuts(page, shots)
-        check_composer_chain(page, shots)
-        check_composer_close(page, shots)
-        check_queue_edges(page, shots)
-        check_test_jobs(page, shots)
-        check_published_notice(page, shots)
-        check_board_actions(page, shots, answers, asked)
-        check_harness(page, shots)
-        check_page_gutter(page, shots)
-        check_trend_issues(page, shots)
-        page.goto(BASE + '/#/projects'); page.wait_for_selector('.projects-page')
-        if '--project-flows-only' in sys.argv:
-            assert not errs, errs
-            print('OK: project flows')
-            sys.exit(0)
-        open_project_creation(page)
-        page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button[type=submit]")
-        page.wait_for_selector("td.ref:text('NS')")
-        assert page.get_attribute("#p-path", "placeholder").startswith("C:\\Users\\")
-        assert page.locator('[data-edit], #project-create').count() == 0
-        assert page.locator('#project-dialog').is_hidden()
-        link = page.locator('[data-project-link="NS"]')
-        assert link.get_attribute('href') == '#/projects?project=NS&tab=manage'
-        link.focus(); page.keyboard.press('Enter')
-        page.wait_for_selector('#p-key:disabled')
-        assert page.locator('.projects-table, .project-create-row').count() == 0
-        assert page.is_disabled("#p-key") and page.input_value("#p-name") == "nightshift"
-        page.fill("#p-path", r"C:\Users\Simon Lomebrote\Projects\nightshift")
-        page.click("#project-form button[type=submit]")
-        page.wait_for_function("document.querySelector('#p-path').value.includes('nightshift') && !document.querySelector('#project-form').hasAttribute('aria-busy')")
-        assert page.is_disabled("#p-key")   # 저장 후에도 현재 프로젝트 관리 범위를 유지한다.
-        # Description 자동 작성 — POST 요청, 저장 안 한 변경이면 확인 창, 결과 문구·Issue 링크(모의 응답)
-        desc_posts = []
-        page.route("**/api/projects/NS/description/request", lambda route: (desc_posts.append(route.request.method), route.fulfill(
-            status=200, content_type="application/json", body=json.dumps({"ref": "NS-99", "provider": "codex", "reused": False}))))
-        page.click("#p-description-request")
-        page.wait_for_selector("#p-description-status a[href='#/issue/NS-99']")
-        assert desc_posts == ["POST"] and "선택된 에이전트: Codex" in page.inner_text("#p-description-status")
-        page.fill("#p-description", "저장 안 한 설명")
-        asked.clear(); answers[:] = [None]  # 전역 on_dialog가 첫 확인 창을 취소한다.
-        page.click("#p-description-request")
-        page.wait_for_function("() => !document.querySelector('#p-description-request').disabled")
-        assert len(asked) == 1 and "저장하지 않은 설명" in asked[0] and desc_posts == ["POST"]
-        with page.expect_response("**/api/projects/NS/description/request"):
+        def block_edit_saving():
+            """편집 저장 — 이전 화면 이슈에서 시작한다."""
+            _previous_issue()
+            check_edit_saving(page, shots)
+            _drop_projects('NS')
+
+        def block_rollback():
+            """롤백 대기 — 이전 화면 이슈에서 시작한다."""
+            _previous_issue()
+            check_rollback_waiting(page, shots)
+            _drop_projects('NS')
+
+        def block_board_flow():
+            """NS·DEV 이슈 흐름 — 프로젝트 등록·계획서·Task·목록·칸반·Agent·테마·완료·대기열·실행 맡기기.
+            앞 단계가 만든 이슈 번호(NS-1·DEV-4-1)와 대기열 상태를 뒤 단계가 이어 쓰므로 한 블록이다. NS·DEV를 지우고 시작한다."""
+            _drop_projects('NS', 'DEV')
+            page.reload(); page.wait_for_selector('#shell:not([hidden])')
+            _projects_page()
+            open_project_creation(page)
+            page.fill("#p-key", "NS"); page.fill("#p-name", "nightshift"); page.click("#project-form button[type=submit]")
+            page.wait_for_selector("td.ref:text('NS')")
+            assert page.get_attribute("#p-path", "placeholder").startswith("C:\\Users\\")
+            assert page.locator('[data-edit], #project-create').count() == 0
+            assert page.locator('#project-dialog').is_hidden()
+            link = page.locator('[data-project-link="NS"]')
+            assert link.get_attribute('href') == '#/projects?project=NS&tab=manage'
+            link.focus(); page.keyboard.press('Enter')
+            page.wait_for_selector('#p-key:disabled')
+            assert page.locator('.projects-table, .project-create-row').count() == 0
+            assert page.is_disabled("#p-key") and page.input_value("#p-name") == "nightshift"
+            page.fill("#p-path", r"C:\Users\Simon Lomebrote\Projects\nightshift")
+            page.click("#project-form button[type=submit]")
+            page.wait_for_function("document.querySelector('#p-path').value.includes('nightshift') && !document.querySelector('#project-form').hasAttribute('aria-busy')")
+            assert page.is_disabled("#p-key")   # 저장 후에도 현재 프로젝트 관리 범위를 유지한다.
+            # Description 자동 작성 — POST 요청, 저장 안 한 변경이면 확인 창, 결과 문구·Issue 링크(모의 응답)
+            desc_posts = []
+            page.route("**/api/projects/NS/description/request", lambda route: (desc_posts.append(route.request.method), route.fulfill(
+                status=200, content_type="application/json", body=json.dumps({"ref": "NS-99", "provider": "codex", "reused": False}))))
             page.click("#p-description-request")
-        assert len(asked) == 2 and desc_posts == ["POST", "POST"]
-        page.unroute("**/api/projects/NS/description/request")
-        page.click("#p-cancel")
-        page.check('[data-archive="NS"]')
-        page.wait_for_function("projects.find(p => p.key === 'NS').archived")
-        page.wait_for_selector('[data-archive="NS"]:checked')
-        page.uncheck('[data-archive="NS"]')
-        page.wait_for_function("!projects.find(p => p.key === 'NS').archived")
-        page.wait_for_selector('#project-dialog', state='attached')
-        assert page.locator('#project-dialog').is_hidden()
-        assert page.locator('#project-dialog[open]').count() == 0
+            page.wait_for_selector("#p-description-status a[href='#/issue/NS-99']")
+            assert desc_posts == ["POST"] and "선택된 에이전트: Codex" in page.inner_text("#p-description-status")
+            page.fill("#p-description", "저장 안 한 설명")
+            asked.clear(); answers[:] = [None]  # 전역 on_dialog가 첫 확인 창을 취소한다.
+            page.click("#p-description-request")
+            page.wait_for_function("() => !document.querySelector('#p-description-request').disabled")
+            assert len(asked) == 1 and "저장하지 않은 설명" in asked[0] and desc_posts == ["POST"]
+            with page.expect_response("**/api/projects/NS/description/request"):
+                page.click("#p-description-request")
+            assert len(asked) == 2 and desc_posts == ["POST", "POST"]
+            page.unroute("**/api/projects/NS/description/request")
+            page.click("#p-cancel")
+            page.check('[data-archive="NS"]')
+            page.wait_for_function("projects.find(p => p.key === 'NS').archived")
+            page.wait_for_selector('[data-archive="NS"]:checked')
+            page.uncheck('[data-archive="NS"]')
+            page.wait_for_function("!projects.find(p => p.key === 'NS').archived")
+            page.wait_for_selector('#project-dialog', state='attached')
+            assert page.locator('#project-dialog').is_hidden()
+            assert page.locator('#project-dialog[open]').count() == 0
 
-        page.goto(BASE + "/#/new")
-        page.select_option("#n-project", "NS")  # 앞 검사가 만든 프로젝트와 무관하게 NS-1을 만든다.
-        page.fill("#n-title", "보드 카드 복사")
-        page.fill("#n-body", "## 요구\n- 우클릭 메뉴\n- `Ctrl+C`\n\n<script>alert(1)</script> NS-1 참고")
-        assert page.locator('#n-priority').is_hidden()
-        assert page.input_value('#n-priority') == 'none'
-        page.fill("#n-labels", "board, ui")
-        page.click("#new-form button[type=submit]")
-        page.wait_for_selector("h1#title:text('보드 카드 복사')")
-        assert page.url.endswith("#/issue/NS-1")
-        body_html = page.inner_html("#body")
-        assert "<h2>요구</h2>" in body_html and "<code>Ctrl+C</code>" in body_html and "<script>" not in body_html and "&lt;script&gt;" in body_html
+            page.goto(BASE + "/#/new")
+            page.select_option("#n-project", "NS")  # 앞 검사가 만든 프로젝트와 무관하게 NS-1을 만든다.
+            page.fill("#n-title", "보드 카드 복사")
+            page.fill("#n-body", "## 요구\n- 우클릭 메뉴\n- `Ctrl+C`\n\n<script>alert(1)</script> NS-1 참고")
+            assert page.locator('#n-priority').is_hidden()
+            assert page.input_value('#n-priority') == 'none'
+            page.fill("#n-labels", "board, ui")
+            page.click("#new-form button[type=submit]")
+            page.wait_for_selector("h1#title:text('보드 카드 복사')")
+            assert page.url.endswith("#/issue/NS-1")
+            body_html = page.inner_html("#body")
+            assert "<h2>요구</h2>" in body_html and "<code>Ctrl+C</code>" in body_html and "<script>" not in body_html and "&lt;script&gt;" in body_html
 
-        # 계획서 쓰기 → v1, 댓글, 상태
-        page.click("#edit-plan"); page.fill("#plan textarea", "1. 메뉴\n2. 붙여넣기"); page.click("#plan .save")
-        page.wait_for_selector("text=v1")
-        page.fill("#comment", "시작할게요"); page.click("#send-comment")
-        page.wait_for_selector(".timeline >> text=시작할게요")
-        page.select_option("#status", "in_review")
-        page.wait_for_selector("#approve")
-        assert page.locator('#result').count() == 1
-        assert page.locator('#result').evaluate("e => e.closest('.panel').previousElementSibling.querySelector('h2').textContent.startsWith('Plan')")
-        page.click("#request-changes")
-        page.click("#result-send"); page.wait_for_timeout(200)   # 메모 없이는 안 보낸다
-        assert page.evaluate("document.getElementById('status').value") == "in_review"
-        page.fill("#result-note", "모바일도 확인해 주세요"); page.click("#result-send")
-        page.wait_for_function("document.getElementById('status').value === 'changes_requested'")
-        assert "모바일도 확인해 주세요" in page.inner_text(".timeline")
-        page.screenshot(path=str(shots / "issue.png"), full_page=True)
+            # 계획서 쓰기 → v1, 댓글, 상태
+            page.click("#edit-plan"); page.fill("#plan textarea", "1. 메뉴\n2. 붙여넣기"); page.click("#plan .save")
+            page.wait_for_selector("text=v1")
+            page.fill("#comment", "시작할게요"); page.click("#send-comment")
+            page.wait_for_selector(".timeline >> text=시작할게요")
+            page.select_option("#status", "in_review")
+            page.wait_for_selector("#approve")
+            assert page.locator('#result').count() == 1
+            assert page.locator('#result').evaluate("e => e.closest('.panel').previousElementSibling.querySelector('h2').textContent.startsWith('Plan')")
+            page.click("#request-changes")
+            page.click("#result-send"); page.wait_for_timeout(200)   # 메모 없이는 안 보낸다
+            assert page.evaluate("document.getElementById('status').value") == "in_review"
+            page.fill("#result-note", "모바일도 확인해 주세요"); page.click("#result-send")
+            page.wait_for_function("document.getElementById('status').value === 'changes_requested'")
+            assert "모바일도 확인해 주세요" in page.inner_text(".timeline")
+            page.screenshot(path=str(shots / "issue.png"), full_page=True)
 
-        # 하위 Task
-        page.click("text=Task 추가")
-        page.fill("#n-title", "Task: 메뉴 UI"); page.click("#new-form button[type=submit]")
-        page.wait_for_selector("text=Task of")
-        assert page.url.endswith("#/issue/NS-1-1")
+            # 하위 Task
+            page.click("text=Task 추가")
+            page.fill("#n-title", "Task: 메뉴 UI"); page.click("#new-form button[type=submit]")
+            page.wait_for_selector("text=Task of")
+            assert page.url.endswith("#/issue/NS-1-1")
 
-        # 목록 — 기본은 열린 것만, 검색
-        page.goto(BASE + "/#/")
-        page.wait_for_selector("tr.row")
-        assert page.locator("tr.row").count() == 2
-        page.fill("#q", "메뉴 UI"); page.wait_for_function("document.querySelectorAll('tr.row').length === 1")
-        page.fill("#q", ""); page.wait_for_function("document.querySelectorAll('tr.row').length === 2")
-        page.screenshot(path=str(shots / "list.png"))
+            # 목록 — 기본은 열린 것만, 검색
+            page.goto(BASE + "/#/")
+            page.wait_for_selector("tr.row")
+            assert page.locator("tr.row").count() == 2
+            page.fill("#q", "메뉴 UI"); page.wait_for_function("document.querySelectorAll('tr.row').length === 1")
+            page.fill("#q", ""); page.wait_for_function("document.querySelectorAll('tr.row').length === 2")
+            page.screenshot(path=str(shots / "list.png"))
 
-        # Task는 부모 바로 아래에 들여써서 붙고, 접으면 숨고, 새로고침해도 기억한다
-        kids = lambda: page.evaluate("[...document.querySelectorAll('tr.row')].map(r => r.dataset.ref + (r.hidden ? ':hidden' : ''))")
-        assert kids() == ["NS-1", "NS-1-1"], kids()   # 부모 다음에 자식
-        assert page.locator('tr.row[data-ref="NS-1-1"]').get_attribute("class").split() == ["row", "child"]
-        assert page.text_content('tr.row[data-ref="NS-1"] .kids') == "Tasks 1"
-        page.click('tr.row[data-ref="NS-1"] .tog')
-        assert "NS-1-1:hidden" in kids() and page.get_attribute('tr.row[data-ref="NS-1"] .tog', "aria-expanded") == "false"
-        assert page.url.endswith("#/") or page.url.endswith("/")   # 토글은 상세로 이동하지 않는다
-        page.reload(); page.wait_for_selector("tr.row"); page.wait_for_selector(".tog")
-        assert "NS-1-1:hidden" in kids()
-        page.screenshot(path=str(shots / "list_collapsed.png"))
-        page.click('tr.row[data-ref="NS-1"] .tog')
-        assert "NS-1-1" in kids() and page.get_attribute('tr.row[data-ref="NS-1"] .tog', "aria-expanded") == "true"
-        for scheme in ("light", "dark"):
-            for w, h, tag in ((1300, 700, "desktop"), (390, 700, "mobile")):
-                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h}); page.wait_for_timeout(300)
-                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
-                page.screenshot(path=str(shots / f"list_tree_{scheme}_{tag}.png"))
-        page.emulate_media(color_scheme="light"); page.set_viewport_size({"width": 1300, "height": 850})
+            # Task는 부모 바로 아래에 들여써서 붙고, 접으면 숨고, 새로고침해도 기억한다
+            kids = lambda: page.evaluate("[...document.querySelectorAll('tr.row')].map(r => r.dataset.ref + (r.hidden ? ':hidden' : ''))")
+            assert kids() == ["NS-1", "NS-1-1"], kids()   # 부모 다음에 자식
+            assert page.locator('tr.row[data-ref="NS-1-1"]').get_attribute("class").split() == ["row", "child"]
+            assert page.text_content('tr.row[data-ref="NS-1"] .kids') == "Tasks 1"
+            page.click('tr.row[data-ref="NS-1"] .tog')
+            assert "NS-1-1:hidden" in kids() and page.get_attribute('tr.row[data-ref="NS-1"] .tog', "aria-expanded") == "false"
+            assert page.url.endswith("#/") or page.url.endswith("/")   # 토글은 상세로 이동하지 않는다
+            page.reload(); page.wait_for_selector("tr.row"); page.wait_for_selector(".tog")
+            assert "NS-1-1:hidden" in kids()
+            page.screenshot(path=str(shots / "list_collapsed.png"))
+            page.click('tr.row[data-ref="NS-1"] .tog')
+            assert "NS-1-1" in kids() and page.get_attribute('tr.row[data-ref="NS-1"] .tog', "aria-expanded") == "true"
+            for scheme in ("light", "dark"):
+                for w, h, tag in ((1300, 700, "desktop"), (390, 700, "mobile")):
+                    page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h}); page.wait_for_timeout(300)
+                    assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                    page.screenshot(path=str(shots / f"list_tree_{scheme}_{tag}.png"))
+            page.emulate_media(color_scheme="light"); page.set_viewport_size({"width": 1300, "height": 850})
 
-        # 칸반 — 끌어서 상태 바꾸기
-        page.goto(BASE + "/#/board")
-        page.wait_for_selector('.card[data-ref="NS-1-1"]')
-        # 대기열 열(DEV-92)에 가려 in_progress 열은 왼쪽 끝만 보인다(main 최대 1320px) — 보이는 왼쪽 끝에 놓는다
-        page.drag_and_drop('.card[data-ref="NS-1-1"]', '.col[data-col="in_progress"] .cards', target_position={"x": 20, "y": 20})
-        page.wait_for_selector('.col[data-col="in_progress"] .card[data-ref="NS-1-1"]')
-        page.screenshot(path=str(shots / "board.png"))
-        check_board_pan(page, shots)
+            # 칸반 — 끌어서 상태 바꾸기
+            page.goto(BASE + "/#/board")
+            page.wait_for_selector('.card[data-ref="NS-1-1"]')
+            # 대기열 열(DEV-92)에 가려 in_progress 열은 왼쪽 끝만 보인다(main 최대 1320px) — 보이는 왼쪽 끝에 놓는다
+            page.drag_and_drop('.card[data-ref="NS-1-1"]', '.col[data-col="in_progress"] .cards', target_position={"x": 20, "y": 20})
+            page.wait_for_selector('.col[data-col="in_progress"] .card[data-ref="NS-1-1"]')
+            page.screenshot(path=str(shots / "board.png"))
+            check_board_pan(page, shots)
 
-        # 에이전트 — 키는 한 번만
-        page.click("[data-nav=agents]")
-        page.wait_for_selector("#a-vendor option", state="attached")   # option은 visible로 잡히지 않는다
-        page.select_option("#a-vendor", "openai")   # Vendor를 고르면 Model 목록이 그 vendor 것으로 바뀐다
-        assert "gpt-6.1-sol" in page.eval_on_selector_all("#a-model option", "os => os.map(o => o.value)")
-        page.select_option("#a-vendor", "anthropic")
-        models = page.eval_on_selector_all("#a-model option", "os => os.map(o => o.value)")
-        assert "claude-opus-5-5" in models and "gpt-6.1-sol" not in models, models
-        page.fill("#a-name", "claude"); page.select_option("#a-model", "claude-opus-5-5")
-        page.click("#agent-form button")
-        page.wait_for_selector(".keybox code")
-        key = page.inner_text("#key")
-        assert key.startswith("dev_")
-        page.click("[data-nav=issues]"); page.click("[data-nav=agents]")
-        page.wait_for_selector("select[data-model]")
-        assert page.eval_on_selector("select[data-model]", "s => s.value") == "claude-opus-5-5"
-        assert page.locator(".keybox").count() == 0 and key not in page.content()
-        # 목록 밖 Agent는 "목록 밖"으로 보이고 드롭다운으로 다시 고르면 목록 안으로 들어간다
-        r = page.request.post(f"{BASE}/api/agents", data={"name": "legacy", "model": "free-text"}, headers={"X-Requested-With": "dev"})
-        assert r.ok, r.text()
-        lid = r.json()["agent"]["id"]
-        page.click("[data-nav=issues]"); page.click("[data-nav=agents]")
-        page.wait_for_selector(f'tr[data-agent="{lid}"] .off-catalog')
-        assert "free-text (목록 밖)" in page.inner_text(f'select[data-model="{lid}"]')
-        page.select_option(f'select[data-vendor="{lid}"]', "openai")
-        page.select_option(f'select[data-model="{lid}"]', "gpt-6-luna")
-        page.wait_for_function(f'!document.querySelector(\'tr[data-agent="{lid}"] .off-catalog\') && document.querySelector(\'select[data-model="{lid}"]\')?.value === "gpt-6-luna"')
-        page.screenshot(path=str(shots / "agents.png"))
+            # 에이전트 — 키는 한 번만
+            page.click("[data-nav=agents]")
+            page.wait_for_selector("#a-vendor option", state="attached")   # option은 visible로 잡히지 않는다
+            page.select_option("#a-vendor", "openai")   # Vendor를 고르면 Model 목록이 그 vendor 것으로 바뀐다
+            assert "gpt-6.1-sol" in page.eval_on_selector_all("#a-model option", "os => os.map(o => o.value)")
+            page.select_option("#a-vendor", "anthropic")
+            models = page.eval_on_selector_all("#a-model option", "os => os.map(o => o.value)")
+            assert "claude-opus-5-5" in models and "gpt-6.1-sol" not in models, models
+            page.fill("#a-name", "claude"); page.select_option("#a-model", "claude-opus-5-5")
+            page.click("#agent-form button")
+            page.wait_for_selector(".keybox code")
+            key = page.inner_text("#key")
+            assert key.startswith("dev_")
+            page.click("[data-nav=issues]"); page.click("[data-nav=agents]")
+            page.wait_for_selector("select[data-model]")
+            assert page.eval_on_selector("select[data-model]", "s => s.value") == "claude-opus-5-5"
+            assert page.locator(".keybox").count() == 0 and key not in page.content()
+            # 목록 밖 Agent는 "목록 밖"으로 보이고 드롭다운으로 다시 고르면 목록 안으로 들어간다
+            r = page.request.post(f"{BASE}/api/agents", data={"name": "legacy", "model": "free-text"}, headers={"X-Requested-With": "dev"})
+            assert r.ok, r.text()
+            lid = r.json()["agent"]["id"]
+            page.click("[data-nav=issues]"); page.click("[data-nav=agents]")
+            page.wait_for_selector(f'tr[data-agent="{lid}"] .off-catalog')
+            assert "free-text (목록 밖)" in page.inner_text(f'select[data-model="{lid}"]')
+            page.select_option(f'select[data-vendor="{lid}"]', "openai")
+            page.select_option(f'select[data-model="{lid}"]', "gpt-6-luna")
+            page.wait_for_function(f'!document.querySelector(\'tr[data-agent="{lid}"] .off-catalog\') && document.querySelector(\'select[data-model="{lid}"]\')?.value === "gpt-6-luna"')
+            page.screenshot(path=str(shots / "agents.png"))
 
-        # 설정 우선순위 — 추가한 Agent가 역할 카드 끝에 생기고, 순서를 바꾸면 provider 순서도 맞춰진다
-        # AUTOB는 check_auto_settings가 지웠으니 이 검사만의 프로젝트를 만든다
-        assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'}, data={'key': 'PRIO', 'name': 'PRIO'}).ok
-        page.goto(BASE + "/#/settings"); page.reload(); page.wait_for_selector('#project-filter option[value="PRIO"]', state='attached')
-        page.select_option('#project-filter', 'PRIO')
-        page.wait_for_selector('#provider-order li')
-        rows = page.locator('#provider-order li span').all_inner_texts()
-        assert rows[-2:] == ['claude · anthropic · claude-opus-5-5', 'legacy · openai · gpt-6-luna'], rows
-        assert page.locator('#description-order li span').all_inner_texts() == rows
-        for i in range(len(rows) - 1, 0, -1):
-            page.click(f'#provider-order [data-move="{i}"][data-direction="-1"]')
-            page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'false'")
-        assert page.locator('#provider-order li span').first.inner_text() == 'legacy · openai · gpt-6-luna'
-        saved = page.request.get(BASE + '/api/projects/PRIO/auto-settings').json()
-        assert saved['provider_order'] == ['codex', 'claude'] and saved['description_provider_order'] == ['claude', 'codex'], saved
-        page.reload(); page.wait_for_selector('#provider-order li')
-        assert page.locator('#provider-order li span').first.inner_text() == 'legacy · openai · gpt-6-luna'
-        assert page.request.delete(BASE + '/api/projects/PRIO', headers={'X-Requested-With': 'dev'}).ok
-        page.evaluate("localStorage.removeItem('dev.project')")
+            # 설정 우선순위 — 추가한 Agent가 역할 카드 끝에 생기고, 순서를 바꾸면 provider 순서도 맞춰진다
+            # AUTOB는 check_auto_settings가 지웠으니 이 검사만의 프로젝트를 만든다
+            assert page.request.post(BASE + '/api/projects', headers={'X-Requested-With': 'dev'}, data={'key': 'PRIO', 'name': 'PRIO'}).ok
+            page.goto(BASE + "/#/settings"); page.reload(); page.wait_for_selector('#project-filter option[value="PRIO"]', state='attached')
+            page.select_option('#project-filter', 'PRIO')
+            page.wait_for_selector('#provider-order li')
+            rows = page.locator('#provider-order li span').all_inner_texts()
+            assert rows[-2:] == ['claude · anthropic · claude-opus-5-5', 'legacy · openai · gpt-6-luna'], rows
+            assert page.locator('#description-order li span').all_inner_texts() == rows
+            for i in range(len(rows) - 1, 0, -1):
+                page.click(f'#provider-order [data-move="{i}"][data-direction="-1"]')
+                page.wait_for_function("document.querySelector('#settings-body').getAttribute('aria-busy') === 'false'")
+            assert page.locator('#provider-order li span').first.inner_text() == 'legacy · openai · gpt-6-luna'
+            saved = page.request.get(BASE + '/api/projects/PRIO/auto-settings').json()
+            assert saved['provider_order'] == ['codex', 'claude'] and saved['description_provider_order'] == ['claude', 'codex'], saved
+            page.reload(); page.wait_for_selector('#provider-order li')
+            assert page.locator('#provider-order li span').first.inner_text() == 'legacy · openai · gpt-6-luna'
+            assert page.request.delete(BASE + '/api/projects/PRIO', headers={'X-Requested-With': 'dev'}).ok
+            page.evaluate("localStorage.removeItem('dev.project')")
 
-        # 에이전트가 API로 계획서를 올리면 상세에 모델과 함께 보인다
-        r = page.request.post(f"{BASE}/api/issues/NS-1/plans", data={"body": "v2 by agent"}, headers={"Authorization": f"Bearer {key}"})
-        assert r.ok, r.text()
-        page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("text=v2 by agent")
-        assert "claude-opus-5-5" in page.inner_text(".timeline")
+            # 에이전트가 API로 계획서를 올리면 상세에 모델과 함께 보인다
+            r = page.request.post(f"{BASE}/api/issues/NS-1/plans", data={"body": "v2 by agent"}, headers={"Authorization": f"Bearer {key}"})
+            assert r.ok, r.text()
+            page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("text=v2 by agent")
+            assert "claude-opus-5-5" in page.inner_text(".timeline")
 
-        # 모바일 폭
-        page.set_viewport_size({"width": 390, "height": 800})
-        page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("h1#title")
-        assert page.evaluate("document.documentElement.scrollWidth") <= 391
-        page.screenshot(path=str(shots / "issue_mobile.png"), full_page=True)
+            # 모바일 폭
+            page.set_viewport_size({"width": 390, "height": 800})
+            page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("h1#title")
+            assert page.evaluate("document.documentElement.scrollWidth") <= 391
+            page.screenshot(path=str(shots / "issue_mobile.png"), full_page=True)
 
-        # 밤/낮 — nightshift처럼 두 상태: 고른 적 없으면 운영체제를 따르고, 누르면 반대로 고정, 새로고침해도 유지
-        bg = lambda: page.evaluate("getComputedStyle(document.body).backgroundColor")
-        theme = lambda: page.evaluate("document.documentElement.dataset.theme || 'auto'")
-        icon = lambda: page.get_attribute("#theme use", "href")
-        page.set_viewport_size({"width": 1300, "height": 850})
-        page.evaluate("localStorage.removeItem('dev.theme')"); page.reload(); page.wait_for_selector("h1#title")
-        page.emulate_media(color_scheme="light")
-        assert theme() == "auto" and icon() == "#i-moon"
-        light_bg = bg()
-        page.emulate_media(color_scheme="dark")
-        page.wait_for_function("document.querySelector('#theme use').getAttribute('href') === '#i-sun'", timeout=3000)
-        assert theme() == "auto"   # 운영체제를 따라 아이콘도
-        dark_bg = bg(); assert dark_bg != light_bg
-        page.click("#theme"); assert theme() == "light" and bg() == light_bg and icon() == "#i-moon"   # 밤이던 화면을 낮으로 고정
-        page.reload(); page.wait_for_selector("h1#title")
-        assert theme() == "light" and bg() == light_bg
-        page.click("#theme"); assert theme() == "dark" and bg() == dark_bg and icon() == "#i-sun"
-        page.emulate_media(color_scheme="light"); page.wait_for_timeout(400)
-        page.screenshot(path=str(shots / "theme_dark.png"))
-        page.click("#theme"); page.wait_for_timeout(400)
+            # 밤/낮 — nightshift처럼 두 상태: 고른 적 없으면 운영체제를 따르고, 누르면 반대로 고정, 새로고침해도 유지
+            bg = lambda: page.evaluate("getComputedStyle(document.body).backgroundColor")
+            theme = lambda: page.evaluate("document.documentElement.dataset.theme || 'auto'")
+            icon = lambda: page.get_attribute("#theme use", "href")
+            page.set_viewport_size({"width": 1300, "height": 850})
+            page.evaluate("localStorage.removeItem('dev.theme')"); page.reload(); page.wait_for_selector("h1#title")
+            page.emulate_media(color_scheme="light")
+            assert theme() == "auto" and icon() == "#i-moon"
+            light_bg = bg()
+            page.emulate_media(color_scheme="dark")
+            page.wait_for_function("document.querySelector('#theme use').getAttribute('href') === '#i-sun'", timeout=3000)
+            assert theme() == "auto"   # 운영체제를 따라 아이콘도
+            dark_bg = bg(); assert dark_bg != light_bg
+            page.click("#theme"); assert theme() == "light" and bg() == light_bg and icon() == "#i-moon"   # 밤이던 화면을 낮으로 고정
+            page.reload(); page.wait_for_selector("h1#title")
+            assert theme() == "light" and bg() == light_bg
+            page.click("#theme"); assert theme() == "dark" and bg() == dark_bg and icon() == "#i-sun"
+            page.emulate_media(color_scheme="light"); page.wait_for_timeout(400)
+            page.screenshot(path=str(shots / "theme_dark.png"))
+            page.click("#theme"); page.wait_for_timeout(400)
 
-        # 헤더·탭 — 사용자 칩(이름·ADMIN), 탭 아이콘, 마우스를 올리면 제목이 펼쳐진다, 활성 탭 밑줄
-        assert page.inner_text("#user-chip-name") == "admin"
-        page.goto(BASE + "/#/"); page.wait_for_selector("tr.row")
-        assert page.get_attribute('[data-nav="issues"]', "class") == "tab-btn active"
-        label_w = lambda: page.evaluate("document.querySelector('[data-nav=projects] .tab-label').getBoundingClientRect().width")
-        assert label_w() < 1
-        page.hover('[data-nav="projects"]'); page.wait_for_timeout(400)
-        assert label_w() > 20
-        page.screenshot(path=str(shots / "header.png"), clip={"x": 0, "y": 0, "width": 1300, "height": 160})
-        # 사용자 칩 → 메뉴 → 바깥 누르면 닫힘
-        page.click("#user-chip"); assert page.is_visible("#user-menu")
-        assert page.get_attribute("#open-nightshift", "href").startswith("http")
-        page.screenshot(path=str(shots / "user_menu.png"), clip={"x": 900, "y": 0, "width": 400, "height": 200})
-        page.mouse.click(600, 500); assert not page.is_visible("#user-menu")
-        page.set_viewport_size({"width": 390, "height": 800}); page.wait_for_timeout(200)
-        page.screenshot(path=str(shots / "header_mobile.png"), clip={"x": 0, "y": 0, "width": 390, "height": 300})
-        assert page.evaluate("document.documentElement.scrollWidth") <= 391
+            # 헤더·탭 — 사용자 칩(이름·ADMIN), 탭 아이콘, 마우스를 올리면 제목이 펼쳐진다, 활성 탭 밑줄
+            assert page.inner_text("#user-chip-name") == "admin"
+            page.goto(BASE + "/#/"); page.wait_for_selector("tr.row")
+            assert page.get_attribute('[data-nav="issues"]', "class") == "tab-btn active"
+            label_w = lambda: page.evaluate("document.querySelector('[data-nav=projects] .tab-label').getBoundingClientRect().width")
+            assert label_w() < 1
+            page.hover('[data-nav="projects"]'); page.wait_for_timeout(400)
+            assert label_w() > 20
+            page.screenshot(path=str(shots / "header.png"), clip={"x": 0, "y": 0, "width": 1300, "height": 160})
+            # 사용자 칩 → 메뉴 → 바깥 누르면 닫힘
+            page.click("#user-chip"); assert page.is_visible("#user-menu")
+            assert page.get_attribute("#open-nightshift", "href").startswith("http")
+            page.screenshot(path=str(shots / "user_menu.png"), clip={"x": 900, "y": 0, "width": 400, "height": 200})
+            page.mouse.click(600, 500); assert not page.is_visible("#user-menu")
+            page.set_viewport_size({"width": 390, "height": 800}); page.wait_for_timeout(200)
+            page.screenshot(path=str(shots / "header_mobile.png"), clip={"x": 0, "y": 0, "width": 390, "height": 300})
+            assert page.evaluate("document.documentElement.scrollWidth") <= 391
 
-        # Approve → Done이면 목록으로 돌아간다(DEV-5), 상태 칸에서 Closed를 골라도
-        page.set_viewport_size({"width": 1300, "height": 850})
-        page.request.post(f"{BASE}/api/issues/NS-1-1/status", data={"status": "in_review"}, headers={"X-Requested-With": "dev"})
-        page.goto(BASE + "/#/issue/NS-1-1"); page.wait_for_selector("#approve")
-        # Task는 Activity(댓글 입력 포함) 바로 뒤에 Result를 한 번만 출력한다.
-        assert page.locator('#result').count() == 1
-        assert page.locator('.detail > div > .panel > h2').evaluate_all("es => es.map(e => e.firstChild.textContent.trim())") == ['Description', 'Plan', 'Tasks', 'Activity', 'Result']
-        assert page.locator('#result').evaluate("e => e.closest('.panel').previousElementSibling.contains(document.getElementById('comment'))")
-        for scheme in ('light', 'dark'):
-            page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
-            page.emulate_media(color_scheme=scheme)
-            for width, tag in ((1300, 'desktop'), (390, 'mobile')):
-                page.set_viewport_size({'width': width, 'height': 850})
-                page.locator('#comment').focus()
-                for target in ('#send-comment', '#approve', '#result-actions .complete-tree', '#request-changes', '#result-actions [data-to="closed"]'):
-                    page.keyboard.press('Tab')
-                    assert page.locator(target).evaluate('e => e === document.activeElement')
-                    box = page.locator(target).bounding_box()
-                    assert box and box['x'] >= 0 and box['x'] + box['width'] <= width + 1
-                assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
-                page.screenshot(path=str(shots / f'task_result_{scheme}_{tag}.png'), full_page=True)
-        page.set_viewport_size({'width': 1300, 'height': 850})
-        page.emulate_media(color_scheme='light')
-        page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
-        page.click("#approve")
-        page.wait_for_function("location.hash === '#/'")
-        assert "NS-1-1을(를) 끝냈어요" in page.inner_text("#toast")
-        page.wait_for_selector("tr.row")
-        assert "NS-1-1" not in page.inner_text("table.issues")   # 기본 목록은 끝난 것을 숨긴다
-        page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("#status")
-        # Closed는 사유를 묻는다(DEV-6) — 취소·빈칸이면 닫지 않고 원래 상태로
-        answers[:] = [None]
-        page.select_option("#status", "closed"); page.wait_for_timeout(300)
-        assert page.input_value("#status") == "changes_requested" and "사유가 없어서" in page.inner_text("#toast")
-        answers[:] = ["   "]
-        page.select_option("#status", "closed"); page.wait_for_timeout(300)
-        assert page.input_value("#status") == "changes_requested"
-        assert page.request.get(f"{BASE}/api/issues/NS-1").json()["status"] == "changes_requested"
-        answers[:] = ["NS-3과 중복"]
-        page.select_option("#status", "closed")
-        page.wait_for_function("location.hash === '#/'")
-        ev = page.request.get(f"{BASE}/api/issues/NS-1").json()["events"][-1]
-        assert ev["kind"] == "status" and ev["data"]["to"] == "closed" and ev["body"] == "NS-3과 중복", ev
-        # 종결 부모 아래 Task를 다시 열려면 부모를 먼저 연다.
-        reopened = page.request.post(f"{BASE}/api/issues/NS-1/status", data={"status": "on_hold"}, headers={"X-Requested-With": "dev"})
-        assert reopened.status == 200, reopened.text()
-        page.goto(BASE + "/#/issue/NS-1-1"); page.wait_for_selector("#status")
-        page.select_option("#status", "in_progress")   # 끝내는 게 아니면 그 자리에 머문다
-        page.wait_for_function("document.getElementById('status') && document.getElementById('status').value === 'in_progress'")
-        assert page.evaluate("location.hash") == "#/issue/NS-1-1"
-        # 검토 상태 외에는 Task Result를 표시하지 않는다.
-        for status in ('backlog', 'triage', 'waiting', 'in_progress', 'changes_requested', 'on_hold', 'done', 'closed'):
-            assert page.evaluate("s => resultHtml({status:s, parent_ref:'NS-1', children:[]})", status) == ''
-        assert page.locator('#result').count() == 0
-
-        # 목록 나눠 읽기(DEV-7) — 처음 50개, 끝까지 내리면 더 붙는다
-        for n in range(110):
-            page.request.post(f"{BASE}/api/issues", data={"project": "NS", "title": f"많은 이슈 {n}"}, headers={"X-Requested-With": "dev"})
-        page.goto(BASE + "/#/"); page.wait_for_selector("tr.row")
-        rows = lambda: page.locator("tr.row").count()
-        page.wait_for_timeout(500)
-        assert rows() == 50, rows()
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_function("document.querySelectorAll('tr.row').length === 100")
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_function("document.querySelectorAll('tr.row').length === 112")   # NS-1(on_hold) + NS-1-1(in_progress) + 110
-        refs = page.evaluate("[...document.querySelectorAll('tr.row')].map(r => r.dataset.ref)")
-        assert len(refs) == len(set(refs))
-        # 검색하면 처음부터, 검색 글칸 포커스 유지
-        page.fill("#q", "많은 이슈 10")
-        page.wait_for_function("document.querySelectorAll('tr.row').length === 11")   # 10, 100~109
-        assert page.evaluate("document.activeElement.id") == "q"
-        page.fill("#q", "")
-        page.wait_for_function("document.querySelectorAll('tr.row').length === 50")
-
-        # 제목 없이 본문만(DEV-8) — 만들어지고 "(제목 없음…)"으로 보인다
-        page.goto(BASE + "/#/new"); page.wait_for_selector("#n-body")
-        # 첫 커서는 Project, 제출 버튼은 [발행](DEV-87)
-        expect(page.locator('#n-project')).to_be_focused()
-        assert page.inner_text("#new-form button[type=submit]").strip() == "발행"
-        page.select_option("#n-project", "NS")  # 앞 검사가 만든 프로젝트와 무관하게 NS 이슈를 만든다.
-        page.fill("#n-body", "제목 없이 쓴 요구")
-        page.click("#new-form button[type=submit]")
-        page.wait_for_function("location.hash.startsWith('#/issue/NS-')")
-        assert "제목 없음" in page.inner_text("h1#title")
-
-        # Create를 연달아 두 번 눌러도 한 번만 저장(DEV-12)
-        page.goto(BASE + "/#/new"); page.wait_for_selector("#n-body")
-        page.select_option("#n-project", "NS")
-        page.fill("#n-title", "두 번 누르기 시험"); page.fill("#n-body", "본문")
-        page.evaluate("() => { const b = document.querySelector('#new-form button[type=submit]'); b.click(); b.click(); b.click(); }")
-        page.wait_for_function("location.hash.startsWith('#/issue/NS-')")
-        page.wait_for_timeout(500)
-        same = [i for i in page.request.get(f"{BASE}/api/issues?q=두 번 누르기 시험").json()["issues"]]
-        assert len(same) == 1, same
-
-        # Issues 화면의 프로젝트 필터(DEV-11) — 탭 줄 필터와 같이 움직인다
-        H = {"X-Requested-With": "dev"}
-        page.request.post(f"{BASE}/api/projects", data={"key": "DEV", "name": "dev"}, headers=H)
-        page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "dev 쪽 이슈"}, headers=H)
-        page.evaluate("loadProjects()"); page.goto(BASE + "/#/"); page.wait_for_selector("#list-project")
-        page.wait_for_selector("tr.row")
-        page.select_option("#list-project", "DEV")
-        page.wait_for_function("() => [...document.querySelectorAll('tr.row')].every(r => r.dataset.ref.startsWith('DEV-')) && document.querySelectorAll('tr.row').length === 1")
-        assert page.input_value("#project-filter") == "DEV"
-        page.select_option("#list-project", "")
-        page.wait_for_function("() => [...document.querySelectorAll('tr.row')].some(r => r.dataset.ref.startsWith('NS-'))")
-
-        # 계획서 결정(DEV-14) — 답 칸에 "정해야 할 것"이 인용되고, 조건부 승인 → 새 판이면 무효 표시 → 거절하면 닫혀 목록으로
-        ref = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결정 화면", "status": "triage"}, headers=H).json()["ref"]
-        page.request.post(f"{BASE}/api/issues/{ref}/plans", data={"body": "## 방향\n하나\n\n## 정해야 할 것\n1. 끌까 지울까(추천: 끄기)\n2. 제한 시간 15분?"}, headers=H)
-        page.goto(BASE + f"/#/issue/{ref}"); page.wait_for_selector("#decision-actions")
-        page.click("#decision-actions [data-verdict=approve_notes]")
-        note = page.input_value("#decision-note")
-        assert "> 1. 끌까 지울까(추천: 끄기)\n→ " in note and "2. 제한 시간 15분?" in note, note
-        page.screenshot(path=str(shots / "decision_form.png"), full_page=True)
-        page.fill("#decision-note", note + "끄기로")
-        page.click("#decision-send"); page.wait_for_selector(".decision-state .status")
-        assert "조건부 승인됨" in page.inner_text(".decision-state") and "끄기로" in page.inner_text(".decision-state")
-        assert page.locator(".decision-state blockquote").count() == 2   # 인용이 그대로 보이지 않고 인용 블록으로(DEV-18)
-        page.screenshot(path=str(shots / "decision_done.png"), full_page=True)
-        page.request.post(f"{BASE}/api/issues/{ref}/plans", data={"body": "v2"}, headers=H)
-        page.reload(); page.wait_for_selector("#decision-actions")   # 같은 주소로 goto하면 다시 그리지 않는다
-        assert "무효" in page.inner_text(".decision-state")
-        page.click("#decision-actions [data-verdict=reject]"); page.click("#decision-send")   # 메모 없이는 안 닫힌다
-        page.wait_for_timeout(300); assert page.evaluate("location.hash") == f"#/issue/{ref}"
-        page.fill("#decision-note", "필요 없어짐"); page.click("#decision-send")
-        page.wait_for_function("location.hash === '#/'")
-        assert page.request.get(f"{BASE}/api/issues/{ref}").json()["status"] == "closed"
-
-        # 목록의 승인 배지와 "승인된 것만" 필터(DEV-17)
-        ok = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "승인된 이슈"}, headers=H).json()["ref"]
-        page.request.post(f"{BASE}/api/issues/{ok}/plans", data={"body": "p"}, headers=H)
-        page.request.post(f"{BASE}/api/issues/{ok}/decision", data={"verdict": "approve", "plan_version": 1}, headers=H)
-        page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector("tr.row")
-        assert "승인됨" in page.inner_text(f'tr.row[data-ref="{ok}"]')
-        page.check("#only-approved")
-        page.wait_for_function("() => document.querySelectorAll('tr.row').length === 1")
-        assert page.get_attribute("tr.row", "data-ref") == ok
-        page.screenshot(path=str(shots / "list_approved.png"), full_page=True)
-        page.uncheck("#only-approved")
-
-        # 선행 Task 표시(DEV-21)
-        pr = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "선후 시험", "status": "triage"}, headers=H).json()["ref"]
-        page.request.post(f"{BASE}/api/issues/{pr}/plans", data={"body": "## Tasks\n1. 먼저\n2. 나중 | 선행: 1"}, headers=H)
-        page.request.post(f"{BASE}/api/issues/{pr}/decision", data={"verdict": "approve", "plan_version": 1}, headers=H)
-        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
-        # 승인된 부모도 변경된 요구사항으로 새 계획서 검토를 요청할 수 있다.
-        for scheme in ('light', 'dark'):
-            for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+            # Approve → Done이면 목록으로 돌아간다(DEV-5), 상태 칸에서 Closed를 골라도
+            page.set_viewport_size({"width": 1300, "height": 850})
+            page.request.post(f"{BASE}/api/issues/NS-1-1/status", data={"status": "in_review"}, headers={"X-Requested-With": "dev"})
+            page.goto(BASE + "/#/issue/NS-1-1"); page.wait_for_selector("#approve")
+            # Task는 Activity(댓글 입력 포함) 바로 뒤에 Result를 한 번만 출력한다.
+            assert page.locator('#result').count() == 1
+            assert page.locator('.detail > div > .panel > h2').evaluate_all("es => es.map(e => e.firstChild.textContent.trim())") == ['Description', 'Plan', 'Tasks', 'Activity', 'Result']
+            assert page.locator('#result').evaluate("e => e.closest('.panel').previousElementSibling.contains(document.getElementById('comment'))")
+            for scheme in ('light', 'dark'):
                 page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
-                page.set_viewport_size({'width': width, 'height': 850})
-                for selector in ('#ask-review', '#ask-codex-review'):
-                    assert page.locator(selector).is_visible() and page.locator(selector).is_enabled()
-                assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
-                page.screenshot(path=str(shots / f'approved_review_{scheme}_{tag}.png'), full_page=True)
-        page.set_viewport_size({'width': 1300, 'height': 850})
-        page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
-        row2 = page.locator("tr.row", has_text="나중")
-        assert "대기 · 선행:" in row2.inner_text()
-        page.screenshot(path=str(shots / "tasks_deps.png"), full_page=True)
-        row2.locator("a").click(); page.wait_for_function("() => document.querySelector('h1#title').innerText === '먼저'")
+                page.emulate_media(color_scheme=scheme)
+                for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+                    page.set_viewport_size({'width': width, 'height': 850})
+                    page.locator('#comment').focus()
+                    for target in ('#send-comment', '#approve', '#result-actions .complete-tree', '#request-changes', '#result-actions [data-to="closed"]'):
+                        page.keyboard.press('Tab')
+                        assert page.locator(target).evaluate('e => e === document.activeElement')
+                        box = page.locator(target).bounding_box()
+                        assert box and box['x'] >= 0 and box['x'] + box['width'] <= width + 1
+                    assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+                    page.screenshot(path=str(shots / f'task_result_{scheme}_{tag}.png'), full_page=True)
+            page.set_viewport_size({'width': 1300, 'height': 850})
+            page.emulate_media(color_scheme='light')
+            page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+            page.click("#approve")
+            page.wait_for_function("location.hash === '#/'")
+            assert "NS-1-1을(를) 끝냈어요" in page.inner_text("#toast")
+            page.wait_for_selector("tr.row")
+            assert "NS-1-1" not in page.inner_text("table.issues")   # 기본 목록은 끝난 것을 숨긴다
+            page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("#status")
+            # Closed는 사유를 묻는다(DEV-6) — 취소·빈칸이면 닫지 않고 원래 상태로
+            answers[:] = [None]
+            page.select_option("#status", "closed"); page.wait_for_timeout(300)
+            assert page.input_value("#status") == "changes_requested" and "사유가 없어서" in page.inner_text("#toast")
+            answers[:] = ["   "]
+            page.select_option("#status", "closed"); page.wait_for_timeout(300)
+            assert page.input_value("#status") == "changes_requested"
+            assert page.request.get(f"{BASE}/api/issues/NS-1").json()["status"] == "changes_requested"
+            answers[:] = ["NS-3과 중복"]
+            page.select_option("#status", "closed")
+            page.wait_for_function("location.hash === '#/'")
+            ev = page.request.get(f"{BASE}/api/issues/NS-1").json()["events"][-1]
+            assert ev["kind"] == "status" and ev["data"]["to"] == "closed" and ev["body"] == "NS-3과 중복", ev
+            # 종결 부모 아래 Task를 다시 열려면 부모를 먼저 연다.
+            reopened = page.request.post(f"{BASE}/api/issues/NS-1/status", data={"status": "on_hold"}, headers={"X-Requested-With": "dev"})
+            assert reopened.status == 200, reopened.text()
+            page.goto(BASE + "/#/issue/NS-1-1"); page.wait_for_selector("#status")
+            page.select_option("#status", "in_progress")   # 끝내는 게 아니면 그 자리에 머문다
+            page.wait_for_function("document.getElementById('status') && document.getElementById('status').value === 'in_progress'")
+            assert page.evaluate("location.hash") == "#/issue/NS-1-1"
+            # 검토 상태 외에는 Task Result를 표시하지 않는다.
+            for status in ('backlog', 'triage', 'waiting', 'in_progress', 'changes_requested', 'on_hold', 'done', 'closed'):
+                assert page.evaluate("s => resultHtml({status:s, parent_ref:'NS-1', children:[]})", status) == ''
+            assert page.locator('#result').count() == 0
 
-        # 실행 기록(DEV-29) — 이슈 화면 옆줄에 상태·시간·토큰·로그 파일
-        import sqlite3
-        db = sqlite3.connect(tmp / "data" / "dev.db")
-        iid = db.execute("SELECT id FROM issues WHERE title='선후 시험'").fetchone()[0]
-        db.executemany("INSERT INTO runs(issue_id, mode, status, actor, started_at, ended_at, exit_code, log_file, input_tokens, output_tokens, cost_usd, note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [
-            (iid, "review", "ok", "human:admin", "2026-09-30T12:00:00+00:00", "2026-09-30T12:03:20+00:00", 0, f"{pr}-20260930-120000.log", 18500, 2300, 0.42, ""),
-            (iid, "review", "failed", "human:admin", "2026-09-30T12:10:00+00:00", "2026-09-30T12:10:05+00:00", 3, f"{pr}-20260930-121000.log", None, None, None, ""),
-            (iid, "review", "orphaned", "human:admin", "2026-09-30T12:20:00+00:00", "2026-09-30T12:25:00+00:00", None, "", None, None, None, "서버가 다시 떠서 끊겼어요")])
-        db.commit(); db.close()
-        assert len(page.request.get(f"{BASE}/api/issues/{pr}/runs").json()["runs"]) == 3
-        assert "runs" not in page.request.get(f"{BASE}/api/issues/{pr}").json()
-        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector(".runs li")
-        txt = page.inner_text(".runs")
-        assert "끊김" in txt and "실패" in txt and "3분 20초" in txt and "토큰 18.5k → 2,300 · $0.42" in txt and "서버가 다시 떠서" in txt, txt
-        assert page.locator(".runs li").first.inner_text().startswith("끊김")   # 최근 것이 먼저
-        for scheme in ("light", "dark"):
-            for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
-                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h}); page.wait_for_timeout(300)
-                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
-                page.screenshot(path=str(shots / f"runs_{scheme}_{tag}.png"), full_page=True)
-        page.set_viewport_size({"width": 1300, "height": 850})
-        page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("text=아직 실행 기록이 없어요")
+            # 목록 나눠 읽기(DEV-7) — 처음 50개, 끝까지 내리면 더 붙는다
+            for n in range(110):
+                page.request.post(f"{BASE}/api/issues", data={"project": "NS", "title": f"많은 이슈 {n}"}, headers={"X-Requested-With": "dev"})
+            page.goto(BASE + "/#/"); page.wait_for_selector("tr.row")
+            rows = lambda: page.locator("tr.row").count()
+            page.wait_for_timeout(500)
+            assert rows() == 50, rows()
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_function("document.querySelectorAll('tr.row').length === 100")
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_function("document.querySelectorAll('tr.row').length === 112")   # NS-1(on_hold) + NS-1-1(in_progress) + 110
+            refs = page.evaluate("[...document.querySelectorAll('tr.row')].map(r => r.dataset.ref)")
+            assert len(refs) == len(set(refs))
+            # 검색하면 처음부터, 검색 글칸 포커스 유지
+            page.fill("#q", "많은 이슈 10")
+            page.wait_for_function("document.querySelectorAll('tr.row').length === 11")   # 10, 100~109
+            assert page.evaluate("document.activeElement.id") == "q"
+            page.fill("#q", "")
+            page.wait_for_function("document.querySelectorAll('tr.row').length === 50")
 
-        # Task 실행 맡기기(DEV-23·32) — 눌러서 실제로 돌리지는 않는다(claude 비용). 버튼 상태·이유·브랜치 요약만 본다.
-        gitrepo = tmp / "gitrepo"; gitrepo.mkdir()
-        g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=gitrepo, check=True, capture_output=True)
-        g("init", "-q", "-b", "main"); (gitrepo / "a.txt").write_text("a\n"); g("add", "."); g("commit", "-qm", "init")
-        g("checkout", "-q", "-b", "relay/DEV-4-1"); (gitrepo / "new_feature.py").write_text("x = 1\n"); g("add", "."); g("commit", "-qm", "feat (DEV-4-1)"); g("checkout", "-q", "main")
-        page.request.patch(f"{BASE}/api/projects/DEV", data={"local_path": str(gitrepo)}, headers=H)
-        t5, t6 = f"{BASE}/api/issues/DEV-4-1", f"{BASE}/api/issues/DEV-4-2"
-        assert page.request.get(t5).json()["execute"]["blocked"] is None and "DEV-4-1" in page.request.get(t6).json()["execute"]["blocked"]
-        assert page.request.get(f"{BASE}/api/issues/{pr}").json()["execute"] is None     # Task가 아니면 없음
-        for scheme in ("light", "dark"):
-            for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
-                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
-                page.goto(BASE + "/#/issue/DEV-4-1"); page.reload(); page.wait_for_selector("#ask-execute")
+            # 제목 없이 본문만(DEV-8) — 만들어지고 "(제목 없음…)"으로 보인다
+            page.goto(BASE + "/#/new"); page.wait_for_selector("#n-body")
+            # 첫 커서는 Project, 제출 버튼은 [발행](DEV-87)
+            expect(page.locator('#n-project')).to_be_focused()
+            assert page.inner_text("#new-form button[type=submit]").strip() == "발행"
+            page.select_option("#n-project", "NS")  # 앞 검사가 만든 프로젝트와 무관하게 NS 이슈를 만든다.
+            page.fill("#n-body", "제목 없이 쓴 요구")
+            page.click("#new-form button[type=submit]")
+            page.wait_for_function("location.hash.startsWith('#/issue/NS-')")
+            assert "제목 없음" in page.inner_text("h1#title")
+
+            # Create를 연달아 두 번 눌러도 한 번만 저장(DEV-12)
+            page.goto(BASE + "/#/new"); page.wait_for_selector("#n-body")
+            page.select_option("#n-project", "NS")
+            page.fill("#n-title", "두 번 누르기 시험"); page.fill("#n-body", "본문")
+            page.evaluate("() => { const b = document.querySelector('#new-form button[type=submit]'); b.click(); b.click(); b.click(); }")
+            page.wait_for_function("location.hash.startsWith('#/issue/NS-')")
+            page.wait_for_timeout(500)
+            same = [i for i in page.request.get(f"{BASE}/api/issues?q=두 번 누르기 시험").json()["issues"]]
+            assert len(same) == 1, same
+
+            # Issues 화면의 프로젝트 필터(DEV-11) — 탭 줄 필터와 같이 움직인다
+            H = {"X-Requested-With": "dev"}
+            page.request.post(f"{BASE}/api/projects", data={"key": "DEV", "name": "dev"}, headers=H)
+            page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "dev 쪽 이슈"}, headers=H)
+            page.evaluate("loadProjects()"); page.goto(BASE + "/#/"); page.wait_for_selector("#list-project")
+            page.wait_for_selector("tr.row")
+            page.select_option("#list-project", "DEV")
+            page.wait_for_function("() => [...document.querySelectorAll('tr.row')].every(r => r.dataset.ref.startsWith('DEV-')) && document.querySelectorAll('tr.row').length === 1")
+            assert page.input_value("#project-filter") == "DEV"
+            page.select_option("#list-project", "")
+            page.wait_for_function("() => [...document.querySelectorAll('tr.row')].some(r => r.dataset.ref.startsWith('NS-'))")
+
+            # 계획서 결정(DEV-14) — 답 칸에 "정해야 할 것"이 인용되고, 조건부 승인 → 새 판이면 무효 표시 → 거절하면 닫혀 목록으로
+            ref = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결정 화면", "status": "triage"}, headers=H).json()["ref"]
+            page.request.post(f"{BASE}/api/issues/{ref}/plans", data={"body": "## 방향\n하나\n\n## 정해야 할 것\n1. 끌까 지울까(추천: 끄기)\n2. 제한 시간 15분?"}, headers=H)
+            page.goto(BASE + f"/#/issue/{ref}"); page.wait_for_selector("#decision-actions")
+            page.click("#decision-actions [data-verdict=approve_notes]")
+            note = page.input_value("#decision-note")
+            assert "> 1. 끌까 지울까(추천: 끄기)\n→ " in note and "2. 제한 시간 15분?" in note, note
+            page.screenshot(path=str(shots / "decision_form.png"), full_page=True)
+            page.fill("#decision-note", note + "끄기로")
+            page.click("#decision-send"); page.wait_for_selector(".decision-state .status")
+            assert "조건부 승인됨" in page.inner_text(".decision-state") and "끄기로" in page.inner_text(".decision-state")
+            assert page.locator(".decision-state blockquote").count() == 2   # 인용이 그대로 보이지 않고 인용 블록으로(DEV-18)
+            page.screenshot(path=str(shots / "decision_done.png"), full_page=True)
+            page.request.post(f"{BASE}/api/issues/{ref}/plans", data={"body": "v2"}, headers=H)
+            page.reload(); page.wait_for_selector("#decision-actions")   # 같은 주소로 goto하면 다시 그리지 않는다
+            assert "무효" in page.inner_text(".decision-state")
+            page.click("#decision-actions [data-verdict=reject]"); page.click("#decision-send")   # 메모 없이는 안 닫힌다
+            page.wait_for_timeout(300); assert page.evaluate("location.hash") == f"#/issue/{ref}"
+            page.fill("#decision-note", "필요 없어짐"); page.click("#decision-send")
+            page.wait_for_function("location.hash === '#/'")
+            assert page.request.get(f"{BASE}/api/issues/{ref}").json()["status"] == "closed"
+
+            # 목록의 승인 배지와 "승인된 것만" 필터(DEV-17)
+            ok = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "승인된 이슈"}, headers=H).json()["ref"]
+            page.request.post(f"{BASE}/api/issues/{ok}/plans", data={"body": "p"}, headers=H)
+            page.request.post(f"{BASE}/api/issues/{ok}/decision", data={"verdict": "approve", "plan_version": 1}, headers=H)
+            page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector("tr.row")
+            assert "승인됨" in page.inner_text(f'tr.row[data-ref="{ok}"]')
+            page.check("#only-approved")
+            page.wait_for_function("() => document.querySelectorAll('tr.row').length === 1")
+            assert page.get_attribute("tr.row", "data-ref") == ok
+            page.screenshot(path=str(shots / "list_approved.png"), full_page=True)
+            page.uncheck("#only-approved")
+
+            # 선행 Task 표시(DEV-21)
+            pr = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "선후 시험", "status": "triage"}, headers=H).json()["ref"]
+            page.request.post(f"{BASE}/api/issues/{pr}/plans", data={"body": "## Tasks\n1. 먼저\n2. 나중 | 선행: 1"}, headers=H)
+            page.request.post(f"{BASE}/api/issues/{pr}/decision", data={"verdict": "approve", "plan_version": 1}, headers=H)
+            page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
+            # 승인된 부모도 변경된 요구사항으로 새 계획서 검토를 요청할 수 있다.
+            for scheme in ('light', 'dark'):
+                for width, tag in ((1300, 'desktop'), (390, 'mobile')):
+                    page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+                    page.set_viewport_size({'width': width, 'height': 850})
+                    for selector in ('#ask-review', '#ask-codex-review'):
+                        assert page.locator(selector).is_visible() and page.locator(selector).is_enabled()
+                    assert page.evaluate('document.documentElement.scrollWidth') <= width + 1
+                    page.screenshot(path=str(shots / f'approved_review_{scheme}_{tag}.png'), full_page=True)
+            page.set_viewport_size({'width': 1300, 'height': 850})
+            page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+            row2 = page.locator("tr.row", has_text="나중")
+            assert "대기 · 선행:" in row2.inner_text()
+            page.screenshot(path=str(shots / "tasks_deps.png"), full_page=True)
+            row2.locator("a").click(); page.wait_for_function("() => document.querySelector('h1#title').innerText === '먼저'")
+
+            # 실행 기록(DEV-29) — 이슈 화면 옆줄에 상태·시간·토큰·로그 파일
+            import sqlite3
+            db = sqlite3.connect(tmp / "data" / "dev.db")
+            iid = db.execute("SELECT id FROM issues WHERE title='선후 시험'").fetchone()[0]
+            db.executemany("INSERT INTO runs(issue_id, mode, status, actor, started_at, ended_at, exit_code, log_file, input_tokens, output_tokens, cost_usd, note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [
+                (iid, "review", "ok", "human:admin", "2026-09-30T12:00:00+00:00", "2026-09-30T12:03:20+00:00", 0, f"{pr}-20260930-120000.log", 18500, 2300, 0.42, ""),
+                (iid, "review", "failed", "human:admin", "2026-09-30T12:10:00+00:00", "2026-09-30T12:10:05+00:00", 3, f"{pr}-20260930-121000.log", None, None, None, ""),
+                (iid, "review", "orphaned", "human:admin", "2026-09-30T12:20:00+00:00", "2026-09-30T12:25:00+00:00", None, "", None, None, None, "서버가 다시 떠서 끊겼어요")])
+            db.commit(); db.close()
+            assert len(page.request.get(f"{BASE}/api/issues/{pr}/runs").json()["runs"]) == 3
+            assert "runs" not in page.request.get(f"{BASE}/api/issues/{pr}").json()
+            page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector(".runs li")
+            txt = page.inner_text(".runs")
+            assert "끊김" in txt and "실패" in txt and "3분 20초" in txt and "토큰 18.5k → 2,300 · $0.42" in txt and "서버가 다시 떠서" in txt, txt
+            assert page.locator(".runs li").first.inner_text().startswith("끊김")   # 최근 것이 먼저
+            for scheme in ("light", "dark"):
+                for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
+                    page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h}); page.wait_for_timeout(300)
+                    assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                    page.screenshot(path=str(shots / f"runs_{scheme}_{tag}.png"), full_page=True)
+            page.set_viewport_size({"width": 1300, "height": 850})
+            page.goto(BASE + "/#/issue/NS-1"); page.wait_for_selector("text=아직 실행 기록이 없어요")
+
+            # Task 실행 맡기기(DEV-23·32) — 눌러서 실제로 돌리지는 않는다(claude 비용). 버튼 상태·이유·브랜치 요약만 본다.
+            gitrepo = tmp / "gitrepo"; gitrepo.mkdir()
+            g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=gitrepo, check=True, capture_output=True)
+            g("init", "-q", "-b", "main"); (gitrepo / "a.txt").write_text("a\n"); g("add", "."); g("commit", "-qm", "init")
+            g("checkout", "-q", "-b", "relay/DEV-4-1"); (gitrepo / "new_feature.py").write_text("x = 1\n"); g("add", "."); g("commit", "-qm", "feat (DEV-4-1)"); g("checkout", "-q", "main")
+            page.request.patch(f"{BASE}/api/projects/DEV", data={"local_path": str(gitrepo)}, headers=H)
+            t5, t6 = f"{BASE}/api/issues/DEV-4-1", f"{BASE}/api/issues/DEV-4-2"
+            assert page.request.get(t5).json()["execute"]["blocked"] is None and "DEV-4-1" in page.request.get(t6).json()["execute"]["blocked"]
+            assert page.request.get(f"{BASE}/api/issues/{pr}").json()["execute"] is None     # Task가 아니면 없음
+            for scheme in ("light", "dark"):
+                for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
+                    page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
+                    page.goto(BASE + "/#/issue/DEV-4-1"); page.reload(); page.wait_for_selector("#ask-execute")
+                    page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)
+                    page.wait_for_timeout(300)
+                    # 비용·시간 안내는 버튼 툴팁으로 옮겼다(DEV-113)
+                    assert page.is_enabled("#ask-execute") and "비용 상한 $2" in page.get_attribute("#ask-execute", "title") and "비용 상한" not in page.inner_text(".exec")
+                    assert page.is_enabled("#ask-codex-execute") and page.get_attribute("#ask-codex-execute", "title") == "Codex: 시간 제한 30분 · 비용 상한 없음."
+                    assert [t.strip() for t in page.locator(".exec .agent-sub").all_inner_texts()] == ["실행", "병합"] and page.locator("#ask-review").count() == 0
+                    assert page.locator('#ask-execute .brand-icon use').get_attribute('href') == '#i-claude'
+                    assert page.locator('#ask-codex-execute .brand-icon use').get_attribute('href') == '#i-openai'
+                    txt = page.inner_text(".exec .branch"); assert "relay/DEV-4-1" in txt and "커밋 1개" in txt and "new_feature.py" in txt and "git merge" not in page.inner_text(".exec"), txt
+                    assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                    page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
+            page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
+            page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
+            check_execute_buttons(page, shots, answers)
+            page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
+            # 선행 대기는 눌러 둘 수 있다(DEV-43) — 줄에서 기다린다
+            assert page.is_enabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec") and "차례로" in page.inner_text(".exec")
+            page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review", state="attached"); assert page.locator("#ask-execute").count() == 0
+            assert page.locator(".side .agent-sub").all_inner_texts() == ["검토"] and "홈서버에서 검토만" in page.get_attribute("#ask-review", "title")
+            # 부모 화면에서 바로 실행(선행이 안 끝난 DEV-4-2도 눌러 두면 줄에 선다, 삭제는 아이콘 하나)
+            page.wait_for_selector("tr.row"); n = page.locator(".run-task").count(); assert n == 4, n
+            check_task_actions(page, pr, shots, answers, asked)
+            assert page.locator("#delete svg").count() == 1 and not page.text_content("#delete").strip()
+
+            # 대기열(DEV-43) — 진짜 claude를 돌리지 않게 같은 줄(DEV 실행)에 도는 run 하나를 심어 두고 줄을 DB에 직접 넣는다
+            db = sqlite3.connect(tmp / "data" / "dev.db")
+            i41, i42 = (page.request.get(u).json()["id"] for u in (t5, t6))
+            db.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'execute', 'running', 'human:admin', '2026-10-02T00:00:00+00:00')", (iid,))
+            db.executemany("INSERT INTO jobs(issue_id, mode, actor, status, note, created_at) VALUES(?, 'execute', 'human:admin', 'queued', ?, '2026-10-02T00:00:00+00:00')",
+                           [(i41, ""), (i42, "선행 Task(DEV-4-1)가 done이 되어야 해요.")])
+            db.commit()
+            # 이전 버전 대기 항목도 펌프에서 Waiting으로 정합화한다.
+            page.request.post(f"{BASE}/api/issues/DEV-4-1/execute", headers=H)
+            assert page.request.get(t5).json()["status"] == "waiting"
+            assert page.request.get(t6).json()["status"] == "waiting"
+            for scheme in ("light", "dark"):
+                page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
+                for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
+                    page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
+                    page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
+                    assert page.input_value('#status') == 'waiting'
+                    assert 'Waiting' in page.inner_text('#stage')
+                    assert "대기 2번째" in page.inner_text(".exec") and "선행 Task" in page.inner_text(".exec") and page.locator("#ask-execute").count() == 0
+                    assert "대기 2번째" in page.inner_text("#stage")
+                    # 위·아래(DEV-85) — 맨 끝이라 아래는 꺼지고 위만 켜진다
+                    assert page.locator('.exec .move-job[data-dir="up"]').is_enabled() and page.locator('.exec .move-job[data-dir="down"]').is_disabled()
+                    assert page.locator('.exec .move-job[data-dir="up"]').get_attribute("aria-label") == "DEV-4-2 대기 순서 앞으로 한 칸"
+                    if tag == "mobile":
+                        box = page.locator('.exec .move-job[data-dir="up"]').bounding_box()
+                        assert box["width"] >= 40 and box["height"] >= 40, box
+                    assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                    page.screenshot(path=str(shots / f"queue_issue_{scheme}_{tag}.png"), full_page=True)
+                    # 부모 Tasks 표(DEV-45) — 줄에 선 Task는 비활성 "실행 대기 중"
+                    page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
+                    for r in ("DEV-4-1", "DEV-4-2"):
+                        b = page.locator(f'.run-task[data-ref="{r}"]')
+                        assert b.is_disabled() and b.get_attribute("aria-label") == "Claude 실행 대기 중", r
+                        assert b.locator('.brand-icon use').get_attribute('href') == '#i-claude'
+                        # 모바일은 아이콘만(DEV-46) — 글자가 표를 넓혀 가로 스크롤을 만들었다
+                        assert ("실행 대기 중" in b.inner_text()) == (tag == "desktop"), r
+                    assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                    page.screenshot(path=str(shots / f"queue_tasks_{scheme}_{tag}.png"), full_page=True)
+                    page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector(".jobs-wait")
+                    assert "Waiting 2" in page.inner_text(".jobs-head") and page.locator(".jobs-wait li").count() == 2
+                    # 대기열 자리(DEV-92) — PC 폭이면 주 패널 오른쪽 열, 좁으면 주 패널 위
+                    side_of = lambda main: page.evaluate("""m => { const j = document.querySelector('#jobs-box').getBoundingClientRect(),
+                        b = document.querySelector(m).getBoundingClientRect();
+                        return j.left >= b.right && j.top < b.bottom && b.top < j.bottom ? 'side' : j.bottom <= b.top ? 'above' : 'other'; }""", main)
+                    page.wait_for_selector('#list-body tr.row')   # 목록이 아직 비어 있으면(높이 0) 자리를 잴 수 없다
+                    assert side_of('#list-body') == 'above', (scheme, tag)   # 목록은 1450px 이하에서 표 전체 폭을 쓰려고 대기열을 위로(DEV-123-1)
+                    assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                    page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
+                    page.click('[data-st="waiting"]')
+                    page.wait_for_function("document.querySelector('#list-body').getAttribute('aria-busy') === 'false'")
+                    assert page.locator('tr.row').count() == 2
+                    assert all('Waiting' in text for text in page.locator('tr.row').all_inner_texts())
+                    page.screenshot(path=str(shots / f"waiting_filter_{scheme}_{tag}.png"), full_page=True)
+                    page.click('[data-st="waiting"]')
+                    page.goto(BASE + '/#/board'); page.wait_for_selector('[data-col="waiting"] .card')
+                    assert page.locator('[data-col="waiting"] .card').count() == 2
+                    page.wait_for_selector('#jobs-box .jobs-wait'); assert page.locator('#jobs-box .jobs-wait li').count() == 2   # Board 위에도 대기열(DEV-91)
+                    assert side_of('.kanban') == ('side' if tag == 'desktop' else 'above'), (scheme, tag)
+                    assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                    page.screenshot(path=str(shots / f"waiting_board_{scheme}_{tag}.png"), full_page=True)
+                    page.goto(BASE + '/#/'); page.wait_for_selector('.jobs-wait')
+            assert page.request.get(f"{BASE}/api/issues/{pr}").json()["children"][0]["job"]["mode"] == "execute"
+            page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
+            # 목록에서 위·아래(DEV-85) — 첫 항목의 위·끝 항목의 아래는 꺼짐, 옮긴 뒤에도 펼침과 포커스 유지
+            order = lambda: [j["issue_id"] for j in page.request.get(f"{BASE}/api/jobs").json()["jobs"]]
+            assert page.locator('.jobs-wait li:first-child .move-job[data-dir="up"]').is_disabled()
+            assert page.locator('.jobs-wait li:last-child .move-job[data-dir="down"]').is_disabled()
+            page.click('.jobs-wait li:first-child .move-job[data-dir="down"]')
+            page.wait_for_function("document.querySelector('.jobs-wait li:first-child a').textContent === 'DEV-4-2'")
+            assert order() == [i42, i41] and page.locator('.jobs-wait').count() == 1
+            assert page.evaluate("document.activeElement.matches('.jobs-wait li:last-child .move-job[data-dir=\"up\"]')")
+            # 다른 탭이 먼저 바꿨으면 409 — 화면은 최신 순서로 다시 그린다
+            j42, j41 = (j["id"] for j in page.request.get(f"{BASE}/api/jobs").json()["jobs"])
+            stale = page.request.post(f"{BASE}/api/jobs/{j41}/move", headers=H, data={"direction": "up", "neighbor_id": j41 + 999})
+            assert stale.status == 409 and order() == [i42, i41]
+            assert page.request.post(f"{BASE}/api/jobs/{j41}/move", headers=H, data={"direction": "up", "neighbor_id": j42}).ok   # 다른 탭
+            page.click('.jobs-wait li:last-child .move-job[data-dir="up"]')   # 화면이 본 이웃(j42)이 낡아 409
+            page.wait_for_function("document.getElementById('toast').innerText.includes('바뀌었어요')")
+            page.wait_for_function("document.querySelector('.jobs-wait li:first-child a').textContent === 'DEV-4-1'")
+            assert order() == [i41, i42] and page.locator('.jobs-wait').count() == 1
+            page.screenshot(path=str(shots / "queue_move_light_desktop.png"), full_page=True)
+            page.click(".jobs-wait li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")
+            page.wait_for_function("() => document.querySelector('.jobs-head')?.innerText.includes('Waiting 1')")
+            page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
+            b1 = page.locator('.run-task[data-ref="DEV-4-1"][data-provider="claude"]')
+            b2 = page.locator('.run-task[data-ref="DEV-4-2"]')
+            assert b1.is_enabled() and "Claude" in b1.inner_text() and b2.is_disabled() and "실행 대기 중" in b2.inner_text()
+            page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
+            assert "대기 1번째" in page.inner_text(".exec")
+            assert page.locator(".exec .move-job:disabled").count() == 4   # 하나뿐이면 네 이동 버튼 모두 꺼짐
+            page.click(".exec .cancel-job"); page.wait_for_selector("#ask-execute")
+            assert page.request.get(f"{BASE}/api/jobs").json()["jobs"] == []
+            page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
+            assert page.locator(".run-task:not([disabled])").count() == 4 and "실행 대기 중" not in str(page.locator("tr.row").all_inner_texts())
+            for provider in ('claude', 'codex'):
+                page.click(f'.run-task[data-ref="DEV-4-1"][data-provider="{provider}"]')
+                page.wait_for_selector('.task-queued[data-ref="DEV-4-1"]')
+                queued = page.request.get(f"{BASE}/api/jobs").json()['jobs']
+                assert len(queued) == 1 and queued[0]['provider'] == provider and queued[0]['ref'] == 'DEV-4-1'
+                assert page.locator('.run-task[data-ref="DEV-4-1"]').count() == 1
+                assert page.locator('.task-queued').get_attribute('data-provider') == provider
+                page.request.delete(f"{BASE}/api/jobs/{queued[0]['id']}", headers=H)
+                page.reload(); page.wait_for_selector('.run-task[data-ref="DEV-4-1"]:not([disabled])')
+            # 바쁠 때도 검토 버튼은 눌러 둘 수 있다 — 줄이 나뉘어 있으니 같은 줄(DEV 검토)에도 도는 run을 심는다
+            db.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'running', 'human:admin', '2026-10-02T00:00:00+00:00')", (iid,)); db.commit()
+            fresh = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "바쁠 때 검토"}, headers=H).json()["ref"]
+            page.goto(BASE + f"/#/issue/{fresh}"); page.reload(); page.wait_for_selector("#ask-review")
+            assert page.is_enabled("#ask-review") and "차례로" in page.inner_text(".side")
+            assert page.is_enabled("#ask-codex-review")
+            check_review_buttons(page, fresh, shots)
+            page.goto(BASE + f'/#/issue/{fresh}'); page.wait_for_selector('#ask-codex-review')
+            for scheme in ("light", "dark"):
                 page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)
-                page.wait_for_timeout(300)
-                # 비용·시간 안내는 버튼 툴팁으로 옮겼다(DEV-113)
-                assert page.is_enabled("#ask-execute") and "비용 상한 $2" in page.get_attribute("#ask-execute", "title") and "비용 상한" not in page.inner_text(".exec")
-                assert page.is_enabled("#ask-codex-execute") and page.get_attribute("#ask-codex-execute", "title") == "Codex: 시간 제한 30분 · 비용 상한 없음."
-                assert [t.strip() for t in page.locator(".exec .agent-sub").all_inner_texts()] == ["실행", "병합"] and page.locator("#ask-review").count() == 0
-                assert page.locator('#ask-execute .brand-icon use').get_attribute('href') == '#i-claude'
-                assert page.locator('#ask-codex-execute .brand-icon use').get_attribute('href') == '#i-openai'
-                txt = page.inner_text(".exec .branch"); assert "relay/DEV-4-1" in txt and "커밋 1개" in txt and "new_feature.py" in txt and "git merge" not in page.inner_text(".exec"), txt
-                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
-                page.screenshot(path=str(shots / f"execute_{scheme}_{tag}.png"), full_page=True)
-        page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
-        page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
-        check_execute_buttons(page, shots, answers)
-        page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector("#ask-execute")
-        # 선행 대기는 눌러 둘 수 있다(DEV-43) — 줄에서 기다린다
-        assert page.is_enabled("#ask-execute") and "선행 Task(DEV-4-1)가 done이 되어야 해요" in page.inner_text(".exec") and "차례로" in page.inner_text(".exec")
-        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("#ask-review", state="attached"); assert page.locator("#ask-execute").count() == 0
-        assert page.locator(".side .agent-sub").all_inner_texts() == ["검토"] and "홈서버에서 검토만" in page.get_attribute("#ask-review", "title")
-        # 부모 화면에서 바로 실행(선행이 안 끝난 DEV-4-2도 눌러 두면 줄에 선다, 삭제는 아이콘 하나)
-        page.wait_for_selector("tr.row"); n = page.locator(".run-task").count(); assert n == 4, n
-        check_task_actions(page, pr, shots, answers, asked)
-        assert page.locator("#delete svg").count() == 1 and not page.text_content("#delete").strip()
+                page.emulate_media(color_scheme=scheme)
+                for w, tag in ((1300, "desktop"), (390, "mobile")):
+                    page.set_viewport_size({"width": w, "height": 850})
+                    page.wait_for_timeout(300)
+                    assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                    page.screenshot(path=str(shots / f"codex_review_{scheme}_{tag}.png"), full_page=True)
+            page.click("#ask-codex-review")
+            page.wait_for_selector(".side .queued")
+            queued = page.request.get(f"{BASE}/api/jobs").json()["jobs"]
+            assert queued[0]["provider"] == "codex" and "Codex" in page.inner_text(".side .queued")
+            page.click(".side .cancel-job")
+            page.wait_for_selector("#ask-codex-review")
+            page.goto(BASE + "/#/issue/DEV-4-1"); page.reload(); page.wait_for_selector("#ask-codex-execute")
+            page.click("#ask-codex-execute")
+            page.wait_for_selector(".exec .queued")
+            queued = page.request.get(f"{BASE}/api/jobs").json()["jobs"]
+            assert queued[0]["provider"] == "codex" and queued[0]["mode"] == "execute"
+            page.click(".exec .cancel-job")
+            page.wait_for_selector("#ask-codex-execute")
+            page.set_viewport_size({"width": 1300, "height": 850})
+            page.emulate_media(color_scheme="light")
+            page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
+            db.execute("UPDATE runs SET status='ok' WHERE status='running'"); db.commit(); db.close()
 
-        # 대기열(DEV-43) — 진짜 claude를 돌리지 않게 같은 줄(DEV 실행)에 도는 run 하나를 심어 두고 줄을 DB에 직접 넣는다
-        db = sqlite3.connect(tmp / "data" / "dev.db")
-        i41, i42 = (page.request.get(u).json()["id"] for u in (t5, t6))
-        db.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'execute', 'running', 'human:admin', '2026-10-02T00:00:00+00:00')", (iid,))
-        db.executemany("INSERT INTO jobs(issue_id, mode, actor, status, note, created_at) VALUES(?, 'execute', 'human:admin', 'queued', ?, '2026-10-02T00:00:00+00:00')",
-                       [(i41, ""), (i42, "선행 Task(DEV-4-1)가 done이 되어야 해요.")])
-        db.commit()
-        # 이전 버전 대기 항목도 펌프에서 Waiting으로 정합화한다.
-        page.request.post(f"{BASE}/api/issues/DEV-4-1/execute", headers=H)
-        assert page.request.get(t5).json()["status"] == "waiting"
-        assert page.request.get(t6).json()["status"] == "waiting"
-        for scheme in ("light", "dark"):
-            page.evaluate("s => { localStorage.setItem('dev.theme', s); document.documentElement.dataset.theme = s; }", scheme)
-            for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
-                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
-                page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
-                assert page.input_value('#status') == 'waiting'
-                assert 'Waiting' in page.inner_text('#stage')
-                assert "대기 2번째" in page.inner_text(".exec") and "선행 Task" in page.inner_text(".exec") and page.locator("#ask-execute").count() == 0
-                assert "대기 2번째" in page.inner_text("#stage")
-                # 위·아래(DEV-85) — 맨 끝이라 아래는 꺼지고 위만 켜진다
-                assert page.locator('.exec .move-job[data-dir="up"]').is_enabled() and page.locator('.exec .move-job[data-dir="down"]').is_disabled()
-                assert page.locator('.exec .move-job[data-dir="up"]').get_attribute("aria-label") == "DEV-4-2 대기 순서 앞으로 한 칸"
-                if tag == "mobile":
-                    box = page.locator('.exec .move-job[data-dir="up"]').bounding_box()
-                    assert box["width"] >= 40 and box["height"] >= 40, box
-                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
-                page.screenshot(path=str(shots / f"queue_issue_{scheme}_{tag}.png"), full_page=True)
-                # 부모 Tasks 표(DEV-45) — 줄에 선 Task는 비활성 "실행 대기 중"
-                page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
-                for r in ("DEV-4-1", "DEV-4-2"):
-                    b = page.locator(f'.run-task[data-ref="{r}"]')
-                    assert b.is_disabled() and b.get_attribute("aria-label") == "Claude 실행 대기 중", r
-                    assert b.locator('.brand-icon use').get_attribute('href') == '#i-claude'
-                    # 모바일은 아이콘만(DEV-46) — 글자가 표를 넓혀 가로 스크롤을 만들었다
-                    assert ("실행 대기 중" in b.inner_text()) == (tag == "desktop"), r
-                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
-                page.screenshot(path=str(shots / f"queue_tasks_{scheme}_{tag}.png"), full_page=True)
-                page.goto(BASE + "/#/"); page.reload(); page.wait_for_selector(".jobs-wait")
-                assert "Waiting 2" in page.inner_text(".jobs-head") and page.locator(".jobs-wait li").count() == 2
-                # 대기열 자리(DEV-92) — PC 폭이면 주 패널 오른쪽 열, 좁으면 주 패널 위
-                side_of = lambda main: page.evaluate("""m => { const j = document.querySelector('#jobs-box').getBoundingClientRect(),
-                    b = document.querySelector(m).getBoundingClientRect();
-                    return j.left >= b.right && j.top < b.bottom && b.top < j.bottom ? 'side' : j.bottom <= b.top ? 'above' : 'other'; }""", main)
-                page.wait_for_selector('#list-body tr.row')   # 목록이 아직 비어 있으면(높이 0) 자리를 잴 수 없다
-                assert side_of('#list-body') == 'above', (scheme, tag)   # 목록은 1450px 이하에서 표 전체 폭을 쓰려고 대기열을 위로(DEV-123-1)
-                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
-                page.screenshot(path=str(shots / f"queue_list_{scheme}_{tag}.png"), full_page=True)
-                page.click('[data-st="waiting"]')
-                page.wait_for_function("document.querySelector('#list-body').getAttribute('aria-busy') === 'false'")
-                assert page.locator('tr.row').count() == 2
-                assert all('Waiting' in text for text in page.locator('tr.row').all_inner_texts())
-                page.screenshot(path=str(shots / f"waiting_filter_{scheme}_{tag}.png"), full_page=True)
-                page.click('[data-st="waiting"]')
-                page.goto(BASE + '/#/board'); page.wait_for_selector('[data-col="waiting"] .card')
-                assert page.locator('[data-col="waiting"] .card').count() == 2
-                page.wait_for_selector('#jobs-box .jobs-wait'); assert page.locator('#jobs-box .jobs-wait li').count() == 2   # Board 위에도 대기열(DEV-91)
-                assert side_of('.kanban') == ('side' if tag == 'desktop' else 'above'), (scheme, tag)
-                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
-                page.screenshot(path=str(shots / f"waiting_board_{scheme}_{tag}.png"), full_page=True)
-                page.goto(BASE + '/#/'); page.wait_for_selector('.jobs-wait')
-        assert page.request.get(f"{BASE}/api/issues/{pr}").json()["children"][0]["job"]["mode"] == "execute"
-        page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
-        # 목록에서 위·아래(DEV-85) — 첫 항목의 위·끝 항목의 아래는 꺼짐, 옮긴 뒤에도 펼침과 포커스 유지
-        order = lambda: [j["issue_id"] for j in page.request.get(f"{BASE}/api/jobs").json()["jobs"]]
-        assert page.locator('.jobs-wait li:first-child .move-job[data-dir="up"]').is_disabled()
-        assert page.locator('.jobs-wait li:last-child .move-job[data-dir="down"]').is_disabled()
-        page.click('.jobs-wait li:first-child .move-job[data-dir="down"]')
-        page.wait_for_function("document.querySelector('.jobs-wait li:first-child a').textContent === 'DEV-4-2'")
-        assert order() == [i42, i41] and page.locator('.jobs-wait').count() == 1
-        assert page.evaluate("document.activeElement.matches('.jobs-wait li:last-child .move-job[data-dir=\"up\"]')")
-        # 다른 탭이 먼저 바꿨으면 409 — 화면은 최신 순서로 다시 그린다
-        j42, j41 = (j["id"] for j in page.request.get(f"{BASE}/api/jobs").json()["jobs"])
-        stale = page.request.post(f"{BASE}/api/jobs/{j41}/move", headers=H, data={"direction": "up", "neighbor_id": j41 + 999})
-        assert stale.status == 409 and order() == [i42, i41]
-        assert page.request.post(f"{BASE}/api/jobs/{j41}/move", headers=H, data={"direction": "up", "neighbor_id": j42}).ok   # 다른 탭
-        page.click('.jobs-wait li:last-child .move-job[data-dir="up"]')   # 화면이 본 이웃(j42)이 낡아 409
-        page.wait_for_function("document.getElementById('toast').innerText.includes('바뀌었어요')")
-        page.wait_for_function("document.querySelector('.jobs-wait li:first-child a').textContent === 'DEV-4-1'")
-        assert order() == [i41, i42] and page.locator('.jobs-wait').count() == 1
-        page.screenshot(path=str(shots / "queue_move_light_desktop.png"), full_page=True)
-        page.click(".jobs-wait li:first-child .cancel-job"); page.wait_for_function("document.getElementById('toast').innerText.includes('대기를 취소했어요')")
-        page.wait_for_function("() => document.querySelector('.jobs-head')?.innerText.includes('Waiting 1')")
-        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
-        b1 = page.locator('.run-task[data-ref="DEV-4-1"][data-provider="claude"]')
-        b2 = page.locator('.run-task[data-ref="DEV-4-2"]')
-        assert b1.is_enabled() and "Claude" in b1.inner_text() and b2.is_disabled() and "실행 대기 중" in b2.inner_text()
-        page.goto(BASE + "/#/issue/DEV-4-2"); page.reload(); page.wait_for_selector(".exec .queued")
-        assert "대기 1번째" in page.inner_text(".exec")
-        assert page.locator(".exec .move-job:disabled").count() == 4   # 하나뿐이면 네 이동 버튼 모두 꺼짐
-        page.click(".exec .cancel-job"); page.wait_for_selector("#ask-execute")
-        assert page.request.get(f"{BASE}/api/jobs").json()["jobs"] == []
-        page.goto(BASE + f"/#/issue/{pr}"); page.reload(); page.wait_for_selector("tr.row")
-        assert page.locator(".run-task:not([disabled])").count() == 4 and "실행 대기 중" not in str(page.locator("tr.row").all_inner_texts())
-        for provider in ('claude', 'codex'):
-            page.click(f'.run-task[data-ref="DEV-4-1"][data-provider="{provider}"]')
-            page.wait_for_selector('.task-queued[data-ref="DEV-4-1"]')
-            queued = page.request.get(f"{BASE}/api/jobs").json()['jobs']
-            assert len(queued) == 1 and queued[0]['provider'] == provider and queued[0]['ref'] == 'DEV-4-1'
-            assert page.locator('.run-task[data-ref="DEV-4-1"]').count() == 1
-            assert page.locator('.task-queued').get_attribute('data-provider') == provider
-            page.request.delete(f"{BASE}/api/jobs/{queued[0]['id']}", headers=H)
-            page.reload(); page.wait_for_selector('.run-task[data-ref="DEV-4-1"]:not([disabled])')
-        # 바쁠 때도 검토 버튼은 눌러 둘 수 있다 — 줄이 나뉘어 있으니 같은 줄(DEV 검토)에도 도는 run을 심는다
-        db.execute("INSERT INTO runs(issue_id, mode, status, actor, started_at) VALUES(?, 'review', 'running', 'human:admin', '2026-10-02T00:00:00+00:00')", (iid,)); db.commit()
-        fresh = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "바쁠 때 검토"}, headers=H).json()["ref"]
-        page.goto(BASE + f"/#/issue/{fresh}"); page.reload(); page.wait_for_selector("#ask-review")
-        assert page.is_enabled("#ask-review") and "차례로" in page.inner_text(".side")
-        assert page.is_enabled("#ask-codex-review")
-        check_review_buttons(page, fresh, shots)
-        check_edit_saving(page, shots)
-        check_rollback_waiting(page, shots)
-        check_result_attach(page, shots)
-        check_sticky_tabbar(page, shots)
-        page.goto(BASE + f'/#/issue/{fresh}'); page.wait_for_selector('#ask-codex-review')
-        for scheme in ("light", "dark"):
-            page.evaluate("scheme => { localStorage.setItem('dev.theme', scheme); document.documentElement.dataset.theme = scheme; }", scheme)
-            page.emulate_media(color_scheme=scheme)
-            for w, tag in ((1300, "desktop"), (390, "mobile")):
-                page.set_viewport_size({"width": w, "height": 850})
-                page.wait_for_timeout(300)
-                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
-                page.screenshot(path=str(shots / f"codex_review_{scheme}_{tag}.png"), full_page=True)
-        page.click("#ask-codex-review")
-        page.wait_for_selector(".side .queued")
-        queued = page.request.get(f"{BASE}/api/jobs").json()["jobs"]
-        assert queued[0]["provider"] == "codex" and "Codex" in page.inner_text(".side .queued")
-        page.click(".side .cancel-job")
-        page.wait_for_selector("#ask-codex-review")
-        page.goto(BASE + "/#/issue/DEV-4-1"); page.reload(); page.wait_for_selector("#ask-codex-execute")
-        page.click("#ask-codex-execute")
-        page.wait_for_selector(".exec .queued")
-        queued = page.request.get(f"{BASE}/api/jobs").json()["jobs"]
-        assert queued[0]["provider"] == "codex" and queued[0]["mode"] == "execute"
-        page.click(".exec .cancel-job")
-        page.wait_for_selector("#ask-codex-execute")
-        page.set_viewport_size({"width": 1300, "height": 850})
-        page.emulate_media(color_scheme="light")
-        page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
-        db.execute("UPDATE runs SET status='ok' WHERE status='running'"); db.commit(); db.close()
+            # 결과 거절 → 닫히고 사유가 남는다(DEV-16)
+            rj = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결과 거절"}, headers=H).json()["ref"]
+            page.request.post(f"{BASE}/api/issues/{rj}/status", data={"status": "in_review"}, headers=H)
+            page.goto(BASE + f"/#/issue/{rj}"); page.wait_for_selector("#result-actions")
+            page.click("#result-actions [data-to=closed]"); page.screenshot(path=str(shots / "result_form.png"), full_page=True)
+            page.fill("#result-note", "방향이 달라서"); page.click("#result-send")
+            page.wait_for_function("location.hash === '#/'")
+            got = page.request.get(f"{BASE}/api/issues/{rj}").json()
+            assert got["status"] == "closed" and "방향이 달라서" in str(got["events"]), got
 
-        # 결과 거절 → 닫히고 사유가 남는다(DEV-16)
-        rj = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "결과 거절"}, headers=H).json()["ref"]
-        page.request.post(f"{BASE}/api/issues/{rj}/status", data={"status": "in_review"}, headers=H)
-        page.goto(BASE + f"/#/issue/{rj}"); page.wait_for_selector("#result-actions")
-        page.click("#result-actions [data-to=closed]"); page.screenshot(path=str(shots / "result_form.png"), full_page=True)
-        page.fill("#result-note", "방향이 달라서"); page.click("#result-send")
-        page.wait_for_function("location.hash === '#/'")
-        got = page.request.get(f"{BASE}/api/issues/{rj}").json()
-        assert got["status"] == "closed" and "방향이 달라서" in str(got["events"]), got
+            # 전체 완료(DEV-44) — Task 화면에서 눌러 상위·형제 Task까지 Done. 확인 창에 닫힐 목록과 주의할 Task가 나온다.
+            top = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "묶음 상위"}, headers=H).json()["ref"]
+            ta, tb = (page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": t, "parent": top}, headers=H).json()["ref"] for t in ("묶음 하나", "묶음 둘"))
+            page.request.post(f"{BASE}/api/issues/{ta}/status", data={"status": "in_review"}, headers=H)
+            for scheme in ("light", "dark"):
+                for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
+                    page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
+                    page.goto(BASE + f"/#/issue/{ta}"); page.reload(); page.wait_for_selector(".complete-tree")
+                    assert page.locator(".complete-tree").count() == 2   # Result 패널 + Status 옆
+                    assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
+                    page.screenshot(path=str(shots / f"complete_tree_{scheme}_{tag}.png"), full_page=True)
+            page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
+            answers.append(None); page.click(".side .complete-tree"); page.wait_for_timeout(500)   # 취소하면 그대로
+            assert page.request.get(f"{BASE}/api/issues/{top}").json()["status"] != "done"
+            asked.clear(); page.click(".side .complete-tree"); page.wait_for_function("location.hash === '#/'")
+            assert top in asked[0] and ta in asked[0] and tb in asked[0] and "아직 끝나지 않은 Task" in asked[0], asked
+            assert all(page.request.get(f"{BASE}/api/issues/{r}").json()["status"] == "done" for r in (top, ta, tb))
 
-        # 전체 완료(DEV-44) — Task 화면에서 눌러 상위·형제 Task까지 Done. 확인 창에 닫힐 목록과 주의할 Task가 나온다.
-        top = page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": "묶음 상위"}, headers=H).json()["ref"]
-        ta, tb = (page.request.post(f"{BASE}/api/issues", data={"project": "DEV", "title": t, "parent": top}, headers=H).json()["ref"] for t in ("묶음 하나", "묶음 둘"))
-        page.request.post(f"{BASE}/api/issues/{ta}/status", data={"status": "in_review"}, headers=H)
-        for scheme in ("light", "dark"):
-            for w, h, tag in ((1300, 850, "desktop"), (390, 800, "mobile")):
-                page.emulate_media(color_scheme=scheme); page.set_viewport_size({"width": w, "height": h})
-                page.goto(BASE + f"/#/issue/{ta}"); page.reload(); page.wait_for_selector(".complete-tree")
-                assert page.locator(".complete-tree").count() == 2   # Result 패널 + Status 옆
-                assert page.evaluate("document.documentElement.scrollWidth") <= w + 1
-                page.screenshot(path=str(shots / f"complete_tree_{scheme}_{tag}.png"), full_page=True)
-        page.set_viewport_size({"width": 1300, "height": 850}); page.emulate_media(color_scheme="light")
-        answers.append(None); page.click(".side .complete-tree"); page.wait_for_timeout(500)   # 취소하면 그대로
-        assert page.request.get(f"{BASE}/api/issues/{top}").json()["status"] != "done"
-        asked.clear(); page.click(".side .complete-tree"); page.wait_for_function("location.hash === '#/'")
-        assert top in asked[0] and ta in asked[0] and tb in asked[0] and "아직 끝나지 않은 Task" in asked[0], asked
-        assert all(page.request.get(f"{BASE}/api/issues/{r}").json()["status"] == "done" for r in (top, ta, tb))
+            _drop_projects('NS', 'DEV')
 
-        check_fab(page)
-        check_issue_tokens(page, shots)
-        check_manual_usage(page, shots)
-        check_progress_clock(page, shots)
-        check_issue_types(page, shots)
-        check_rating(page, shots)
+        def run_blocks(ids):
+            """블록을 차례로 돈다 — 하나가 실패해도 나머지를 돌고 실패한 블록 id 목록을 돌려준다."""
+            import traceback
+            failed = []
+            for n, block_id in enumerate(ids):
+                try:
+                    if n:
+                        reset_between_blocks()
+                    BLOCK_INDEX[block_id][3]()
+                    assert not errs, (block_id, errs)
+                except Exception:
+                    traceback.print_exc()
+                    failed.append(block_id)
+                    errs.clear()
+                    print(f'FAIL: block:{block_id}', flush=True)
+                    continue
+                print(f'OK: block:{block_id}', flush=True)
+            return failed
 
-        check_progress_refresh(page, shots)
-        check_progress_note(page, shots)
-        check_reproduce(page, shots)
-        # 로그아웃(사용자 메뉴 안)
-        check_management_agents(page, shots)
-        check_management_delay_probe(page)
-        check_management_layout(page, shots)
-        check_troubleshooter(page, shots)
-        check_global_agent_orders(page, shots)
-        check_self_restart_banner(page, shots)
-        check_issue_table(page, shots)
-        check_list_spacing(page, shots)
-        check_new_issue_dependencies(page, shots)
-        check_task_action_alignment(page, shots)
-        page.click("#user-chip"); page.click("#logout"); page.wait_for_selector("#login:not([hidden])")
-        assert page.locator('#open-jupyter').get_attribute('hidden') is not None
-        assert not errs, errs
+        failed = run_blocks(ONLY or [b[0] for b in BLOCKS])
+        if failed:
+            sys.exit('실패한 블록: ' + ','.join(failed))
     print("OK")
 finally:
     for pr in procs:

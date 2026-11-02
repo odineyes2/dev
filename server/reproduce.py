@@ -31,6 +31,45 @@ def result(ref):
     return row
 
 
+def ui_options(source):
+    """UI 검사 소스에서 검사 함수 → 그 함수만 다시 돌릴 인자. 블록 표(DEV-233)가 있으면 `--only <블록>`, 옛 커밋은 `--x-only` 분기."""
+    options = {}
+    tree = ast.parse(source)
+    # 블록 표(DEV-233): `_block('id', '제목', check_x)` 또는 흐름 블록 함수(block_*) 안의 check_x → `--only id`
+    defs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    table = next((n.value for n in tree.body if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+                  and n.targets[0].id == 'BLOCKS' and isinstance(n.value, ast.List)), None)
+    for call in (table.elts if table else []):
+        if not (isinstance(call, ast.Call) and call.args and isinstance(call.args[0], ast.Constant)):
+            continue
+        block = call.args[0].value
+        named = [a.id for a in call.args[2:] if isinstance(a, ast.Name)]
+        named += [k.value.value for k in call.keywords if k.arg == 'source' and isinstance(k.value, ast.Constant)]
+        todo = list(named)
+        while todo:   # 블록 함수에서 (중첩 호출까지) 닿는 검사 함수는 그 블록으로 다시 돈다
+            name = todo.pop()
+            if name in options:
+                continue
+            options[name] = ['--only', block]
+            todo += [n.func.id for n in ast.walk(defs[name]) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                     and n.func.id in defs and n.func.id.startswith(('check_', 'block_'))] if name in defs else []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+            continue
+        test = node.test
+        if not (isinstance(test.left, ast.Constant) and isinstance(test.left.value, str)
+                and re.fullmatch(r'--[a-z-]+-only', test.left.value)
+                and len(test.ops) == 1 and isinstance(test.ops[0], ast.In)
+                and ast.unparse(test.comparators[0]) == 'sys.argv'):
+            continue
+        calls = [statement.value.func.id for statement in node.body
+                 if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+                 and isinstance(statement.value.func, ast.Name) and statement.value.func.id.startswith('check_')]
+        if len(calls) == 1:
+            options.setdefault(calls[0], [test.left.value])   # 블록 표 이전 커밋의 옛 `--x-only` 분기
+    return options
+
+
 def panel(issue):
     ref = issue['ref']
     latest = result(ref)
@@ -72,22 +111,8 @@ def panel(issue):
                             text += '\n' + log.read_text(encoding='utf-8', errors='replace')[-10000:]
                     functions = re.findall(r'test_ui\.py["\u0027], line \d+, in (check_\w+)', text)
                     source = project_build._git(repo, 'show', sha + ':' + paths[0])
-                    options = {}
-                    for node in ast.walk(ast.parse(source)):
-                        if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
-                            continue
-                        test = node.test
-                        if not (isinstance(test.left, ast.Constant) and isinstance(test.left.value, str)
-                                and re.fullmatch(r'--[a-z-]+-only', test.left.value)
-                                and len(test.ops) == 1 and isinstance(test.ops[0], ast.In)
-                                and ast.unparse(test.comparators[0]) == 'sys.argv'):
-                            continue
-                        calls = [statement.value.func.id for statement in node.body
-                                 if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
-                                 and isinstance(statement.value.func, ast.Name) and statement.value.func.id.startswith('check_')]
-                        if len(calls) == 1:
-                            options[calls[0]] = test.left.value
-                    args = [options[functions[-1]]] if functions and functions[-1] in options else []
+                    options = ui_options(source)
+                    args = list(options[functions[-1]]) if functions and functions[-1] in options else []
                     if not args:
                         raise ValueError('UI 실패 위치와 전용 실행 옵션을 찾지 못했어요. 전체 UI 검사는 실행하지 않아요.')
                 targets.append({'file': paths[0], 'args': args})
