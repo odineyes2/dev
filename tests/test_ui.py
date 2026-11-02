@@ -256,6 +256,8 @@ def check_complete_summary(page, shots):
             page.evaluate("t => {localStorage.setItem('dev.theme',t); document.documentElement.dataset.theme=t}", scheme)
             # Task 상세에서도 최상위 이슈 내용을 보여 준다.
             page.goto(BASE + f'/#/issue/{tasks[1]}')
+            # 주소만 바뀌고 상세가 아직 안 그려졌을 수 있다 — 그 Task로 다시 그려진 뒤에 본다(병렬 검사 부하에서 5초를 넘김)
+            page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim().split(' ')[0] === ref", arg=tasks[1])   # Task는 'REF · Task of …'
             expect(page.locator('.side .complete-tree')).to_be_visible()
             page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
             page.click('.side .complete-tree')
@@ -274,6 +276,8 @@ def check_complete_summary(page, shots):
             dialog.locator('.confirm-cancel').click()
             assert page.request.get(BASE + f'/api/issues/{root}').json()['status'] == 'in_review'
             page.goto(BASE + '/#/')
+            # 목록을 다 읽은 뒤에 본다(병렬 검사 부하에서 5초를 넘김)
+            page.wait_for_selector(f'#list-body[aria-busy="false"] [data-action="complete-tree"][data-ref="{leaf}"]', state='attached')
             expect(page.locator(f'[data-action="complete-tree"][data-ref="{leaf}"]')).to_be_visible()
             page.evaluate('() => { window.confirmDialog = window.realConfirmDialog; }')
             page.click(f'[data-action="complete-tree"][data-ref="{leaf}"]')
@@ -348,6 +352,8 @@ def check_decision_layout(page, shots):
             page.evaluate("t => {localStorage.setItem('dev.theme',t); document.documentElement.dataset.theme=t}", scheme)
             for ref, count in ((plain, 3), (planned, 4), (child, 4)):
                 page.goto(BASE + f'/#/issue/{ref}')
+                # 앞 이슈 화면의 버튼을 재지 않도록 그 이슈로 다시 그려진 뒤에 본다
+                page.wait_for_function("ref => document.querySelector('.detail > div > .ref')?.textContent.trim().split(' ')[0] === ref", arg=ref)
                 expect(page.locator('#approve')).to_be_visible()
                 grid('#result-actions', ['check-check'] + (['list-checks'] if count == 4 else []) + ['pencil', 'x'],
                      ['결과 승인'] + (['전체 완료'] if count == 4 else []) + ['수정 요청', '결과 거절'])

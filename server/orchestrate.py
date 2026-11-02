@@ -577,7 +577,10 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
         regression.save_record('regression-selection:' + ref + ':' + stage,
                                {**selection, 'results': results, 'durations': durations, 'wall': wall, 'block_durations': block_durations,
                                 'cache': {'used': bool(reused), 'reused': reused, 'reason': reason}})
-        whole = [n for n, p in (selection.get('blocks') or {}).items() if p.get('whole_once') and results.get(n) in ('passed', 'failed')]
+        mapped = [f"{n}: {p['reason']}" for n, p in (selection.get('blocks') or {}).items() if p.get('reason') and results.get(n) in ('passed', 'failed')]
+        if stage == 'server_completion' and mapped:   # 대응표로 고른 이유(DEV-233-3)
+            issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref, 'ℹ️ 화면 변경 블록 선택 — ' + ' / '.join(mapped))
+        whole = [n for n, p in (selection.get('blocks') or {}).items() if p.get('whole_once') and not p.get('reason') and results.get(n) in ('passed', 'failed')]
         if stage == 'server_completion' and whole:
             issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref,
                                f"ℹ️ {', '.join(whole)}: 블록을 정하지 못해 전체 1회 — 바뀐 줄이 블록 밖(main·공용 도우미)이라 반복하지 않았어요(R10이 병합에서 가려요)")
