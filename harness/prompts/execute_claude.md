@@ -9,9 +9,10 @@ dev Task {ref}를 **구현**한다. 지금 작업 폴더는 이 Task 전용 git 
    그보다 크면 고치지 말고 사람에게 묻는다.
    명령 규칙(허용 목록 밖이면 거절되고, 거절마다 문맥 전체가 다시 오간다): 이미 작업 폴더라 `cd`를 붙이지 않는다. 명령은 한 번에 하나만 — `;`·`&&`·`|`로 잇지 않는다.
    파일은 Edit·Write 도구로만 고친다(python·heredoc 수정 스크립트, 작업 폴더 밖 임시 파일, rm은 막혀 있다). 거절된 명령은 같은 방식으로 다시 시도하지 않는다.
-3. 기능 하나를 커밋 하나로 `git add`·`git commit` 한다(커밋 메시지 끝에 `({ref})` 표시,
+3. 검사: {checks}
+4. 기능 하나를 커밋 하나로 `git add`·`git commit` 한다(커밋 메시지 끝에 `({ref})` 표시,
    트레일러 `Co-Authored-By: Claude Code <noreply@anthropic.com>`).
-4. `git rev-parse HEAD`로 커밋 해시를 얻어 mcp__dev__link_commit으로 잇고, 마지막 응답에 확인하는 법을 적고(상태 전환은 서버가 수행한다),
+5. `git rev-parse HEAD`로 커밋 해시를 얻어 mcp__dev__link_commit으로 잇고, 마지막 응답에 확인하는 법을 적고(상태 전환은 서버가 수행한다),
    mcp__dev__release_issue로 놓는다.
 막히거나 사람의 결정이 필요하면 mcp__dev__add_comment로 묻고 on_hold로 둔다. push·브랜치 이동·다른 폴더 수정·서버 재시작은 할 수 없고 하지 않는다.
 자동 병합은 서버가 최신 기준 브랜치와 Task를 별도 임시 worktree에서 시험 병합한 뒤 반영한다.

@@ -334,7 +334,7 @@ def reconcile():
             _waiting(c, j)
 
 
-def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, note=None, plan_version=None, attachment_ids=None) -> dict:
+def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, note=None, plan_version=None, attachment_ids=None, checks=None) -> dict:
     """줄에 넣고 착수를 예약한다. 시작 가능하면 {started}, 아니면 {queued, position}."""
     import auto_settings
     import execute
@@ -357,6 +357,10 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
         raise issues.StoreError("지원하지 않는 작업이에요.", 400)
     issue = issues.get_issue(ref)   # 없으면 404
     ref = issue["ref"]
+    if checks is not None and mode != 'execute':
+        raise issues.StoreError('검사는 실행을 맡길 때만 고를 수 있어요.', 400)
+    import task_checks
+    keys = task_checks.selection(issue, checks) if mode == 'execute' else None   # 사람이 맡길 때 고른 계획 검사(DEV-238)
     if mode == 'review' and note is None:
         import project_init
         from pathlib import Path
@@ -397,8 +401,13 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
                 why = execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None, wait=False)
                 if why:
                     raise issues.StoreError(why, 409)
-            c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, provider, model) VALUES(?, ?, ?, 'queued', ?, ?, ?)",
-                      (issue["id"], mode, issues.actor_label(actor), db.now_iso(), provider, auto_settings.model_for(c, issue["id"], provider)))
+            c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, provider, model, checks_json) VALUES(?, ?, ?, 'queued', ?, ?, ?, ?)",
+                      (issue["id"], mode, issues.actor_label(actor), db.now_iso(), provider, auto_settings.model_for(c, issue["id"], provider),
+                       json.dumps(keys) if keys is not None else None))
+            dropped = [i for i in task_checks.from_body(issue.get('body', ''))[0] if keys is not None and i['key'] not in keys]
+            if dropped:   # 사람이 해제한 검사는 기록으로 남긴다
+                issues._event(c, issue['id'], actor, 'comment', '🧪 맡길 때 해제한 검사(이번 실행에서 돌리지 않아요): '
+                              + ', '.join(f"`{i['cmd']}`" for i in dropped), {'checks_dropped': [i['key'] for i in dropped]})
         j = c.execute("SELECT * FROM jobs WHERE issue_id=? AND mode=? AND status='queued'", (issue["id"], mode)).fetchone()
         if note is not None:
             issues._event(c, issue['id'], actor, 'comment', note,
@@ -772,7 +781,7 @@ def pump() -> None:
                     if why:   # 선행·겹치는 파일 대기 — 뒤 항목을 먼저 본다
                         _set(j["id"], "queued", why)
                         continue
-                    execute.start(actor, j["ref"], j["provider"], j["model"])
+                    execute.start(actor, j["ref"], j["provider"], j["model"], j.get("checks_json"))
             except sqlite3.IntegrityError as e:
                 if j['source'] != 'auto':
                     raise

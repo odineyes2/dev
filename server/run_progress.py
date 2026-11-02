@@ -1,4 +1,4 @@
-"""Task 실행 진행 단계(DEV-206) — 실행 스레드가 구현을 시작하면 남기고, 화면은 짧은 표시와 ⓘ 상세로 본다.
+"""Task 실행 진행 단계(DEV-206) — 실행 스레드가 구현·검사·재작업으로 넘어갈 때 남기고, 화면은 짧은 표시와 ⓘ 상세로 본다.
 메모리에만 둔다 — dev가 재시작되면 도는 실행은 어차피 orphaned가 된다. In Progress 경과 시간(DEV-208)은 DB에서 읽는다."""
 import threading
 import time
@@ -10,6 +10,7 @@ _lock = threading.Lock()
 _runs = {}     # ref → {'phase', 'since', 'attempt', 'provider', 'model', 'limit'}
 
 STALL_GRACE_SEC = 120          # 모델 호출이 시간 제한을 이만큼 넘겨도 끝나지 않으면 멈춘 것으로 본다
+SHORT = {'implement': '구현 중', 'checks': '검사 중', 'rework': '재작업 중'}   # 검사는 맡길 때 고른 것만(DEV-238)
 
 
 def set_phase(ref, phase, **info):
@@ -43,16 +44,16 @@ def view(ref, now=None) -> dict | None:
         run = dict(_runs[ref]) if ref in _runs else None
     if not run:
         return None
-    elapsed = now - run['since']
+    phase, elapsed = run.get('phase', 'implement'), now - run['since']
     who = ' '.join(x for x in (run.get('provider'), run.get('model')) if x)
-    limit = run.get('limit') or 0
-    lines = ['구현 중', f"{who + ' · ' if who else ''}시작 {_clock(run['since'])} · 경과 {_span(elapsed)}" + (f' / 시간 제한 {_span(limit)}' if limit else '')]
+    limit = run.get('limit') or 0 if phase != 'checks' else 0   # 검사는 명령마다 따로 시간 제한이 걸린다
+    lines = [SHORT.get(phase, '구현 중'), f"{who + ' · ' if who else ''}시작 {_clock(run['since'])} · 경과 {_span(elapsed)}" + (f' / 시간 제한 {_span(limit)}' if limit else '')]
     stalled = bool(limit) and elapsed > limit + STALL_GRACE_SEC
-    short = '구현 중'
+    short = SHORT.get(phase, '구현 중')
     if stalled:
         short = '⚠️ 멈춘 것 같아요'
-        lines.insert(0, '⚠️ 구현 단계가 예상 시간을 넘겼는데 끝나지 않았어요 — 실행 로그와 남은 프로세스를 확인해 주세요.')
-    return {'phase': 'implement', 'short': short, 'long': '\n'.join(lines), 'stalled': stalled}
+        lines.insert(0, f'⚠️ {SHORT.get(phase, "구현 중")} 단계가 예상 시간을 넘겼는데 끝나지 않았어요 — 실행 로그와 남은 프로세스를 확인해 주세요.')
+    return {'phase': phase, 'short': short, 'long': '\n'.join(lines), 'stalled': stalled}
 
 
 def elapsed(items) -> None:

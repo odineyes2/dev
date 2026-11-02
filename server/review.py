@@ -487,10 +487,10 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         with db.connect() as c:
             row = c.execute('SELECT model FROM runs WHERE id=?', (run_id,)).fetchone()
         progress = {'provider': 'Codex' if provider == 'codex' else 'Claude', 'model': row['model'] if row else None, 'limit': timeout}
-    for attempt in range(1):
+    for attempt in range(2 if label == "실행" else 1):   # 실행은 서버 검사가 실패하면 한 번 재작업한다(DEV-238)
         code, note, status, out, err = None, "", "ok", "", ""
         if progress:
-            run_progress.set_phase(ref, 'implement', **progress)
+            run_progress.set_phase(ref, 'rework' if attempt else 'implement', **progress)
         try:
             # 프롬프트는 명령(cmd)에 보존하되 실행 때 stdin으로 보낸다 — Codex는 마지막 인자, Claude는 "-p" 다음 인자.
             # 파일 지도·하네스·부모 계획서가 길어져도 Windows 명령행 한도(32,767자, WinError 206)를 넘지 않는다.
@@ -531,7 +531,23 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         if now["status"] == "on_hold" and str(last.get("actor", "")).startswith("agent:"):   # 에이전트가 스스로 멈췄다(질문·외부 조건) — 실패가 아니라 사람 차례다
             held = True
             break
-        break
+        if provider == "codex" and re.search(r'"outcome"\s*:\s*"blocked"', text) or blocked:   # 막혔다고 답했으면 검사할 것이 없다
+            break
+        # 맡길 때 고른 검사와 언제나 절차를 서버가 그대로 다시 돌린다(DEV-238). 에이전트 보고만 믿지 않는다.
+        import task_checks
+        run_progress.set_phase(ref, 'checks', **progress)
+        failed = task_checks.verify(ref, cwd, run_id)
+        if not failed:
+            break
+        if attempt:
+            status, note = "failed", "재작업 뒤에도 검사가 실패했어요:\n" + failed[-1500:]
+            break
+        earlier = text + "\n\n--- 서버 검사 실패 → 재작업 ---\n" + failed + "\n\n"
+        earlier_out = out
+        retry = ("\n\n이전 실행의 결과가 이 worktree에 그대로 남아 있다. 서버가 맡길 때 고른 검사를 다시 돌렸더니 아래가 실패했다. "
+                 "실패한 원인만 고치고 같은 검사로 다시 확인한 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 마친다. "
+                 "검사를 넓히거나 다른 검사를 새로 돌리지 않는다.\n```\n" + failed[-6000:] + "\n```")
+        cmd = cmd[:2] + [cmd[2] + retry] + cmd[3:] if provider == "claude" else cmd[:-1] + [cmd[-1] + retry]
     run_progress.clear(ref)
     stats = spent
     exhausted = status != "timeout" and token_exhausted(out, err, provider)

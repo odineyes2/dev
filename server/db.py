@@ -1170,6 +1170,13 @@ DELETE FROM app_settings WHERE key LIKE 'regression%' OR key LIKE 'test_jobs:%' 
 """)
 
 
+# Task 검사(DEV-238) — 사람이 맡길 때 고른 계획 검사 키. NULL이면 계획 검사 전부(자동 위임·옛 화면).
+MIGRATIONS.append("""
+ALTER TABLE jobs ADD COLUMN checks_json TEXT;
+ALTER TABLE runs ADD COLUMN checks_json TEXT;
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

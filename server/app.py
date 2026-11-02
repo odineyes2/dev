@@ -746,7 +746,7 @@ import run_progress  # noqa: E402
 async def api_execute(ref: str, request: Request):
     me = actor(request)
     b = await json_body(request) if await request.body() else {}
-    return await run_in_threadpool(jobs.enqueue, me, ref, "execute", b.get("provider"))   # 대기열 잠금을 이벤트 루프에서 기다리면 서버 전체가 멈춘다
+    return await run_in_threadpool(lambda: jobs.enqueue(me, ref, "execute", b.get("provider"), checks=b.get("checks")))   # 대기열 잠금을 이벤트 루프에서 기다리면 서버 전체가 멈춘다
 
 
 @app.post("/api/issues/{ref}/review")

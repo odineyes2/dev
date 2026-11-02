@@ -241,23 +241,29 @@ def reject_capture_changes(cwd, *revision):
         raise issues.StoreError('캡처 산출물(.ui-captures/, tests/shots/)을 커밋에서 제외해 주세요.', 409)
 
 
-def prompt_for(ref: str, parent_ref: str | None) -> str:
+def prompt_for(ref: str, parent_ref: str | None, keys=None) -> str:
     import review
-    return review.preamble(ref, execution=True) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref)
+    import task_checks
+    return review.preamble(ref, execution=True) + prompts.render("execute_claude.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref,
+                                                                 checks=task_checks.prompt_text(issues.get_issue(ref), keys))
 
 
-def command_for(ref: str, parent_ref: str | None, mcp_config: str) -> list[str]:
+def command_for(ref: str, parent_ref: str | None, mcp_config: str, keys=None) -> list[str]:
     import review   # 검토 모드와 같은 claude 실행 파일·dev MCP 설정을 쓴다
-    allowed = list(ALLOWED_TOOLS)
-    return [review.claude_bin(), "-p", prompt_for(ref, parent_ref), "--permission-mode", "acceptEdits", *USER_ISOLATION,
+    import task_checks
+    # 사람이 맡길 때 고른 검사 명령만 그대로 허용한다(DEV-238)
+    allowed = list(ALLOWED_TOOLS) + [f"Bash({i['cmd']})" for i in task_checks.selected(issues.get_issue(ref), keys)]
+    return [review.claude_bin(), "-p", prompt_for(ref, parent_ref, keys), "--permission-mode", "acceptEdits", *USER_ISOLATION,
             "--strict-mcp-config", "--mcp-config", mcp_config, "--allowedTools", *allowed, "--disallowedTools", *BLOCKED_TOOLS,
             "--max-budget-usd", str(BUDGET_USD), "--no-session-persistence", "--output-format", "stream-json", "--verbose"]
 
 
-def codex_command_for(ref: str, parent_ref: str | None) -> list[str]:
+def codex_command_for(ref: str, parent_ref: str | None, keys=None) -> list[str]:
     """코드 수정·검사는 worktree 안에서, 커밋과 결과 등록은 서버가 수행한다."""
     import review
-    prompt = review.preamble(ref, execution=True) + prompts.render("execute_codex.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref)
+    import task_checks
+    prompt = review.preamble(ref, execution=True) + prompts.render("execute_codex.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref,
+                                                                   checks=task_checks.prompt_text(issues.get_issue(ref), keys))
     cmd = review.codex_command(prompt, ["whoami", "get_issue", "list_projects", "read_attachment"], web="cached")
     return cmd[:-1] + ["--output-schema", str(Path(__file__).with_name("codex_execute.schema.json")),
                        cmd[-1]]
@@ -448,8 +454,12 @@ def _register_repair(actor, ref, rid, sha, ended_at=None):
     import orchestrate
     cwd = worktree_path(ref)
     try:
+        import task_checks
+        failed = task_checks.verify(ref, cwd, rid)   # 맡길 때 고른 검사와 언제나 절차(DEV-238)
+        if failed:
+            raise issues.StoreError('수정 커밋이 검사를 통과하지 못했어요.\n' + failed[-3000:], 409)
         if _git(cwd, 'rev-parse', 'HEAD') != sha:
-            raise issues.StoreError('등록 중 수정 커밋이 바뀌었어요.', 409)
+            raise issues.StoreError('검사 중 수정 커밋이 바뀌었어요.', 409)
         note = '수동 수정 커밋의 완료 등록을 마쳤어요. 에이전트 재호출 없음.'
         register_completion(actor, ref, cwd, rid, note)
         if ended_at:
@@ -667,7 +677,7 @@ def _run_then_merge(actor, ref, log_path, run_id, cmd, worktree, env, timeout, l
         issues.add_comment(actor, ref, f"⚠️ 자동 병합 중 오류: {e}")
 
 
-def start(actor: dict, ref: str, provider: str | None = None, model: str | None = None) -> dict:
+def start(actor: dict, ref: str, provider: str | None = None, model: str | None = None, checks_json: str | None = None) -> dict:
     """Task 실행을 시작한다(사람만). 조건이 안 맞거나 다른 실행이 돌고 있으면 409. 화면·REST는 jobs.enqueue를 거쳐 부른다."""
     import review
     import jobs
@@ -697,7 +707,8 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     stale = stale_commits(repo, issue, parent)
     notice = (conflict_notice(conflicts) if conflicts else "") + (stale_notice(stale, parent["approval"]["plan_version"]) if stale else "")
     timeout = TIMEOUT_SEC
-    cmd = codex_command_for(ref, issue["parent_ref"]) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG))
+    keys = json.loads(checks_json) if checks_json else None   # 맡길 때 사람이 고른 계획 검사(DEV-238) — 없으면 전부
+    cmd = codex_command_for(ref, issue["parent_ref"], keys) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG), keys)
     cmd = review.with_model(with_notice(cmd, provider, notice), provider, model)
     env = safe_env(repo)
     issue = issues.get_issue(ref)
@@ -713,7 +724,7 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
         if blocker["status"] == "closed":
             issues.add_comment(actor, ref, f"⚠️ 선행 {blocker['ref']}이 닫혔어요 — 그대로 진행해요.")
     with db.connect() as c:
-        c.execute('UPDATE runs SET task_start_sha=? WHERE id=?', (start_sha, run_id))
+        c.execute('UPDATE runs SET task_start_sha=?, checks_json=? WHERE id=?', (start_sha, checks_json, run_id))
         c.execute('INSERT INTO task_execution_results(run_id,plan_version) SELECT id,? FROM runs WHERE id=? AND issue_id=?',
                   (parent['approval']['plan_version'], run_id, issue['id']))
     name = "Codex" if provider == "codex" else "Claude"
@@ -746,7 +757,9 @@ def panel(issue: dict) -> dict | None:
         and branch and branch['commits'] and any(e['kind'] == 'commit' for e in issue.get('events', []))
         and approval and not approval['stale'] and approval['verdict'] in ('approve', 'approve_notes')
         and orchestrate.settings(issue['project_key']).get('auto_merge'))
+    import task_checks
     return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC,
+            "checks": task_checks.items(issue),   # 맡기기 확인창 체크리스트(DEV-238)
             "manual_merge_available": manual_merge_available,
             "retry_merge_available": orchestrate.retry_available(issue),
             "manual_merge_confirmable": orchestrate.manual_merge_confirmable(issue, completed),

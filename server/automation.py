@@ -29,11 +29,11 @@ def plan_structure_error(body, root):
     if numbers != list(range(1, len(tasks) + 1)):
         return 'Task 번호는 1부터 중복 없이 순서대로 적어 주세요.'
     for task, line in zip(tasks, lines):
-        if not task['title'] or not task['files'] or not task['check']:
-            return 'Task 제목·파일·확인이 필요해요.'
+        if not task['title'] or not task['files'] or not task.get('checks'):
+            return 'Task 제목·파일과 `## 검사` 절의 검사(또는 없음 — 이유)가 필요해요.'
         fields = [part.strip() for part in line.split('|')[1:]]
-        if len(fields) != 3 or {f.partition(':')[0].strip() for f in fields} != {'파일', '확인', '선행'}:
-            return 'Task에 파일·확인·선행을 명시해 주세요.'
+        if len(fields) != 2 or {f.partition(':')[0].strip() for f in fields} != {'파일', '선행'}:
+            return 'Task에 파일·선행을 명시해 주세요.'
         after = next(f.partition(':')[2].strip() for f in fields if f.startswith('선행'))
         if not re.fullmatch(r'(없음|\d+(?:\s*,\s*\d+)*)', after):
             return '선행은 없음 또는 Task 번호 목록이어야 해요.'

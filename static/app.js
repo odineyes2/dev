@@ -80,7 +80,7 @@ function toast(msg){
   clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, 3000);
 }
 // 계획서의 '사람이 할 일'(NS-60) — Done 전에 다 했는지 확인받는다. 없으면 바로 통과. 서버도 확인 없이는 Done을 거절한다.
-function confirmDialog(message, {description, summary, body: workBody, wrapItems = false, itemLimit = 3, items = [], moreLabel, okText = '확인', danger = false, input = false, focusCancel = false} = {}){
+function confirmDialog(message, {description, summary, body: workBody, wrapItems = false, itemLimit = 3, items = [], moreLabel, okText = '확인', danger = false, input = false, focusCancel = false, checklist = null} = {}){
   return new Promise(resolve => {
     const previous = document.activeElement;
     const dialog = document.createElement('dialog');
@@ -90,7 +90,7 @@ function confirmDialog(message, {description, summary, body: workBody, wrapItems
     const [title, ...lines] = String(message).split('\n');
     const detail = description ?? lines.join('\n');
     const list = items.length ? `<div class="confirm-items${wrapItems ? ' wrap' : ''}">${items.slice(0,itemLimit).map(x => `<div class="confirm-item"><span class="confirm-ref">${esc(x.ref)}</span><span class="confirm-item-title" title="${esc(x.title)}">${esc(x.title)}</span>${x.note ? `<span class="confirm-note">${esc(x.note)}</span>` : ''}</div>`).join('')}${items.length > itemLimit ? `<div class="confirm-more">${esc(moreLabel ?? `외 ${items.length - itemLimit}개`)}</div>` : ''}</div>` : '';
-    dialog.innerHTML = `<form method="dialog"><h2 id="confirm-title">${esc(title)}</h2><div class="confirm-content">${summary ? `<p class="confirm-summary">${esc(summary)}</p>` : ''}${summary && (list || workBody) ? '<h3 class="confirm-work-title">작업 내용</h3>' : ''}${summary ? '' : `<p class="confirm-message">${esc(detail)}</p>`}${list}${workBody ? `<p class="confirm-body">${esc(workBody)}</p>` : ''}${summary ? `<p class="confirm-message confirm-foot">${esc(detail)}</p>` : ''}${input ? '<input class="confirm-input" aria-label="닫는 이유" required>' : ''}</div><div class="confirm-actions"><button type="button" class="confirm-cancel">취소</button><button type="submit" class="confirm-ok${danger ? ' danger' : ''}">${esc(okText)}</button></div></form>`;
+    dialog.innerHTML = `<form method="dialog"><h2 id="confirm-title">${esc(title)}</h2><div class="confirm-content">${summary ? `<p class="confirm-summary">${esc(summary)}</p>` : ''}${summary && (list || workBody) ? '<h3 class="confirm-work-title">작업 내용</h3>' : ''}${summary ? '' : `<p class="confirm-message">${esc(detail)}</p>`}${list}${workBody ? `<p class="confirm-body">${esc(workBody)}</p>` : ''}${summary ? `<p class="confirm-message confirm-foot">${esc(detail)}</p>` : ''}${input ? '<input class="confirm-input" aria-label="닫는 이유" required>' : ''}${checklist ? checklistHtml(checklist) : ''}</div><div class="confirm-actions"><button type="button" class="confirm-cancel">취소</button><button type="submit" class="confirm-ok${danger ? ' danger' : ''}">${esc(okText)}</button></div></form>`;
     dialog.setAttribute('aria-labelledby', 'confirm-title');
     if(!detail) dialog.querySelector('.confirm-message').remove();
     if(detail){ dialog.querySelector('.confirm-message').id = 'confirm-description'; dialog.setAttribute('aria-describedby', 'confirm-description'); }
@@ -98,11 +98,24 @@ function confirmDialog(message, {description, summary, body: workBody, wrapItems
     let result = input ? null : false;
     dialog.querySelector('.confirm-cancel').onclick = () => dialog.close();
     dialog.onclick = e => { if(e.target === dialog) dialog.close(); };
-    dialog.querySelector('form').onsubmit = e => { e.preventDefault(); result = input ? dialog.querySelector('.confirm-input').value : true; dialog.close(); };
+    dialog.querySelector('form').onsubmit = e => { e.preventDefault(); result = input ? dialog.querySelector('.confirm-input').value
+      : checklist ? [...dialog.querySelectorAll('input[data-check]:checked')].map(x => x.dataset.check) : true; dialog.close(); };
     dialog.onclose = () => { dialog.remove(); if(previous?.isConnected) previous.focus({preventScroll:true}); resolve(result); };
     dialog.showModal();
     (input ? dialog.querySelector('.confirm-input') : dialog.querySelector(focusCancel ? '.confirm-cancel' : '.confirm-ok')).focus();
   });
+}
+// 맡기기 확인창의 검사 체크리스트(DEV-238) — 계획 검사는 체크된 채 해제 가능, 필수와 언제나 절차는 체크된 채 비활성.
+// 좁은 화면에서는 한 줄 요약으로 접고 누르면 펼친다. 고른 계획 검사 키 목록이 확인창의 결과가 된다.
+function checklistHtml(c){
+  const plan = c.plan || [], always = c.always || [];
+  const row = (i, attr) => `<label class="check-row"><input type="checkbox" ${attr} checked ${i.required ? 'disabled' : ''}><span class="check-text"><span class="check-title">${attr.startsWith('data-check') ? `<code>${esc(i.cmd)}</code>` : `<b>${esc(i.label)}</b>`}${i.required ? ' <span class="check-badge">필수</span>' : ''}</span><small>${esc(i.why)}</small></span></label>`;
+  const required = plan.filter(i => i.required).length + always.length;
+  const open = window.matchMedia('(min-width: 601px)').matches ? ' open' : '';
+  return `<details class="confirm-checks"${open}><summary>검사 ${plan.length + always.length}개 · 필수 ${required}개</summary>
+    <div class="check-group"><div class="check-head">계획 검사</div>${plan.length ? plan.map(i => row(i, `data-check="${esc(i.key)}"`)).join('') : `<p class="check-none">${c.none ? `없음 — ${esc(c.none)}` : '계획서에 이 Task의 검사가 없어요.'}</p>`}</div>
+    <div class="check-group"><div class="check-head">언제나 하는 절차</div>${always.map(i => row(i, `data-always="${esc(i.key)}"`)).join('')}</div>
+    <p class="check-foot">체크를 해제한 검사는 이번 실행에서 돌리지 않고 기록에 남겨요. 서버가 끝난 뒤 고른 검사를 다시 돌려요.</p></details>`;
 }
 // 마지막 검토 메모를 HTML 없이 평문으로 보여 준다.
 function inReviewNote(it){
@@ -667,6 +680,7 @@ function bindActions(container,session,refresh){
       if(actionOff(kind,settings,i)){toast('Auto 모드에서는 해당 버튼이 비활성화됩니다.');return;}
       pendingActions.add(i.ref);
       container.querySelectorAll('[data-action]').forEach(x=>{if(x.dataset.ref===i.ref)x.disabled=true;});
+      let checks=null;   // 실행 맡기기에서 사람이 고른 검사(DEV-238)
       try{
         if(kind==='complete-tree'){
           const root=await api('GET',`/api/issues/${encodeURIComponent(i.ref)}`,undefined,current);
@@ -682,12 +696,14 @@ function bindActions(container,session,refresh){
           if(!current())return;
           const limit=task?(provider==='codex'?`시간 제한은 ${Math.floor(task.execute.timeout_sec/60)}분이고 비용 상한은 없어요.`:`비용 상한은 $${task.execute.budget_usd}이에요.`):'';
           const scope=task ? '홈서버의 격리된 worktree에서 구현해요. 실행 후 기존 자동 병합 정책이 적용돼요.' : '홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).';
-          if(!await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?`, {description:task ? `${delegateLine(task, provider)}${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}` : reviewConfirmText(detail, provider), okText:kind==='review'?'검토 맡기기':'실행 맡기기'}))return;
+          const picked=await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?`, {description:task ? `${delegateLine(task, provider)}${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}` : reviewConfirmText(detail, provider), okText:kind==='review'?'검토 맡기기':'실행 맡기기', checklist:task?task.execute.checks:null});
+          if(!picked)return;
+          if(task) checks=picked;
         }
         if(!current())return;
         // 응답(대기열 등록·착수)까지 누른 버튼에 스피너를 보인다(DEV-221).
         b.innerHTML='<svg class="ico list-spinner" aria-hidden="true"><use href="#i-loader-circle"/></svg>'; b.setAttribute('aria-busy','true');
-        await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:kind==='complete-tree'?{confirm_checks:true}:provider?{provider}:{},current);
+        await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:kind==='complete-tree'?{confirm_checks:true}:provider?(checks?{provider,checks}:{provider}):{},current);
         if(current())toast(kind==='decision'?'계획을 승인했어요.':kind==='task-approve'?'Task를 승인했어요.':kind==='complete-tree'?'묶음을 끝냈어요.':'작업을 대기열에 등록했어요.');
       }catch(e){ /* 최신 정보로 다시 판단한다. */ }
       finally{pendingActions.delete(i.ref);if(current())await refresh();}
@@ -1820,10 +1836,11 @@ async function renderIssue(ref, background = false){
       const task = await api('GET', `/api/issues/${encodeURIComponent(ref)}`);
       const name = PROVIDER_NAME[provider], x = task.execute;
       const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(x.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${x.budget_usd}이에요.`;
-      if(!await confirmDialog(`${ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${delegateLine(task, provider)}홈서버에서 relay/${ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+      const checks = await confirmDialog(`${ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${delegateLine(task, provider)}홈서버에서 relay/${ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
-${QUEUE_LINE}`, okText:'실행 맡기기'})) return;
-      const r = await api('POST', `/api/issues/${encodeURIComponent(ref)}/execute`, { provider });
+${QUEUE_LINE}`, okText:'실행 맡기기', checklist:x.checks});
+      if(!checks) return;
+      const r = await api('POST', `/api/issues/${encodeURIComponent(ref)}/execute`, { provider, checks });
       toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요'));
       await reload();
     }catch(e){ /* api()가 오류를 알린다 */ }
@@ -1871,13 +1888,14 @@ ${QUEUE_LINE}`, okText:'실행 맡기기'})) return;
     if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;
     const name = PROVIDER_NAME[provider];
     const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(it.execute.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${it.execute.budget_usd}이에요.`;
-    if(!await confirmDialog(`${it.ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${delegateLine(it, provider)}홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+    const checks = await confirmDialog(`${it.ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${delegateLine(it, provider)}홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
-${QUEUE_LINE}`, okText:'실행 맡기기'})) return;
+${QUEUE_LINE}`, okText:'실행 맡기기', checklist:it.execute.checks});
+    if(!checks) return;
     pendingExecutions.set(ref, provider);
     $('exec-btns').outerHTML = busyLine(provider, '실행');
     try {
-      const r = await api('POST', `/api/issues/${R}/execute`, { provider });
+      const r = await api('POST', `/api/issues/${R}/execute`, { provider, checks });
       toast(queuedMsg(r, '실행을 맡겼어요 — 끝나면 in_review로 올라와요'));
     } catch(e) { /* api()가 이미 오류를 알린다. */ }
     finally {

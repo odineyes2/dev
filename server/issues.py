@@ -1038,7 +1038,9 @@ def complete_tree(actor, ref, note="", confirm_checks=False) -> list[dict]:
 
 def post_plan(actor, ref, body) -> dict:
     import execute
+    import task_checks
     body = _text(body, "계획서", required=True)
+    task_checks.validate_plan(body)   # Task마다 `## 검사`가 있어야 한다(DEV-238)
     with db.connect() as c:
         repo = c.execute("SELECT p.local_path FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id=?", (_find(c, ref)["id"],)).fetchone()[0]
     base = execute.base_sha(repo)   # 에이전트가 적는 값이 아니라 서버가 지금 base를 적는다
@@ -1078,8 +1080,12 @@ def parse_tasks(body: str) -> list[dict]:
             continue
         title, *fields = [x.strip() for x in mm.group(2).split("|")]
         info = {k.strip(): v.strip() for k, _, v in (f.partition(":") for f in fields)}
-        out.append({"n": int(mm.group(1)), "title": title[:300], "files": info.get("파일", ""), "check": info.get("확인", ""),
+        out.append({"n": int(mm.group(1)), "title": title[:300], "files": info.get("파일", ""),
                     "after": [int(x) for x in re.findall(r"\d+", info.get("선행", ""))]})
+    import task_checks
+    checks = task_checks.parse_section(body, strict=False) or {}   # `## 검사` 절(DEV-238) — 승인 때 Task 본문으로 옮긴다
+    for t in out:
+        t["checks"] = checks.get(t["n"])
     return out
 
 
@@ -1122,7 +1128,9 @@ def _spawn_tasks(c, parent, plan_body, version, actor, note) -> int:
     if (version == 1 or not parse_tasks(plan_body)) and has_children:
         return 0   # 첫 판인데 하위가 이미 있음(사람이 만든 Task), 또는 Tasks 절 없는 새 판(기존 Task를 이어 감) — 그대로 둔다
     # 계획서에 Tasks 절이 없으면(작은 일) 이슈 자체를 Task 하나로 — 실행은 Task에만 붙는다
-    tasks = parse_tasks(plan_body) or [{"n": 1, "title": parent["title"], "files": "", "check": "", "after": []}]
+    import task_checks
+    tasks = parse_tasks(plan_body) or [{"n": 1, "title": parent["title"], "files": "", "after": [],
+                                        "checks": (task_checks.parse_section(plan_body, strict=False) or {}).get(1)}]
     existing = {r["title"]: r["id"] for r in c.execute(f"SELECT i.id, i.title FROM issues i WHERE i.parent_id=? AND {_SUPERSEDED} IS NULL", (parent["id"],))}
     proj = c.execute("SELECT * FROM projects WHERE id=?", (parent["project_id"],)).fetchone()
     now, ids, made, ref = db.now_iso(), {}, set(), _issue_dict(parent)["ref"]
@@ -1150,6 +1158,8 @@ def _task_body(ref, version, t, note) -> str:
     body = f"{ref} 계획서 v{version}의 Task {t['n']}."
     if t["files"]:
         body += f"\n\n**바꿀 파일**: {t['files']}"
+    import task_checks
+    body += task_checks.body_text(t.get("checks"))
     if note.strip():
         body += f"\n\n**{ref}의 조건부 승인 메모(계획서보다 우선)**:\n{note.strip()}"
     return body

@@ -900,6 +900,18 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .confirm-note,.confirm-more{ color:var(--muted); font-size:12px; }
 .confirm-note{ flex:none; }
 .confirm-input{ width:100%; min-height:40px; }
+/* 맡기기 확인창 검사 체크리스트(DEV-238) — 필수는 체크된 채 비활성, 좁은 화면에서는 요약 한 줄로 접힌다 */
+.confirm-checks{ padding:var(--sp-2) var(--sp-3); border:1px solid var(--border); border-radius:var(--r-md); background:var(--panel-2); font-size:13px; }
+.confirm-checks summary{ cursor:pointer; font-weight:600; }
+.check-group{ display:flex; flex-direction:column; gap:var(--sp-1); margin-top:var(--sp-2); }
+.check-head{ color:var(--muted); font-size:12px; }
+.check-row{ display:flex; align-items:flex-start; gap:var(--sp-2); min-width:0; }
+.check-row input{ flex:none; margin-top:3px; }
+.check-text{ display:flex; flex-direction:column; min-width:0; overflow-wrap:anywhere; }
+.check-text code{ font-family:var(--mono); font-size:12px; }
+.check-text small,.check-none,.check-foot{ color:var(--muted); font-size:12px; margin:0; }
+.check-badge{ display:inline-block; margin-left:var(--sp-1); padding:0 var(--sp-1); border-radius:var(--r-sm); background:var(--panel); border:1px solid var(--border); font-size:11px; }
+.check-foot{ margin-top:var(--sp-2); }
 .confirm-actions{ display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); gap:var(--sp-2); }
 .confirm-actions button{ width:100%; min-width:0; white-space:normal; min-height:40px; justify-content:center; }
 .confirm-actions .confirm-ok{ background:var(--grad-primary); border-color:var(--accent); color:#fff; }
