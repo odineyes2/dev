@@ -9,6 +9,67 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits, improve_fixture
 
 
+def check_nav_shortcuts(page, shots):
+    """전역 탭 키와 입력·조합·모달 중 이동 방지를 확인한다."""
+    page.goto(BASE + '/#/')
+    expect(page.locator('#shell')).to_be_visible()
+    page.locator('body').click(position={'x': 1, 'y': 1})
+    for key, nav, route in [('t', 'trends', '/trends'), ('a', 'agents', '/agents'),
+                            ('p', 'projects', '/projects'), ('h', 'harness', '/harness'),
+                            ('s', 'settings', '/settings'), ('i', 'issues', '/')]:
+        page.evaluate('() => document.activeElement.blur()')
+        page.keyboard.press(key)
+        expect(page).to_have_url(re.compile(re.escape(BASE + '/#' + route) + r'(?:/[^?]*)?(\?.*)?$'))
+        expect(page.locator(f'.tab-bar [data-nav="{nav}"]')).to_have_class(re.compile(r'\bactive\b'))
+        expect(page.locator(f'[data-nav="{nav}"]')).to_have_attribute('aria-keyshortcuts', key.upper())
+    page.dispatch_event('body', 'keydown', {'code': 'KeyT', 'key': 'ㅅ'})
+    expect(page).to_have_url(BASE + '/#/trends')
+    page.keyboard.press('Shift+I')
+    expect(page).to_have_url(BASE + '/#/')
+
+    def ignored(selector='body', **options):
+        result = page.locator(selector).evaluate("""(el, options) => {
+            const event = new KeyboardEvent('keydown', {bubbles:true, cancelable:true,
+                code:'KeyT', key:'t', ...options});
+            el.dispatchEvent(event);
+            return {prevented:event.defaultPrevented, hash:location.hash};
+        }""", options)
+        assert result == {'prevented': False, 'hash': '#/'}, result
+
+    for options in ({'ctrlKey': True}, {'altKey': True}, {'metaKey': True},
+                    {'repeat': True}, {'isComposing': True}):
+        ignored(**options)
+    ignored('#project-filter')
+    for markup in ('<input>', '<textarea>', '<div contenteditable="true"><span>입력</span></div>'):
+        page.evaluate("html => {const el=document.createElement('div'); el.id='nav-key-probe'; el.innerHTML=html; document.body.append(el)}", markup)
+        selector = '#nav-key-probe span' if 'contenteditable' in markup else '#nav-key-probe > *'
+        page.locator('#nav-key-probe > *').focus()
+        page.keyboard.press('t')
+        expect(page).to_have_url(BASE + '/#/')
+        ignored(selector)
+        page.locator('#nav-key-probe').evaluate('(el) => el.remove()')
+    page.locator('body').focus()
+    page.keyboard.press('`')
+    expect(page.locator('#composer')).to_be_visible()
+    ignored()
+    page.keyboard.press('Escape')
+    expect(page.locator('#composer')).to_be_hidden()
+    for markup in ('<dialog open></dialog>', '<div aria-modal="true">모달</div>'):
+        page.evaluate("html => document.body.insertAdjacentHTML('beforeend', '<div id=nav-key-probe>'+html+'</div>')", markup)
+        ignored()
+        page.locator('#nav-key-probe').evaluate('(el) => el.remove()')
+    page.evaluate("() => {document.getElementById('shell').hidden=true}")
+    try:
+        ignored()
+    finally:
+        page.evaluate("() => {document.getElementById('shell').hidden=false}")
+    page.evaluate("() => document.body.insertAdjacentHTML('beforeend', '<div id=nav-key-probe aria-modal=true hidden></div>')")
+    page.dispatch_event('body', 'keydown', {'code': 'KeyT', 'key': 't'})
+    expect(page).to_have_url(BASE + '/#/trends')
+    page.locator('#nav-key-probe').evaluate('(el) => el.remove()')
+    page.goto(BASE + '/#/')
+
+
 def check_delegate_confirm(page, shots):
     """위임 안내의 공용 문구와 실제 확인창을 네 화면에서 확인한다."""
     headers = {'X-Requested-With': 'dev'}
@@ -448,22 +509,42 @@ def check_progress_clock(page, shots):
                 page.emulate_media(color_scheme=theme)
                 page.set_viewport_size({'width':width,'height':850})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-                box, row = run_clock.bounding_box(), page.locator(f'tr[data-ref="{running}"] .progress-note').bounding_box()
+                # 목록 갱신 중 서로 다른 렌더의 좌표를 섞지 않고, 모두 보일 때 한 번에 읽는다.
+                bounds = page.wait_for_function('''refs => {
+                    const selectors = {
+                        box: `tr[data-ref="${refs.running}"] .progress-clock`,
+                        row: `tr[data-ref="${refs.running}"] .progress-note`,
+                        short: `tr[data-ref="${refs.running}"] .progress-short`,
+                        more: `tr[data-ref="${refs.running}"] .progress-more`,
+                        manualNote: `tr[data-ref="${refs.manual}"] .progress-note`,
+                        manualBox: `tr[data-ref="${refs.manual}"] .progress-clock`,
+                    };
+                    const bounds = {};
+                    for (const [name, selector] of Object.entries(selectors)) {
+                        const el = document.querySelector(selector);
+                        if (!el || !el.getClientRects().length) return false;
+                        const rect = el.getBoundingClientRect();
+                        if (!rect.width || !rect.height) return false;
+                        bounds[name] = rect.toJSON();
+                    }
+                    return bounds;
+                }''', arg={'running': running, 'manual': manual}).json_value()
+                box, row = bounds['box'], bounds['row']
                 assert box and row and box['x'] + box['width'] <= row['x'] + row['width'] + 1, (box, row)   # 시계가 칸 밖으로 밀리지 않는다
                 short = page.locator(f'tr[data-ref="{running}"] .progress-short')
-                short_box = short.bounding_box()
+                short_box = bounds['short']
                 if width == 390:
                     assert short_box['y'] + short_box['height'] <= box['y'] + 1, (short_box, box)
                     assert short.evaluate('e => e.scrollWidth <= e.clientWidth')
                     assert run_clock.evaluate('e => getComputedStyle(e, "::before").content') == 'none'
                 else:
                     assert abs(short_box['y'] - box['y']) <= 1, (short_box, box)
-                more = page.locator(f'tr[data-ref="{running}"] .progress-more').bounding_box()
+                more = bounds['more']
                 for item in (box, more):
                     assert item['x'] >= row['x'] - 1 and item['x'] + item['width'] <= row['x'] + row['width'] + 1
                     assert item['y'] >= row['y'] - 1 and item['y'] + item['height'] <= row['y'] + row['height'] + 1
-                manual_note = page.locator(f'tr[data-ref="{manual}"] .progress-note').bounding_box()
-                manual_box = manual_clock.bounding_box()
+                manual_note = bounds['manualNote']
+                manual_box = bounds['manualBox']
                 assert abs(manual_note['height'] - manual_box['height']) <= 1
                 page.locator(f'tr[data-ref="{running}"]').scroll_into_view_if_needed()
                 page.screenshot(path=str(shots / f'progress-clock-{theme}-{width}.png'), animations='disabled')
@@ -5815,6 +5896,10 @@ try:
         if '--login-only' in sys.argv:
             assert not errs, errs
             print('OK: login screen and authentication'); sys.exit(0)
+        if '--nav-shortcut-only' in sys.argv:
+            check_nav_shortcuts(page, shots)
+            assert not errs, errs
+            print('OK: nav shortcuts'); sys.exit(0)
         if '--delegate-confirm-only' in sys.argv:
             check_delegate_confirm(page, shots)
             assert not errs, errs
@@ -6186,6 +6271,7 @@ try:
         check_attachments(page, shots)
         check_new_attachment_images(page, shots)
         check_composer_images(page, shots)
+        check_nav_shortcuts(page, shots)
         check_composer_chain(page, shots)
         check_composer_close(page, shots)
         check_queue_edges(page, shots)

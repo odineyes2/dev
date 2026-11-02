@@ -2284,6 +2284,17 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
   if(composer.hidden) void openComposer(); else closeComposer();   // 열린 상태에서 백틱(입력칸 밖)이면 닫는다(DEV-96)
 });
+// 전역 탭 단축키는 한글 입력 상태에서도 물리 키로 판별한다(DEV-224).
+const NAV_KEYS = {KeyI:'issues', KeyT:'trends', KeyA:'agents', KeyP:'projects', KeyH:'harness', KeyS:'settings'};
+document.addEventListener('keydown', (e) => {
+  const nav = NAV_KEYS[e.code];
+  if(!nav || e.ctrlKey || e.altKey || e.metaKey || e.repeat || e.isComposing || sharedLightbox?.isOpen || !composer.hidden || document.getElementById('shell').hidden) return;
+  const t = e.target;
+  if(t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) return;
+  if([...document.querySelectorAll('dialog[open], [aria-modal="true"]')].some(d => d.getClientRects().length && getComputedStyle(d).visibility !== 'hidden')) return;
+  const tab = document.querySelector(`.tab-bar a[data-nav="${nav}"]`);
+  if(tab){ e.preventDefault(); tab.click(); }
+});
 composer.addEventListener('keydown', (e) => { if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); closeComposer(); } });
 cmpBody.addEventListener('keydown', (e) => {
   if(e.key !== 'Enter' || e.shiftKey) return;   // Shift+Enter는 줄바꿈
