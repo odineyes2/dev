@@ -6050,6 +6050,10 @@ else:
 ONLY = expand(ONLY)
 if '--resolve' in sys.argv:   # 인자가 어떤 블록으로 풀리는지만 보인다(브라우저 없이, ASCII JSON)
     print(json.dumps(ONLY or [b[0] for b in BLOCKS])); sys.exit(0)
+# --coverage <out.json>: 블록마다 쓴 JS 함수·CSS 규칙 위치를 CDP로 모아 남긴다(scripts/ui_block_map.py가 이름으로 바꾼다, DEV-233-2)
+COVERAGE = sys.argv[sys.argv.index('--coverage') + 1] if '--coverage' in sys.argv[:-1] else None
+if '--block-map' in sys.argv:   # 모은 원본으로 바로 tests/ui_block_map.json을 쓴다(scripts/ui_block_map.py와 같은 결과)
+    COVERAGE = COVERAGE or str(Path(tempfile.mkdtemp()) / 'coverage.json')
 
 
 def snapshot_db():
@@ -6900,7 +6904,14 @@ try:
             """블록을 차례로 돈다 — 하나가 실패해도 나머지를 돌고 실패한 블록 id 목록을 돌려준다."""
             import traceback
             failed = []
+            collector, coverage = None, {}
+            if COVERAGE:
+                sys.path.insert(0, str(ROOT / 'scripts'))
+                from ui_block_map import Collector
+                collector = Collector(page)
             for n, block_id in enumerate(ids):
+                if collector:
+                    collector.start()   # 블록 앞 초기화(다시 읽기)부터 센다 — 블록이 보는 화면의 첫 그리기도 그 블록이 쓴 코드다
                 try:
                     if n:
                         reset_between_blocks()
@@ -6912,10 +6923,21 @@ try:
                     errs.clear()
                     print(f'FAIL: block:{block_id}', flush=True)
                     continue
+                finally:
+                    if collector:
+                        try:
+                            coverage[block_id] = {**collector.stop(), 'ok': block_id not in failed}
+                        except Exception:
+                            traceback.print_exc()
+                            coverage[block_id] = {'js': {}, 'css': {}, 'complete': False, 'ok': False}
+                        Path(COVERAGE).write_text(json.dumps(coverage), encoding='utf-8')
                 print(f'OK: block:{block_id}', flush=True)
             return failed
 
         failed = run_blocks(ONLY or [b[0] for b in BLOCKS])
+        if '--block-map' in sys.argv:
+            from ui_block_map import write_map
+            write_map(json.loads(Path(COVERAGE).read_text(encoding='utf-8')), [b[0] for b in BLOCKS])
         if failed:
             sys.exit('실패한 블록: ' + ','.join(failed))
     print("OK")
