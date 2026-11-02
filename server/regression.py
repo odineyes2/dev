@@ -676,3 +676,23 @@ def save_record(key, value):
             c.execute('INSERT INTO app_settings(key,value,updated_at,updated_by) VALUES(?,?,?,?) '
                       'ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by',
                       (key, json.dumps(value, ensure_ascii=False), db.now_iso(), 'server'))
+
+
+def triage_line(rows):
+    """완료 메모·댓글에 넣을 재실행 분류 한 줄을 만든다."""
+    labels = {'flaky': '불안정', 'timeout': '시간 초과', 'real': '진짜 실패'}
+    return ' · '.join(x['file'] + ('#' + x['block'] if x['block'] else '') + ' ' + labels[x['class']] +
+                      ('(재실행 통과)' if x['rerun'] == 'pass' else '(재실행 실패)') for x in rows)
+
+
+def record_triage(project, ref, rows):
+    """프로젝트의 블록별 분류 횟수와 최근 Task 10개를 누적한다."""
+    key = 'regression-flaky:' + project
+    # 병렬 검사 결과를 모은 뒤 한 번만 호출한다.
+    data = load_record(key)
+    for row in rows:
+        name = row['file'] + ('#' + row['block'] if row['block'] else '')
+        entry = data.setdefault(name, {'flaky': 0, 'timeout': 0, 'real': 0, 'last': []})
+        entry[row['class']] += 1
+        entry['last'] = ([x for x in entry['last'] if x != ref] + [ref])[-10:]
+    save_record(key, data)
