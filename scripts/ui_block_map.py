@@ -18,8 +18,20 @@ _REGEX_BEFORE = set('(,=:[!&|?{};+-*%<>~^')
 
 
 def blob_sha(data):
-    """git blob sha — git 없이 파일 내용으로 계산한다(generated_from 비교용)."""
+    """git blob sha — git 없이 내용으로 계산한다(generated_from 비교용). 내용은 git에 저장되는 모양(LF)이어야 한다."""
     return hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest()
+
+
+def file_blob_sha(root, rel):
+    """작업 폴더 파일의 git blob sha — `git hash-object`로 git과 같은 변환(core.autocrlf의 CRLF→LF)을 거친다.
+    작업 폴더 바이트를 그대로 해시하면 Windows(CRLF)에서 git에 없는 sha가 되어 서버가 대응표를 늘 낡았다고 본다(DEV-233)."""
+    try:
+        r = subprocess.run(['git', 'hash-object', '--', rel], cwd=root, capture_output=True, text=True, timeout=30)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return blob_sha((Path(root) / rel).read_bytes().replace(b'\r\n', b'\n'))
 
 
 def _utf16_lines(text):
@@ -335,7 +347,7 @@ def build_map(raw_blocks, block_ids, root=ROOT):
     texts, shas = {}, {}
     for rel in JS_FILES + CSS_FILES + ('static/index.html',):
         data = (root / rel).read_bytes()
-        shas[rel] = blob_sha(data)
+        shas[rel] = file_blob_sha(root, rel)
         if not rel.endswith('.html'):
             texts[rel] = data.decode('utf-8')
     blocks = {}

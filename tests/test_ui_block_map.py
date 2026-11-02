@@ -102,8 +102,22 @@ def check_build():
     print('OK — 대응표 만들기')
 
 
+def check_git_shas():
+    """대응표의 generated_from은 git이 아는 blob이어야 한다 — 작업 폴더 바이트(CRLF)를 해시하면 git에 없는 sha가 되어
+    서버(regression.ui_map_pick)가 기준 파일을 못 찾고 화면 변경마다 전체 1회로 떨어진다(DEV-233)."""
+    import subprocess
+    saved = json.loads((ROOT / 'tests' / 'ui_block_map.json').read_text(encoding='utf-8'))['generated_from']
+    for rel, sha in saved.items():
+        assert subprocess.run(['git', 'cat-file', '-e', sha], cwd=ROOT).returncode == 0, (rel, sha)
+    for rel in saved:
+        expected = subprocess.run(['git', 'hash-object', '--', rel], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+        assert m.file_blob_sha(ROOT, rel) == expected, rel
+    print('OK — map shas are git blobs')
+
+
 check_segments()
 check_css()
 check_collect()
 check_build()
+check_git_shas()
 print('OK')
