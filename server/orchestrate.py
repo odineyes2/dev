@@ -500,17 +500,36 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
     def _one(t):
         def item(name):
             run_progress.check_item(ref, t.name, name)
-        r = run_test(repo, t, env=env, on_item=item)
+        # 블록 단위(DEV-231): 완료 검사는 고른·바뀐 블록만 `--only`로 돈다. 병합 검사(R07)는 늘 파일 전체다.
+        plan = (selection.get('blocks') or {}).get(t.name) if stage == 'server_completion' else None
+        args = ('--only', ','.join(plan['only'])) if plan and plan['only'] else ()
+        r = run_test(repo, t, env=env, on_item=item, **({'args': args} if args else {}))
+        _block_times(t, r)
         # 불안정 검사 대책(DEV-160-3): 바뀐 검사는 완료 때 3번, 병합에서 실패한 검사는 2번 더 돌려 섞임을 가린다.
+        # 블록을 아는 검사는 바뀐 블록만 2번 더, 블록 밖이 바뀌어 블록을 정하지 못했으면 전체 1번만(R10이 병합에서 가린다).
         runs, bad = [r], ([r] if r.returncode else [])
-        if (stage == 'server_completion' and t.name in changed_tests) or (stage == 'server_merge' and r.returncode):
+        repeat = ()
+        if stage == 'server_completion' and t.name in changed_tests:
+            repeat = (('--only', ','.join(plan['repeat'])) if plan['repeat'] else None) if plan else ()
+        if stage == 'server_merge' and r.returncode:
+            repeat = ()
+        elif not (stage == 'server_completion' and t.name in changed_tests):
+            repeat = None
+        if repeat is not None:
             for _ in range(2):
                 run_progress.check_start(ref, t.name, test_runner.timeout_for(t))   # 다시 돌리는 동안의 경과·항목을 처음부터
-                again = run_test(repo, t, env=env, on_item=item)
+                again = run_test(repo, t, env=env, on_item=item, **({'args': repeat} if repeat else {}))
+                _block_times(t, again)
                 runs.append(again)
                 if again.returncode:
                     bad.append(again)
         return runs, bad
+
+    block_durations = {}   # 'test_ui.py#confirm' → 초(이번 실행의 마지막 값)
+
+    def _block_times(t, r):
+        for bid, sec in (getattr(r, 'blocks', None) or {}).items():
+            block_durations[t.name + '#' + bid] = sec
     # 병렬(DEV-200): 격리 PG는 모든 검사가 한 클러스터를 같이 쓰므로 순차로 돌린다.
     timing = regression.load_record('regression-durations:' + key)
     started = time.monotonic()
@@ -546,16 +565,22 @@ def _run_tests(repo, stage, ref, changed, env) -> str | None:
             tag = f"{policy[stage].get('number', '')} {policy[stage]['name']} 실패 — {policy.get('file:' + t.name, {}).get('number', '')} "
             failures.append(f"{flaky}{tag}{t.name}: 종료 코드 {r.returncode} (0x{r.returncode & 0xffffffff:08X})\n전체 로그: {log}\n{output[-1500:]}")
     results = {t.name: results[t.name] for t in files if t.name in results}
-    if durations:   # 다음 병렬 실행이 오래 걸리는 검사부터 시작하게 파일별 시간을 프로젝트마다 남긴다
-        regression.save_record('regression-durations:' + key, {**timing, **durations})
+    # 블록 시간(DEV-231)은 지수 평균으로 같은 기록에 `파일#블록` 키로 남긴다(예상 소요·선정 근거).
+    blocks_avg = {k: round(timing[k] * 0.5 + s * 0.5, 1) if isinstance(timing.get(k), (int, float)) else s for k, s in block_durations.items()}
+    if durations or blocks_avg:   # 다음 병렬 실행이 오래 걸리는 검사부터 시작하게 파일별 시간을 프로젝트마다 남긴다
+        regression.save_record('regression-durations:' + key, {**timing, **durations, **blocks_avg})
     if ref:
         cached['_meta'] = meta
         regression.save_record('regression-cache:' + ref, cached)
         reused = sum(1 for v in results.values() if v == 'reused')
         reason = next(iter(miss.values()), '') if not reused else ''
         regression.save_record('regression-selection:' + ref + ':' + stage,
-                               {**selection, 'results': results, 'durations': durations, 'wall': wall,
+                               {**selection, 'results': results, 'durations': durations, 'wall': wall, 'block_durations': block_durations,
                                 'cache': {'used': bool(reused), 'reused': reused, 'reason': reason}})
+        whole = [n for n, p in (selection.get('blocks') or {}).items() if p.get('whole_once') and results.get(n) in ('passed', 'failed')]
+        if stage == 'server_completion' and whole:
+            issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref,
+                               f"ℹ️ {', '.join(whole)}: 블록을 정하지 못해 전체 1회 — 바뀐 줄이 블록 밖(main·공용 도우미)이라 반복하지 않았어요(R10이 병합에서 가려요)")
         if stage == 'server_merge' and durations:
             issues.add_comment({'kind': 'human', 'name': 'system/regression-cache'}, ref, '⏱️ 병합 ' + slowest_line(durations, wall=wall))
         if stage == 'server_merge' and miss and not reused and not reason.startswith('트리가 다름'):

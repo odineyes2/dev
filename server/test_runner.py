@@ -127,8 +127,15 @@ def run(repo, t, args=(), env=None, on_item=None):
                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     out, err = [], []
     rule, on_line = rule_for(repo, t), None
-    if on_item and rule.get('item'):
-        def on_line(line):
+    blocks, last = {}, [time.monotonic()]   # 블록별 초(DEV-231) — `OK: block:<id>` 줄 사이 시간
+
+    def on_line(line):
+        m = BLOCK_MARK.match(line)
+        if m:
+            now = time.monotonic()
+            blocks[m['id']] = round(now - last[0], 1)
+            last[0] = now
+        if on_item and rule.get('item'):
             name = item_name(rule, line)
             if name is not None:
                 try:
@@ -155,7 +162,31 @@ def run(repo, t, args=(), env=None, on_item=None):
     if any(reader.is_alive() for reader in readers):   # 읽기 스레드는 daemon이라 버려 둬도 서버 종료를 막지 않는다
         note += (f'\n⚠️ 검사가 끝난 뒤에도 남은 자식 프로세스가 출력을 붙잡고 있어 {PIPE_GRACE_SEC}초만 기다리고 넘어갔어요'
                  ' — 검사가 띄운 보조 서버를 정리하지 않았는지 확인해 주세요.')
-    return subprocess.CompletedProcess(proc.args, code, ''.join(list(out)), ''.join(list(err)) + note)
+    result = subprocess.CompletedProcess(proc.args, code, ''.join(list(out)), ''.join(list(err)) + note)
+    result.blocks = dict(blocks)
+    return result
+
+
+BLOCK_MARK = re.compile(r'^\s*OK:\s*block:(?P<id>[\w.-]+)')   # 블록 하나가 끝난 줄(DEV-231)
+
+
+def list_blocks(repo, t, env=None):
+    """검사 파일의 블록 목록(DEV-231) — `--list-blocks`에 JSON 한 줄 [{"id","title","lines":[시작,끝]}]로 답하는 파일만.
+    소스에 `--list-blocks`가 없거나 응답이 없거나 모양이 틀리면 None(블록 없는 파일, 지금처럼 파일 단위)."""
+    try:
+        if '--list-blocks' not in Path(t).read_text(encoding='utf-8', errors='replace'):
+            return None
+        r = subprocess.run(command(repo, t) + ['--list-blocks'], cwd=repo, capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=60, env={**(os.environ if env is None else env), 'PYTHONIOENCODING': 'utf-8', 'DEV_TEST_RUN': '1'},
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        line = next((x for x in reversed(r.stdout.splitlines()) if x.strip()), '') if r.returncode == 0 else ''
+        data = json.loads(line) if line else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    ok = isinstance(data, list) and all(
+        isinstance(b, dict) and isinstance(b.get('id'), str) and re.fullmatch(r'[\w.-]+', b['id'])
+        and isinstance(b.get('lines'), list) and len(b['lines']) == 2 and all(type(n) is int for n in b['lines']) for b in data)
+    return [{'id': b['id'], 'title': str(b.get('title') or ''), 'lines': b['lines']} for b in data] if ok else None
 
 
 def timeout_for(t) -> int:

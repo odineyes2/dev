@@ -184,7 +184,33 @@ def planning_instructions(ref=None):
             '수준은 light(문구/화면/문서), normal(개별 기능), high(인증/DB/공통 실행)이다. '
             '각 Task의 Auto 항목을 모두 판단하고 개별 파일도 file:test_x.py 키로 선택한다. '
             'Task가 추가·수정하는 검사 파일은 서버가 항상 돌리므로 false로 두어도 꺼지지 않는다. '
-            'On/Off는 사람 설정이며 바꾸지 않는다. 검사 키와 현재 모드: ' + keys + '\n')
+            'On/Off는 사람 설정이며 바꾸지 않는다. 검사 키와 현재 모드: ' + keys + '\n' + _block_instructions(issue, repo))
+
+
+def _block_instructions(issue, repo):
+    """블록을 지원하는 검사 파일의 블록 id·제목·평균 시간(DEV-231). 없으면 빈 문자열."""
+    repo = repo or Path(__file__).resolve().parents[1]
+    if not Path(repo).is_dir():
+        return ''
+    pk = issue['project_key'] if issue else project_key(repo)
+    found = [p for p in test_files(repo, pk) if '--list-blocks' in p.read_text(encoding='utf-8', errors='replace')]
+    if not found:
+        return ''
+    try:
+        timing = load_record('regression-durations:' + pk)
+    except Exception:   # 안내가 계획 작성을 막지 않는다
+        return ''
+    parts = []
+    for path in found:
+        listed = blocks_of(repo, path)
+        if listed:
+            parts.append(path.name + ': ' + ', '.join(
+                b['id'] + (f"({b['title']}" + (f", 평균 {timing[path.name + '#' + b['id']]:.0f}초" if path.name + '#' + b['id'] in timing else '') + ')' if b['title'] else '')
+                for b in listed))
+    if not parts:
+        return ''
+    return ('블록을 지원하는 검사 파일은 `"file:test_ui.py#confirm": true`처럼 블록만 고를 수 있다 — 고른 블록만 한 번에 돈다'
+            '(병합 검사는 파일 전체). 화면을 바꾸는 Task는 파일 전체 대신 관련 블록을 고른다. 블록 목록: ' + ' / '.join(parts) + '\n')
 
 
 def _plan_task(issue, body):
@@ -346,6 +372,31 @@ def resolve(ref=None, repo=None, changed=None):
         for key, item in checks.items():
             if item['mode'] == 'auto':
                 item.update(enabled=True, reason='Task 문맥 없는 직접 검사')
+    # 블록 선택(DEV-231) — 계획의 `file:x.py#블록` 키와 Task가 바꾼 블록. 블록을 모르는 파일은 지금처럼 파일 단위다.
+    blocks = {}
+    picks = {}
+    for key, on in choice.get('checks', {}).items():
+        if key.startswith('file:') and '#' in key and on is True:
+            name, block = key[5:].split('#', 1)
+            picks.setdefault(name, []).append(block)
+    if repo and Path(repo).is_dir() and (picks or changed_tests):
+        for path in test_files(repo, pk):
+            if path.name not in picks and path.name not in changed_tests:
+                continue
+            listed = blocks_of(repo, path)
+            if not listed:
+                continue
+            lines = None
+            if path.name in changed_tests:
+                lines = changed_lines(repo, Path(path).relative_to(repo).as_posix() if Path(path).is_relative_to(repo) else path.name)
+                lines = set() if lines is None else lines   # 새 파일·읽기 실패는 블록을 정하지 못한 것으로 본다
+            plan = block_plan(listed, lines, picks.get(path.name, ()))
+            if not plan['only'] and not plan['whole_once']:
+                continue
+            blocks[path.name] = plan
+            item = checks.get('file:' + path.name)
+            if item and item['mode'] == 'auto' and plan['selected'] and not item['enabled']:
+                item.update(enabled=True, reason='계획 에이전트가 블록을 고름: ' + ', '.join(plan['selected']))
     human_off = []
     for name in sorted(changed_tests):
         item = checks.get('file:' + name)
@@ -374,13 +425,66 @@ def resolve(ref=None, repo=None, changed=None):
     for key, item in checks.items():
         item['number'] = labels.get(key[5:], '') if key.startswith('file:') else registry.number_of(key)
     return {'level': level, 'project': pk, 'changed_files': changed, 'planned': bool(choice), 'checks': checks,
-            'changed_tests': sorted(changed_tests), 'changed_tests_off': human_off}
+            'changed_tests': sorted(changed_tests), 'changed_tests_off': human_off, 'blocks': blocks}
 
 
 def test_files(repo, project_key=None):
     """프로젝트의 검사 규칙(orchestrate.json `tests`, 없으면 기본 — 루트 검사와 Moai의 패키지 검사)으로 찾는다(DEV-212, test_runner)."""
     import test_runner
     return test_runner.test_files(repo, project_key)
+
+
+def blocks_of(repo, t):
+    """검사 파일의 블록 목록(DEV-231) — 파일 내용 지문으로 캐시한다. 블록을 모르는 파일은 None(지금처럼 파일 단위)."""
+    import test_runner
+    try:
+        sha = hashlib.sha256(Path(t).read_bytes()).hexdigest()
+    except OSError:
+        return None
+    key = 'regression-blocks:' + sha
+    saved = load_record(key)
+    if 'blocks' in saved:
+        return saved['blocks']
+    blocks = test_runner.list_blocks(str(repo), t)
+    save_record(key, {'file': Path(t).name, 'blocks': blocks})
+    return blocks
+
+
+def changed_lines(repo, rel):
+    """Task가 바꾼 검사 파일의 새 쪽 줄 번호들(base...HEAD와 커밋 전 변경). 새 파일·읽기 실패는 None(전체로 본다)."""
+    import execute
+    lines = set()
+    for args in ((f'{execute.BASE_BRANCH}...HEAD',), ('HEAD',)):
+        r = execute._run_git(str(repo), 'diff', '-U0', *args, '--', rel)
+        if r.returncode:
+            return None
+        if re.search(r'^--- /dev/null', r.stdout, re.M):
+            return None
+        for m in re.finditer(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@', r.stdout, re.M):
+            start, count = int(m[1]), int(m[2] if m[2] is not None else 1)
+            lines.update(range(start, start + count) if count else (start,))   # 지운 줄은 그 자리 줄로 본다
+    return lines
+
+
+def block_plan(blocks, changed=None, selected=()):
+    """블록 선택·바뀐 블록을 실행 계획으로 만든다(DEV-231).
+    changed: 바뀐 줄 번호 집합(None=검사 파일 변경 없음, 빈 집합 아님) · selected: 계획이 고른 블록 id.
+    돌려주는 것: only(고른+바뀐 블록, 비면 파일 전체), repeat(R09로 2번 더 돌 블록), whole_once(블록을 정하지 못해 전체 1회)."""
+    ids = {b['id'] for b in blocks}
+    picked = [i for i in selected if i in ids]
+    hit, outside = [], False
+    if changed is not None:
+        for n in changed:
+            owner = next((b['id'] for b in blocks if b['lines'][0] <= n <= b['lines'][1]), None)
+            if owner is None:
+                outside = True
+            elif owner not in hit:
+                hit.append(owner)
+    whole = outside or changed is not None and not changed
+    if whole:
+        return {'only': [], 'repeat': [], 'whole_once': True, 'changed': hit, 'selected': picked}
+    only = picked + [i for i in hit if i not in picked]
+    return {'only': only, 'repeat': hit, 'whole_once': False, 'changed': hit, 'selected': picked}
 
 
 def work_tree_hash(repo):

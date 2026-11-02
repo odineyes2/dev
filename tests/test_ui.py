@@ -4306,6 +4306,10 @@ def check_list_sort(page, shots):
                 page.evaluate("s => {document.documentElement.dataset.theme=s}", theme)
                 page.set_viewport_size({'width': width, 'height': 850})
                 page.wait_for_timeout(150)
+                # 크기·테마를 바꾼 뒤 목록을 다시 그리는 중이면 행이 잠시 없으니 두 행이 생길 때까지 기다린다.
+                page.wait_for_selector('#list-body tr[data-ref="TEST-61"] td.ref', state='attached')
+                page.wait_for_selector('#list-body tr[data-ref="TEST-61-1"] td.ref', state='attached')
+                settled()
                 positions = page.evaluate("""() => {
                     const firstGlyph = cell => {
                         const node = [...cell.childNodes].find(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
