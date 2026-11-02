@@ -9,6 +9,18 @@ ROOT = Path(__file__).resolve().parent.parent
 from ui_fixture import FAKE_NS, free_port, wait_port, child_environment, BOOTSTRAP, audit_fixture, mock_audits, improve_fixture
 
 
+def assert_dialog_actions(row):
+    """버튼이 같은 줄·같은 너비로 하단 양끝을 채우는지 확인한다."""
+    bounds = row.evaluate("""e => ({row:e.getBoundingClientRect().toJSON(),
+        buttons:[...e.querySelectorAll('button')].map(b => b.getBoundingClientRect().toJSON())})""")
+    buttons, line = bounds['buttons'], bounds['row']
+    assert len(buttons) == 2, bounds
+    assert abs(buttons[0]['y'] - buttons[1]['y']) < 2, bounds
+    assert abs(buttons[0]['width'] - buttons[1]['width']) < 2, bounds
+    assert abs(buttons[0]['left'] - line['left']) < 2, bounds
+    assert abs(buttons[-1]['right'] - line['right']) < 2, bounds
+
+
 def check_nav_shortcuts(page, shots):
     """전역 탭 키와 입력·조합·모달 중 이동 방지를 확인한다."""
     page.goto(BASE + '/#/')
@@ -3150,7 +3162,8 @@ def check_auto_settings(page, shots):
     page.set_viewport_size({'width': 1300, 'height': 850})
     page.evaluate("localStorage.setItem('dev.theme', 'light'); document.documentElement.dataset.theme = 'light'")
     # 전역 설정은 프로젝트 삭제로 초기화되지 않는다. 다음 UI 검사의 자동 실행을 격리한다.
-    assert page.request.patch(BASE + '/api/settings/auto', headers=H, data={
+    # 같은 값을 저장하는 정리 요청만 연결 초기화(ECONNRESET) 때 최대 두 번 재시도한다.
+    assert page.request.patch(BASE + '/api/settings/auto', headers=H, max_retries=2, data={
         'auto_review': False, 'auto_plan_approve': False, 'auto_execute': False, 'auto_approve': False,
         'token_exhaustion_fallback': False, 'provider_order': ['claude','codex'],
         'orchestrator_provider_order': ['claude','codex'], 'troubleshooter_provider_order': ['claude','codex'],
@@ -5870,6 +5883,7 @@ try:
                             assert dialog.locator('.confirm-item-title').first.evaluate("e => e.scrollWidth > e.clientWidth && getComputedStyle(e).textOverflow === 'ellipsis'")
                             assert dialog.locator('.confirm-ok').inner_text() == '완료로 바꾸기'
                         dialog.evaluate('e => Promise.all(e.getAnimations().map(a => a.finished))')
+                        assert_dialog_actions(dialog.locator('.confirm-actions'))
                         # 버튼 외곽뿐 아니라 실제 라벨 영역의 가로·세로 중심을 확인한다.
                         for button in dialog.locator('.confirm-actions button').all():
                             metrics = button.evaluate("""e => {
@@ -5891,6 +5905,28 @@ try:
             page.mouse.click(1, 1)
             expect(page.locator('.confirm-dialog')).to_have_count(0)
             assert page.evaluate('window.confirmResult') is False
+            headers = {'X-Requested-With': 'dev'}
+            assert page.request.post(BASE + '/api/projects', headers=headers,
+                                     data={'key':'DEV', 'name':'버튼 검사'}).ok
+            response = page.request.post(BASE + '/api/issues', headers=headers,
+                                         data={'project':'DEV', 'title':'연관 이슈 버튼 확인'})
+            assert response.ok, response.status
+            issue = response.json()
+            page.goto(BASE + '/#/issue/' + issue['ref'])
+            expect(page.locator('#edit-deps')).to_be_visible()
+            for theme in ('light', 'dark'):
+                page.evaluate('t => document.documentElement.dataset.theme=t', theme)
+                for width in (1300, 390):
+                    page.set_viewport_size({'width':width, 'height':850})
+                    page.click('#edit-deps')
+                    editor = page.locator('#dep-editor')
+                    expect(editor).to_be_visible()
+                    assert_dialog_actions(editor.locator('.row-end'))
+                    assert editor.evaluate('e => e.scrollWidth <= e.clientWidth')
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                    page.screenshot(path=str(shots / f'confirm-dependencies-{theme}-{width}.png'))
+                    page.click('#dep-cancel')
+                    expect(editor).not_to_be_visible()
             assert not errs, errs
             print('OK: confirm dialog'); sys.exit(0)
         if '--login-only' in sys.argv:
