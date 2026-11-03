@@ -1528,7 +1528,7 @@ const RESULT_FORM = {
 };
 function resultHtml(it){
   if(it.status !== 'in_review') return '';
-  return `<div class="panel"><h2>Result <span class="meta">결과를 확인해 주세요</span></h2>
+  return `<div class="panel" id="panel-result"><h2>Result <span class="meta">결과를 확인해 주세요</span></h2>
     <div class="decision" id="result"><div id="result-form" hidden><textarea id="result-note"></textarea>
       <div id="result-attach" hidden><div class="cmp-files" id="result-files"></div>
         <button type="button" id="result-attach-btn">이미지 첨부</button>
@@ -1539,33 +1539,175 @@ function resultHtml(it){
       <button data-to="changes_requested" id="request-changes"><svg class="ico" aria-hidden="true"><use href="#i-pencil"/></svg><span>수정 요청</span></button>
       <button data-to="closed" class="danger"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg><span>결과 거절</span></button></div></div></div>`;
 }
-// ---- 단계 안내: 지금 어디이고 다음에 뭘 하면 되는지 한 줄 ----
-function stageHtml(it, liveMode, liveProvider){
-  const a = it.approval, x = it.execute, ok = a && !a.stale && a.verdict !== 'reject';
-  let msg = '';
-  if(['done', 'closed'].includes(it.status)) return '';
-  if(LIVE_MERGE.has(it.merge_state)) msg = `${esc(it.merge_state)} — 운영 반영 확인이 끝나면 결과를 확인할 수 있어요.`;
-  else if(it.review_running) msg = liveMode === 'execute' ? `${PROVIDER_NAME[liveProvider] || 'Claude'}가 구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.` : `${PROVIDER_NAME[liveProvider] || 'Claude'}가 검토하는 중이에요 — 끝나면 계획서가 올라와요.`;
-  else if(it.job) msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — ${esc(it.job.note || '앞의 일이 끝나면 차례로 시작해요.')}`;
-  else if(x?.retry_merge_available) msg = '병합 보류 — 병합 재시도를 눌러 다시 진행할 수 있어요.';
-  else if(x?.manual_merge_confirmable) msg = '자동 병합이 끝나지 않았어요 — 직접 main에 반영했으면 “수동 반영 확인”을 눌러 주세요.';
-  else if(x?.manual_merge_available) msg = '수동 커밋 병합 대기 — 병합 진행을 누르면 운영 반영을 시작해요.';
-  else if(it.merge_state === '병합됨') msg = '병합됨 — 결과를 확인해 주세요.';
-  else if(it.status === 'in_review') msg = '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.';
-  else if(x) msg = x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
-  else if(!it.plan) msg = '계획서가 없어요 → Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
-  else if(it.plan.revision_note) msg = '계획서 재검토 요청 → 새 계획서를 기다려 주세요. 검토가 실패했으면 메모 붙여 재검토로 다시 맡겨 주세요.';
-  else if(!ok) msg = '계획서 승인 대기 → 계획서 아래에서 승인·메모 붙여 승인·메모 붙여 재검토·거절을 골라 주세요.';
-  else { const next = it.children.find(c => !['done', 'closed', 'in_review'].includes(c.status));
-    msg = next ? `계획 승인됨 → <a href="#/issue/${esc(next.ref)}">${esc(next.ref)}</a>에서 실행 맡기기` : it.children.length ? '모든 Task가 실행됐어요 — 결과를 확인해 주세요.' : '계획 승인됨.'; }
-  // 상황별 버튼은 이 줄 하나에만 둔다(DEV-113) — 도는 중·대기 중이면 숨긴다
-  const idle = x && !it.review_running && !it.job && !LIVE_MERGE.has(it.merge_state);
-  const actions = (idle && x.manual_merge_available ? '<button id="manual-merge" title="연결된 수동 커밋을 기존 병합 경로로 반영해요.">병합 진행</button>' : '')
-    + (idle && x.manual_merge_confirmable ? '<button id="confirm-manual-merge" title="Task 커밋이 main에 들어갔는지 서버가 확인하고 병합 완료로 표시해요. 재시작은 하지 않아요.">수동 반영 확인</button>' : '')
-    + (idle && x.retry_merge_available ? '<button id="retry-merge" title="기존 구현 커밋으로 병합만 다시 진행해요. 자동 병합·재시작 정책이 적용돼요.">병합 재시도</button>' : '')
-    + (idle && x.repair_available ? '<button class="register-repair" title="에이전트 재호출 없이 연결된 수정 커밋을 기존 병합 정책으로 처리해요.">수정 커밋 결과 등록</button>' : '');
-  return `<div class="stage" id="stage"><span>${msg}</span>${actions ? `<span class="stage-actions">${actions}</span>` : ''}</div>`;
+// ---- 이슈 주기 5단계(DEV-240) — 판정은 lifecycle 하나, 스테퍼·다음 할 일 줄·목록 점이 모두 이 결과를 쓴다 ----
+const LC_NAMES = ['발행', '계획', '실행', '검사', '완료'];
+const LC_PANELS = ['panel-description', 'panel-plan', 'panel-tasks', 'panel-result', 'panel-result'];
+function lcDate(t, time = true){
+  if(!t) return '';
+  const d = new Date(t), p = n => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())}${time ? ` ${p(d.getHours())}:${p(d.getMinutes())}` : ''}`;
 }
+function lcDuration(sec){
+  const m = Math.round(Math.max(0, sec) / 60), h = Math.floor(m / 60);
+  return h ? `${h}시간 ${m % 60}분` : `${m}분`;
+}
+function lcClock(sec){
+  return sec == null ? '' : ` <span class="progress-clock" data-elapsed="${sec}" data-at="${performance.now()}">${fmtClock(sec)}</span>`;
+}
+// 실패 검사 label에서 도구 이름과 파일 경로를 뽑는다
+function lcCheckTool(label){ return /pytest/.test(label) ? 'pytest' : /node/.test(label) ? 'node' : '검사'; }
+function lcCheckTarget(label){ return (String(label).match(/[\w./-]+\.(?:py|js|mjs|ts|css|html)\b/) || [label])[0]; }
+// 반환: {steps:[{key,label,state,meta,bars?,loop?}×5], cur, owner, msg, go?}. auto는 Auto 설정(없으면 꺼짐으로 본다).
+function lifecycle(it, auto = {}){
+  const f = it.lifecycle_facts || {}, a = it.approval, x = it.execute, plan = it.plan;
+  const task = !!it.parent_ref, tasks = f.tasks || [], total = tasks.length;
+  const doneN = tasks.filter(t => t.status === 'done').length;
+  const pv = plan?.version || a?.plan_version, ok = a && !a.stale && a.verdict !== 'reject';
+  const run = f.running || (it.review_running ? {mode: x ? 'execute' : 'review', provider: 'claude'} : null);
+  const prov = PROVIDER_NAME[run?.provider] || 'Claude';
+  const s = ['todo', 'todo', 'todo', 'todo', 'todo'], m = ['', '', '', '', ''];
+  let cur = 0, owner = 'human', msg = '', go = null;
+  const at = (i, state, meta) => {
+    for(let k = 0; k < i; k++) s[k] = 'done';
+    m[0] = lcDate(it.created_at);
+    if(i > 1 && pv) m[1] = `v${pv} 승인`;
+    s[i] = state; if(meta != null) m[i] = meta; cur = i;
+  };
+  const count = (n = doneN) => total ? `${n}/${total}` : '';
+  const ownerBy = on => on ? 'agent' : 'human';
+  // 목업에 없는 상황의 문장 — 옛 stageHtml 문장을 그대로 쓴다
+  const oldMsg = () => {
+    if(x) return x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
+    if(!plan) return '계획서가 없어요 → Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
+    if(plan.revision_note) return '계획서 재검토 요청 → 새 계획서를 기다려 주세요. 검토가 실패했으면 메모 붙여 재검토로 다시 맡겨 주세요.';
+    if(!ok) return '계획서 승인 대기 → 계획서 아래에서 승인·메모 붙여 승인·메모 붙여 재검토·거절을 골라 주세요.';
+    const next = (it.children || []).find(c => !['done', 'closed', 'in_review'].includes(c.status));
+    return next ? `계획 승인됨 → <a href="#/issue/${esc(next.ref)}">${esc(next.ref)}</a>에서 실행 맡기기` : total ? '모든 Task가 실행됐어요 — 결과를 확인해 주세요.' : '계획 승인됨.';
+  };
+  const mergeWait = x ? x.retry_merge_available || x.manual_merge_confirmable || x.manual_merge_available
+    : it.status === 'on_hold' && it.merge_state && !LIVE_MERGE.has(it.merge_state) && it.merge_state !== '병합됨';
+  if(it.status === 'done'){
+    at(4, 'done', `${lcDate(it.last_done_at || it.closed_at || it.updated_at, false)}${it.completion_seconds != null ? ` · ${lcDuration(it.completion_seconds)}` : ''}`);
+    m[2] = `${count(total)} 병합됨`.trim(); m[3] = '검사 통과'; owner = 'none';
+    msg = it.completion_seconds != null ? `끝난 이슈예요. 발행부터 완료까지 ${lcDuration(it.completion_seconds)} 걸렸어요.` : '끝난 이슈예요.';
+  }else if(it.status === 'closed'){
+    const rejected = a?.verdict === 'reject', stop = rejected ? 1 : total || task ? 2 : 0;
+    at(stop, 'fail', rejected ? `<b>v${a.plan_version || pv} 거절</b>` : '<b>닫힘</b>');
+    if(stop < 2) m[1] = rejected ? m[1] : '';
+    for(let k = stop + 1; k < 5; k++) s[k] = 'skip';
+    owner = 'none';
+    msg = rejected ? `계획서를 거절해 닫았어요.${f.note ? ` 사유: ${esc(f.note)}` : ''}` : '닫힌 이슈예요.';
+  }else if(LIVE_MERGE.has(it.merge_state)){
+    at(3, 'agent', `<b>${esc(it.merge_state)}</b>`); m[2] = count(); owner = 'agent';
+    msg = `${esc(it.merge_state)} — 운영 반영 확인이 끝나면 결과를 확인할 수 있어요.`;
+  }else if(run?.mode === 'review'){
+    at(1, 'agent', `<b>${prov} 검토 중</b>${lcClock(run.seconds)}`); owner = 'agent';
+    msg = `${prov}가 코드를 읽고 계획서를 쓰는 중이에요. 끝나면 계획서가 올라와요.`;
+  }else if(run?.mode === 'execute'){
+    const lead = n => task || !total ? '' : `${n}/${total} · `;
+    owner = 'agent';
+    if(run.phase === 'rework'){
+      const failed = run.failed || [];
+      at(2, 'agent', `<b>${lead(run.sub_number ?? doneN)}재작업 중</b>${lcClock(run.seconds)}`);
+      s[3] = 'fail'; m[3] = failed.length ? `<b>${lcCheckTool(failed[0])} ${failed.length}개 실패</b>` : '<b>검사 실패</b>';
+      msg = `${esc(run.ref || it.ref)} 검사에서 ${esc(failed.length ? lcCheckTarget(failed[0]) : '검사')}가 실패해 ${prov}가 한 번 더 고치는 중이에요.`;
+    }else if(run.phase === 'checks'){
+      at(2, 'agent', `<b>${lead(doneN)}검사 중</b>${lcClock(run.seconds)}`);
+      msg = `${prov}가 구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.`;
+    }else{
+      at(2, 'agent', `<b>${lead(doneN)}${prov} 구현 중</b>${lcClock(run.seconds)}`);
+      msg = task ? `부모 계획서 v${f.parent_plan_version ?? ''}의 ${it.sub_number ?? run.sub_number ?? ''}번째 Task예요. ${prov}가 구현하고 있어요.`
+        : `${esc(run.ref || it.ref)}를 ${prov}가 구현하고 있어요. 끝나면 서버가 검사를 다시 돌리고 병합해요.`;
+    }
+  }else if(it.job){
+    at(it.job.mode === 'review' ? 1 : 2, 'agent', `대기 ${it.job.position}번째`); owner = 'agent';
+    msg = `${statusHtml('waiting')} ${PROVIDER_NAME[it.job.provider] || 'Claude'} ${RUN_MODE[it.job.mode]} 대기 ${it.job.position}번째예요 — ${esc(it.job.note || '앞의 일이 끝나면 차례로 시작해요.')}`;
+  }else if(mergeWait){
+    const hold = it.status === 'on_hold';
+    at(3, hold ? 'hold' : 'human', hold ? '<b>병합 보류</b>' : x?.manual_merge_confirmable ? '<b>수동 반영 확인 대기</b>' : '<b>병합 진행 대기</b>');
+    m[2] = count();
+    msg = x?.retry_merge_available || !x ? '병합이 보류됐어요. 병합 재시도를 눌러 다시 진행할 수 있어요.'
+      : x.manual_merge_confirmable ? '자동 병합이 끝나지 않았어요 — 직접 main에 반영했으면 “수동 반영 확인”을 눌러 주세요.'
+      : '수동 커밋 병합 대기 — 병합 진행을 누르면 운영 반영을 시작해요.';
+  }else if(it.status === 'in_review' || it.merge_state === '병합됨'){
+    at(3, 'human', '<b>결과 확인 대기</b>'); m[2] = `${count(total)} 병합됨`.trim();
+    msg = it.status !== 'in_review' ? '병합됨 — 결과를 확인해 주세요.'
+      : task ? '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.'
+      : '모든 Task가 검사를 통과하고 병합됐어요. 운영 화면에서 확인하고 결과를 승인해 주세요.';
+    if(it.status === 'in_review') go = {label: '결과 승인', target: 'panel-result'};
+  }else if(it.status === 'on_hold'){
+    at(task || ok ? 2 : plan ? 1 : 0, 'hold', '<b>보류</b>'); msg = oldMsg();
+  }else if(it.status === 'changes_requested'){
+    at(2, 'fail', '<b>수정 요청됨</b>'); owner = ownerBy(auto.auto_execute);
+    msg = f.note ? `"${esc(f.note)}"라는 수정 요청이 남아 있어요. 에이전트에게 다시 맡겨 주세요.` : '수정 요청이 남아 있어요. 에이전트에게 다시 맡겨 주세요.';
+    go = {label: '실행 맡기기', target: 'panel-tasks'};
+  }else if(f.failed_tasks > 0){
+    at(2, 'fail', `<b>실행 실패 ${f.failed_tasks}개</b>`); owner = ownerBy(auto.auto_execute); msg = oldMsg();
+  }else if(x){
+    if(x.blocked){ at(2, 'todo', `<b>${esc(String(x.blocked).slice(0, 24))}</b>`); owner = 'agent'; }
+    else{ at(2, 'human', '<b>실행 맡기기 대기</b>'); owner = ownerBy(auto.auto_execute); }
+    msg = oldMsg();
+  }else if(!plan){
+    at(0, 'human', '<b>검토 맡기기 대기</b>'); m[0] = '<b>검토 맡기기 대기</b>'; owner = ownerBy(auto.auto_review);
+    msg = '계획서가 없어요. Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
+    go = {label: '검토 맡기기', target: 'review-btns'};
+  }else if(plan.revision_note){
+    at(1, 'agent', `<b>v${pv} 재검토 대기</b>`); owner = 'agent'; msg = oldMsg();
+  }else if(!ok){
+    at(1, 'human', `<b>v${pv} 승인 대기</b>`);
+    if(f.planned_tasks) m[2] = `Task ${f.planned_tasks}개 예정`;
+    msg = `계획서 v${pv}이 올라왔어요. 승인·메모 붙여 승인·재검토·거절 중에서 골라 주세요.`;
+    go = {label: '계획서 보기', target: 'panel-plan'};
+  }else if(tasks.some(t => !['done', 'closed', 'in_review'].includes(t.status)) || !total){
+    at(2, total ? 'human' : 'human', count()); owner = total ? ownerBy(auto.auto_execute) : 'human'; msg = oldMsg();
+    if(total) go = {label: '실행 맡기기', target: 'panel-tasks'};
+  }else{
+    at(3, 'human', '<b>결과 확인 대기</b>'); m[2] = count(total); msg = oldMsg();
+  }
+  if(task){
+    s[0] = s[1] = 'inherited';
+    m[0] = `<a href="#/issue/${esc(it.parent_ref)}">${esc(it.parent_ref)}</a>`;
+    m[1] = f.parent_plan_version ? `부모 v${f.parent_plan_version}` : '';
+  }
+  const bars = total >= 2 ? tasks.map(t => t.status === 'done' ? 'done' : run?.ref === t.ref ? 'agent'
+    : t.status === 'in_review' ? 'human' : t.status === 'changes_requested' ? 'fail' : 'todo') : null;
+  const steps = s.map((state, i) => ({key: i, label: LC_NAMES[i], state, meta: m[i],
+    bars: i === 2 ? bars : null, loop: i === 2 && f.loops > 0 ? f.loops + 1 : 0}));
+  return {steps, cur, owner, msg, go};
+}
+function lifecycleHtml(it, auto){
+  const lc = lifecycle(it, auto), x = it.execute;
+  const icon = st => ({done: 'check', human: 'user', fail: 'x', hold: 'pause'})[st];
+  const items = lc.steps.map((st, i) => {
+    const prev = lc.steps[i - 1]?.state;
+    const line = i && prev === 'done' && !['todo', 'skip'].includes(st.state) ? 'done' : '';
+    const target = i >= 3 && it.status !== 'in_review' ? 'panel-tasks' : LC_PANELS[i];
+    const plain = st.meta.replace(/<[^>]+>/g, '');
+    return `<li class="lc-step" data-s="${st.state}" data-line="${line}"${i === lc.cur ? ' data-cur' : ''}>
+      <button type="button" class="lc-jump" data-target="${target}" aria-label="${esc(`${st.label} — ${plain || '아직'} · 이동`)}"></button>
+      <span class="lc-node">${icon(st.state) ? `<svg aria-hidden="true"><use href="#i-${icon(st.state)}"/></svg>` : ''}</span><span class="lc-name">${st.label}</span>
+      ${st.loop ? `<span class="lc-loop" title="되돌아온 횟수"><svg aria-hidden="true"><use href="#i-rotate-ccw"/></svg>${st.loop}바퀴</span>` : ''}<span class="lc-meta">${st.meta || '&nbsp;'}</span>
+      ${st.bars ? `<span class="lc-segs" aria-hidden="true">${st.bars.map(b => `<i data-s="${b}"></i>`).join('')}</span>` : ''}</li>`;
+  }).join('');
+  // 상황별 버튼은 이 줄 하나에만 둔다(DEV-113) — 도는 중·대기 중이면 숨긴다. id·동작은 그대로다.
+  const idle = x && !it.review_running && !it.job && !LIVE_MERGE.has(it.merge_state);
+  const pri = lc.owner === 'human' ? ' class="primary"' : '';
+  const actions = (lc.go ? `<button type="button" class="lc-go${lc.owner === 'human' ? ' primary' : ''}" data-target="${lc.go.target}">${esc(lc.go.label)}</button>` : '')
+    + (idle && x.manual_merge_available ? `<button id="manual-merge"${pri} title="연결된 수동 커밋을 기존 병합 경로로 반영해요.">병합 진행</button>` : '')
+    + (idle && x.manual_merge_confirmable ? `<button id="confirm-manual-merge"${pri} title="Task 커밋이 main에 들어갔는지 서버가 확인하고 병합 완료로 표시해요. 재시작은 하지 않아요.">수동 반영 확인</button>` : '')
+    + (idle && x.retry_merge_available ? `<button id="retry-merge"${pri} title="기존 구현 커밋으로 병합만 다시 진행해요. 자동 병합·재시작 정책이 적용돼요.">병합 재시도</button>` : '')
+    + (idle && x.repair_available ? `<button class="register-repair${lc.owner === 'human' ? ' primary' : ''}" title="에이전트 재호출 없이 연결된 수정 커밋을 기존 병합 정책으로 처리해요.">수정 커밋 결과 등록</button>` : '');
+  const turn = {agent: '에이전트 차례', human: '내 차례', none: '끝남'}[lc.owner];
+  return `<section class="lc" aria-label="이슈 진행 단계"><ol class="lc-steps">${items}</ol>
+    <div class="lc-next stage" id="stage"><span class="lc-turn" data-o="${lc.owner}">${turn}</span><span class="lc-msg">${lc.msg}</span>${actions ? `<span class="stage-actions">${actions}</span>` : ''}</div></section>`;
+}
+// 칸·go 버튼은 해당 패널로 내려가기만 한다(실제 동작은 각 패널의 버튼)
+document.addEventListener('click', e => {
+  const b = e.target.closest('.lc [data-target]');
+  if(!b) return;
+  const el = document.getElementById(b.dataset.target) || document.getElementById('panel-tasks');
+  el?.scrollIntoView({block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+});
 // 부모 화면에서 바로 실행: 계획 승인됨 · 아직 안 한 Task(서버가 다시 확인한다). 바쁘거나 선행이 안 끝났으면 줄에 선다(DEV-43)
 // — Task 여럿을 한 번에 눌러 두면 선행 순서대로 돈다.
 function canRun(it, ch){
@@ -1589,7 +1731,8 @@ function taskActionsHtml(it, ch){
 const pendingReviews = new Map();
 async function renderIssue(ref, background = false){
   const seq = ++issueRenderSeq, hash = location.hash;
-  const [it, { runs }, catalog] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), api('GET', '/api/issue-types?include_inactive=true'), agentsById.size ? null : loadAgents()]);
+  const [it, { runs }, catalog, , auto] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), api('GET', '/api/issue-types?include_inactive=true'), agentsById.size ? null : loadAgents(),
+    api('GET', '/api/settings/auto', undefined, undefined, {notifyErrors: false}).catch(() => ({}))]);
   if(seq !== issueRenderSeq || hash !== location.hash) return;
   const queue = it.job ? (await restartJobsSnapshot().catch(() => ({jobs: []}))).jobs : [];
   if(seq !== issueRenderSeq || hash !== location.hash) return;
@@ -1626,17 +1769,17 @@ async function renderIssue(ref, background = false){
           <div id="dep-selected" class="dep-selected" aria-label="선택한 연관 이슈"></div><div id="dep-list" class="dep-list" aria-label="연관 이슈 후보"></div>
           <p id="dep-status" role="status"></p><div class="row-end"><button type="button" id="dep-cancel">취소</button><button type="button" class="primary" id="dep-save">저장</button></div>
         </fieldset></form></dialog>
-        ${stageHtml(it, liveMode, liveRun.provider)}
-        <div class="panel"><h2>Description<span class="right"><button id="edit-body">고치기</button></span></h2>
+        ${lifecycleHtml(it, auto || {})}
+        <div class="panel" id="panel-description"><h2>Description<span class="right"><button id="edit-body">고치기</button></span></h2>
           <div id="body">${it.body ? md(it.body) : '<p class="dim">본문이 없어요.</p>'}</div></div>
         ${attachmentsHtml(it.attachments)}
-        <div class="panel"><h2>Plan${it.plan ? ` <span class="meta">v${it.plan.version} · ${esc(actorName(it.plan.author))} · ${fmtTime(it.plan.created_at)}</span>` : ''}
+        <div class="panel" id="panel-plan"><h2>Plan${it.plan ? ` <span class="meta">v${it.plan.version} · ${esc(actorName(it.plan.author))} · ${fmtTime(it.plan.created_at)}</span>` : ''}
           <span class="right">${it.plan && it.plan.version > 1 ? '<button id="plan-history">이전 판</button>' : ''}<button id="edit-plan">${it.plan ? '고쳐 쓰기' : '쓰기'}</button></span></h2>
           <div id="plan">${it.plan ? md(it.plan.body) : '<p class="dim">아직 계획서가 없어요.</p>'}</div>
           ${it.plan && !['done', 'closed'].includes(it.status) ? decisionHtml(it) : ''}</div>
         ${it.superseded_by_plan ? `<div class="stage">계획서 v${it.superseded_by_plan}으로 대체된 이전 Task예요. 기록은 보존되며 실행 대상에서 제외됐어요.</div>` : ''}
         ${it.parent_ref ? '' : resultHtml(it)}
-        <div class="panel"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
+        <div class="panel" id="panel-tasks"><h2>Tasks <span class="meta">${it.children.length}</span><span class="right"><a class="button" href="#/new?parent=${esc(it.ref)}">Task 추가</a></span></h2>
           ${it.children.length ? `<table class="issues tasks">${it.children.map(ch => `<tr class="row" data-ref="${esc(ch.ref)}"><td class="ref">${esc(ch.ref)}</td>
             <td>${titleHtml(ch)}${blockedHtml(ch.blocked_by)}<div class="task-history">${processingAgentsHtml(ch)} ${completionTimeHtml(ch)} ${issueTokensHtml(ch)}</div></td><td>${statusHtml(ch.status)}${progressHtml(ch)}</td>
             <td>${taskActionsHtml(it, ch)}</td></tr>`).join('')}</table>` : '<p class="dim">하위 Task가 없어요.</p>'}</div>
