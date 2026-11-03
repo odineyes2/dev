@@ -68,6 +68,70 @@ SC = [
      'inherited inherited agent todo todo', ['DEV-220', '부모 v1', r'Codex 구현 중 12:4\d', '', ''], '', 0, '에이전트 차례',
      '부모 계획서 v1의 4번째 Task예요. Codex가 구현하고 있어요.'),
 ]
+# 목업 LIST 순서와 실제 목록 응답의 계획 요약을 사용한다.
+LIST_KEYS = ['review', 'approve', 'retry', 'plan', 'changes', 'new', 'hold', 'done']
+LIST = []
+for n, key in enumerate(LIST_KEYS, 1):
+    d = dict(next(row[1] for row in SC if row[0] == key))
+    d.update(id=n, updated_at=d['created_at'])
+    d.pop('execute', None)
+    p = d.pop('plan', None)
+    d['action_context'] = {'plan_version': p['version'] if p else None}
+    if key == 'hold':
+        d['merge_state'] = '보류'
+    LIST.append(d)
+
+
+def check_list(browser, port):
+    page = browser.new_page(viewport={'width': 1050, 'height': 900}, timezone_id='Asia/Seoul')
+    page.clock.install()
+    page.route('**/*', handler(LIST[0]))
+    page.goto(f'http://127.0.0.1:{port}/#/')
+    page.wait_for_selector('#list-body tr.row', state='attached')
+    rows = page.locator('#list-body tr.row')
+    assert rows.count() == 8
+    assert page.locator('tr.mine').count() == 5
+    for n, key in enumerate(LIST_KEYS):
+        expected = next(row for row in SC if row[0] == key)
+        dots = rows.nth(n).locator('.issue-col-progress .lc-dots')
+        assert dots.locator('i').evaluate_all('els => els.map(e => e.dataset.s).join(" ")') == expected[2], key
+        cur = page.evaluate('(i) => lifecycle(i).cur', LIST[n])
+        assert re.fullmatch(expected[3][cur], dots.locator('em').text_content()), key
+        assert dots.get_attribute('title') == expected[-1], key
+    assert page.locator('[data-turn=mine]').text_content() == '내 차례만 · 5'
+    for turn, count in [('mine', 5), ('agent', 2)]:
+        page.locator(f'[data-turn={turn}]').click()
+        assert page.locator('#list-body tr.row:visible').count() == count
+    page.reload()
+    page.wait_for_selector('#list-body tr.row', state='attached')
+    assert page.locator('[data-turn=agent]').get_attribute('aria-pressed') == 'true'
+    assert page.locator('#list-body tr.row:visible').count() == 2
+    page.locator('[data-turn=all]').click()
+    page.locator('.ops-main').screenshot(path=str(CAPTURES / '10-list.png'))
+    for theme in ('light', 'dark'):
+        for width in (800, 400):
+            page.set_viewport_size({'width': width, 'height': 900})
+            page.evaluate('(t) => document.documentElement.dataset.theme = t', theme)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), (theme, width)
+            if width == 400:
+                assert not page.locator('th.issue-col-progress').is_visible()
+                assert page.locator('.lc-mobile:visible').count() == 8
+            page.locator('.ops-main').screenshot(path=str(CAPTURES / f'{theme}-{width}-list.png'))
+        page.set_viewport_size({'width': 800, 'height': 900})
+        page.goto(f'http://127.0.0.1:{port}/#/board')
+        page.wait_for_selector('.card .meta .lc-dots')
+        assert page.locator('.card .meta .lc-dots').count() == 8
+        page.locator('.kanban').screenshot(path=str(CAPTURES / f'{theme}-800-board.png'))
+        page.goto(f'http://127.0.0.1:{port}/#/')
+        page.wait_for_selector('#list-body tr.row', state='attached')
+    for key in ('retry', 'hold'):
+        detail = next(row[1] for row in SC if row[0] == key)
+        detail_page = open_issue(browser, port, detail)
+        assert detail_page.locator('.lc-step').evaluate_all('els => els.map(e => e.dataset.s).join(" ")') == page.evaluate('(i) => lifecycle(i).steps.map(s => s.state).join(" ")', next(i for i in LIST if i['ref'] == detail['ref']))
+        detail_page.close()
+    page.close()
+
+
 SHOTS = {'approve': '02-approve', 'exec': '03-exec', 'retry': '04-retry', 'review': '05-review', 'closed': '06-closed', 'task': '07-task'}
 
 
@@ -86,6 +150,8 @@ def handler(detail):
         path = url.split('/api/', 1)[1]
         if path == 'auth/me':
             return route.fulfill(json={'actor': {'kind': 'human', 'name': 'admin'}, 'nightshift_url': '#'})
+        if path == 'issues':
+            return route.fulfill(json={'issues': LIST, 'has_more': False})
         if path == f'issues/{detail["ref"]}':
             return route.fulfill(json=detail)
         if path.endswith('/runs'):
@@ -134,6 +200,7 @@ def run():
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
             try:
+                check_list(browser, port)
                 by_key = {}
                 for key, detail, *expect in SC:
                     by_key[key] = detail
