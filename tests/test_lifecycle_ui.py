@@ -107,6 +107,8 @@ def check_list(browser, port):
         assert clock.locator('.progress-clock').count() == 1, key
         assert clock.bounding_box()['y'] >= dots.locator('i').first.bounding_box()['y'] + 9, key
         secs = lambda: sum(int(p) * 60 ** k for k, p in enumerate(reversed(clock.text_content().split(':'))))
+        # 첫 글자는 그린 때 값이라 1초 주기 틱 위상과 맞춘 뒤 잰다
+        page.clock.run_for(1000)
         before = secs()
         page.clock.run_for(1000)
         assert secs() == before + 1, (key, before, secs())
