@@ -418,8 +418,9 @@ def _priority(value) -> str:
     return v
 
 
-def _list_action_context(c, rows):
-    """목록과 페이지 밖 부모의 판단 근거를 묶음 조회한다. 실행 권한 검사를 대신하지 않는다."""
+def _action_facts(c, rows):
+    """빠른 액션 판정(DEV-243)의 사실 — 목록·상세·상세의 child가 같은 모양을 받는다. 페이지 밖 부모도 묶음 조회한다.
+    쿼리 수는 행 수와 무관하다. 실행 권한 검사를 대신하지 않는다(서버 수락 조건은 decide·blocked_reason·review_block_reason)."""
     ids = sorted({r["id"] for r in rows} | {r["parent_id"] for r in rows if r["parent_id"] is not None})
     if not ids:
         return {}
@@ -427,9 +428,14 @@ def _list_action_context(c, rows):
     contexts = {}
     for r in c.execute(_ISSUE_SELECT + f" WHERE i.id IN ({marks})", ids):
         issue = _issue_dict(r)
+        claim = _lease_active(r)
         contexts[r["id"]] = {"plan_version": r["latest_plan"], "approval": issue["approval"],
-                              "has_children": False, "has_execution": False, "has_active_job": False}
-    for r in c.execute(f"SELECT DISTINCT parent_id FROM issues WHERE parent_id IN ({marks})", ids):
+                              "revision_requested": bool(r["plan_revision_requested"]),
+                              "has_children": False, "has_execution": False, "has_active_job": False,
+                              "claim_active": claim, "claimed_by": r["claimed_by"] if claim else None,
+                              "lease_until": r["lease_until"] if claim else None,
+                              "superseded": r["superseded_by_plan"] is not None}
+    for r in c.execute(f"SELECT DISTINCT parent_id FROM issues i WHERE parent_id IN ({marks}) AND {_SUPERSEDED} IS NULL", ids):
         contexts[r["parent_id"]]["has_children"] = True
     for r in c.execute(f"SELECT DISTINCT issue_id FROM runs WHERE mode='execute' AND issue_id IN ({marks})", ids):
         contexts[r["issue_id"]]["has_execution"] = True
@@ -438,6 +444,20 @@ def _list_action_context(c, rows):
                        f"AND j.issue_id IN ({marks})", ids):
         contexts[r["issue_id"]]["has_active_job"] = True
     return {r["id"]: {**contexts[r["id"]], "parent": contexts.get(r["parent_id"])} for r in rows}
+
+
+def review_block_reason(c, row) -> str | None:
+    """메모 없는 일반 검토를 받지 않는 이유(DEV-243) — Auto 검토(`auto_run_gate`)와 같은 사실 기준:
+    최상위·미종결·계획서 없음·활성 점유 없음. 계획서가 있으면 승인하거나 메모 붙여 재검토로 간다."""
+    if row["parent_id"] is not None:
+        return "Task는 검토하지 않아요 — 실행을 맡겨 주세요."
+    if row["status"] in HUMAN_ONLY_STATUSES:
+        return "끝난 이슈는 검토할 수 없어요."
+    if c.execute("SELECT 1 FROM plans WHERE issue_id=? LIMIT 1", (row["id"],)).fetchone():
+        return "계획서가 있어요 — 승인하거나 메모 붙여 재검토를 골라 주세요."
+    if _lease_active(row):
+        return f"{row['claimed_by']}가 잡고 있어요(점유 만료 {row['lease_until']})."
+    return None
 
 
 _LIFECYCLE_FAILED = ('failed', 'timeout', 'orphaned')
@@ -550,7 +570,7 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
             where.append("(i.title LIKE ? OR i.body LIKE ?)"); args += [f"%{q}%"] * 2
         sql = _ISSUE_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY " + orders[sort] + " LIMIT ? OFFSET ?"
         rows = c.execute(sql, (*args, max(1, min(int(limit), 2001)), max(0, int(offset)))).fetchall()
-        contexts = _list_action_context(c, rows)
+        contexts = _action_facts(c, rows)
         lifecycle = _lifecycle_facts(c, rows)
         from usage import issue_token_usage, task_token_usage
         tokens = issue_token_usage(c, (r['id'] for r in rows))
@@ -657,8 +677,11 @@ def get_issue(ref) -> dict:
                 f"SELECT {ref_sql('b', 'p')} AS ref, b.status FROM issue_deps x JOIN issues b ON b.id=x.blocked_by_id "
                 "JOIN projects p ON p.id=b.project_id WHERE x.issue_id=? ORDER BY b.id", (iid,))]
         d["blocked_by"] = blockers(row["id"])
-        d["children"] = [{**{k: v for k, v in _issue_dict(ch).items() if k != "body"}, "blocked_by": blockers(ch["id"])} for ch in
-                         c.execute(_ISSUE_SELECT + " WHERE i.parent_id=? ORDER BY i.id", (row["id"],))]
+        kid_rows = c.execute(_ISSUE_SELECT + " WHERE i.parent_id=? ORDER BY i.id", (row["id"],)).fetchall()
+        contexts = _action_facts(c, [row, *kid_rows])   # 목록과 같은 빠른 액션 사실(DEV-243) — 자기와 child를 묶음 1회로
+        d["action_context"] = contexts[row["id"]]
+        d["children"] = [{**{k: v for k, v in _issue_dict(ch).items() if k != "body"}, "blocked_by": blockers(ch["id"]),
+                          "action_context": contexts[ch["id"]]} for ch in kid_rows]
         from usage import issue_token_usage, task_token_usage
         tokens = issue_token_usage(c, [d['id'], *(ch['id'] for ch in d['children'])])
         task_tokens = task_token_usage(c, [d['id'], *(ch['id'] for ch in d['children'])])
