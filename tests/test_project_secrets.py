@@ -41,7 +41,7 @@ auth.nightshift_user = _admin
 
 HUMAN = {'cookies': {'ns_session': 'ok'}, 'headers': {'x-requested-with': 'dev'}}
 ADMIN = {'kind': 'human', 'name': 'admin'}
-SECRET = 'plain-live-abcdef123456'   # 비밀값 검사(키 모양)에 걸리지 않는 가짜 값
+SAMPLE = 'plain-live-abcdef123456'   # 비밀값 검사(키 모양)에 걸리지 않는 가짜 값
 SPACED = 'two words #x'
 
 
@@ -92,23 +92,23 @@ issues.create_project(ADMIN, 'DV', 'dev 자신', local_path=str(config.REPO_ROOT
 
 # --- 키 읽기·저장 규칙 ---
 check(project_secrets.keys(repo) == ['LLM_API_KEY', 'OTHER_TOKEN', 'DEV_SECRET'], '.env.example 키 순서·중복 제거·export')
-r = project_secrets.save(ADMIN, 'SC', {'LLM_API_KEY': {'value': f'  {SECRET} '}, 'OTHER_TOKEN': {'value': SPACED}})
+r = project_secrets.save(ADMIN, 'SC', {'LLM_API_KEY': {'value': f'  {SAMPLE} '}, 'OTHER_TOKEN': {'value': SPACED}})
 text = (repo / '.env').read_text(encoding='utf-8')
-check(text == f'# 기존 주석\nKEEP=1\nPORT=7777\nLLM_API_KEY={SECRET}\nOTHER_TOKEN="{SPACED}"\n', '저장 — 기존 키·주석 보존, 공백·# 값은 따옴표')
+check(text == f'# 기존 주석\nKEEP=1\nPORT=7777\nLLM_API_KEY={SAMPLE}\nOTHER_TOKEN="{SPACED}"\n', '저장 — 기존 키·주석 보존, 공백·# 값은 따옴표')
 check(r['restart'] == {'status': 'skipped'} and not restart_calls, 'service_app 없으면 재시작 생략')
 check(project_secrets.env_for(repo)['OTHER_TOKEN'] == SPACED, 'env_for가 따옴표 한 겹을 벗김')
 project_secrets.save(ADMIN, 'SC', {'LLM_API_KEY': {'value': 'replaced-value-9999'}})
 check('LLM_API_KEY=replaced-value-9999\n' in (repo / '.env').read_text(encoding='utf-8'), '같은 키 줄 바꾸기')
-project_secrets.save(ADMIN, 'SC', {'LLM_API_KEY': {'value': SECRET}})
+project_secrets.save(ADMIN, 'SC', {'LLM_API_KEY': {'value': SAMPLE}})
 project_secrets.save(ADMIN, 'SC', {'OTHER_TOKEN': {'clear': True}})
-check((repo / '.env').read_text(encoding='utf-8') == f'# 기존 주석\nKEEP=1\nPORT=7777\nLLM_API_KEY={SECRET}\n', '지우기는 그 줄만')
+check((repo / '.env').read_text(encoding='utf-8') == f'# 기존 주석\nKEEP=1\nPORT=7777\nLLM_API_KEY={SAMPLE}\n', '지우기는 그 줄만')
 for bad, label in (('a\nB=1', '개행'), ('a"b', '큰따옴표'), ('a\\b', '역슬래시'), ('   ', '빈 값'), ('x' * 4097, '너무 긴 값')):
     message = refused(lambda: project_secrets.save(ADMIN, 'SC', {'LLM_API_KEY': {'value': bad}}), 400, f'{label} 거절')
     check(bad.strip()[:20] not in message or not bad.strip(), f'{label} 오류 문구에 값 없음')
 refused(lambda: project_secrets.save(ADMIN, 'SC', {'KEEP': {'value': 'x'}}), 400, '.env.example 밖 키 거절')
 refused(lambda: project_secrets.save(ADMIN, 'SC', {'LLM_API_KEY': {'value': 'x', 'clear': True}}), 400, '변경 형식 거절')
-refused(lambda: project_secrets.save(ADMIN, 'BR', {'LLM_API_KEY': {'value': SECRET}}), 409, '.gitignore에 .env 없으면 거절')
-check(SECRET not in (bare / '.env').read_text(encoding='utf-8'), '거절 때 .env 그대로')
+refused(lambda: project_secrets.save(ADMIN, 'BR', {'LLM_API_KEY': {'value': SAMPLE}}), 409, '.gitignore에 .env 없으면 거절')
+check(SAMPLE not in (bare / '.env').read_text(encoding='utf-8'), '거절 때 .env 그대로')
 refused(lambda: project_secrets.save(ADMIN, 'DV', {'X': {'value': 'y'}}), 409, 'dev 자신 거절')
 refused(lambda: project_secrets.save({'kind': 'agent', 'id': 1}, 'SC', {'LLM_API_KEY': {'value': 'x'}}), 403, '에이전트 저장 함수 거절')
 
@@ -125,7 +125,7 @@ check('dev-only-value' not in (repo / '.env').read_text(encoding='utf-8'), 'DEV_
 # --- 재시작 연결 ---
 with db.connect() as c:
     c.execute("UPDATE projects SET service_app='scapp' WHERE key='SC'")
-r = project_secrets.save(ADMIN, 'SC', {'LLM_API_KEY': {'value': SECRET}})
+r = project_secrets.save(ADMIN, 'SC', {'LLM_API_KEY': {'value': SAMPLE}})
 check(restart_calls == ['SC'] and r['restart']['status'] == 'waiting', 'service_app 있으면 재시작 한 번')
 fake_request.fail = True
 project_secrets.save(ADMIN, 'SC', {'OTHER_TOKEN': {'value': 'after-failure-77'}})
@@ -143,11 +143,11 @@ with TestClient(app_module.app) as client:
     check('agent-wrote' not in (repo / '.env').read_text(encoding='utf-8'), '에이전트 PUT은 .env를 안 바꿈')
     r = client.get('/api/projects/SC/secrets', headers=bearer)
     check(r.status_code == 200 and all(set(i) == {'key', 'set'} for i in r.json()['keys']), '에이전트 GET은 key·set만')
-    check(SECRET not in r.text and SECRET[-4:] not in r.text, '에이전트 GET에 값·끝자리 없음')
+    check(SAMPLE not in r.text and SAMPLE[-4:] not in r.text, '에이전트 GET에 값·끝자리 없음')
     r = client.get('/api/projects/SC/secrets', **HUMAN)
     items = {i['key']: i for i in r.json()['keys']}
-    check(r.status_code == 200 and items['LLM_API_KEY'] == {'key': 'LLM_API_KEY', 'set': True, 'last4': SECRET[-4:], 'dev_available': False}, '사람 GET은 last4')
-    check(SECRET not in r.text and 'after-failure-88' not in r.text, '사람 GET에 원래 값 없음')
+    check(r.status_code == 200 and items['LLM_API_KEY'] == {'key': 'LLM_API_KEY', 'set': True, 'last4': SAMPLE[-4:], 'dev_available': False}, '사람 GET은 last4')
+    check(SAMPLE not in r.text and 'after-failure-88' not in r.text, '사람 GET에 원래 값 없음')
     r = client.put('/api/projects/SC/secrets', json={'changes': {'LLM_API_KEY': {'value': 'rest-value-abcd1234'}}}, **HUMAN)
     check(r.status_code == 200 and r.json()['restart']['status'] == 'waiting', '사람 PUT 200·재시작 상태')
     check('rest-value-abcd1234' not in r.text and project_secrets.env_for(repo)['LLM_API_KEY'] == 'rest-value-abcd1234', 'PUT 응답에 값 없음·저장됨')
@@ -160,7 +160,7 @@ with TestClient(app_module.app) as client:
 
 with db.connect() as c:
     dump = json.dumps([[dict(x) for x in c.execute(f'SELECT * FROM {t}').fetchall()] for t in ('events', 'runs', 'projects')], ensure_ascii=False)
-for value in (SECRET, SPACED, 'from-dev-value-42', 'after-failure-88', 'rest-value-abcd1234'):
+for value in (SAMPLE, SPACED, 'from-dev-value-42', 'after-failure-88', 'rest-value-abcd1234'):
     check(value not in dump, f'events·runs·projects에 값 없음: {value[:6]}…')
 
 # --- pm2 세 경로 env 주입 ---
