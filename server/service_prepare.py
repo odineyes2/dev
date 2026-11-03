@@ -98,6 +98,7 @@ def _generate(project, snapshot, directory):
 준비되지 않은 필수 구성·알 수 없는 인증·API·DB 계약은 꾸미지 말고 blocked와 구체적인 reason을 반환한다.
 의존성이 필요하면 기존 선언을 사용한 실행 부트스트랩에 반영하며 버전을 추측하지 않는다. API 키·DB 설정 값은 환경변수로만 받는다.
 ecosystem.config.js에는 위 이름의 앱을 정의하고 cwd·script는 __dirname 또는 프로젝트 상대 경로를 사용한다. 임시 폴더의 절대 경로는 쓰지 않는다.
+ecosystem.config.js는 루트 .env가 있으면 읽어 앱 env에 합치고 HOST·PORT가 그 값을 덮는다(.env는 만들지 않는다).
 files는 신규 프로젝트 상대 경로이며 최대 12개이다. 확장자는 .py, .js, .cjs, .mjs, .json, .toml, .txt만 사용한다.
 최소 한 개의 작은 자체 검사 파일을 포함하고 checks에는 그 경로를 적는다.
 검사는 test_로 시작하는 Python 파일 또는 .test.js/.test.cjs/.test.mjs 파일이며 실제 외부 서비스·DNS·터널·PM2를 변경하지 않는다.

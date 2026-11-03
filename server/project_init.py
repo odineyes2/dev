@@ -237,6 +237,7 @@ HOST(기본 127.0.0.1)·PORT 환경변수를 따르고 서버는 루프백에만
 health의 probe는 환경변수 DEV_INITIALIZATION_PROBE 값이며 없으면 빈 문자열이다. 이는 서버가 확인하는 해당 초기 앱의 구동 식별값이다.
 소스·PROJECT_SPEC.md·.git·환경 파일을 HTTP로 공개하지 않는다. runtime entry와 ecosystem.config.js, README의 실행 방법이 서로 일치해야 한다.
 ecosystem.config.js는 __dirname을 cwd로 사용하고 저장된 PM2 앱 이름·포트로 위 진입점을 실행한다. PORT 환경변수로 포트를 바꿀 수 있어야 한다.
+ecosystem.config.js는 루트 .env가 있으면 읽어 앱 env에 합치고 HOST·PORT가 그 값을 덮는다(.env는 만들지 않는다).
 AGENTS.md는 원본 PROJECT_SPEC.md와 공식 문서를 참조하고 기존 승인 절차를 우회하지 않는다. .env.example에는 빈 비밀값만 둔다.
 issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 body는 범위·완료 기준·미확인 선행 조건을 포함한다.
 각 plan에 ## Tasks 절을 쓰며 한 줄 형식은 반드시 `1. 제목 | 파일: backend/example.py | 확인: 검사 방법 | 선행: 없음`이다.
