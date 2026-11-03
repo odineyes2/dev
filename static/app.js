@@ -2952,7 +2952,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     renderProjects(ed.key, b.dataset.projectTab);
     view.querySelector(`[data-project-tab="${b.dataset.projectTab}"]`).focus();
   });
-  if(ed && projectTab === 'manage' && me?.kind === 'human') bindProjectRestart(ed);
+  if(ed && projectTab === 'manage' && me?.kind === 'human') bindProjectSecrets(ed, bindProjectRestart(ed));
   if(ed && projectTab === 'usage') bindProjectUsage(ed);
   view.querySelectorAll('[data-delete-project]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
     const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;
@@ -3062,6 +3062,66 @@ function bindProjectRestart(project){
     }
   };
   load();
+  return () => { retries = 0; load(); };
+}
+
+// 비밀값(DEV-239) — `.env.example` 키마다 값을 넣는다. 저장된 값은 응답에도 DOM에도 다시 넣지 않는다.
+function bindProjectSecrets(project, reloadRestart){
+  const anchor = view.querySelector('.project-restart');
+  if(!anchor) return;
+  anchor.insertAdjacentHTML('beforebegin', `<section class="panel project-secrets" aria-labelledby="secrets-title">
+    <div class="audit-toolbar"><h3 id="secrets-title">비밀값</h3></div>
+    <p class="dim">값은 이 프로젝트의 .env에만 저장돼요. 빈 칸은 바꾸지 않아요.</p>
+    <div id="secrets-body" class="dim">불러오는 중…</div>
+    <div class="line"><button type="button" id="secrets-save" class="primary" hidden>저장</button></div>
+    <p id="secrets-result" role="status"></p></section>`);
+  const panel = view.querySelector('.project-secrets'), body = panel.querySelector('#secrets-body');
+  const save = panel.querySelector('#secrets-save'), result = panel.querySelector('#secrets-result');
+  const url = `/api/projects/${encodeURIComponent(project.key)}/secrets`;
+  let keys = [];
+  function paint(){
+    body.className = keys.length ? 'secrets-list' : 'dim';
+    save.hidden = !keys.length;
+    if(!keys.length){ body.textContent = '.env.example에 키가 없어요.'; return; }
+    body.innerHTML = keys.map((k, i) => `<div class="secret-row">
+      <label class="secret-name" for="secret-${i}">${esc(k.key)}</label>
+      <span class="secret-state ${k.set ? 'is-set' : ''}">${k.set ? `설정됨${k.last4 ? ' ··' + esc(k.last4) : ''}` : '비어 있어요'}</span>
+      <input id="secret-${i}" type="password" autocomplete="off" spellcheck="false" data-secret="${esc(k.key)}" placeholder="${k.set ? '새 값으로 바꾸기' : '값 붙여 넣기'}">
+      <span class="secret-actions">${k.set ? `<label class="secret-clear"><input type="checkbox" data-secret-clear="${esc(k.key)}"> 지우기</label>` : ''}${k.dev_available ? `<button type="button" data-secret-dev="${esc(k.key)}">dev 값 그대로 쓰기</button>` : ''}</span></div>`).join('');
+    body.querySelectorAll('[data-secret-dev]').forEach(b => b.onclick = () => submit({[b.dataset.secretDev]: {from_dev: true}}, b));
+  }
+  async function submit(changes, button){
+    if(!Object.keys(changes).length){ result.textContent = '바꿀 값을 입력해 주세요.'; return; }
+    await whileBusy(button, async () => {
+      result.textContent = '저장하고 있어요…';
+      let data;
+      try { data = await api('PUT', url, changes, () => panel.isConnected, {notifyErrors: false}); }
+      catch(error){ if(panel.isConnected) result.textContent = `저장하지 못했어요. ${error.message}`; return; }
+      if(!panel.isConnected) return;
+      keys = data.keys || []; paint();
+      const restart = data.restart || {};
+      result.textContent = restart.status === 'complete' ? '반영됨 — 앱을 다시 띄웠어요.'
+        : restart.status === 'failed' ? `저장됐어요. 재시작 실패: ${restart.error || '원인을 알 수 없어요.'}`
+        : restart.status === 'skipped' || !restart.status ? '저장됐어요 — 재시작할 앱이 없어요.'
+        : '저장됐어요. 앱 재시작을 진행하고 있어요 — 아래 앱 재시작 칸에서 이어 봐요.';
+      if(restart.status && restart.status !== 'skipped' && reloadRestart) reloadRestart();
+    });
+  }
+  save.onclick = () => {
+    const changes = {};
+    body.querySelectorAll('[data-secret]').forEach(input => { if(input.value.trim()) changes[input.dataset.secret] = {value: input.value}; });
+    body.querySelectorAll('[data-secret-clear]:checked').forEach(cb => { changes[cb.dataset.secretClear] = {clear: true}; });
+    submit(changes, save);
+  };
+  api('GET', url, undefined, () => panel.isConnected, {notifyErrors: false}).then(data => {
+    if(!panel.isConnected) return;
+    keys = data.keys || []; paint();
+  }).catch(error => {
+    if(!panel.isConnected) return;
+    // dev 자신의 .env는 이 화면에서 바꾸지 않는다 — 패널을 숨긴다.
+    if(error.status === 409 && error.message.includes('dev 자신')){ panel.remove(); return; }
+    body.textContent = error.message;
+  });
 }
 
 function bindProjectUsage(project){
