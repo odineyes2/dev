@@ -1053,7 +1053,7 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .turn-filter button:hover{color:var(--text)}
 .turn-filter button[aria-pressed=true]{background:rgba(var(--accent-rgb),.1);border-color:rgba(var(--accent-rgb),.4);color:var(--accent)}
 #list-body tr.mine{background:color-mix(in srgb,var(--s-in_review) 4%,transparent)}
-.lc-dots{display:inline-flex;align-items:center;gap:4px;max-width:100%;min-width:0;vertical-align:middle}
+.lc-dots{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px;max-width:100%;min-width:0;vertical-align:middle}
 .lc-dots i{flex:0 0 9px;width:9px;height:9px;border-radius:999px;background:var(--border-strong)}
 .lc-dots i[data-s=done]{background:var(--s-done)}
 .lc-dots i[data-s=agent]{background:var(--s-in_progress);box-shadow:0 0 0 2px color-mix(in srgb,var(--s-in_progress) 25%,transparent)}
@@ -1062,7 +1062,10 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .lc-dots i[data-s=hold]{background:var(--s-on_hold)}
 .lc-dots i[data-s=skip]{background:transparent;border:1.5px dashed var(--border-strong)}
 .lc-dots i[data-s=inherited]{background:transparent;border:1.5px solid var(--border-strong)}
-.lc-dots em{font-style:normal;font-size:12px;color:var(--dim);margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.lc-dots em{flex:1 1 0;min-width:0;font-style:normal;font-size:12px;color:var(--dim);margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.lc-dots em:empty{display:none}
+.lc-clock{flex-basis:100%;font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums;margin-top:2px}
+.lc-clock .progress-clock::before{content:none}
 .issue-col-progress .lc-dots{max-width:240px}
 .lc-mobile{display:none}
 .card .meta .lc-dots{display:flex;flex-basis:100%;margin-top:4px}
