@@ -244,4 +244,36 @@ def release_server_restart(reservation_id: int) -> dict:
     return _call(project_restart.reservation_action, _actor(), reservation_id, 'release')
 
 
+@mcp.tool
+def list_project_templates() -> list[dict]:
+    """초기 프로젝트 생성에 쓸 템플릿 목록(id·options·genres·default_genre). request_project_initialization의 template·genre·options 값을 여기서 고른다."""
+    import project_templates
+    _actor()
+    return project_templates.catalog()
+
+
+@mcp.tool
+def request_project_initialization(request_id: str, key: str, name: str, folder: str, provider: str, spec_markdown: str,
+                                   template: str = "blank", genre: str = "", options: dict | None = None, repo_url: str = "",
+                                   service_domain: str = "", service_port: int = 0, service_app: str = "",
+                                   service_prepare_provider: str = "auto") -> dict:
+    """기획서 본문(Markdown, UTF-8 200,000바이트 이하)으로 새 프로젝트 초기 생성을 요청한다. 화면의 프로젝트 만들기와 같은 값·검증을 쓴다.
+    호출하면 유료 분석(Claude/Codex)과 초기 저장소 생성이 시작된다. 만들어진 기능 Task 실행은 별도로 사람이 승인해야 한다.
+    request_id는 새 UUID이며, 응답을 못 받아 재시도할 때는 같은 request_id를 써야 중복 생성되지 않는다. 진행은 project_initialization_status로 본다."""
+    import project_init
+    body = {'request_id': request_id, 'key': key, 'name': name, 'folder': folder, 'provider': provider,
+            'spec_markdown': spec_markdown, 'template': template, 'genre': genre, 'options': {} if options is None else options,
+            'repo_url': repo_url, 'service_domain': service_domain, 'service_port': service_port, 'service_app': service_app,
+            'service_prepare_provider': service_prepare_provider}
+    return _call(project_init.request, _actor(), body, allow_agent=True)
+
+
+@mcp.tool
+def project_initialization_status(key: str) -> dict:
+    """초기 생성 진행 상태(status·phase·error·local_path·genre·refs)를 프로젝트 Key로 조회한다."""
+    import project_init
+    _actor()
+    return _call(project_init.status, key)
+
+
 mcp_app = mcp.http_app(path="/", stateless_http=True, json_response=True)

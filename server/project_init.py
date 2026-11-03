@@ -27,6 +27,7 @@ ROOT = config.REPO_ROOT.parent
 SCHEMA = Path(__file__).with_name('project_init.schema.json')
 REQUIRED = {'README.md', '.env.example', 'AGENTS.md', 'ecosystem.config.js'}
 MAX_FILE_BYTES = 256 * 1024
+MAX_SPEC_BYTES = 200000
 BOOT_TIMEOUT = 30
 _lock = threading.Lock()
 _active = set()
@@ -92,8 +93,40 @@ def status(key):
             'refs': json.loads(row['refs_json'])}
 
 
-def request(actor, body):
-    if actor['kind'] != 'human':
+def _spec_text(actor, body):
+    """첨부 또는 본문(spec_markdown) 중 정확히 하나에서 기획서를 읽는다. 둘 다 같은 한도·빈 내용 검사를 거친다."""
+    has_file = body.get('attachment_id') not in (None, '')
+    has_text = 'spec_markdown' in body
+    if has_file == has_text:
+        raise issues.StoreError('기획서는 파일 첨부 또는 직접 입력 중 하나로만 보내 주세요.')
+    if has_text:
+        text = body['spec_markdown']
+        if not isinstance(text, str):
+            raise issues.StoreError('기획서 본문은 문자열이어야 해요.')
+        try:
+            raw = text.encode('utf-8')
+        except UnicodeEncodeError:
+            raise issues.StoreError('UTF-8로 쓸 수 없는 문자가 기획서에 있어요.')
+    else:
+        a = attachments.get(actor, body.get('attachment_id'))
+        if a['kind'] != 'markdown' or a['issue_id'] is not None:
+            raise issues.StoreError('자신의 새 Markdown 기획서를 첨부해 주세요.')
+        with attachments.open_content(a) as f:
+            raw = f.read(MAX_SPEC_BYTES + 1)
+    if len(raw) > MAX_SPEC_BYTES:
+        raise issues.StoreError('기획서는 UTF-8 기준 200KB 이내로 보내 주세요.', 413)
+    try:
+        spec = raw.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        raise issues.StoreError('UTF-8 Markdown 기획서를 첨부해 주세요.')
+    if not spec.strip():
+        raise issues.StoreError('기획서가 비어 있어요.')
+    return spec
+
+
+def request(actor, body, allow_agent=False):
+    # 에이전트 요청은 MCP 생성 도구만 연다(allow_agent). REST·재시도·취소는 사람 전용 그대로다.
+    if actor.get('kind') not in (('human', 'agent') if allow_agent else ('human',)):
         raise issues.StoreError('초기 프로젝트 생성은 관리자만 할 수 있어요.', 403)
     request_id = body.get('request_id')
     try:
@@ -126,19 +159,7 @@ def request(actor, body):
         if old['owner'] != issues.actor_label(actor) or old['key'] != key:
             raise issues.StoreError('다른 생성 요청의 ID예요.', 409)
         return status(key)
-    a = attachments.get(actor, body.get('attachment_id'))
-    if a['kind'] != 'markdown' or a['issue_id'] is not None:
-        raise issues.StoreError('자신의 새 Markdown 기획서를 첨부해 주세요.')
-    with attachments.open_content(a) as f:
-        raw = f.read(200001)
-    if len(raw) > 200000:
-        raise issues.StoreError('기획서는 UTF-8 기준 200KB 이내로 첨부해 주세요.', 413)
-    try:
-        spec = raw.decode('utf-8-sig')
-    except UnicodeDecodeError:
-        raise issues.StoreError('UTF-8 Markdown 기획서를 첨부해 주세요.')
-    if not spec.strip():
-        raise issues.StoreError('기획서가 비어 있어요.')
+    spec = _spec_text(actor, body)
     if not automation.provider_available(provider):
         raise issues.StoreError('선택한 에이전트를 실행할 수 없어요. Agents 설정을 확인해 주세요.', 409)
     if target.exists() or target.is_symlink():
@@ -524,6 +545,15 @@ def materialize(row, result):
         stage.rename(target)
 
 
+def _owner_actor(c, owner):
+    """저장된 요청자 표기(human:<이름>·agent:<id>)를 actor로 되돌린다 — actor_label이 같은 표기를 다시 만든다."""
+    if owner.startswith('agent:'):
+        aid = owner.removeprefix('agent:')
+        agent = c.execute('SELECT name FROM agents WHERE id=?', (aid,)).fetchone() if aid.isdigit() else None
+        return {'kind': 'agent', 'id': int(aid) if aid.isdigit() else aid, 'name': agent['name'] if agent else owner}
+    return {'kind': 'human', 'name': owner.removeprefix('human:')}
+
+
 def publish(row, result):
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
@@ -533,7 +563,7 @@ def publish(row, result):
         proj = c.execute('SELECT * FROM projects WHERE id=?', (row['project_id'],)).fetchone()
         if proj['archived']:
             raise issues.StoreError('보관된 프로젝트에는 생성 결과를 등록할 수 없어요.', 409)
-        actor = {'kind': 'human', 'name': row['owner'].removeprefix('human:')}
+        actor = _owner_actor(c, row['owner'])
         refs = []
         for item in result['issues']:
             number, _, _ = issues._next_number(c, proj, None)
