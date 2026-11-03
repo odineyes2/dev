@@ -3086,7 +3086,7 @@ function bindProjectSecrets(project, reloadRestart){
     body.innerHTML = keys.map((k, i) => `<div class="secret-row">
       <label class="secret-name" for="secret-${i}">${esc(k.key)}</label>
       <span class="secret-state ${k.set ? 'is-set' : ''}">${k.set ? `설정됨${k.last4 ? ' ··' + esc(k.last4) : ''}` : '비어 있어요'}</span>
-      <input id="secret-${i}" type="password" autocomplete="off" spellcheck="false" data-secret="${esc(k.key)}" placeholder="${k.set ? '새 값으로 바꾸기' : '값 붙여 넣기'}">
+      <input id="secret-${i}" type="password" autocomplete="off" spellcheck="false" data-env-key="${esc(k.key)}" placeholder="${k.set ? '새 값으로 바꾸기' : '값 붙여 넣기'}">
       <span class="secret-actions">${k.set ? `<label class="secret-clear"><input type="checkbox" data-secret-clear="${esc(k.key)}"> 지우기</label>` : ''}${k.dev_available ? `<button type="button" data-secret-dev="${esc(k.key)}">dev 값 그대로 쓰기</button>` : ''}</span></div>`).join('');
     body.querySelectorAll('[data-secret-dev]').forEach(b => b.onclick = () => submit({[b.dataset.secretDev]: {from_dev: true}}, b));
   }
@@ -3109,7 +3109,7 @@ function bindProjectSecrets(project, reloadRestart){
   }
   save.onclick = () => {
     const changes = {};
-    body.querySelectorAll('[data-secret]').forEach(input => { if(input.value.trim()) changes[input.dataset.secret] = {value: input.value}; });
+    body.querySelectorAll('[data-env-key]').forEach(input => { if(input.value.trim()) changes[input.dataset.envKey] = {value: input.value}; });
     body.querySelectorAll('[data-secret-clear]:checked').forEach(cb => { changes[cb.dataset.secretClear] = {clear: true}; });
     submit(changes, save);
   };

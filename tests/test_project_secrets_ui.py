@@ -73,11 +73,11 @@ def behaviour(page, api):
     expect(rows.nth(1).locator('[data-secret-dev]')).to_have_count(1)
     assert rows.nth(0).locator('input[type=password]').get_attribute('autocomplete') == 'off'
     # 빈 칸은 바꾸지 않는다 — 입력한 키만 body에 들어간다
-    page.locator('[data-secret="OTHER_TOKEN"]').fill(TYPED)
+    page.locator('[data-env-key="OTHER_TOKEN"]').fill(TYPED)
     page.locator('#secrets-save').click()
     expect(page.locator('#secrets-result')).to_contain_text('반영됨')
     assert api.puts[-1] == {'OTHER_TOKEN': {'value': TYPED}}, api.puts
-    expect(page.locator('[data-secret="OTHER_TOKEN"]')).to_have_value('')
+    expect(page.locator('[data-env-key="OTHER_TOKEN"]')).to_have_value('')
     assert TYPED not in page.content() and STORED not in page.content(), '원값이 페이지에 남으면 안 된다'
     # 재시작 실패
     api.restart = 'failed'
@@ -102,7 +102,7 @@ def behaviour(page, api):
 def layout(page, path):
     panel = page.locator('.project-secrets')
     expect(panel.locator('.secret-row')).to_have_count(2)
-    page.locator('[data-secret="LLM_API_KEY"]').fill(TYPED)
+    page.locator('[data-env-key="LLM_API_KEY"]').fill(TYPED)
     panel.scroll_into_view_if_needed()
     assert panel.evaluate('''p => {
       const r = p.getBoundingClientRect();
