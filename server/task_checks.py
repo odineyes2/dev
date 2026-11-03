@@ -276,28 +276,67 @@ def check_syntax(cwd, files) -> dict:
             "output": "\n".join(bad), "detail": f"{count}개 파일"}
 
 
+SECRET_HITS_MAX = 30
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _secret_shape(text: str) -> str:
+    """repo_snapshot.SECRET에 걸린 문자열의 갈래 이름만 돌려준다. 값은 돌려주지 않는다(DEV-241)."""
+    low = text.lower()
+    if text.startswith("-----BEGIN"):
+        return "개인 키 블록"
+    for prefix in ("sk-", "github_pat_"):
+        if low.startswith(prefix):
+            return f"{prefix} 키 모양"
+    if re.match(r"gh[pousr]_", low):
+        return "gh*_ 키 모양"
+    if low.startswith("akia"):
+        return "AKIA 키 모양"
+    if re.match(r"bearer\s", low):
+        return "Bearer 토큰 모양"
+    if low.startswith("eyj"):
+        return "JWT 모양"
+    if re.match(r"[a-z][a-z0-9+.-]*://", low):
+        return "URL 속 계정:암호 모양"
+    # 이름=값 갈래는 고정 키워드로 시작하므로 문자·_·-까지만 읽으면 값이 섞이지 않는다
+    return "이름=값 모양: " + re.match(r"[A-Za-z_-]*", text).group(0).lower()
+
+
 def check_secrets(cwd, files, base) -> dict:
-    """추가된 줄과 새 파일에서 키·토큰 모양을 찾는다. 값은 출력하지 않고 위치만 남긴다."""
+    """추가된 줄과 새 파일에서 키·토큰 모양을 찾는다. 값은 출력하지 않고 `파일:줄 (모양)`만 남긴다."""
     import execute
     import repo_snapshot
-    started, hits = time.monotonic(), []
+    started, hits = time.monotonic(), {}
+
+    def scan(name, number, text):
+        shapes = [_secret_shape(m.group(0)) for m in repo_snapshot.SECRET.finditer(text)]
+        if shapes:
+            hits.setdefault(f"{name}:{number}", list(dict.fromkeys(shapes)))
+
     tracked = set(execute._git(cwd, "ls-files").splitlines())
-    current = None
+    current, number, left = None, 0, 0
     for line in execute._git(cwd, "diff", "-U0", base).splitlines():
-        if line.startswith("+++ "):
+        if left > 0 and line.startswith("+"):   # 추가 줄 수를 세어 `++ `로 시작하는 내용을 머리로 오인하지 않는다
+            if current:
+                scan(current, number, line[1:])
+            number, left = number + 1, left - 1
+        elif line.startswith("+++ "):
             current = line[6:] if line.startswith("+++ b/") else None
-        elif line.startswith("+") and current and repo_snapshot.SECRET.search(line[1:]):
-            hits.append(current)
+        elif m := _HUNK.match(line):
+            number, left = int(m.group(1)), int(m.group(2) or 1)
     for name in files:
         if name not in tracked:
             try:
-                if repo_snapshot.SECRET.search((Path(cwd) / name).read_text(encoding="utf-8", errors="replace")):
-                    hits.append(name)
+                text = (Path(cwd) / name).read_text(encoding="utf-8", errors="replace")
             except OSError:
-                pass
-    hits = list(dict.fromkeys(hits))
+                continue
+            for i, line in enumerate(text.splitlines(), 1):
+                scan(name, i, line)
+    rows = [f"{where} ({', '.join(shapes)})" for where, shapes in hits.items()]
+    if len(rows) > SECRET_HITS_MAX:
+        rows = rows[:SECRET_HITS_MAX] + [f"… 외 {len(rows) - SECRET_HITS_MAX}곳"]
     return {"cmd": "비밀값 검사", "ok": not hits, "seconds": round(time.monotonic() - started, 1),
-            "output": ("키·토큰 모양이 있는 파일(값은 표시하지 않아요): " + ", ".join(hits)) if hits else ""}
+            "output": "\n".join(["키·토큰 모양이 있는 곳(값은 표시하지 않아요):", *rows]) if hits else ""}
 
 
 def check_migration(cwd) -> dict:
