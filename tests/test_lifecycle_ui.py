@@ -109,9 +109,18 @@ def check_list(browser, port):
         assert dots.locator('i').evaluate_all('els => els.map(e => e.dataset.s).join(" ")') == expected[2], key
         cur = page.evaluate('(i) => lifecycle(i).cur', LIST[n])
         clock = dots.locator('.lc-clock')
-        meta = ' '.join(t for t in [dots.locator('em').text_content()] + clock.all_text_contents() if t)
+        assert dots.locator('em').count() == 0, key
+        tip = rows.nth(n).locator('td.issue-col-progress').get_attribute('title')
+        first, msg = tip.split('\n')
+        label = page.evaluate('(i) => lifecycle(i).steps[lifecycle(i).cur].label', LIST[n])
+        assert first == label or first.startswith(label + ' · '), (key, first)
+        meta = first[len(label):].removeprefix(' · ')
+        meta = ' '.join(t for t in [meta] + clock.all_text_contents() if t)
         assert re.fullmatch(expected[3][cur], meta), (key, meta)
-        assert dots.get_attribute('title') == expected[-1], key
+        assert msg == expected[-1], key
+        assert dots.get_attribute('title') == tip, key
+        assert rows.nth(n).locator('.lc-mobile .lc-dots').get_attribute('title') == tip, key
+        assert rows.nth(n).locator('.lc-mobile em').count() == 0, key
         if key not in ('plan', 'retry'):
             assert clock.count() == 0, key
             continue
@@ -147,6 +156,7 @@ def check_list(browser, port):
         page.goto(f'http://127.0.0.1:{port}/#/board')
         page.wait_for_selector('.card .meta .lc-dots')
         assert page.locator('.card .meta .lc-dots').count() == 8
+        assert page.locator('.card .meta .lc-dots em').count() == 8
         page.locator('.kanban').screenshot(path=str(CAPTURES / f'{theme}-800-board.png'))
         page.goto(f'http://127.0.0.1:{port}/#/')
         page.wait_for_selector('#list-body tr.row', state='attached')
@@ -156,6 +166,31 @@ def check_list(browser, port):
         assert detail_page.locator('.lc-step').evaluate_all('els => els.map(e => e.dataset.s).join(" ")') == page.evaluate('(i) => lifecycle(i).steps.map(s => s.state).join(" ")', next(i for i in LIST if i['ref'] == detail['ref']))
         detail_page.close()
     page.close()
+    # 실제 하위 행으로 접기 버튼과 접힘 기억을 확인한다.
+    child = issue('DEV-220-1', 'done', '11-01T01:03', parent_ref='DEV-220', id=99, updated_at=LIST[0]['updated_at'])
+    LIST.append(child)
+    try:
+        page = browser.new_page(viewport={'width': 1050, 'height': 900}, timezone_id='Asia/Seoul')
+        page.route('**/*', handler(LIST[0]))
+        page.goto(f'http://127.0.0.1:{port}/#/')
+        parent = page.locator('#list-body tr[data-ref="DEV-220"]')
+        toggle = parent.locator('.tog')
+        toggle.wait_for()
+        assert parent.locator('.kids').count() == 0
+        assert 'Tasks ' not in parent.text_content()
+        child_row = page.locator('#list-body tr[data-ref="DEV-220-1"]')
+        assert child_row.is_visible()
+        toggle.click()
+        assert not child_row.is_visible()
+        page.reload()
+        page.wait_for_selector('#list-body tr.row', state='attached')
+        assert toggle.get_attribute('aria-expanded') == 'false'
+        assert not child_row.is_visible()
+        toggle.click()
+        assert child_row.is_visible()
+        page.close()
+    finally:
+        LIST.pop()
 
 
 SHOTS = {'approve': '02-approve', 'exec': '03-exec', 'retry': '04-retry', 'review': '05-review', 'closed': '06-closed', 'task': '07-task'}

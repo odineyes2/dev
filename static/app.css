@@ -1066,11 +1066,11 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .lc-dots em:empty{display:none}
 .lc-clock{flex-basis:100%;font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums;margin-top:2px}
 .lc-clock .progress-clock::before{content:none}
+.issue-col-progress{cursor:default}
 .issue-col-progress .lc-dots{max-width:240px}
 .lc-mobile{display:none}
 .card .meta .lc-dots{display:flex;flex-basis:100%;margin-top:4px}
 @media(max-width:640px){
   #list-body .issue-col-progress{display:none}
   .lc-mobile{display:block;margin:6px 0 2px}
-  .lc-mobile em{display:none}
 }
