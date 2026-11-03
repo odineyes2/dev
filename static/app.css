@@ -954,5 +954,15 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .template-card ul{ padding-left:var(--sp-4); margin:var(--sp-2) 0 0; }
 #p-step-heading{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-3); }
 #p-register-mode{ margin-top:var(--sp-4); }
+/* 기획서 입력 방식 — 파일 첨부와 직접 입력 편집기(DEV-225). */
+.spec-source{ border:0; padding:0; margin:0 0 var(--sp-3); min-width:0; }
+.spec-modes, .spec-file, .spec-draft{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2) var(--sp-4); }
+#project-dialog .spec-modes label{ flex:0 0 auto; display:flex; flex-direction:row; align-items:center; gap:var(--sp-2); min-height:40px; font-family:var(--sans); text-transform:none; letter-spacing:0; color:var(--text); font-size:14px; font-weight:400; }
+#project-dialog .spec-modes input{ width:auto; min-height:0; flex:none; }
+#project-dialog .spec-file input{ flex:1 1 220px; width:auto; }
+#project-dialog #p-spec-text{ width:100%; min-height:240px; resize:vertical; font-family:var(--mono, monospace); font-size:13px; line-height:1.5; }
+#p-spec-text[aria-invalid="true"]:not(:placeholder-shown){ border-color:var(--danger, #d92d20); }
+.spec-size, .spec-draft{ margin:var(--sp-1, 4px) 0 0; overflow-wrap:anywhere; }
+#p-spec-error:empty{ display:none; }
 #qa-title{ display:flex; align-items:center; flex-wrap:wrap; gap:var(--sp-2); }
 #qa-start{ margin-left:auto; }

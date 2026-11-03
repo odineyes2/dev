@@ -2450,7 +2450,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       <label class="project-port">로컬 포트<span class="project-port-controls"><input id="p-port" type="number" min="1" max="65535" step="1" placeholder="예: 8400" value="${ed?.service_port || ''}" aria-describedby="p-port-message"><button type="button" id="p-free-port">빈 포트</button></span><span id="p-port-message" role="status" aria-live="polite"></span></label>
       <label>PM2 앱 이름<input id="p-service-app" maxlength="80" placeholder="예: myapp (이미 실행 중이면 비워요)" value="${esc(ed?.service_app || '')}"></label><label>실행 파일 생성 방식<select id="p-service-provider">${[["auto","자동 · 작업 에이전트 우선순위"],["codex","Codex"],["claude","Claude"],["none","기존 파일만 사용 · 유료 호출 없음"]].map(([value,label]) => `<option value="${value}"${(ed?.service_prepare_provider || "auto") === value ? " selected" : ""}>${label}</option>`).join("")}</select></label></div><p class="dim">로컬 포트는 다른 서비스가 쓰지 않는 번호를 정하고 앱 실행 설정에도 같은 값을 사용해 주세요. 이 값을 저장해도 앱의 포트가 자동으로 바뀌지는 않아요.</p></div>
       <label class="project-description">프로젝트 설명<textarea id="p-description" maxlength="200000" placeholder="목적, 대상 사용자와 원하는 기능을 적어 주세요.">${esc(ed?.description || '')}</textarea></label>
-      ${ed ? '' : `<details class="project-description project-spec"><summary>기획서로 시작</summary><p class="dim">기획서로 실행 가능한 최소 앱·로컬 Git·Issue·Task를 만들어요. 기본 화면과 health가 로컬에서 응답해야 초기 생성이 완료돼요. 선택한 에이전트의 유료 분석을 시작하며, 제품 기능 Task 실행은 별도 승인이 필요해요.</p><fieldset class="project-templates"><legend>앱 종류</legend><div id="p-templates" class="template-cards" aria-live="polite">앱 종류를 불러오고 있어요…</div></fieldset><fieldset id="p-template-options" hidden><legend>기본 기능</legend><div class="template-options"></div></fieldset><div class="line"><label>기획서<input id="p-spec" type="file" accept=".md,text/markdown"></label><label>Projects 하위 폴더명<input id="p-folder" placeholder="예: moai" maxlength="80"></label><label>분석 도구<select id="p-init-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label></div><p class="dim">UTF-8 Markdown · 최대 200KB. 위 Repository와 Local path는 기존 저장소 등록에 사용해요.</p><button type="button" id="p-initialize">초기 프로젝트 생성</button><p id="p-init-message" role="status" aria-live="polite"></p></details>`}
+      ${ed ? '' : `<details class="project-description project-spec"><summary>기획서로 시작</summary><p class="dim">기획서로 실행 가능한 최소 앱·로컬 Git·Issue·Task를 만들어요. 기본 화면과 health가 로컬에서 응답해야 초기 생성이 완료돼요. 선택한 에이전트의 유료 분석을 시작하며, 제품 기능 Task 실행은 별도 승인이 필요해요.</p><fieldset class="project-templates"><legend>앱 종류</legend><div id="p-templates" class="template-cards" aria-live="polite">앱 종류를 불러오고 있어요…</div></fieldset><fieldset id="p-template-options" hidden><legend>기본 기능</legend><div class="template-options"></div></fieldset><fieldset id="p-spec-source" class="spec-source"><legend>기획서</legend><div class="spec-modes"><label><input type="radio" name="p-spec-mode" value="file" checked>파일 첨부</label><label><input type="radio" name="p-spec-mode" value="text">직접 입력</label></div><div id="p-spec-file" class="spec-file"><input id="p-spec" type="file" accept=".md,text/markdown" aria-label="기획서 파일" aria-describedby="p-spec-hint"><button type="button" id="p-spec-load">편집기로 불러오기</button></div><div id="p-spec-editor" hidden><textarea id="p-spec-text" rows="14" spellcheck="false" aria-label="기획서 Markdown" aria-describedby="p-spec-size p-spec-error" placeholder="# 프로젝트 이름&#10;&#10;## 목적&#10;…"></textarea><p id="p-spec-size" class="dim spec-size" aria-live="polite"></p><div class="spec-draft"><span id="p-spec-draft" class="dim" role="status"></span><button type="button" id="p-spec-clear" class="ghost" hidden>초안 지우기</button></div></div><p id="p-spec-error" class="error" aria-live="polite"></p><p id="p-spec-hint" class="dim">UTF-8 Markdown · 최대 200,000바이트. 직접 입력한 초안은 이 브라우저에만 보관해요.</p></fieldset><div class="line"><label>Projects 하위 폴더명<input id="p-folder" placeholder="예: moai" maxlength="80"></label><label>분석 도구<select id="p-init-provider"><option value="codex">Codex</option><option value="claude">Claude</option></select></label></div><button type="button" id="p-initialize">초기 프로젝트 생성</button><p id="p-init-message" role="status" aria-live="polite"></p></details>`}
       <label class="actions">${ed ? '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">저장</button>'
         : '<button type="button" id="p-cancel">취소</button><button class="primary" type="submit">등록</button>'}</label></div><p id="project-error" class="error" role="alert"></p></form>
 `;
@@ -2501,6 +2501,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       portLookup = false;
       freePort.disabled = saving; freePort.textContent = '빈 포트';
       if(!saving) locked.forEach(el => { el.disabled = false; });
+      syncInitialize();
     }
   };
   function serviceLabel(state){
@@ -2625,6 +2626,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     if(saving || !dialog?.open) return;
     portRevision++; portTouched = false; portMessage.textContent = '';
     form.reset(); clearSuggestion(); initRequest = null;
+    specSeq++; restoreSpecDraft();
     selectedTemplate = 'blank';
     Object.keys(selectedGenre).forEach(key => delete selectedGenre[key]);
     if(templateCatalog) templateCatalog.forEach(t => { templateValues[t.id] = Object.fromEntries(Object.entries(t.options).map(([k, o]) => [k, o.default])); });
@@ -2651,7 +2653,10 @@ function renderProjects(editKey, projectTab = 'manage'){
       if(e.target === dialog && (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom)) closeCreation();
     });
   }
-  form.addEventListener('input', () => { clearSuggestion(); if(!saving) initRequest = null; });
+  form.addEventListener('input', e => {
+    clearSuggestion(); if(!saving) initRequest = null;
+    if(specText && e.target === specText){ saveSpecDraft(); paintSpec(); }
+  });
   const initialize = view.querySelector('#p-initialize');
   let selectedTemplate = 'blank', templateCatalog = null;
   const templateValues = {}, selectedGenre = {};
@@ -2659,6 +2664,10 @@ function renderProjects(editKey, projectTab = 'manage'){
   const currentGenre = () => currentTemplate()?.genres?.find(g => g.id === selectedGenre[selectedTemplate]);
   const allowedOptions = () => Object.entries(currentTemplate().options).filter(([key]) => !currentGenre() || currentGenre().options.includes(key));
   let creationMode = 'pick';
+  const SPEC_DRAFT = 'dev.projectSpecDraft', SPEC_MAX = 200000;
+  const specText = form.querySelector('#p-spec-text'), specFile = form.querySelector('#p-spec'), specLoad = form.querySelector('#p-spec-load');
+  let specMemory = '', specSeq = 0;
+  try{ specMemory = localStorage.getItem(SPEC_DRAFT) || ''; }catch{}
   if(dialog){
     const fields = form.querySelector(':scope > .line'); fields.id = 'p-details';
     const spec = form.querySelector('.project-spec');
@@ -2681,8 +2690,80 @@ function renderProjects(editKey, projectTab = 'manage'){
     const actions = form.querySelector('.actions'); actions.lastElementChild.id = 'p-register';
     actions.append(initialize); initialize.classList.add('primary');
     content.querySelector('p.dim').textContent = '기획서로 최소 앱·공식 문서·Issue·Task를 만들고 실행 검사해요. 선택한 도구의 유료 분석을 시작하며, 기능 Task 실행은 별도 승인이 필요해요.';
-    content.querySelectorAll('p.dim')[1].textContent = 'UTF-8 Markdown · 최대 200KB.';
+    form.querySelectorAll('[name="p-spec-mode"]').forEach(radio => radio.onchange = () => { specSeq++; form.querySelector('#p-spec-error').textContent = ''; paintSpec(); });
+    specFile.addEventListener('change', () => { specSeq++; form.querySelector('#p-spec-error').textContent = ''; paintSpec(); });
+    specLoad.onclick = loadSpecFile;
+    form.querySelector('#p-spec-clear').onclick = async () => {
+      if(!await confirmDialog('기획서 초안을 지울까요?', {description:'이 브라우저에 보관한 초안도 함께 지워요. 되돌릴 수 없어요.', okText:'지우기', danger:true, focusCancel:true}) || saving) return;
+      specSeq++; specText.value = ''; initRequest = null; saveSpecDraft(); paintSpec(); specText.focus();
+    };
+    restoreSpecDraft();
     setCreationStep('pick', false);
+  }
+  // 기획서 직접 입력(DEV-225) — 초안은 메모리와 이 브라우저 localStorage 한 칸에 두고, 생성 요청이 성공해야 지운다.
+  function specMode(){ return form.querySelector('[name="p-spec-mode"]:checked')?.value || 'file'; }
+  function specProblem(text = specText.value){
+    const bytes = new TextEncoder().encode(text).length;
+    if(text.isWellFormed && !text.isWellFormed()) return '짝이 맞지 않는 문자가 있어요. 해당 부분을 지우고 다시 입력해 주세요.';
+    if(bytes > SPEC_MAX) return `200,000바이트를 ${(bytes - SPEC_MAX).toLocaleString()}바이트 넘었어요. 내용을 줄여 주세요.`;
+    if(!text.replace(/^﻿/, '').trim()) return '기획서 내용을 입력해 주세요.';
+    return '';
+  }
+  function syncInitialize(){
+    // 카탈로그 로딩·포트 조회·저장·편집기 상태를 한곳에서 계산해 비동기 콜백이 버튼을 잘못 켜지 않게 한다.
+    if(initialize) initialize.disabled = saving || portLookup || !templateCatalog || creationMode !== 'template' || (specMode() === 'text' && !!specProblem());
+  }
+  function paintSpec(){
+    if(!specText) return syncInitialize();
+    const text = specText.value, bytes = new TextEncoder().encode(text).length, chars = [...text].length;
+    const editing = specMode() === 'text', active = creationMode === 'template' && !saving;
+    form.querySelector('#p-spec-file').hidden = editing; form.querySelector('#p-spec-editor').hidden = !editing;
+    specText.disabled = !active || !editing; specFile.disabled = !active || editing; specLoad.disabled = !active || editing || !specFile.files.length;
+    form.querySelector('#p-spec-size').textContent = `${chars.toLocaleString()}자 · ${bytes.toLocaleString()} / 200,000바이트 · 남은 ${Math.max(0, SPEC_MAX - bytes).toLocaleString()}바이트${bytes > chars ? ' · 한글 등은 한 글자가 2~4바이트라 바이트 한도가 먼저 적용돼요.' : ''}`;
+    if(editing){
+      const problem = specProblem(text);
+      form.querySelector('#p-spec-error').textContent = problem;
+      specText.setAttribute('aria-invalid', problem ? 'true' : 'false');
+    }
+    form.querySelector('#p-spec-clear').hidden = !text;
+    syncInitialize();
+  }
+  function saveSpecDraft(){
+    specMemory = specText.value;
+    const note = form.querySelector('#p-spec-draft');
+    try{
+      if(specMemory) localStorage.setItem(SPEC_DRAFT, specMemory); else localStorage.removeItem(SPEC_DRAFT);
+      note.textContent = specMemory ? '초안을 이 브라우저에 보관했어요.' : '';
+    }catch{ note.textContent = '초안을 이 브라우저에 보관하지 못했어요. 입력한 내용은 이 화면에서 유지돼요.'; }
+  }
+  function forgetSpecDraft(){
+    specMemory = '';
+    try{ localStorage.removeItem(SPEC_DRAFT); }catch{}
+  }
+  function restoreSpecDraft(){
+    specText.value = specMemory;
+    if(specMemory) form.querySelector('[name="p-spec-mode"][value="text"]').checked = true;
+    form.querySelector('#p-spec-draft').textContent = specMemory ? '이전에 입력한 초안을 불러왔어요.' : '';
+    form.querySelector('#p-spec-error').textContent = '';
+    paintSpec();
+  }
+  async function loadSpecFile(){
+    const file = specFile.files[0], seq = ++specSeq, error = form.querySelector('#p-spec-error');
+    if(!file || saving) return;
+    error.textContent = '';
+    if(file.size > SPEC_MAX){ error.textContent = '기획서 파일은 200,000바이트 이내여야 해요.'; return; }
+    let text;
+    try{ text = new TextDecoder('utf-8', {fatal:true}).decode(await file.arrayBuffer()); }
+    catch{ if(seq === specSeq) error.textContent = 'UTF-8로 읽을 수 없는 파일이에요. UTF-8 Markdown으로 저장해 다시 골라 주세요.'; return; }
+    // 읽는 사이 파일·입력 방식·창이 바뀌었으면 지난 결과를 적용하지 않는다.
+    const current = () => seq === specSeq && dialog.open && !saving && specFile.files[0] === file;
+    if(!current()) return;
+    if(specText.value && specText.value !== text && !await confirmDialog('편집기 내용을 파일 내용으로 바꿀까요?', {description:'지금 편집기에 있는 초안은 사라져요.', okText:'바꾸기', danger:true, focusCancel:true})) return;
+    if(!current()) return;
+    specText.value = text; form.querySelector('[name="p-spec-mode"][value="text"]').checked = true;
+    initRequest = null; saveSpecDraft(); paintSpec();
+    form.querySelector('#p-spec-draft').textContent = `${file.name}을 불러왔어요. 고친 뒤 생성할 수 있어요.`;
+    specText.focus();
   }
   function setCreationStep(mode, focus = true){
     if(!dialog || saving) return;
@@ -2704,6 +2785,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     form.querySelectorAll('#p-details input, #p-details textarea, #p-details select, #p-details button').forEach(el => {
       el.disabled = choosing || !!el.closest('[hidden]') || (el === freePort && portLookup);
     });
+    paintSpec();
     if(focus) (genre ? form.querySelector(`[data-genre-pick="${selectedGenre[selectedTemplate] || currentTemplate().default_genre}"]`) : picking ? form.querySelector(`[data-template-pick="${selectedTemplate}"]`) || form.querySelector('#p-register-mode') : form.querySelector('#p-key')).focus();
   }
   function renderGenres(){
@@ -2737,7 +2819,7 @@ function renderProjects(editKey, projectTab = 'manage'){
         selectedTemplate = button.dataset.templatePick; setCreationStep(currentTemplate().genres?.length ? 'genre' : 'template');
       });
       renderTemplateOptions();
-      initialize.disabled = saving || portLookup || creationMode !== 'template';
+      syncInitialize();
       if(dialog?.open && creationMode === 'pick') setCreationStep('pick');
     }catch(error){
       if(!form.isConnected) return;
@@ -2765,21 +2847,31 @@ function renderProjects(editKey, projectTab = 'manage'){
       if(!ed && (creationMode === 'template' || initRequest)){
         if(!templateCatalog) throw new Error('앱 종류를 먼저 불러와 주세요.');
         if(!initRequest){
-          const file = view.querySelector('#p-spec').files[0];
-          if(!file || !file.name.toLowerCase().endsWith('.md')) throw new Error('Markdown 기획서를 첨부해 주세요.');
-          if(file.size > 200000) throw new Error('기획서는 200KB 이내로 첨부해 주세요.');
+          // 직접 입력은 spec_markdown만, 파일 첨부는 attachment_id만 보낸다.
+          const editing = specMode() === 'text', file = view.querySelector('#p-spec').files[0];
+          if(editing){ const problem = specProblem(); if(problem) throw new Error(problem); }
+          else {
+            if(!file || !file.name.toLowerCase().endsWith('.md')) throw new Error('Markdown 기획서를 첨부해 주세요.');
+            if(file.size > SPEC_MAX) throw new Error('기획서는 200KB 이내로 첨부해 주세요.');
+          }
           const folder = val('#p-folder').trim();
           if(!folder) throw new Error('Projects 하위 폴더명을 입력해 주세요.');
-          view.querySelector('#p-init-message').textContent = '기획서를 업로드하고 생성 요청을 등록하고 있어요…';
-          const data = new FormData(); data.append('file', file);
-          const attachment = await api('POST', '/api/attachments', data);
-          if(!form.isConnected) return;
-          initRequest = {request_id: crypto.randomUUID(), attachment_id: attachment.id,
+          view.querySelector('#p-init-message').textContent = editing ? '생성 요청을 등록하고 있어요…' : '기획서를 업로드하고 생성 요청을 등록하고 있어요…';
+          let source = {spec_markdown: specText.value};
+          if(!editing){
+            const data = new FormData(); data.append('file', file);
+            const attachment = await api('POST', '/api/attachments', data);
+            if(!form.isConnected) return;
+            source = {attachment_id: attachment.id};
+          }
+          initRequest = {request_id: crypto.randomUUID(), ...source,
             template: selectedTemplate, ...(currentGenre() ? {genre: currentGenre().id} : {}),
             options: Object.fromEntries(allowedOptions().map(([key]) => [key, templateValues[selectedTemplate][key]])),
             key: val('#p-key'), name: val('#p-name'), repo_url: val('#p-repo'), folder, provider: val('#p-init-provider'), service_domain: val('#p-domain'), service_port: val('#p-port') || 0, service_app: val('#p-service-app'), service_prepare_provider: val('#p-service-provider')};
         }
         const result = await api('POST', '/api/projects/initialize', initRequest);
+        // 요청이 등록된 순간 초안을 지운다 — 뒤의 목록 갱신이 실패해도 다시 보관하지 않는다.
+        if('spec_markdown' in initRequest) forgetSpecDraft();
         await loadProjects();
         if(!form.isConnected) return;
         dialog?.close();
@@ -2822,6 +2914,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       button.disabled = cancel.disabled = false; button.textContent = original;
       if(close) close.disabled = false;
       form.removeAttribute('aria-busy');
+      if(form.isConnected) syncInitialize();
     }
   });
   if(ed){
