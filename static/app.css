@@ -983,3 +983,8 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 #p-spec-error:empty{ display:none; }
 #qa-title{ display:flex; align-items:center; flex-wrap:wrap; gap:var(--sp-2); }
 #qa-start{ margin-left:auto; }
+/* 댓글·메모에 붙은 첨부(DEV-242) */
+.event-files{ display:flex; flex-wrap:wrap; gap:var(--sp-2); margin-top:var(--sp-2); }
+.event-files a{ display:inline-flex; align-items:center; gap:6px; min-height:32px; padding:4px 10px; border:1px solid var(--border); border-radius:999px; background:var(--panel); color:var(--text); font-size:12px; text-decoration:none; }
+.event-files a:hover{ border-color:var(--accent); color:var(--accent); }
+.event-files .ico{ width:14px; height:14px; color:var(--dim); }

@@ -186,8 +186,9 @@ FORMATS = {
 
 
 def _owner(actor):
-    if actor.get('kind') != 'human':
-        raise issues.StoreError('첨부 변경은 사람만 할 수 있어요.', 403)
+    """사람과 에이전트 모두 첨부를 올리고 잇는다(DEV-242). 남의 첨부를 잇거나 지우는 것만 막는다."""
+    if not actor:
+        raise issues.StoreError('로그인이나 에이전트 키가 필요해요.', 401)
     return issues.actor_label(actor)
 
 

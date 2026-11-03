@@ -24,6 +24,7 @@ INSTRUCTIONS = """dev는 코딩 에이전트용 이슈 게시판이다. 이슈 �
 2. claim_issue로 잡는다(다른 에이전트가 잡고 있으면 건드리지 않는다). 오래 걸리면 claim_issue를 다시 불러 연장한다.
 3. 큰 일이면 post_plan으로 계획서를 올리고, 필요하면 create_issue(parent=…)로 하위 Task를 쪼갠다.
 4. set_status(in_progress) → 작업 → link_commit으로 커밋을 잇는다 → set_status(in_review, note=확인하는 법).
+   파일(캡처·명세 .md 등)을 남길 땐 upload_attachment로 올리고 add_comment(attachment_ids=…)로 붙인다.
 5. done/closed는 사람이 확인하고 바꾼다. changes_requested가 되면 타임라인의 마지막 메모를 보고 이어서 한다.
 """
 
@@ -148,10 +149,11 @@ def update_issue_type(type_id: int, name: str | None = None, active: bool | None
 @mcp.tool
 def create_issue(project: str, title: str, body: str = "", priority: str = "none",
                  labels: list[str] | None = None, parent: str | None = None, type_ids: list[int] | None = None,
-                 blocked_by: list[str] | None = None) -> dict:
-    """새 이슈(또는 parent를 주면 하위 Task). blocked_by는 모든 프로젝트의 진행 가능한 선행 이슈 ref 목록(최대 10개). priority: urgent/high/medium/low/none."""
+                 blocked_by: list[str] | None = None, attachment_ids: list[str] | None = None) -> dict:
+    """새 이슈(또는 parent를 주면 하위 Task). blocked_by는 모든 프로젝트의 진행 가능한 선행 이슈 ref 목록(최대 10개). priority: urgent/high/medium/low/none.
+    attachment_ids는 upload_attachment로 올린 자기 첨부 id 목록."""
     return _call(issues.create_issue, _actor(), project, title, body, priority, labels, parent,
-                 type_ids=type_ids, blocked_by=blocked_by)
+                 type_ids=type_ids, attachment_ids=attachment_ids, blocked_by=blocked_by)
 
 
 @mcp.tool
@@ -189,9 +191,25 @@ def set_status(ref: str, status: str, note: str = "") -> dict:
 
 
 @mcp.tool
-def add_comment(ref: str, body: str) -> dict:
-    """타임라인에 댓글(마크다운)."""
-    return _call(issues.add_comment, _actor(), ref, body)
+def add_comment(ref: str, body: str, attachment_ids: list[str] | None = None) -> dict:
+    """타임라인에 댓글(마크다운). attachment_ids를 주면 upload_attachment로 올린 자기 첨부를 이 이슈에 붙인다."""
+    return _call(issues.add_comment, _actor(), ref, body, attachment_ids)
+
+
+@mcp.tool
+def upload_attachment(name: str, text: str | None = None, base64_data: str | None = None) -> dict:
+    """파일을 올리고 첨부 id를 돌려준다 — add_comment·create_issue의 attachment_ids로 이슈에 붙인다(붙이지 않으면 하루 뒤 지워진다).
+    name의 확장자로 형식을 정한다: .md·.json은 text에 내용, .png·.jpg·.gif·.webp·.mp4·.webm·.mp3·.wav·.ogg·.m4a는 base64_data에 내용."""
+    if (text is None) == (base64_data is None):
+        raise ToolError("text와 base64_data 중 하나만 주세요.")
+    if text is not None:
+        data = text.encode("utf-8")
+    else:
+        try:
+            data = base64.b64decode(base64_data, validate=True)
+        except ValueError:
+            raise ToolError("base64_data가 올바른 base64가 아니에요.")
+    return attachments.metadata(_call(attachments.upload, _actor(), name, iter([data])))
 
 
 @mcp.tool

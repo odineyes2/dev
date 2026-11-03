@@ -1371,12 +1371,18 @@ function bindAttachmentPreviews(){
   }));
 }
 
+// 댓글·재검토 메모에 붙은 첨부 이름(DEV-242) — 내용은 위 Attachments 패널에 있다
+let eventAttachments = new Map();
+function eventFilesHtml(ids){
+  const items = (ids || []).map(id => eventAttachments.get(id)).filter(Boolean);
+  return items.length ? `<div class="event-files">${items.map(a => `<a href="${a.kind === 'url' ? esc(/^https?:\/\//i.test(a.url) ? a.url : '#') : `/api/attachments/${encodeURIComponent(a.id)}/content`}"${a.kind === 'url' ? ' target="_blank" rel="noopener noreferrer"' : ' download'}><svg class="ico" aria-hidden="true"><use href="#i-paperclip"/></svg>${esc(a.kind === 'url' ? a.url : a.name)}</a>`).join('')}</div>` : '';
+}
 function eventHtml(e){
   const who = actorHtml(e.actor, e.data && e.data.model);
   const when = `<span class="when" title="${esc(e.created_at)}">${fmtTime(e.created_at)}</span>`;
   const d = e.data || {};
   let what;
-  if(e.kind === 'comment') return `<li class="comment">${who}${when}${md(e.body)}</li>`;
+  if(e.kind === 'comment') return `<li class="comment">${who}${when}${md(e.body)}${eventFilesHtml(d.attachment_ids)}</li>`;
   if(e.kind === 'status') what = `상태 ${statusHtml(d.from)} → ${statusHtml(d.to)}`;
   else if(e.kind === 'plan') what = `Plan v${esc(d.version)}을(를) 올렸어요`;
   else if(e.kind === 'commit') what = `커밋 <code>${esc(String(d.sha).slice(0, 7))}</code>${d.repo ? ` (${esc(d.repo)})` : ''} ${esc(e.body)}`;
@@ -1384,7 +1390,7 @@ function eventHtml(e){
   else if(e.kind === 'assign') what = d.agent_id ? `담당: ${esc(actorName('agent:' + d.agent_id))}` : '담당을 비웠어요';
   else if(e.kind === 'edit') what = `고침: ${esc((d.fields || []).join(', '))}`;
   else what = esc(e.kind);
-  return `<li class="sys">${who}${when} · ${what}${e.kind === 'status' && e.body ? md(e.body) : ''}</li>`;
+  return `<li class="sys">${who}${when} · ${what}${e.kind === 'status' && e.body ? md(e.body) : ''}${e.kind === 'status' ? eventFilesHtml(d.attachment_ids) : ''}</li>`;
 }
 // ---- 계획서 결정: 승인 · 메모 붙여 승인 · 메모 붙여 재검토 · 거절 ----
 const VERDICT_LABEL = { approve: '승인됨', approve_notes: '조건부 승인됨', reject: '거절됨' };
@@ -1607,6 +1613,7 @@ async function renderIssue(ref, background = false){
   const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job, edges) : reviewBusy ? busyLine(reviewProvider, '검토')
     : `<div class="agent-btns" id="review-btns">${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}</div>${it.review_busy ? `<div class="dim hint">다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}</div>` : ''}`}`;
   closeProgress();
+  eventAttachments = new Map((it.attachments || []).map(a => [a.id, a]));
   view.innerHTML = `
     <div class="detail">
       <div>

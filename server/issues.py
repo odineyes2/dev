@@ -1296,11 +1296,16 @@ def list_plans(ref) -> list[dict]:
         return [dict(p) for p in c.execute("SELECT * FROM plans WHERE issue_id=? ORDER BY version DESC", (row["id"],))]
 
 
-def add_comment(actor, ref, body) -> dict:
+def add_comment(actor, ref, body, attachment_ids=None) -> dict:
     body = _text(body, "댓글", 50_000, required=True)
+    if attachment_ids is not None and not isinstance(attachment_ids, list):
+        raise StoreError("첨부 ID 목록이 필요해요.")
     with db.connect() as c:
         row = _find(c, ref)
-        _event(c, row["id"], actor, "comment", body)
+        if attachment_ids:   # 같은 트랜잭션에서 연결 — 실패하면 댓글도 남지 않는다
+            import attachments
+            attachments.link(c, actor, row["id"], attachment_ids)
+        _event(c, row["id"], actor, "comment", body, {"attachment_ids": list(attachment_ids)} if attachment_ids else None)
         c.execute("UPDATE issues SET updated_at=? WHERE id=?", (db.now_iso(), row["id"]))
         return _last_event(c, row["id"])
 

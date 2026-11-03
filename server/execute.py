@@ -38,7 +38,7 @@ USER_ISOLATION = ["--setting-sources", "project", "--disable-slash-commands",
                   "--settings", json.dumps({"claudeMdExcludes": [(Path.home() / ".claude" / "CLAUDE.md").as_posix()], "autoMemoryEnabled": False})]
 ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git status:*)", "Bash(git diff:*)",
                  "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)"] + [f"mcp__dev__{t}" for t in (
-    "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "add_comment", "set_status", "link_commit", "claim_issue", "release_issue")]
+    "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "add_comment", "set_status", "link_commit", "claim_issue", "release_issue", "upload_attachment")]
 BLOCKED_TOOLS = ["WebFetch", "WebSearch", "NotebookEdit", "Read(**/.env)"] + [f"Bash({c}:*)" for c in (
     "git push", "git checkout", "git switch", "git reset", "git rebase", "git merge", "git worktree", "git branch", "git remote",
     "git config", "git clean", "git stash", "rm", "curl", "wget", "ssh", "npx", "pm2")]   # Read(**/.env): 프로젝트 비밀값(DEV-239)

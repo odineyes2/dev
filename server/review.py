@@ -38,7 +38,7 @@ TIMEOUT_SEC = float(os.environ.get("DEV_REVIEW_TIMEOUT_SEC") or 1200)
 LOG_DIR = config.DATA_DIR / "reviews"
 ALLOWED_TOOLS = ["Read", "Grep", "Glob"] + [f"mcp__dev__{t}" for t in (
     "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "post_plan", "add_comment", "set_status", "update_issue",
-    "claim_issue", "release_issue", "list_issue_types", "classify_issue")]
+    "claim_issue", "release_issue", "upload_attachment", "list_issue_types", "classify_issue")]
 # Claude 검토는 허용 도메인만 조회하고 실행은 오프라인이다. Codex 검토·실행은 외부 문서를 조회할 수 있다.
 # 실행기는 파일을 쓰고 작업 폴더 밖도 읽을 수 있어 웹이 열리면 비밀값(.env·에이전트 키)이 새는 길이 된다.
 WEB_DOMAINS = ("docs.runpod.io", "graphql-spec.runpod.io", "api.runpod.io", "docs.comfy.org", "huggingface.co", "civitai.com",

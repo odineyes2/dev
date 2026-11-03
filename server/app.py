@@ -297,7 +297,7 @@ import attachments  # noqa: E402
 
 @app.post('/api/attachments')
 async def api_upload_attachment(request: Request):
-    me = human_only(request)
+    me = actor(request)
     if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'multipart/form-data':
         raise HTTPException(400, 'multipart/form-data 파일 업로드가 필요해요.')
     # Content-Length를 신뢰하지 않고 파서에 전달되는 실제 바이트를 제한한다.
@@ -336,13 +336,13 @@ async def api_upload_attachment(request: Request):
 
 @app.post('/api/attachments/url')
 async def api_url_attachment(request: Request):
-    me = human_only(request)
+    me = actor(request)
     return attachments.metadata(attachments.add_url(me, (await json_body(request)).get('url')))
 
 
 @app.delete('/api/attachments/{attachment_id}', status_code=204)
 def api_delete_attachment(attachment_id: str, request: Request):
-    attachments.delete(human_only(request), attachment_id)
+    attachments.delete(actor(request), attachment_id)
 
 
 @app.get('/api/attachments/{attachment_id}/content')
@@ -729,7 +729,8 @@ async def api_post_plan(ref: str, request: Request):
 
 @app.post("/api/issues/{ref}/comments")
 async def api_comment(ref: str, request: Request):
-    return issues.add_comment(actor(request), ref, (await json_body(request)).get("body"))
+    b = await json_body(request)
+    return issues.add_comment(actor(request), ref, b.get("body"), b.get("attachment_ids"))
 
 
 @app.post("/api/issues/{ref}/commits")
