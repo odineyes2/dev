@@ -440,6 +440,85 @@ def _list_action_context(c, rows):
     return {r["id"]: {**contexts[r["id"]], "parent": contexts.get(r["parent_id"])} for r in rows}
 
 
+_LIFECYCLE_FAILED = ('failed', 'timeout', 'orphaned')
+
+
+def _lifecycle_facts(c, rows) -> dict:
+    """화면의 이슈 주기 판정(DEV-240)에 쓰는 읽기 전용 요약 — {id: facts}. 묶음 조회만 써서 쿼리 수는 행 수와 무관하다.
+    판정은 화면의 `lifecycle()` 하나가 한다 — 목록과 상세가 같은 입력을 받게 여기서 같은 모양으로 만든다."""
+    import run_progress
+    ids = [r["id"] for r in rows]
+    tops = [r["id"] for r in rows if r["parent_id"] is None]
+    parents = sorted({r["parent_id"] for r in rows if r["parent_id"] is not None})
+    m = lambda xs: ','.join('?' * len(xs))   # 빈 목록도 그대로 돌린다(SQLite는 IN ()을 받는다) — 쿼리 수를 고정한다
+    kids = {}
+    for ch in c.execute(f"SELECT i.id, i.parent_id, i.status, i.sub_number, {ref_sql('i', 'p')} AS ref FROM issues i "
+                        f"JOIN projects p ON p.id=i.project_id WHERE i.parent_id IN ({m(tops)}) AND {_SUPERSEDED} IS NULL "
+                        "ORDER BY i.id", tops):
+        kids.setdefault(ch["parent_id"], []).append(dict(ch))
+    targets = {r["id"]: [r["id"]] if r["parent_id"] is not None else [ch["id"] for ch in kids.get(r["id"], [])] for r in rows}
+    refs = {r["id"]: (r["ref"], r["sub_number"]) for r in rows}
+    statuses = {r["id"]: r["status"] for r in rows}
+    for chs in kids.values():
+        for ch in chs:
+            refs[ch["id"]], statuses[ch["id"]] = (ch["ref"], ch["sub_number"]), ch["status"]
+    every = sorted(set(ids) | {ch["id"] for chs in kids.values() for ch in chs})
+    executes, latest_exec, running = {}, {}, {}
+    for run in c.execute(f"SELECT issue_id, mode, status, provider, started_at FROM runs WHERE mode IN ('review','execute') "
+                         f"AND issue_id IN ({m(every)}) ORDER BY id", every):
+        if run["mode"] == "execute":
+            executes[run["issue_id"]] = executes.get(run["issue_id"], 0) + 1
+            latest_exec[run["issue_id"]] = run["status"]
+        if run["status"] == "running":
+            running.setdefault(run["issue_id"], dict(run))
+    changes = {}
+    for e in c.execute(f"SELECT issue_id, body FROM events WHERE kind='status' AND json_extract(data_json,'$.to')='changes_requested' "
+                       f"AND issue_id IN ({m(every)}) ORDER BY id", every):
+        changes.setdefault(e["issue_id"], []).append(e["body"])
+    parent_plan = dict(c.execute(f"SELECT issue_id, MAX(version) FROM plans WHERE issue_id IN ({m(parents)}) GROUP BY issue_id", parents).fetchall())
+    childless = [i for i in ids if not kids.get(i)]
+    plan_bodies = {p["issue_id"]: p["body"] for p in c.execute(
+        f"SELECT issue_id, body FROM plans pl WHERE issue_id IN ({m(childless)}) "
+        "AND version=(SELECT MAX(version) FROM plans q WHERE q.issue_id=pl.issue_id)", childless)}
+    closed = [r["id"] for r in rows if r["status"] == "closed"]
+    rejects = {d["issue_id"]: d["note"] for d in c.execute(
+        f"SELECT issue_id, verdict, note FROM decisions d WHERE gate='plan' AND issue_id IN ({m(closed)}) "
+        "AND id=(SELECT MAX(id) FROM decisions q WHERE q.issue_id=d.issue_id AND q.gate='plan')", closed) if d["verdict"] == "reject"}
+    now = datetime.now(timezone.utc)
+    out = {}
+    for r in rows:
+        own = targets[r["id"]]
+        live = next(((iid, running[iid]) for iid in [r["id"], *own] if iid in running), None)   # 자신이 먼저, 다음은 Task id 순
+        facts_running = None
+        if live:
+            iid, run = live
+            ref, sub_number = refs[iid]
+            view = run_progress.view(ref) if run["mode"] == "execute" else None
+            seconds = view["seconds"] if view else max(0, int((now - datetime.fromisoformat(run["started_at"])).total_seconds()))
+            facts_running = {"mode": run["mode"], "provider": run["provider"], "ref": ref, "sub_number": sub_number,
+                             "seconds": seconds, "phase": view["phase"] if view else "implement", "failed": view["failed"] if view else []}
+        loops = sum(max(0, executes.get(t, 0) - 1) for t in own)
+        loops += sum(len(changes.get(t, [])) for t in {r["id"], *own})
+        if facts_running and facts_running["phase"] == "rework":
+            loops += 1
+        note = ""
+        if r["status"] == "closed" and r["id"] in rejects:
+            note = rejects[r["id"]] or ""
+        elif r["status"] == "changes_requested" and changes.get(r["id"]):
+            note = changes[r["id"]][-1] or ""
+        out[r["id"]] = {
+            "tasks": [{"ref": ch["ref"], "status": ch["status"], "sub_number": ch["sub_number"]} for ch in kids.get(r["id"], [])]
+                     if r["parent_id"] is None else [],
+            "failed_tasks": sum(1 for t in own if latest_exec.get(t) in _LIFECYCLE_FAILED and statuses[t] not in ("done", "closed")),
+            "running": facts_running,
+            "loops": loops,
+            "parent_plan_version": parent_plan.get(r["parent_id"]) if r["parent_id"] is not None else None,
+            "planned_tasks": len(parse_tasks(plan_bodies[r["id"]])) if r["id"] in plan_bodies else None,
+            "note": note[:200],
+        }
+    return out
+
+
 def list_issues(project=None, status=None, assignee=None, parent=None, q=None, limit=500, offset=0, approved=False, sort=None) -> list[dict]:
     """status: 목록 또는 쉼표 문자열. parent: 이슈 ref(그 하위만) 또는 "none"(최상위만). offset부터 limit개(나눠 읽기).
     approved: 최신 계획서가 승인(조건부 포함)된 이슈만."""
@@ -472,6 +551,7 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
         sql = _ISSUE_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY " + orders[sort] + " LIMIT ? OFFSET ?"
         rows = c.execute(sql, (*args, max(1, min(int(limit), 2001)), max(0, int(offset)))).fetchall()
         contexts = _list_action_context(c, rows)
+        lifecycle = _lifecycle_facts(c, rows)
         from usage import issue_token_usage, task_token_usage
         tokens = issue_token_usage(c, (r['id'] for r in rows))
         task_tokens = task_token_usage(c, (r['id'] for r in rows))
@@ -480,6 +560,7 @@ def list_issues(project=None, status=None, assignee=None, parent=None, q=None, l
         d = _issue_dict(r)
         d.pop("body")   # 목록에는 본문을 싣지 않는다(에이전트 토큰 절약) — get_issue로 읽는다
         d["action_context"] = contexts[r["id"]]
+        d["lifecycle_facts"] = lifecycle[r["id"]]
         d['token_usage'] = tokens[r['id']]
         d['task_token_usage'] = task_tokens[r['id']]
         out.append(d)
@@ -557,6 +638,7 @@ def get_issue(ref) -> dict:
         row = _find(c, ref)
         d = _issue_dict(row)
         d["type_revision"] = _type_revision(c, row["id"])
+        d["lifecycle_facts"] = _lifecycle_facts(c, [row])[row["id"]]   # 목록과 같은 요약(DEV-240)
         plan = c.execute("SELECT * FROM plans WHERE issue_id=? ORDER BY version DESC LIMIT 1", (row["id"],)).fetchone()
         d["plan"] = dict(plan) if plan else None
         if plan:

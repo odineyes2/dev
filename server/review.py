@@ -542,6 +542,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         if attempt:
             status, note = "failed", "재작업 뒤에도 검사가 실패했어요:\n" + failed[-1500:]
             break
+        progress['failed'] = run_progress.failed_checks(failed)   # 화면 검사 칸이 실패 검사 이름을 보인다(DEV-240)
         earlier = text + "\n\n--- 서버 검사 실패 → 재작업 ---\n" + failed + "\n\n"
         earlier_out = out
         retry = ("\n\n이전 실행의 결과가 이 worktree에 그대로 남아 있다. 서버가 맡길 때 고른 검사를 다시 돌렸더니 아래가 실패했다. "
