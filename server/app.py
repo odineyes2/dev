@@ -437,6 +437,23 @@ def api_app_restart(key: str, request: Request):
     return project_restart.request(human_only(request), key)
 
 
+@app.get('/api/projects/{key}/secrets')
+def api_project_secrets(key: str, request: Request):
+    """비밀값 설정 여부(DEV-239) — 에이전트는 키·설정 여부만, 사람은 끝 4자·dev 값 사용 가능 여부도 받는다."""
+    import project_secrets
+    return JSONResponse(project_secrets.status(actor(request), key), headers={'Cache-Control': 'no-store'})
+
+
+@app.put('/api/projects/{key}/secrets')
+async def api_project_secrets_save(key: str, request: Request):
+    """사람만. 본문 {"changes": {KEY: {value}|{clear}|{from_dev}}} — 422가 입력값을 되돌리지 않도록 모델 없이 읽는다."""
+    me = human_only(request)
+    body = await json_body(request)
+    import project_secrets
+    result = await run_in_threadpool(project_secrets.save, me, key, body.get('changes'))
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
 @app.post('/api/projects/{key}/deploy')
 def api_app_deploy(key: str, request: Request):
     import project_restart

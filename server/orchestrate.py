@@ -143,8 +143,12 @@ def _no_restart_note(hits) -> str:
 
 def _restart(repo, cfg) -> str | None:
     """재시작 명령을 돌린다. 실패하면 출력 끝부분."""
+    env = None
+    if cfg.get("pm2_app", "") != "dev":
+        import project_secrets
+        env = {**os.environ, **project_secrets.env_for(repo)}   # 프로젝트 .env 비밀값(DEV-239)
     try:
-        r = subprocess.run(cfg["restart_cmd"].format(app=cfg.get("pm2_app", "")), shell=True, cwd=repo, capture_output=True,
+        r = subprocess.run(cfg["restart_cmd"].format(app=cfg.get("pm2_app", "")), shell=True, cwd=repo, env=env, capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=300, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired) as error:
         return '재시작 명령 실행 실패: ' + type(error).__name__
