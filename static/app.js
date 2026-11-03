@@ -767,10 +767,30 @@ function issueTokensHtml(i, detail = false){
   const taskHtml = `<span class="issue-tokens issue-tokens-tasks" title="${esc(taskExplanation)}" aria-label="${esc('Task 합계 ' + task.text + ' · ' + taskExplanation)}">Task 합계 ${esc(task.text)}</span>`;
   return `<span class="issue-tokens-lines"><span class="issue-tokens-own"><span class="issue-tokens-label">자신</span>${ownHtml}</span>${taskHtml}</span>${detail ? `<p class="token-explanation">${esc(explanation)}<br>${esc(taskExplanation)}</p>` : ''}`;
 }
+// 점과 상세는 같은 판정과 Auto 설정을 쓴다. HTML을 텍스트로 풀어 속성에 넣는다.
+function lcText(html){ const el = document.createElement('span'); el.innerHTML = html; return el.textContent.trim(); }
+function lifecycleDotsHtml(i){
+  const lc = lifecycle(i, actionSession?.settings || {}), meta = lcText(lc.steps[lc.cur].meta), msg = lcText(lc.msg);
+  return `<span class="lc-dots" title="${esc(msg)}" aria-label="${esc(`진행 ${lc.steps[lc.cur].label}: ${msg}`)}">${lc.steps.map(s => `<i data-s="${s.state}"></i>`).join('')}<em>${esc(meta)}</em></span>`;
+}
+function applyTurnFilter(){
+  const rows = [...view.querySelectorAll('#list-body tr.row')], turn = listState().turn || 'all';
+  for(const row of rows){
+    const parent = rows.find(r => r.dataset.ref === row.dataset.parent);
+    row.hidden = turn === 'all' ? !!parent && collapsedSet().has(parent.dataset.ref) : row.dataset.o !== (turn === 'mine' ? 'human' : 'agent');
+  }
+  const count = rows.filter(r => r.dataset.o === 'human').length;
+  view.querySelectorAll('[data-turn]').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.dataset.turn === turn));
+    if(b.dataset.turn === 'mine') b.textContent = `내 차례만 · ${count}${listLoad && !listLoad.done ? '+' : ''}`;
+  });
+}
 function issueRowHtml(i){
-  return `<tr class="row${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
+  const lc = lifecycle(i, actionSession?.settings || {});
+  return `<tr class="row${lc.owner === 'human' ? ' mine' : ''}${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-o="${lc.owner}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
     <td class="title-cell"><span class="issue-title-line" title="${esc(i.title || '')}">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}</span><div class="issue-badges">${i.rating ? `<span class="row-rating" title="평점 ${i.rating}/5" aria-label="평점 ${i.rating}점">★${i.rating}</span>` : ''}${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile"><span class="issue-meta-agent">${processingAgentsHtml(i)}</span><span class="issue-meta-time">${completionTimeHtml(i)}</span><span class="issue-meta-tokens">${issueTokensHtml(i)}</span></div></td>
-    <td>${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}</td>
+    <td class="issue-col-status">${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}<span class="lc-mobile">${lifecycleDotsHtml(i)}</span></td>
+    <td class="issue-col-progress">${lifecycleDotsHtml(i)}</td>
     <td class="hide-m issue-col-agent">${processingAgentsHtml(i)}</td><td class="hide-m issue-col-time">${completionTimeHtml(i)}</td><td class="hide-m token-cell issue-col-tokens">${issueTokensHtml(i)}</td><td class="hide-m dim issue-col-updated">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
 // Task는 부모 바로 아래에 들여써서 붙이고(부모가 아직 안 왔으면 오는 순간 끌어온다) 접고 펼 수 있다. 접힘은 부모 ref별로 기억한다.
@@ -805,6 +825,7 @@ function placeRow(tbody, i){
   tbody.append(row);
   const parentTr = i.parent_ref && [...tbody.children].find(r => r.dataset.ref === i.parent_ref);
   orderKids(tbody, parentTr || row);
+  applyTurnFilter();
 }
 let issueSummaryPeriod = 'today', issueSummaryRequest = 0;
 const ISSUE_SUMMARY_PERIODS = { today: '오늘', yesterday: '어제', week: '이번 주', last_week: '저번 주', month: '이번 달', last_month: '저번 달', year: '올해', all: '전체' };
@@ -1145,11 +1166,17 @@ async function renderList(){
     <div class="ops-split"><section id="issue-summary" class="issue-summary" aria-label="Issue 처리 현황">
       <div class="issue-summary-head"><span class="issue-summary-title">처리 현황</span><div class="issue-summary-periods" role="group" aria-label="집계 기간">
         ${Object.entries(ISSUE_SUMMARY_PERIODS).map(([key, label]) => `<button type="button" data-summary-period="${key}" aria-pressed="${key === issueSummaryPeriod}">${label}</button>`).join('')}
-      </div></div><div class="issue-summary-content" role="status" aria-live="polite"></div></section><div class="ops-main"><div id="list-body"></div><div id="list-more" class="list-more"></div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
+      </div></div><div class="issue-summary-content" role="status" aria-live="polite"></div></section><div class="ops-main"><div class="turn-filter" role="group" aria-label="목록 필터">${[['all','전체'],['mine','내 차례만 · 0'],['agent','에이전트 작업 중']].map(([v,t]) => `<button type="button" data-turn="${v}" aria-pressed="${(st.turn || 'all') === v}">${t}</button>`).join('')}</div><div id="list-body"></div><div id="list-more" class="list-more"></div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
   view.querySelector('#issue-summary').addEventListener('click', e => {
     const period = e.target.closest('[data-summary-period]');
     if(period){ issueSummaryPeriod = period.dataset.summaryPeriod; loadIssueSummary(); }
     else if(e.target.closest('.issue-summary-retry')) loadIssueSummary();
+  });
+  view.querySelector('.turn-filter').addEventListener('click', e => {
+    const b = e.target.closest('[data-turn]'); if(!b) return;
+    localStorage.setItem('dev.list', JSON.stringify({...listState(), turn:b.dataset.turn}));
+    applyTurnFilter();
+    if(listLoad && !listLoad.done && listLoad.more.getBoundingClientRect().top < innerHeight + 400) loadMoreIssues();
   });
   loadIssueSummary();
   loadJobs().catch(() => {});
@@ -1182,6 +1209,7 @@ async function renderList(){
       set.has(tr.dataset.ref) ? set.delete(tr.dataset.ref) : set.add(tr.dataset.ref);
       localStorage.setItem('dev.collapsed', JSON.stringify([...set]));
       refreshKids(tr.parentElement, tr);
+      applyTurnFilter();
       return;
     }
     const r = e.target.closest('tr.row');
@@ -1209,6 +1237,8 @@ async function renderList(){
       bindActions(tbody, L.actions, loadList);   // 새로 그린 Action 버튼에 핸들러를 다시 붙인다(DEV-97)
       L.seen = new Set(data.issues.map(i => i.ref));
       L.offset = data.issues.length; L.done = !data.has_more;
+      applyTurnFilter();
+      if(!L.done && L.more.getBoundingClientRect().top < innerHeight + 400) loadMoreIssues();
     }else if(data.issues.length) await loadList();
     const queued = await loadJobs();
     if(L !== listLoad || body !== view.querySelector('#list-body')) return;
@@ -1263,11 +1293,12 @@ async function loadMoreIssues(){
   L.offset += data.issues.length;
   L.done = !data.has_more;   // 예전 서버(has_more 없음)면 한 번으로 끝
   if(!body.querySelector('table, .empty')){
-    body.innerHTML = items.length ? `<table class="issues"><thead><tr><th aria-sort="${L.qs.sort === 'id_asc' ? 'ascending' : L.qs.sort === 'id_desc' ? 'descending' : 'none'}"><button type="button" id="list-id-sort" class="list-sort" title="${L.qs.sort === 'id_asc' ? 'ID 내림차순으로 정렬해요' : L.qs.sort === 'id_desc' ? '최근 고친 순으로 정렬해요' : 'ID 오름차순으로 정렬해요'}">ID${L.qs.sort ? `<svg class="ico${L.qs.sort === 'id_desc' ? ' sort-desc' : ''}" aria-hidden="true"><use href="#i-arrow-up"/></svg>` : ''}</button></th><th>Title</th><th>Status</th>
+    body.innerHTML = items.length ? `<table class="issues"><thead><tr><th aria-sort="${L.qs.sort === 'id_asc' ? 'ascending' : L.qs.sort === 'id_desc' ? 'descending' : 'none'}"><button type="button" id="list-id-sort" class="list-sort" title="${L.qs.sort === 'id_asc' ? 'ID 내림차순으로 정렬해요' : L.qs.sort === 'id_desc' ? '최근 고친 순으로 정렬해요' : 'ID 오름차순으로 정렬해요'}">ID${L.qs.sort ? `<svg class="ico${L.qs.sort === 'id_desc' ? ' sort-desc' : ''}" aria-hidden="true"><use href="#i-arrow-up"/></svg>` : ''}</button></th><th>Title</th><th>Status</th><th class="issue-col-progress">진행</th>
       <th class="hide-m history-heading issue-col-agent">AGENT</th><th class="hide-m history-heading issue-col-time">TIME</th><th class="hide-m issue-col-tokens">TOKENS</th><th class="hide-m issue-col-updated">Updated</th><th>Action</th></tr></thead><tbody></tbody></table>` : '<div class="empty">이슈가 없어요.</div>';
   }
   const tbody = body.querySelector('tbody');
   if(tbody){ items.forEach(i => placeRow(tbody, i)); bindActions(tbody, L.actions, loadList); }
+  applyTurnFilter();
   more.textContent = '';
   // 한 화면이 다 안 찼으면 바로 다음 묶음
   if(!L.done && more.getBoundingClientRect().top < window.innerHeight + 400) loadMoreIssues();
@@ -1323,7 +1354,7 @@ async function renderBoard(){
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
         <div class="t">${titleHtml(i)}</div><div class="meta">${approvalHtml(i.approval)}${labelsHtml(i.labels)}${typesHtml(i)}
-        ${processingAgentsHtml(i)}${completionTimeHtml(i)}${issueTokensHtml(i)}${clockHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
+        ${processingAgentsHtml(i)}${completionTimeHtml(i)}${issueTokensHtml(i)}${clockHtml(i)}${lifecycleDotsHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
     </div></div>`;
   }).join('')}</div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
   loadJobs().catch(() => {});
@@ -1559,7 +1590,7 @@ function lcCheckTool(label){ return /pytest/.test(label) ? 'pytest' : /node/.tes
 function lcCheckTarget(label){ return (String(label).match(/[\w./-]+\.(?:py|js|mjs|ts|css|html)\b/) || [label])[0]; }
 // 반환: {steps:[{key,label,state,meta,bars?,loop?}×5], cur, owner, msg, go?}. auto는 Auto 설정(없으면 꺼짐으로 본다).
 function lifecycle(it, auto = {}){
-  const f = it.lifecycle_facts || {}, a = it.approval, x = it.execute, plan = it.plan;
+  const f = it.lifecycle_facts || {}, a = it.approval, x = it.execute, plan = it.plan || (it.action_context?.plan_version ? {version:it.action_context.plan_version, revision_note:a?.revision_requested} : null);
   const task = !!it.parent_ref, tasks = f.tasks || [], total = tasks.length;
   const doneN = tasks.filter(t => t.status === 'done').length;
   const pv = plan?.version || a?.plan_version, ok = a && !a.stale && a.verdict !== 'reject';
@@ -1577,7 +1608,7 @@ function lifecycle(it, auto = {}){
   const ownerBy = on => on ? 'agent' : 'human';
   // 목업에 없는 상황의 문장 — 옛 stageHtml 문장을 그대로 쓴다
   const oldMsg = () => {
-    if(x) return x.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
+    if(x || task) return x?.blocked ? `실행 대기 — ${esc(x.blocked)}` : '실행할 수 있어요 → Claude나 Codex에게 실행을 맡겨 주세요.';
     if(!plan) return '계획서가 없어요 → Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
     if(plan.revision_note) return '계획서 재검토 요청 → 새 계획서를 기다려 주세요. 검토가 실패했으면 메모 붙여 재검토로 다시 맡겨 주세요.';
     if(!ok) return '계획서 승인 대기 → 계획서 아래에서 승인·메모 붙여 승인·메모 붙여 재검토·거절을 골라 주세요.';
@@ -1643,8 +1674,8 @@ function lifecycle(it, auto = {}){
     go = {label: '실행 맡기기', target: 'panel-tasks'};
   }else if(f.failed_tasks > 0){
     at(2, 'fail', `<b>실행 실패 ${f.failed_tasks}개</b>`); owner = ownerBy(auto.auto_execute); msg = oldMsg();
-  }else if(x){
-    if(x.blocked){ at(2, 'todo', `<b>${esc(String(x.blocked).slice(0, 24))}</b>`); owner = 'agent'; }
+  }else if(x || task){
+    if(x?.blocked){ at(2, 'todo', `<b>${esc(String(x.blocked).slice(0, 24))}</b>`); owner = 'agent'; }
     else{ at(2, 'human', '<b>실행 맡기기 대기</b>'); owner = ownerBy(auto.auto_execute); }
     msg = oldMsg();
   }else if(!plan){
