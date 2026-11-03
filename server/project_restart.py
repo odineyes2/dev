@@ -259,6 +259,9 @@ def _heartbeat(aid, stopped):
 def _restart(row):
     import repo_snapshot
     env = repo_snapshot._environment()
+    if not row['self_restart']:
+        import project_secrets
+        env.update(project_secrets.env_for(row['repo']))   # 프로젝트 .env 비밀값(DEV-239) — HOST·PORT는 아래에서 덮는다
     env.update(HOST='127.0.0.1', PORT=str(urlsplit(row['health_url']).port))
     if row['self_restart']:
         env.update(DEV_DATA_DIR=str(config.DATA_DIR.resolve()), DEV_DB_PATH=str(config.DB_PATH.resolve()))

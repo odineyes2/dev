@@ -95,6 +95,16 @@ def _project(key):
     return dict(row)
 
 
+def app_environment(repo, port):
+    """서비스 연결의 앱 시작 env — 허용 목록 env에 프로젝트 .env 비밀값(DEV-239)을 더하고 PORT·HOST가 이긴다."""
+    import project_secrets
+    import repo_snapshot
+    env = {**repo_snapshot._environment(), **project_secrets.env_for(repo), 'PORT': str(port), 'HOST': '127.0.0.1'}
+    if os.environ.get('PM2_HOME'):
+        env['PM2_HOME'] = os.environ['PM2_HOME']
+    return env
+
+
 def _existing_service(project):
     """저장된 값과 알려진 운영 주소로 조회한다. 기존 터널의 소유권은 가져오지 않는다."""
     domain, port = project['service_domain'], project['service_port']
@@ -422,11 +432,7 @@ def _run(project, action):
                 _save(pid, phase='앱 시작')
                 launcher = pm2_launcher()
                 args = [*launcher, 'startOrRestart', 'ecosystem.config.js', '--only', app, '--update-env']
-                import repo_snapshot
-                app_env = {**repo_snapshot._environment(), 'PORT': str(port), 'HOST': '127.0.0.1'}
-                if os.environ.get('PM2_HOME'):
-                    app_env['PM2_HOME'] = os.environ['PM2_HOME']
-                _command(args, 'PM2 앱 시작', str(repo), environment=app_env)
+                _command(args, 'PM2 앱 시작', str(repo), environment=app_environment(repo, port))
             _save(pid, phase='로컬 서비스 확인')
             _healthy(f'http://127.0.0.1:{port}/api/health')
             _save(pid, step=5, phase='DNS 연결')
