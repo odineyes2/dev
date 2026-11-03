@@ -401,6 +401,10 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
                 why = execute.blocked_reason(issue, issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None, wait=False)
                 if why:
                     raise issues.StoreError(why, 409)
+            elif note is None:   # 일반 검토는 화면 버튼과 같은 사실 기준으로만 받는다(DEV-243)
+                why = issues.review_block_reason(c, issues._find(c, ref))
+                if why:
+                    raise issues.StoreError(why, 409)
             c.execute("INSERT INTO jobs(issue_id, mode, actor, status, created_at, provider, model, checks_json) VALUES(?, ?, ?, 'queued', ?, ?, ?, ?)",
                       (issue["id"], mode, issues.actor_label(actor), db.now_iso(), provider, auto_settings.model_for(c, issue["id"], provider),
                        json.dumps(keys) if keys is not None else None))
