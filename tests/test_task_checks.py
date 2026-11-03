@@ -120,7 +120,7 @@ class RunTest(unittest.TestCase):
         self.assertIn("시간 제한", r["output"])
 
     def test_always_checks(self):
-        (self.repo / "ok.py").write_text("print('changed')\n", encoding="utf-8")
+        (self.repo / "ok.py").write_text("print('changed')\nSECRET = 'plain-live-value'\n", encoding="utf-8")
         (self.repo / "broken.py").write_text("def x(:\n", encoding="utf-8")
         (self.repo / "leak.txt").write_text("token = " + "sk-" + "A" * 24 + "\n", encoding="utf-8")
         files, base = tc.changed(self.repo)
@@ -130,8 +130,12 @@ class RunTest(unittest.TestCase):
         self.assertIn("broken.py", syntax["output"])
         secrets = tc.check_secrets(self.repo, files, base)
         self.assertFalse(secrets["ok"])
-        self.assertIn("leak.txt", secrets["output"])
-        self.assertNotIn("A" * 24, secrets["output"])   # 값은 남기지 않는다
+        out = secrets["output"]
+        self.assertIn("leak.txt:1 (이름=값 모양: token)", out)   # 새 파일
+        self.assertIn("ok.py:2 (이름=값 모양: secret)", out)     # 추적 파일 diff
+        self.assertNotIn("plain-live-value", out)
+        self.assertNotIn("A" * 24, out)   # 값은 남기지 않는다
+        (self.repo / "ok.py").write_text("print('changed')\n", encoding="utf-8")
         (self.repo / "broken.py").unlink()
         (self.repo / "leak.txt").unlink()
         files, base = tc.changed(self.repo)
