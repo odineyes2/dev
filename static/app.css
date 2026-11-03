@@ -880,7 +880,10 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .confirm-dialog[open]{ animation:confirm-appear 120ms ease-out; }
 .confirm-dialog::backdrop{ background:rgba(16,24,40,.28); }
 .confirm-dialog form{ display:flex; flex-direction:column; gap:var(--sp-3); min-width:0; max-height:calc(100dvh - 64px); }
-.confirm-dialog h2{ margin:0; font-size:16px; word-break:keep-all; overflow-wrap:break-word; }
+.confirm-dialog .confirm-badge{ display:grid; place-items:center; align-self:center; flex-shrink:0; width:calc(var(--sp-5) * 2); height:calc(var(--sp-5) * 2); border:1px solid var(--border); border-radius:999px; background:var(--panel-2); color:var(--accent); }
+.confirm-dialog .confirm-badge-danger{ color:var(--danger); }
+.confirm-dialog .confirm-badge .ico{ width:24px; height:24px; }
+.confirm-dialog h2{ flex-shrink:0; margin:0; font-size:16px; word-break:keep-all; overflow-wrap:break-word; }
 /* 내용만 스크롤하여 완료·취소 버튼을 화면 안에 남긴다. */
 .confirm-content{ min-height:0; overflow:auto; display:flex; flex-direction:column; gap:var(--sp-3); }
 .confirm-summary{ margin:0; font-size:14px; font-weight:600; overflow-wrap:anywhere; }
