@@ -28,7 +28,16 @@ def issue(ref, status, created, facts=None, **kw):
          'body': '', 'labels': [], 'types': [], 'type_ids': [], 'blocked_by': [], 'events': [], 'attachments': [],
          'processing_agents': [], 'plan': None, 'approval': None, 'lifecycle_facts': f}
     d.update(kw)
-    d['children'] = [{**t, 'title': t['ref'], 'labels': [], 'blocked_by': [], 'processing_agents': []} for t in f['tasks']] if not d.get('parent_ref') else []
+    # 상세 응답처럼 빠른 액션 사실(DEV-243)을 붙인다 — 자기·child가 같은 모양
+    p = d['plan']
+    ctx = {'plan_version': p['version'] if p else None, 'approval': d['approval'], 'revision_requested': False,
+           'has_children': bool(f['tasks']), 'has_execution': False, 'has_active_job': bool(d.get('review_running') or d.get('job')),
+           'claim_active': False, 'claimed_by': None, 'lease_until': None, 'superseded': False, 'parent': None}
+    ctx.update(d.get('action_context') or {})
+    d['action_context'] = ctx
+    d['children'] = [{**t, 'parent_ref': ref, 'title': t['ref'], 'labels': [], 'blocked_by': [], 'processing_agents': [],
+                      'action_context': {**ctx, 'plan_version': None, 'approval': None, 'has_children': False, 'claim_active': False,
+                                         'has_active_job': False, 'parent': ctx}} for t in f['tasks']] if not d.get('parent_ref') else []
     return d
 
 
@@ -67,6 +76,9 @@ SC = [
     ('task', issue('DEV-220-4', 'in_progress', '11-01T01:03', {'running': EXEC, 'parent_plan_version': 1}, parent_ref='DEV-220', sub_number=4, execute={}, review_running=True),
      'inherited inherited agent todo todo', ['DEV-220', '부모 v1', r'Codex 구현 중 12:4\d', '', ''], '', 0, '에이전트 차례',
      '부모 계획서 v1의 4번째 Task예요. Codex가 구현하고 있어요.'),
+    # DEV-243: 대화형 세션이 잡고 상태만 바꾼 경우(run·job 없음, 계획서 없음) — 검토 맡기기 대기가 아니라 에이전트 차례
+    ('claimed', issue('DEV-245', 'in_progress', '11-03T10:00', action_context={'claim_active': True, 'claimed_by': 'agent:7', 'lease_until': '2026-11-04T03:30:00+00:00'}),
+     'agent todo todo todo todo', ['agent:7 작업 중', '', '', '', ''], '', 0, '에이전트 차례', 'agent:7이(가) 잡고 작업 중이에요(점유 만료 12:30).'),
 ]
 # 목업 LIST 순서와 실제 목록 응답의 계획 요약을 사용한다.
 LIST_KEYS = ['review', 'approve', 'retry', 'plan', 'changes', 'new', 'hold', 'done']
@@ -223,6 +235,19 @@ def run():
                     if key in SHOTS:
                         page.locator('.lc').screenshot(path=str(CAPTURES / f'{SHOTS[key]}.png'))
                     page.close()
+                # 점유 중이면 진행 줄 go도 검토 버튼도 없다. 계획서 v2 승인 대기면 계획서 보기만, 검토 버튼은 없다(NS-116)
+                page = open_issue(browser, port, by_key['claimed'])
+                assert page.locator('.lc-go').count() == 0 and page.locator('#ask-review').count() == 0
+                page.close()
+                page = open_issue(browser, port, by_key['approve'])
+                assert page.locator('.lc-go').text_content() == '계획서 보기' and page.locator('#ask-review').count() == 0
+                page.close()
+                page = open_issue(browser, port, by_key['new'])
+                assert page.locator('.lc-go').text_content() == '검토 맡기기' and page.locator('#ask-review').count() == 1
+                page.close()
+                page = open_issue(browser, port, by_key['changes'])
+                assert page.locator('.lc-go').text_content() == '실행 맡기기' and page.locator('.run-task').count() == 2
+                page.close()
                 # 병합 보류: 기존 #retry-merge가 다음 할 일 줄 안에 그대로 있다
                 page = open_issue(browser, port, by_key['hold'])
                 assert page.locator('.lc-next #retry-merge').count() == 1
@@ -263,7 +288,7 @@ def run():
     finally:
         server.shutdown()
         server.server_close()
-    print(f'PASS: 목업 11개 상황 스테퍼·다음 할 일 줄, 병합 버튼, 스크롤, reduced-motion, 800·400 × 낮·밤. 캡처: {CAPTURES}')
+    print(f'PASS: 목업 11개 상황 + 점유 상황 스테퍼·다음 할 일 줄, 빠른 액션 버튼, 병합 버튼, 스크롤, reduced-motion, 800·400 × 낮·밤. 캡처: {CAPTURES}')
 
 
 if __name__ == '__main__':
