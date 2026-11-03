@@ -41,7 +41,7 @@ auth.nightshift_user = _admin
 
 HUMAN = {'cookies': {'ns_session': 'ok'}, 'headers': {'x-requested-with': 'dev'}}
 ADMIN = {'kind': 'human', 'name': 'admin'}
-SECRET = 'sk-live-abcdef123456'
+SECRET = 'plain-live-abcdef123456'   # 비밀값 검사(키 모양)에 걸리지 않는 가짜 값
 SPACED = 'two words #x'
 
 
