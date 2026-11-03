@@ -14,8 +14,20 @@ SHORT = {'implement': '구현 중', 'checks': '검사 중', 'rework': '재작업
 
 
 def set_phase(ref, phase, **info):
+    """단계를 바꾼다. `started`(실행 전체의 시작)는 같은 ref에서 처음 부를 때만 정하고 재작업 전환에도 이어진다(DEV-240)."""
+    now = time.time()
     with _lock:
-        _runs[ref] = {'phase': phase, 'since': time.time(), **info}
+        started = _runs.get(ref, {}).get('started', now)
+        _runs[ref] = {'phase': phase, 'since': now, **info, 'started': started}
+
+
+def failed_checks(report) -> list[str]:
+    """task_checks 보고의 `- ❌ {label} · …` 줄에서 실패한 검사 label만 뽑는다(DEV-240)."""
+    out = []
+    for line in (report or '').splitlines():
+        if line.startswith('- ❌ '):
+            out.append(line[4:].split(' · ', 1)[0].strip().strip('`'))
+    return out
 
 
 def clear(ref):
@@ -53,7 +65,8 @@ def view(ref, now=None) -> dict | None:
     if stalled:
         short = '⚠️ 멈춘 것 같아요'
         lines.insert(0, f'⚠️ {SHORT.get(phase, "구현 중")} 단계가 예상 시간을 넘겼는데 끝나지 않았어요 — 실행 로그와 남은 프로세스를 확인해 주세요.')
-    return {'phase': phase, 'short': short, 'long': '\n'.join(lines), 'stalled': stalled}
+    return {'phase': phase, 'short': short, 'long': '\n'.join(lines), 'stalled': stalled,
+            'failed': list(run.get('failed') or []), 'seconds': int(max(0, now - run.get('started', run['since'])))}
 
 
 def elapsed(items) -> None:
