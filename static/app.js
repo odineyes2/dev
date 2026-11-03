@@ -527,7 +527,7 @@ function followProgress(refresh, current){
   };
   liveTimer = setTimeout(tick, 5000);
 }
-const LIVE_MERGE = new Set(['병합 중', '운영 반영 중', '재시작 확인 중', '복구 중', '복구 확인 중']);
+// LIVE_MERGE는 quick_actions.js에 있다
 function activeProgress(i){ return i.review_running || i.job || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
 function splitProgress(text, mode){
   if(text.length <= 20 && !text.includes('—')) return {short:text, long:''};
@@ -630,18 +630,8 @@ window.addEventListener('hashchange', closeProgress);
 
 let actionSession = null;
 const pendingActions = new Set();
-function actionKind(i){
-  const c=i.action_context;
-  if(!c || c.has_active_job || pendingActions.has(i.ref)) return '';
-  const valid=c => c?.plan_version && c.approval && !c.approval.stale && c.approval.plan_version===c.plan_version && ['approve','approve_notes'].includes(c.approval.verdict);
-  if(i.parent_id!=null || i.parent_ref){
-    if(i.status==='in_review' && actionSession?.parentStatuses.get(i.parent_ref)==='triage') return 'task-approve';
-    return i.status==='backlog' && valid(c.parent) ? 'execute' : '';
-  }
-  if(i.status==='in_review') return 'complete-tree';
-  if(['triage','backlog'].includes(i.status) && c.plan_version && !valid(c) && !c.approval?.revision_requested) return 'decision';
-  return i.status==='backlog' && !c.plan_version && !c.has_children ? 'review' : '';
-}
+// 판정은 quick_actions.js의 quickAction 하나가 한다(DEV-243)
+const actionKind=i=>quickAction(i,{pending:pendingActions.has(i.ref)}).kind;
 function actionOff(kind,s,i){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='task-approve' ? s.auto_approve===true : kind==='decision' && i.status==='triage' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
 function actionHtml(i){
   const kind=actionKind(i); if(!kind) return '';
@@ -651,15 +641,9 @@ function actionHtml(i){
     return `<button type="button" draggable="false" data-action="${kind}" data-ref="${esc(i.ref)}" data-provider="${provider}" title="${label}" aria-label="${label}" aria-disabled="${!settings || !!actionOff(kind,settings,i)}">${provider?`<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider==='claude'?'claude':'openai'}"/></svg>`:`<svg class="ico" aria-hidden="true"><use href="#i-${({decision:'clipboard-check','task-approve':'check','complete-tree':'check-check'})[kind]}"/></svg>`}</button>`;
   }).join('')}</div>`;
 }
-function beginActions(current){ return actionSession={settings:null,items:new Map(),parentStatuses:new Map(),current}; }
+function beginActions(current){ return actionSession={settings:null,items:new Map(),current}; }
 async function loadActionSettings(session,items){
   items.forEach(i=>session.items.set(i.ref,i));
-  // 목록 요약에 부모 상태가 없으므로 승인 후보의 부모만 조회한다. 실패하면 승인을 표시하지 않는다.
-  await Promise.all([...new Set(items.filter(i=>i.status==='in_review' && i.parent_ref).map(i=>i.parent_ref))].filter(ref=>!session.parentStatuses.has(ref)).map(async ref=>{
-    try{ const parent=await api('GET',`/api/issues/${encodeURIComponent(ref)}`,undefined,session.current);
-      session.parentStatuses.set(ref,parent.status);
-    }catch(e){ session.parentStatuses.set(ref,null); }
-  }));
   // 보조 조회 오류는 Action 클릭 때 안내하며 발행 성공 알림을 덮지 않는다.
   try{ const s=await api('GET','/api/settings/auto',undefined,session.current,{notifyErrors:false});
     if(typeof s.auto_review!=='boolean' || typeof s.auto_execute!=='boolean') throw new Error('설정');
@@ -1594,7 +1578,7 @@ function lcCheckTool(label){ return /pytest/.test(label) ? 'pytest' : /node/.tes
 function lcCheckTarget(label){ return (String(label).match(/[\w./-]+\.(?:py|js|mjs|ts|css|html)\b/) || [label])[0]; }
 // 반환: {steps:[{key,label,state,meta,bars?,loop?}×5], cur, owner, msg, go?}. auto는 Auto 설정(없으면 꺼짐으로 본다).
 function lifecycle(it, auto = {}){
-  const f = it.lifecycle_facts || {}, a = it.approval, x = it.execute, plan = it.plan || (it.action_context?.plan_version ? {version:it.action_context.plan_version, revision_note:a?.revision_requested} : null);
+  const f = it.lifecycle_facts || {}, c = it.action_context || {}, a = it.approval, x = it.execute, plan = it.plan || (it.action_context?.plan_version ? {version:it.action_context.plan_version, revision_note:a?.revision_requested} : null);
   const task = !!it.parent_ref, tasks = f.tasks || [], total = tasks.length;
   const doneN = tasks.filter(t => t.status === 'done').length;
   const pv = plan?.version || a?.plan_version, ok = a && !a.stale && a.verdict !== 'reject';
@@ -1669,15 +1653,19 @@ function lifecycle(it, auto = {}){
     msg = it.status !== 'in_review' ? '병합됨 — 결과를 확인해 주세요.'
       : task ? '결과 확인 대기 → 아래 “결과”에서 승인·수정 요청·거절을 골라 주세요.'
       : '모든 Task가 검사를 통과하고 병합됐어요. 운영 화면에서 확인하고 결과를 승인해 주세요.';
-    if(it.status === 'in_review') go = {label: '결과 승인', target: 'panel-result'};
   }else if(it.status === 'on_hold'){
     at(task || ok ? 2 : plan ? 1 : 0, 'hold', '<b>보류</b>'); msg = oldMsg();
   }else if(it.status === 'changes_requested'){
     at(2, 'fail', '<b>수정 요청됨</b>'); owner = ownerBy(auto.auto_execute);
     msg = f.note ? `"${esc(f.note)}"라는 수정 요청이 남아 있어요. 에이전트에게 다시 맡겨 주세요.` : '수정 요청이 남아 있어요. 에이전트에게 다시 맡겨 주세요.';
-    go = {label: '실행 맡기기', target: 'panel-tasks'};
   }else if(f.failed_tasks > 0){
     at(2, 'fail', `<b>실행 실패 ${f.failed_tasks}개</b>`); owner = ownerBy(auto.auto_execute); msg = oldMsg();
+  }else if(c.claim_active && !(plan && !ok && !plan.revision_note && !task)){
+    // 대화형 세션 등이 잡고 일하는 중(run·job 없음). 단 계획서 승인은 사람이 할 일이라 아래 승인 대기가 이긴다.
+    const who = esc(actorName(c.claimed_by) || '에이전트'), name = `<b>${who} 작업 중</b>`;
+    at(task || ok ? 2 : plan ? 1 : 0, 'agent', name); if(!task && !ok && !plan) m[0] = name; owner = 'agent';
+    const until = c.lease_until ? new Date(c.lease_until).toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit', hour12: false}) : '';
+    msg = `${who}이(가) 잡고 작업 중이에요${until ? `(점유 만료 ${until})` : ''}.`;
   }else if(x || task){
     if(x?.blocked){ at(2, 'todo', `<b>${esc(String(x.blocked).slice(0, 24))}</b>`); owner = 'agent'; }
     else{ at(2, 'human', '<b>실행 맡기기 대기</b>'); owner = ownerBy(auto.auto_execute); }
@@ -1685,19 +1673,25 @@ function lifecycle(it, auto = {}){
   }else if(!plan){
     at(0, 'human', '<b>검토 맡기기 대기</b>'); m[0] = '<b>검토 맡기기 대기</b>'; owner = ownerBy(auto.auto_review);
     msg = '계획서가 없어요. Claude나 Codex에게 검토를 맡겨 계획서를 받아 보세요.';
-    go = {label: '검토 맡기기', target: 'review-btns'};
   }else if(plan.revision_note){
     at(1, 'agent', `<b>v${pv} 재검토 대기</b>`); owner = 'agent'; msg = oldMsg();
   }else if(!ok){
     at(1, 'human', `<b>v${pv} 승인 대기</b>`);
     if(f.planned_tasks) m[2] = `Task ${f.planned_tasks}개 예정`;
     msg = `계획서 v${pv}이 올라왔어요. 승인·메모 붙여 승인·재검토·거절 중에서 골라 주세요.`;
-    go = {label: '계획서 보기', target: 'panel-plan'};
   }else if(tasks.some(t => !['done', 'closed', 'in_review'].includes(t.status)) || !total){
     at(2, total ? 'human' : 'human', count()); owner = total ? ownerBy(auto.auto_execute) : 'human'; msg = oldMsg();
-    if(total) go = {label: '실행 맡기기', target: 'panel-tasks'};
   }else{
     at(3, 'human', '<b>결과 확인 대기</b>'); m[2] = count(total); msg = oldMsg();
+  }
+  // go 버튼은 quickAction 결과로만 정한다(DEV-243) — 도는 중·대기 중·병합 중에는 두지 않는다
+  if(!run && !it.job && !LIVE_MERGE.has(it.merge_state)){
+    const kind = quickAction(it).kind;
+    go = kind === 'review' ? {label: '검토 맡기기', target: 'review-btns'}
+      : kind === 'decision' ? {label: '계획서 보기', target: 'panel-plan'}
+      : ['task-approve', 'complete-tree'].includes(kind) ? {label: '결과 승인', target: 'panel-result'}
+      : kind === 'execute' ? {label: '실행 맡기기', target: 'exec-btns'}
+      : (it.children || []).some(ch => quickAction(ch).kind === 'execute') ? {label: '실행 맡기기', target: 'panel-tasks'} : null;
   }
   if(task){
     s[0] = s[1] = 'inherited';
@@ -1743,12 +1737,8 @@ document.addEventListener('click', e => {
   const el = document.getElementById(b.dataset.target) || document.getElementById('panel-tasks');
   el?.scrollIntoView({block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
 });
-// 부모 화면에서 바로 실행: 계획 승인됨 · 아직 안 한 Task(서버가 다시 확인한다). 바쁘거나 선행이 안 끝났으면 줄에 선다(DEV-43)
+// 부모 화면에서 바로 실행: quickAction이 execute일 때만(서버가 다시 확인한다). 바쁘거나 선행이 안 끝났으면 줄에 선다(DEV-43)
 // — Task 여럿을 한 번에 눌러 두면 선행 순서대로 돈다.
-function canRun(it, ch){
-  const a = it.approval;
-  return a && !a.stale && a.verdict !== 'reject' && ['backlog', 'changes_requested'].includes(ch.status);
-}
 const pendingTasks = new Set();
 function taskActionsHtml(it, ch){
   const icon = provider => `<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>`;
@@ -1756,7 +1746,7 @@ function taskActionsHtml(it, ch){
     const provider = ch.job.provider || 'claude', label = `${PROVIDER_NAME[provider]} 실행 대기 중`;
     return `<div class="task-actions"><button class="run-task task-queued" data-ref="${esc(ch.ref)}" data-provider="${provider}" disabled aria-label="${label}" title="${esc(`${label} — 대기 ${ch.job.position}번째${ch.job.note ? ' — ' + ch.job.note : ''}`)}">${icon(provider)}<span class="hide-m">${label}</span></button></div>`;
   }
-  if(!canRun(it, ch)) return '';
+  if(quickAction(ch).kind !== 'execute') return '';
   return `<div class="task-actions">${['claude', 'codex'].map(provider => {
     const label = `${PROVIDER_NAME[provider]}에게 실행 맡기기`;
     return `<button class="run-task" data-ref="${esc(ch.ref)}" data-provider="${provider}"${pendingTasks.has(ch.ref) ? ' disabled' : ''} title="${label}" aria-label="${label}">${icon(provider)}<span class="hide-m">${PROVIDER_NAME[provider]}</span></button>`;
@@ -1787,9 +1777,12 @@ async function renderIssue(ref, background = false){
   const reviewProvider = pendingReviews.get(ref) || (it.review_running && liveMode === 'review' ? liveRun.provider : null);
   const reviewBusy = it.review_running || pendingReviews.has(ref);
   const reviewButton = (provider, id) => `<button id="${id}" title="홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음)."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${PROVIDER_NAME[provider]}에게 검토 맡기기</button>`;
-  // 검토 절은 Task가 아닐 때만 — 도는 중이면 버튼 대신 상태 줄
-  const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job, edges) : reviewBusy ? busyLine(reviewProvider, '검토')
-    : `<div class="agent-btns" id="review-btns">${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}</div>${it.review_busy ? `<div class="dim hint">다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}</div>` : ''}`}`;
+  // 검토 절은 Task가 아닐 때만 — 도는 중이면 버튼 대신 상태 줄, 버튼은 quickAction이 review일 때만(DEV-243)
+  const qa = quickAction(it);
+  const reviewIdle = qa.kind === 'review' ? `<div class="agent-btns" id="review-btns">${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}</div>${it.review_busy ? `<div class="dim hint">다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}</div>` : ''}`
+    : qa.why === 'claimed' ? `<div class="dim hint">${esc(actorName(it.action_context.claimed_by))}이(가) 잡고 있어요 — 점유가 풀리면 검토를 맡길 수 있어요.</div>`
+    : it.plan && !['done', 'closed'].includes(it.status) ? '<div class="dim hint">계획서가 있어요 — 다시 검토하려면 계획서 아래 메모 붙여 재검토를 골라 주세요.</div>' : '';
+  const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job, edges) : reviewBusy ? busyLine(reviewProvider, '검토') : reviewIdle}`;
   closeProgress();
   eventAttachments = new Map((it.attachments || []).map(a => [a.id, a]));
   view.innerHTML = `
