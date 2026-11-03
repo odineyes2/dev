@@ -94,6 +94,27 @@ for n, key in enumerate(LIST_KEYS, 1):
     LIST.append(d)
 
 
+def check_dot_rows(page, selector):
+    # ??? ??? ?? ??? ? ??? ??? ????.
+    groups = page.locator(selector)
+    assert groups.count() == 8, selector
+    for group in groups.all():
+        dots = group.locator('i')
+        assert dots.count() == 5
+        assert group.locator('.lc-dot-row > i').count() == 5
+        boxes = [dot.bounding_box() for dot in dots.all()]
+        ys = [box['y'] + box['height'] / 2 for box in boxes]
+        assert max(ys) - min(ys) <= 1, (selector, boxes)
+        for left, right in zip(boxes, boxes[1:]):
+            assert left['x'] + left['width'] < right['x'], (selector, boxes)
+        bounds = group.bounding_box()
+        assert boxes[0]['x'] >= bounds['x']
+        assert boxes[-1]['x'] + boxes[-1]['width'] <= bounds['x'] + bounds['width'] + 1
+        clock = group.locator('.lc-clock')
+        if clock.count():
+            assert clock.bounding_box()['y'] >= max(b['y'] + b['height'] for b in boxes)
+
+
 def check_list(browser, port):
     page = browser.new_page(viewport={'width': 1050, 'height': 900}, timezone_id='Asia/Seoul')
     page.clock.install()
@@ -102,6 +123,7 @@ def check_list(browser, port):
     page.wait_for_selector('#list-body tr.row', state='attached')
     rows = page.locator('#list-body tr.row')
     assert rows.count() == 8
+    check_dot_rows(page, '.issue-col-progress .lc-dots:visible')
     assert page.locator('tr.mine').count() == 5
     for n, key in enumerate(LIST_KEYS):
         expected = next(row for row in SC if row[0] == key)
@@ -144,11 +166,12 @@ def check_list(browser, port):
     page.locator('[data-turn=all]').click()
     page.locator('.ops-main').screenshot(path=str(CAPTURES / '10-list.png'))
     for theme in ('light', 'dark'):
-        for width in (800, 400):
+        for width in (1300, 800, 400, 390):
             page.set_viewport_size({'width': width, 'height': 900})
             page.evaluate('(t) => document.documentElement.dataset.theme = t', theme)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), (theme, width)
-            if width == 400:
+            check_dot_rows(page, '.lc-mobile .lc-dots:visible' if width <= 640 else '.issue-col-progress .lc-dots:visible')
+            if width <= 640:
                 assert not page.locator('th.issue-col-progress').is_visible()
                 assert page.locator('.lc-mobile:visible').count() == 8
             page.locator('.ops-main').screenshot(path=str(CAPTURES / f'{theme}-{width}-list.png'))
@@ -157,6 +180,7 @@ def check_list(browser, port):
         page.wait_for_selector('.card .meta .lc-dots')
         assert page.locator('.card .meta .lc-dots').count() == 8
         assert page.locator('.card .meta .lc-dots em').count() == 8
+        check_dot_rows(page, '.card .meta .lc-dots:visible')
         page.locator('.kanban').screenshot(path=str(CAPTURES / f'{theme}-800-board.png'))
         page.goto(f'http://127.0.0.1:{port}/#/')
         page.wait_for_selector('#list-body tr.row', state='attached')

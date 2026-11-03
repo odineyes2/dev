@@ -766,7 +766,7 @@ function lifecycleDotsHtml(i, {meta: showMeta = true} = {}){
   const el = document.createElement('span'); el.innerHTML = lc.steps[lc.cur].meta;
   const clock = el.querySelector('.progress-clock'); clock?.remove();
   const meta = el.textContent.trim();
-  return `<span class="lc-dots" title="${esc(lifecycleTip(lc))}" aria-label="${esc(`진행 ${lc.steps[lc.cur].label}: ${msg}`)}">${lc.steps.map(s => `<i data-s="${s.state}"></i>`).join('')}${showMeta ? `<em>${esc(meta)}</em>` : ''}${clock ? `<span class="lc-clock">${clock.outerHTML}</span>` : ''}</span>`;
+  return `<span class="lc-dots" title="${esc(lifecycleTip(lc))}" aria-label="${esc(`진행 ${lc.steps[lc.cur].label}: ${msg}`)}"><span class="lc-dot-row">${lc.steps.map(s => `<i data-s="${s.state}"></i>`).join('')}</span>${showMeta ? `<em>${esc(meta)}</em>` : ''}${clock ? `<span class="lc-clock">${clock.outerHTML}</span>` : ''}</span>`;
 }
 function applyTurnFilter(){
   const rows = [...view.querySelectorAll('#list-body tr.row')], turn = listState().turn || 'all';
