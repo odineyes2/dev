@@ -1054,6 +1054,7 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .turn-filter button[aria-pressed=true]{background:rgba(var(--accent-rgb),.1);border-color:rgba(var(--accent-rgb),.4);color:var(--accent)}
 #list-body tr.mine{background:color-mix(in srgb,var(--s-in_review) 4%,transparent)}
 .lc-dots{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px;max-width:100%;min-width:0;vertical-align:middle}
+.lc-dot-row{display:inline-flex;flex-flow:row nowrap;flex:0 0 auto;align-items:center;gap:4px;min-width:61px}
 .lc-dots i{flex:0 0 9px;width:9px;height:9px;border-radius:999px;background:var(--border-strong)}
 .lc-dots i[data-s=done]{background:var(--s-done)}
 .lc-dots i[data-s=agent]{background:var(--s-in_progress);box-shadow:0 0 0 2px color-mix(in srgb,var(--s-in_progress) 25%,transparent)}
