@@ -753,13 +753,20 @@ function issueTokensHtml(i, detail = false){
 }
 // 점과 상세는 같은 판정과 Auto 설정을 쓴다. HTML을 텍스트로 풀어 속성에 넣는다.
 function lcText(html){ const el = document.createElement('span'); el.innerHTML = html; return el.textContent.trim(); }
+// 현재 단계·메타와 다음 할 일을 담고 매초 바뀌는 시계는 제외한다.
+function lifecycleTip(lc){
+  const el = document.createElement('span'); el.innerHTML = lc.steps[lc.cur].meta;
+  el.querySelectorAll('.progress-clock').forEach(clock => clock.remove());
+  const meta = el.textContent.trim();
+  return `${lc.steps[lc.cur].label}${meta ? ' · ' + meta : ''}\n${lcText(lc.msg)}`;
+}
 // 시계(.progress-clock)는 요소째 살려 다음 줄에 두어 tickClocks가 1초마다 센다.
-function lifecycleDotsHtml(i){
+function lifecycleDotsHtml(i, {meta: showMeta = true} = {}){
   const lc = lifecycle(i, actionSession?.settings || {}), msg = lcText(lc.msg);
   const el = document.createElement('span'); el.innerHTML = lc.steps[lc.cur].meta;
   const clock = el.querySelector('.progress-clock'); clock?.remove();
   const meta = el.textContent.trim();
-  return `<span class="lc-dots" title="${esc(msg)}" aria-label="${esc(`진행 ${lc.steps[lc.cur].label}: ${msg}`)}">${lc.steps.map(s => `<i data-s="${s.state}"></i>`).join('')}<em>${esc(meta)}</em>${clock ? `<span class="lc-clock">${clock.outerHTML}</span>` : ''}</span>`;
+  return `<span class="lc-dots" title="${esc(lifecycleTip(lc))}" aria-label="${esc(`진행 ${lc.steps[lc.cur].label}: ${msg}`)}">${lc.steps.map(s => `<i data-s="${s.state}"></i>`).join('')}${showMeta ? `<em>${esc(meta)}</em>` : ''}${clock ? `<span class="lc-clock">${clock.outerHTML}</span>` : ''}</span>`;
 }
 function applyTurnFilter(){
   const rows = [...view.querySelectorAll('#list-body tr.row')], turn = listState().turn || 'all';
@@ -777,8 +784,8 @@ function issueRowHtml(i){
   const lc = lifecycle(i, actionSession?.settings || {});
   return `<tr class="row${lc.owner === 'human' ? ' mine' : ''}${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-o="${lc.owner}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
     <td class="title-cell"><span class="issue-title-line" title="${esc(i.title || '')}">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}</span><div class="issue-badges">${i.rating ? `<span class="row-rating" title="평점 ${i.rating}/5" aria-label="평점 ${i.rating}점">★${i.rating}</span>` : ''}${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile"><span class="issue-meta-agent">${processingAgentsHtml(i)}</span><span class="issue-meta-time">${completionTimeHtml(i)}</span><span class="issue-meta-tokens">${issueTokensHtml(i)}</span></div></td>
-    <td class="issue-col-status">${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}<span class="lc-mobile">${lifecycleDotsHtml(i)}</span></td>
-    <td class="issue-col-progress">${lifecycleDotsHtml(i)}</td>
+    <td class="issue-col-status">${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}<span class="lc-mobile">${lifecycleDotsHtml(i, {meta:false})}</span></td>
+    <td class="issue-col-progress" title="${esc(lifecycleTip(lc))}">${lifecycleDotsHtml(i, {meta:false})}</td>
     <td class="hide-m issue-col-agent">${processingAgentsHtml(i)}</td><td class="hide-m issue-col-time">${completionTimeHtml(i)}</td><td class="hide-m token-cell issue-col-tokens">${issueTokensHtml(i)}</td><td class="hide-m dim issue-col-updated">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
 // Task는 부모 바로 아래에 들여써서 붙이고(부모가 아직 안 왔으면 오는 순간 끌어온다) 접고 펼 수 있다. 접힘은 부모 ref별로 기억한다.
@@ -789,11 +796,9 @@ function refreshKids(tbody, parentTr){
   if(!kids.length) return;
   if(!parentTr.querySelector('.tog')){
     parentTr.querySelector('td.ref').insertAdjacentHTML('afterbegin', '<button class="tog" type="button"><i></i></button>');
-    parentTr.querySelector('.title-cell').insertAdjacentHTML('beforeend', '<div class="sub kids"></div>');
   }
   const b = parentTr.querySelector('.tog');
   b.setAttribute('aria-expanded', String(open)); b.setAttribute('aria-label', open ? 'Task 접기' : 'Task 펼치기');
-  parentTr.querySelector('.kids').textContent = `Tasks ${kids.length}`;
   kids.forEach(k => { k.hidden = !open; });
 }
 function orderKids(tbody, parentTr){
