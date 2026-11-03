@@ -769,9 +769,13 @@ function issueTokensHtml(i, detail = false){
 }
 // 점과 상세는 같은 판정과 Auto 설정을 쓴다. HTML을 텍스트로 풀어 속성에 넣는다.
 function lcText(html){ const el = document.createElement('span'); el.innerHTML = html; return el.textContent.trim(); }
+// 시계(.progress-clock)는 요소째 살려 다음 줄에 두어 tickClocks가 1초마다 센다.
 function lifecycleDotsHtml(i){
-  const lc = lifecycle(i, actionSession?.settings || {}), meta = lcText(lc.steps[lc.cur].meta), msg = lcText(lc.msg);
-  return `<span class="lc-dots" title="${esc(msg)}" aria-label="${esc(`진행 ${lc.steps[lc.cur].label}: ${msg}`)}">${lc.steps.map(s => `<i data-s="${s.state}"></i>`).join('')}<em>${esc(meta)}</em></span>`;
+  const lc = lifecycle(i, actionSession?.settings || {}), msg = lcText(lc.msg);
+  const el = document.createElement('span'); el.innerHTML = lc.steps[lc.cur].meta;
+  const clock = el.querySelector('.progress-clock'); clock?.remove();
+  const meta = el.textContent.trim();
+  return `<span class="lc-dots" title="${esc(msg)}" aria-label="${esc(`진행 ${lc.steps[lc.cur].label}: ${msg}`)}">${lc.steps.map(s => `<i data-s="${s.state}"></i>`).join('')}<em>${esc(meta)}</em>${clock ? `<span class="lc-clock">${clock.outerHTML}</span>` : ''}</span>`;
 }
 function applyTurnFilter(){
   const rows = [...view.querySelectorAll('#list-body tr.row')], turn = listState().turn || 'all';

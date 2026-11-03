@@ -96,8 +96,20 @@ def check_list(browser, port):
         dots = rows.nth(n).locator('.issue-col-progress .lc-dots')
         assert dots.locator('i').evaluate_all('els => els.map(e => e.dataset.s).join(" ")') == expected[2], key
         cur = page.evaluate('(i) => lifecycle(i).cur', LIST[n])
-        assert re.fullmatch(expected[3][cur], dots.locator('em').text_content()), key
+        clock = dots.locator('.lc-clock')
+        meta = ' '.join(t for t in [dots.locator('em').text_content()] + clock.all_text_contents() if t)
+        assert re.fullmatch(expected[3][cur], meta), (key, meta)
         assert dots.get_attribute('title') == expected[-1], key
+        if key not in ('plan', 'retry'):
+            assert clock.count() == 0, key
+            continue
+        # 시계는 점 다음 줄에 progress-clock 요소째 있어 1초마다 늘어난다
+        assert clock.locator('.progress-clock').count() == 1, key
+        assert clock.bounding_box()['y'] >= dots.locator('i').first.bounding_box()['y'] + 9, key
+        secs = lambda: sum(int(p) * 60 ** k for k, p in enumerate(reversed(clock.text_content().split(':'))))
+        before = secs()
+        page.clock.run_for(1000)
+        assert secs() == before + 1, (key, before, secs())
     assert page.locator('[data-turn=mine]').text_content() == '내 차례만 · 5'
     for turn, count in [('mine', 5), ('agent', 2)]:
         page.locator(f'[data-turn={turn}]').click()
