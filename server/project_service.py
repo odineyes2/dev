@@ -459,6 +459,79 @@ def _run(project, action):
         _save(pid, status='failed', phase='연결 실패', error=error + note)
 
 
+INIT_CONNECT_WAIT_SEC = 1800
+INIT_ACTOR = 'system:project_initialization'
+
+
+def _ingress_hosts():
+    try:
+        data = yaml.safe_load(config_path().read_bytes()) or {}
+        rules = data.get('ingress') or []
+        return {str(r.get('hostname', '')).lower().rstrip('.') for r in rules if isinstance(r, dict) and r.get('hostname')}
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+        raise issues.StoreError('터널 설정을 읽을 수 없어 자동 연결 도메인을 확인하지 못했어요. DEV_TUNNEL_CONFIG와 파일 접근 권한을 확인해 주세요.', 409)
+
+
+def check_new_domain(domain):
+    """초기 생성의 자동 연결은 기존 터널 도메인의 하위 새 이름만 허용한다(DEV-247)."""
+    hosts = _ingress_hosts()
+    zones = sorted({h.split('.', 1)[1] for h in hosts if h.count('.') >= 2})
+    if not any(domain.endswith('.' + zone) for zone in zones):
+        raise issues.StoreError('자동 연결 도메인은 기존 터널 도메인(' + (', '.join(zones) or '없음') + ')의 하위 이름만 쓸 수 있어요.')
+    if domain in hosts:
+        raise issues.StoreError('기존 터널에서 쓰는 도메인이에요. 다른 도메인을 입력해 주세요.')
+
+
+def _init_failed(pid, error):
+    with db.connect() as c:
+        c.execute('''INSERT INTO project_services(project_id,status,actor,action,updated_at,step,phase,error) VALUES(?,'failed',?,'connect',?,2,'연결 실패',?)
+            ON CONFLICT(project_id) DO UPDATE SET status='failed',phase='연결 실패',error=excluded.error,updated_at=excluded.updated_at''',
+                  (pid, INIT_ACTOR, db.now_iso(), error))
+
+
+def connect_for_initialization(project):
+    """초기 생성 스레드 안에서 공용 터널 잠금을 잡고, 다른 작업이 끝난 뒤 기존 connect 6단계를 동기로 돈다."""
+    import jobs
+    pid, key = project['id'], project['key']
+    end = time.monotonic() + INIT_CONNECT_WAIT_SEC
+    while True:
+        try:
+            with db.connect() as c:
+                c.execute('BEGIN IMMEDIATE')
+                c.execute('''INSERT INTO project_services(project_id,status,actor,action,updated_at,step,phase) VALUES(?,'running',?,'connect',?,2,'다른 작업이 끝나기를 기다리는 중')
+                    ON CONFLICT(project_id) DO UPDATE SET status='running',step=2,phase=excluded.phase,error='',actor=excluded.actor,action=excluded.action,updated_at=excluded.updated_at''',
+                          (pid, INIT_ACTOR, db.now_iso()))
+            break
+        except sqlite3.IntegrityError:
+            if time.monotonic() >= end:
+                _init_failed(pid, '다른 서비스 연결이 끝나지 않아 서비스 연결을 못 했어요.')
+                return _row(pid)
+            time.sleep(1)
+    # 잠금을 잡은 뒤에는 start_block이 새 작업을 막는다. 이미 도는 작업만 끝나기를 기다린다.
+    try:
+        while True:
+            with db.connect() as c:
+                lanes = jobs._active_lanes(c) - {(key, 'initialization')}
+                restarting = c.execute("SELECT 1 FROM project_app_restarts WHERE status IN ('waiting','restarting','checking')").fetchone()
+            if not lanes and not restarting:
+                break
+            if time.monotonic() >= end:
+                _save(pid, status='failed', phase='연결 실패', error='다른 작업이 끝나지 않아 서비스 연결을 못 했어요.')
+                return _row(pid)
+            time.sleep(1)
+    except Exception:
+        _save(pid, status='failed', phase='연결 실패', error='다른 작업의 상태를 확인하지 못해 서비스 연결을 못 했어요.')
+        return _row(pid)
+    _run(project, 'connect')
+    return _row(pid)
+
+
+def _row(pid):
+    with db.connect() as c:
+        row = c.execute('SELECT status,error FROM project_services WHERE project_id=?', (pid,)).fetchone()
+    return dict(row) if row else None
+
+
 def recover():
     with db.connect() as c:
         rows = [dict(r) for r in c.execute("SELECT * FROM project_services WHERE status='running'")]

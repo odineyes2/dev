@@ -72,6 +72,8 @@ def cancel(actor, key):
             raise issues.StoreError('초기 생성 요청을 찾을 수 없어요.', 404)
         if row['status'] == 'complete':
             raise issues.StoreError('이미 초기 생성이 완료됐어요.', 409)
+        if json.loads(row['refs_json'] or '[]'):
+            raise issues.StoreError('Issue 등록 뒤에는 취소할 수 없어요.', 409)
         if row['status'] != 'cancelled':
             c.execute("UPDATE project_initializations SET status='cancelling',phase='초기 생성 중단 중',error='사용자가 초기 생성을 취소했어요.',updated_at=? WHERE project_id=?", (db.now_iso(), row['project_id']))
     stop_cancelled()
@@ -89,8 +91,10 @@ def get(key):
 
 def status(key):
     row = get(key)
+    with db.connect() as c:
+        service = c.execute('SELECT status,error FROM project_services WHERE project_id=?', (row['project_id'],)).fetchone()
     return {**{k: row[k] for k in ('key', 'provider', 'status', 'phase', 'error', 'local_path', 'updated_at', 'genre')},
-            'refs': json.loads(row['refs_json'])}
+            'refs': json.loads(row['refs_json'] or '[]'), 'service': dict(service) if service else None}
 
 
 def _spec_text(actor, body):
@@ -159,6 +163,10 @@ def request(actor, body, allow_agent=False):
         if old['owner'] != issues.actor_label(actor) or old['key'] != key:
             raise issues.StoreError('다른 생성 요청의 ID예요.', 409)
         return status(key)
+    if service['service_domain']:
+        # 초기 생성은 마지막 단계에서 서비스를 자동 연결하므로 새 하위 이름만 받는다(DEV-247).
+        from project_service import check_new_domain
+        check_new_domain(service['service_domain'])
     spec = _spec_text(actor, body)
     if not automation.provider_available(provider):
         raise issues.StoreError('선택한 에이전트를 실행할 수 없어요. Agents 설정을 확인해 주세요.', 409)
@@ -274,7 +282,7 @@ issues에는 필요한 개발 단계를 기능별 Issue로 작성한다. 각 bod
         prompt += '\n앞선 생성 결과가 다음 검증에서 실패했다. 이 오류를 수정하여 전체 JSON을 다시 반환한다: ' + correction
     with db.connect() as c:
         service = dict(c.execute('SELECT service_domain,service_port,service_app FROM projects WHERE id=?', (row['project_id'],)).fetchone())
-    prompt += '\n서비스 실행 설정(배포는 Dev 관리 화면에서 별도로 실행): ' + json.dumps(service, ensure_ascii=False)
+    prompt += '\n서비스 실행 설정(서비스 연결은 초기 생성 마지막 단계에서 Dev가 실행):' + json.dumps(service, ensure_ascii=False)
     cwd = config.DATA_DIR / 'project-initializations' / row['request_id']
     cwd.mkdir(parents=True, exist_ok=True)
     if row['provider'] == 'codex':
@@ -559,30 +567,44 @@ def _owner_actor(c, owner):
 
 
 def publish(row, result):
+    """Issue·Task를 한 번만 등록한다. 서비스 연결이 남았으면 running으로 두고 True, 아니면 같은 트랜잭션에서 complete한다."""
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
-        current = c.execute('SELECT status FROM project_initializations WHERE project_id=?', (row['project_id'],)).fetchone()
+        current = c.execute('SELECT status,refs_json FROM project_initializations WHERE project_id=?', (row['project_id'],)).fetchone()
         if not current or current['status'] != 'running':
             raise Cancelled()
         proj = c.execute('SELECT * FROM projects WHERE id=?', (row['project_id'],)).fetchone()
         if proj['archived']:
             raise issues.StoreError('보관된 프로젝트에는 생성 결과를 등록할 수 없어요.', 409)
-        actor = _owner_actor(c, row['owner'])
-        refs = []
-        for item in result['issues']:
-            number, _, _ = issues._next_number(c, proj, None)
-            now = db.now_iso()
-            iid = c.execute('''INSERT INTO issues(project_id,number,title,body,status,reporter,created_at,updated_at)
-                VALUES(?,?,?,?, 'triage',?,?,?)''', (proj['id'], number, item['title'], item['body'] + '\n\n기획서 기반 초안. 실행 전에 계획서를 검토하고 승인한다.', row['owner'], now, now)).lastrowid
-            sha = _git(Path(row['local_path']), 'rev-parse', 'HEAD')
-            c.execute('INSERT INTO plans(issue_id,version,body,author,created_at,base_sha) VALUES(?,1,?,?,?,?)', (iid, item['plan'], row['owner'], now, sha))
-            parent = c.execute(issues._ISSUE_SELECT + ' WHERE i.id=?', (iid,)).fetchone()
-            issues._event(c, iid, actor, 'plan', item['plan'], {'version': 1, 'source': 'project_initialization'})
-            issues._spawn_tasks(c, parent, item['plan'], 1, actor, '')
-            refs.append(issues._issue_dict(parent)['ref'])
-        c.execute('UPDATE projects SET description=? WHERE id=?', (result['description'], row['project_id']))
-        c.execute("UPDATE project_initializations SET status='complete',phase='초기 생성 완료',error='',refs_json=?,updated_at=? WHERE project_id=?",
-                  (json.dumps(refs), db.now_iso(), row['project_id']))
+        connect = bool(proj['service_domain'] and proj['service_port'])
+        refs = json.loads(current['refs_json'] or '[]')
+        if not refs:
+            refs = _register(c, row, proj, result)
+        if connect:
+            c.execute("UPDATE project_initializations SET phase='서비스 연결 중',error='',refs_json=?,updated_at=? WHERE project_id=?",
+                      (json.dumps(refs), db.now_iso(), row['project_id']))
+        else:
+            c.execute("UPDATE project_initializations SET status='complete',phase='초기 생성 완료',error='',refs_json=?,updated_at=? WHERE project_id=?",
+                      (json.dumps(refs), db.now_iso(), row['project_id']))
+    return connect
+
+
+def _register(c, row, proj, result):
+    actor = _owner_actor(c, row['owner'])
+    refs = []
+    for item in result['issues']:
+        number, _, _ = issues._next_number(c, proj, None)
+        now = db.now_iso()
+        iid = c.execute('''INSERT INTO issues(project_id,number,title,body,status,reporter,created_at,updated_at)
+            VALUES(?,?,?,?, 'triage',?,?,?)''', (proj['id'], number, item['title'], item['body'] + '\n\n기획서 기반 초안. 실행 전에 계획서를 검토하고 승인한다.', row['owner'], now, now)).lastrowid
+        sha = _git(Path(row['local_path']), 'rev-parse', 'HEAD')
+        c.execute('INSERT INTO plans(issue_id,version,body,author,created_at,base_sha) VALUES(?,1,?,?,?,?)', (iid, item['plan'], row['owner'], now, sha))
+        parent = c.execute(issues._ISSUE_SELECT + ' WHERE i.id=?', (iid,)).fetchone()
+        issues._event(c, iid, actor, 'plan', item['plan'], {'version': 1, 'source': 'project_initialization'})
+        issues._spawn_tasks(c, parent, item['plan'], 1, actor, '')
+        refs.append(issues._issue_dict(parent)['ref'])
+    c.execute('UPDATE projects SET description=? WHERE id=?', (result['description'], row['project_id']))
+    return refs
 
 
 def _run(key):
@@ -629,7 +651,13 @@ def _run(key):
         materialize(row, prepared)
         _checkpoint(row)
         _update(key, phase='Issue·Task 등록 중')
-        publish(row, result)
+        if publish(row, result):
+            # 마지막 단계: 새 호스트 이름만 추가하는 기존 connect 6단계. 실패해도 생성 결과는 지키고 결과는 project_services에 남는다.
+            import project_service
+            project_service.connect_for_initialization(project_service._project(key))
+            with db.connect() as c:
+                c.execute("UPDATE project_initializations SET status='complete',phase='초기 생성 완료',updated_at=? WHERE request_id=? AND status='running'",
+                          (db.now_iso(), row['request_id']))
     except Cancelled:
         if row:
             with db.connect() as c:
