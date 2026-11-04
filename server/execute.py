@@ -736,6 +736,12 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     return {"started": True, "ref": ref, "branch": branch_name(ref)}
 
 
+def service_warning(row) -> bool:
+    """도메인·포트가 있는데 서비스 연결이 끝나지 않았으면 참(DEV-247) — 맡기기 확인창 경고용, 막지는 않는다.
+    포트 0(외부 운영 서비스)·도메인 없는 프로젝트는 경고하지 않는다."""
+    return bool(row and row["service_domain"] and row["service_port"] and row["service_status"] != "connected")
+
+
 def panel(issue: dict) -> dict | None:
     """화면용 — Task면 실행을 못 맡기는 이유(있으면)와 브랜치 정보. Task가 아니면 None."""
     if not issue.get("parent_ref"):
@@ -743,7 +749,9 @@ def panel(issue: dict) -> dict | None:
     # 부모는 승인 요약만, 프로젝트는 local_path만 — 타임라인 통째·프로젝트 목록을 다시 읽지 않는다(DEV-42-3)
     with db.connect() as c:
         parent = issues._issue_dict(issues._find(c, issue["parent_ref"]))
-        row = c.execute("SELECT local_path FROM projects WHERE key=?", (issue["project_key"],)).fetchone()
+        row = c.execute("SELECT p.local_path, p.service_domain, p.service_port, "
+                        "(SELECT s.status FROM project_services s WHERE s.project_id=p.id) AS service_status "
+                        "FROM projects p WHERE p.key=?", (issue["project_key"],)).fetchone()
         prior_run = c.execute("SELECT 1 FROM runs WHERE issue_id=? AND mode='execute' LIMIT 1", (issue['id'],)).fetchone()
     repo = row["local_path"] if row else ""
     try:
@@ -760,6 +768,7 @@ def panel(issue: dict) -> dict | None:
     import task_checks
     return {"blocked": blocked_reason(issue, parent), "branch": branch, "budget_usd": BUDGET_USD, "timeout_sec": TIMEOUT_SEC,
             "checks": task_checks.items(issue),   # 맡기기 확인창 체크리스트(DEV-238)
+            "service_warning": service_warning(row),   # 미연결 서비스 경고(DEV-247)
             "manual_merge_available": manual_merge_available,
             "retry_merge_available": orchestrate.retry_available(issue),
             "manual_merge_confirmable": orchestrate.manual_merge_confirmable(issue, completed),

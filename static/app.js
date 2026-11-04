@@ -680,7 +680,7 @@ function bindActions(container,session,refresh){
           if(!current())return;
           const limit=task?(provider==='codex'?`시간 제한은 ${Math.floor(task.execute.timeout_sec/60)}분이고 비용 상한은 없어요.`:`비용 상한은 $${task.execute.budget_usd}이에요.`):'';
           const scope=task ? '홈서버의 격리된 worktree에서 구현해요. 실행 후 기존 자동 병합 정책이 적용돼요.' : '홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).';
-          const picked=await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?`, {description:task ? `${delegateLine(task, provider)}${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}` : reviewConfirmText(detail, provider), okText:kind==='review'?'검토 맡기기':'실행 맡기기', checklist:task?task.execute.checks:null});
+          const picked=await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?`, {description:task ? `${serviceWarnLine(task)}${delegateLine(task, provider)}${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}` : reviewConfirmText(detail, provider), okText:kind==='review'?'검토 맡기기':'실행 맡기기', checklist:task?task.execute.checks:null});
           if(!picked)return;
           if(task) checks=picked;
         }
@@ -1447,6 +1447,10 @@ function delegateLine(it, provider){
   if(!d) return '';
   return `모델 ${d.model ? `${d.model_name || d.model} (${d.model})` : 'CLI 기본값'}${d.agent ? ` · Agent "${d.agent}"` : ''}\n`;
 }
+// 서비스 연결이 끝나지 않은 프로젝트의 Task 맡기기 경고(DEV-247) — 막지는 않는다
+function serviceWarnLine(it){
+  return it.execute?.service_warning ? '아직 외부 주소로 확인할 수 없어요 — 서비스 연결이 끝나지 않았어요.\n' : '';
+}
 function reviewConfirmText(it, provider){
   const timeout = it.delegates?.review_timeout_sec;
   return `${delegateLine(it, provider)}계획서만 올리고 코드는 고치지 않아요${timeout == null ? '' : ` · 최대 ${Math.floor(timeout / 60)}분`}\n${it.review_busy ? '앞 작업이 끝나면 시작해요' : '바로 시작해요'}`;
@@ -2019,7 +2023,7 @@ async function renderIssue(ref, background = false){
       const task = await api('GET', `/api/issues/${encodeURIComponent(ref)}`);
       const name = PROVIDER_NAME[provider], x = task.execute;
       const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(x.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${x.budget_usd}이에요.`;
-      const checks = await confirmDialog(`${ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${delegateLine(task, provider)}홈서버에서 relay/${ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+      const checks = await confirmDialog(`${ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${serviceWarnLine(task)}${delegateLine(task, provider)}홈서버에서 relay/${ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`, okText:'실행 맡기기', checklist:x.checks});
       if(!checks) return;
@@ -2071,7 +2075,7 @@ ${QUEUE_LINE}`, okText:'실행 맡기기', checklist:x.checks});
     if(e.currentTarget.disabled || pendingExecutions.has(ref)) return;
     const name = PROVIDER_NAME[provider];
     const limit = provider === 'codex' ? `시간 제한은 ${Math.floor(it.execute.timeout_sec / 60)}분이고 비용 상한은 없어요.` : `비용 상한은 $${it.execute.budget_usd}이에요.`;
-    const checks = await confirmDialog(`${it.ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${delegateLine(it, provider)}홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
+    const checks = await confirmDialog(`${it.ref}을(를) ${name}에게 실행 맡길까요?`, {description:`${serviceWarnLine(it)}${delegateLine(it, provider)}홈서버에서 ${it.execute.branch ? it.execute.branch.branch : 'relay/' + it.ref} 브랜치의 worktree에 코드를 고치고 커밋해요(push·재시작은 하지 않아요).
 ${limit} 사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.
 ${QUEUE_LINE}`, okText:'실행 맡기기', checklist:it.execute.checks});
     if(!checks) return;
@@ -3108,7 +3112,7 @@ function renderProjects(editKey, projectTab = 'manage'){
         const result = await api('GET', `/api/projects/${encodeURIComponent(ed.key)}/initialization`);
         if(!panel.isConnected) return;
         panel.hidden = false;
-        panel.innerHTML = `<h3>초기 프로젝트 생성</h3><p>${esc(result.phase)}</p><p class="dim">${esc(result.local_path)}</p>${result.error ? `<p class="error" role="alert">${esc(result.error)}</p>` : ''}${['queued', 'running', 'failed'].includes(result.status) ? '<button type="button" id="p-init-stop">초기 생성 취소</button>' : ''}${result.status === 'failed' ? '<button type="button" id="p-init-retry">다시 생성</button>' : ''}${result.status === 'cancelled' ? '<p class="dim">초기 생성을 취소했어요. 프로젝트 이름 변경이나 삭제가 가능해요. 이미 만든 파일은 보존해요.</p>' : ''}${result.refs.length ? `<p>${result.refs.map(ref => `<a href="#/issue/${esc(ref)}">${esc(ref)}</a>`).join(' · ')}</p><p class="dim">생성된 Plan과 Task는 초안이에요. 검토 후 승인하여 실행해 주세요.</p>` : ''}`;
+        panel.innerHTML = `<h3>초기 프로젝트 생성</h3><p>${esc(result.phase)}</p><p class="dim">${esc(result.local_path)}</p>${result.error ? `<p class="error" role="alert">${esc(result.error)}</p>` : ''}${['queued', 'running', 'failed'].includes(result.status) ? '<button type="button" id="p-init-stop">초기 생성 취소</button>' : ''}${result.status === 'failed' ? '<button type="button" id="p-init-retry">다시 생성</button>' : ''}${result.service?.status === 'running' ? '<p class="dim">서비스 연결 중</p>' : ''}${result.service?.status === 'failed' ? `<p class="error" role="alert">서비스 연결 실패: ${esc(result.service.error || '이유를 알 수 없어요')}</p>${result.status === 'complete' ? '<button type="button" id="p-init-connect">서비스 다시 연결</button>' : ''}` : ''}${result.status === 'cancelled' ? '<p class="dim">초기 생성을 취소했어요. 프로젝트 이름 변경이나 삭제가 가능해요. 이미 만든 파일은 보존해요.</p>' : ''}${result.refs.length ? `<p>${result.refs.map(ref => `<a href="#/issue/${esc(ref)}">${esc(ref)}</a>`).join(' · ')}</p><p class="dim">생성된 Plan과 Task는 초안이에요. 검토 후 승인하여 실행해 주세요.</p>` : ''}`;
         const stop = panel.querySelector('#p-init-stop');
         if(stop) stop.onclick = () => whileBusy(stop, async () => {
           await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/initialization/cancel`);
@@ -3119,7 +3123,13 @@ function renderProjects(editKey, projectTab = 'manage'){
           await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/initialization/retry`);
           await refreshInitialization();
         });
-        if(['queued', 'running', 'cancelling'].includes(result.status)) setTimeout(refreshInitialization, 2000);
+        // 서비스 다시 연결(DEV-247) — 기존 사람 전용 연결 경로를 그대로 부른다
+        const connect = panel.querySelector('#p-init-connect');
+        if(connect) connect.onclick = () => whileBusy(connect, async () => {
+          await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/service`, {action:'connect'});
+          await refreshInitialization();
+        });
+        if(['queued', 'running', 'cancelling'].includes(result.status) || result.service?.status === 'running') setTimeout(refreshInitialization, 2000);
       }catch(error){
         if(panel.isConnected && !panel.hidden) panel.textContent = `${error.message} 새로고침해 주세요.`;
       }
