@@ -1591,6 +1591,11 @@ function lcDuration(sec){
   const m = Math.round(Math.max(0, sec) / 60), h = Math.floor(m / 60);
   return h ? `${h}시간 ${m % 60}분` : `${m}분`;
 }
+// 스테퍼의 순수 작업 시간(DEV-249) — 1시간이 넘어도 언제나 mm:ss다(fmtClock은 h:mm:ss로 바뀐다)
+function lcWork(sec){
+  const s = Math.floor(sec), p = n => String(n).padStart(2, '0');
+  return `${p(Math.floor(s / 60))}:${p(s % 60)}`;
+}
 function lcClock(sec){
   return sec == null ? '' : ` <span class="progress-clock" data-elapsed="${sec}" data-at="${performance.now()}">${fmtClock(sec)}</span>`;
 }
@@ -1721,7 +1726,8 @@ function lifecycle(it, auto = {}){
   }
   const bars = total >= 2 ? tasks.map(t => t.status === 'done' ? 'done' : run?.ref === t.ref ? 'agent'
     : t.status === 'in_review' ? 'human' : t.status === 'changes_requested' ? 'fail' : 'todo') : null;
-  const steps = s.map((state, i) => ({key: i, label: LC_NAMES[i], state, meta: m[i],
+  const w = f.work_seconds || {}, work = [0, task ? 0 : w.plan, w.execute, w.check, 0];
+  const steps = s.map((state, i) => ({key: i, label: LC_NAMES[i], state, meta: m[i], work: work[i] >= 1 ? work[i] : 0,
     bars: i === 2 ? bars : null, loop: i === 2 && f.loops > 0 ? f.loops + 1 : 0}));
   return {steps, cur, owner, msg, go};
 }
@@ -1732,11 +1738,12 @@ function lifecycleHtml(it, auto){
     const prev = lc.steps[i - 1]?.state;
     const line = i && prev === 'done' && !['todo', 'skip'].includes(st.state) ? 'done' : '';
     const target = i >= 3 && it.status !== 'in_review' ? 'panel-tasks' : LC_PANELS[i];
-    const plain = st.meta.replace(/<[^>]+>/g, '');
+    const plain = st.meta.replace(/<[^>]+>/g, ''), work = st.work ? lcWork(st.work) : '';
     return `<li class="lc-step" data-s="${st.state}" data-line="${line}"${i === lc.cur ? ' data-cur' : ''}>
-      <button type="button" class="lc-jump" data-target="${target}" aria-label="${esc(`${st.label} — ${plain || '아직'} · 이동`)}"></button>
+      <button type="button" class="lc-jump" data-target="${target}" aria-label="${esc(`${st.label} — ${plain || '아직'}${work ? ` · 작업 ${work}` : ''} · 이동`)}"></button>
       <span class="lc-node">${icon(st.state) ? `<svg aria-hidden="true"><use href="#i-${icon(st.state)}"/></svg>` : ''}</span><span class="lc-name">${st.label}</span>
       ${st.loop ? `<span class="lc-loop" title="되돌아온 횟수"><svg aria-hidden="true"><use href="#i-rotate-ccw"/></svg>${st.loop}바퀴</span>` : ''}<span class="lc-meta">${st.meta || '&nbsp;'}</span>
+      ${work ? `<span class="lc-work" title="순수 작업 시간(대기 제외)">${work}</span>` : ''}
       ${st.bars ? `<span class="lc-segs" aria-hidden="true">${st.bars.map(b => `<i data-s="${b}"></i>`).join('')}</span>` : ''}</li>`;
   }).join('');
   // 상황별 버튼은 이 줄 하나에만 둔다(DEV-113) — 도는 중·대기 중이면 숨긴다. id·동작은 그대로다.

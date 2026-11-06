@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 TMP = Path(tempfile.mkdtemp(prefix='dev-lifecycle-'))
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 
 import db  # noqa: E402
 import issues  # noqa: E402
+import orchestrate  # noqa: E402
 import run_progress  # noqa: E402
 import task_checks  # noqa: E402
 
@@ -137,6 +139,80 @@ run_progress.clear(busy['ref'])
 run_progress.set_phase(busy['ref'], 'implement')
 check(run_progress.view(busy['ref'])['seconds'] < 5, 'clear 뒤 새 실행은 started를 새로 잡는다')
 run_progress.clear(busy['ref'])
+
+# 단계별 순수 작업 시간(DEV-249) — 대기·도는 실행이 빠진다
+T0 = datetime(2026, 11, 6, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def at(seconds):
+    return (T0 + timedelta(seconds=seconds)).isoformat()
+
+
+def finished(iid, mode, seconds, state='ok', ended=True):
+    return sql("INSERT INTO runs(issue_id, mode, status, actor, started_at, ended_at, provider) VALUES(?,?,?,?,?,?,?)",
+               (iid, mode, state, 'human:admin', at(0), at(seconds) if ended else None, 'claude'))
+
+
+def completion(rid, iid, phase='complete', merge_sha='abc', start=0, end=0, wait=0):
+    sql("INSERT INTO execution_completion(run_id,issue_id,ref,actor,task_sha,auto_merge,phase,merge_sha,owner_event,cfg_json,updated_at,merge_started_at,merge_wait_seconds) "
+        "VALUES(?,?,?,?,?,1,?,?,0,'{}',?,?,?)", (rid, iid, f'LC-{rid}', 'human:admin', 'sha', phase, merge_sha, at(end), None if start is None else at(start), wait))
+
+
+timed = issues.create_issue(HUMAN, 'LC', '시간 부모')
+task_a = issues.create_issue(HUMAN, 'LC', '시간 Task A', parent=timed['ref'])
+task_b = issues.create_issue(HUMAN, 'LC', '시간 Task B', parent=timed['ref'])
+gone = issues.create_issue(HUMAN, 'LC', '시간 대체 Task', parent=timed['ref'])
+event(gone['id'], 'comment', '보관', {'superseded_by_plan': 2})
+finished(gone['id'], 'execute', 9999)
+finished(timed['id'], 'review', 100)
+finished(timed['id'], 'review', 50, 'failed')
+ra = finished(task_a['id'], 'execute', 200)
+finished(task_a['id'], 'execute', 30, 'timeout')   # 실패·시간 초과도 일한 시간이다
+rb = finished(task_b['id'], 'execute', 10)
+finished(task_b['id'], 'execute', 0, 'running', ended=False)   # 도는 실행은 세지 않는다
+completion(ra, task_a['id'], start=0, end=500, wait=470)   # 30초
+completion(rb, task_b['id'], start=0, end=25)              # 25초
+quiet = issues.create_issue(HUMAN, 'LC', '시작 시각 없는 Task', parent=timed['ref'])
+rq = finished(quiet['id'], 'execute', 1)
+completion(rq, quiet['id'], start=None, end=900)   # 옛 행
+held = issues.create_issue(HUMAN, 'LC', '보류 Task', parent=timed['ref'])
+rh = finished(held['id'], 'execute', 1)
+completion(rh, held['id'], phase='held', start=0, end=900)
+empty = issues.create_issue(HUMAN, 'LC', 'SHA 없는 Task', parent=timed['ref'])
+re_ = finished(empty['id'], 'execute', 1)
+completion(re_, empty['id'], merge_sha='', start=0, end=900)
+over = issues.create_issue(HUMAN, 'LC', '대기가 더 긴 Task')
+ro = finished(over['id'], 'execute', 5)
+completion(ro, over['id'], start=0, end=10, wait=60)
+
+listed = {it['ref']: it['lifecycle_facts'] for it in issues.list_issues(project='LC')}
+w = listed[timed['ref']]['work_seconds']
+check(w == {'plan': 150, 'execute': 243, 'check': 55}, f'부모 시간은 자기 review와 Task의 실행·병합 합이고 대기·대체 Task·미완료 행이 빠진다 ({w})')
+check(w == issues.get_issue(timed['ref'])['lifecycle_facts']['work_seconds'], '목록·상세의 work_seconds가 같다')
+check(listed[task_a['ref']]['work_seconds'] == {'plan': 0, 'execute': 230, 'check': 30}, f"Task 시간은 자기 실행·병합만 ({listed[task_a['ref']]['work_seconds']})")
+check(listed[task_b['ref']]['work_seconds']['execute'] == 10, '도는 실행은 합에 없다')
+check(listed[over['ref']]['work_seconds'] == {'plan': 0, 'execute': 5, 'check': 0}, f"병합 시간은 음수가 되지 않고 Task 없는 이슈는 자기 실행을 센다 ({listed[over['ref']]['work_seconds']})")
+check(listed[reviewing['ref']]['work_seconds'] == {'plan': 0, 'execute': 0, 'check': 0}, '끝난 실행이 없으면 0')
+
+
+def clock(rid):
+    with db.connect() as c:
+        return c.execute('SELECT merge_started_at, merge_wait_seconds FROM execution_completion WHERE run_id=?', (rid,)).fetchone()
+
+
+ready_run = finished(over['id'], 'execute', 1)
+completion(ready_run, over['id'], phase='ready', start=None, wait=7)
+orchestrate._start_merge_clock(ready_run)
+row = clock(ready_run)
+check(row[0] is not None and row[1] == 0, f'_start_merge_clock은 ready 행의 시각을 잡고 기다린 초를 비운다 ({tuple(row)})')
+restart_run = finished(over['id'], 'execute', 1)
+completion(restart_run, over['id'], phase='restart_requested', start=5, wait=7)
+orchestrate._start_merge_clock(restart_run)
+row = clock(restart_run)
+check(row[0] == at(5) and row[1] == 7, f'재시작 뒤 복구는 시작 시각을 그대로 둔다 ({tuple(row)})')
+orchestrate._add_merge_wait(restart_run, 3.9)
+orchestrate._add_merge_wait(restart_run, 2)
+check(clock(restart_run)[1] == 12, f'_add_merge_wait는 값을 더한다 ({clock(restart_run)[1]})')
 
 # 쿼리 수 고정 — 행 2개와 20개에서 list_issues의 SELECT 수가 같다
 for n in range(15):

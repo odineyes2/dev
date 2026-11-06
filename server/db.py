@@ -1177,6 +1177,13 @@ ALTER TABLE runs ADD COLUMN checks_json TEXT;
 """)
 
 
+# 스테퍼 순수 작업 시간(DEV-249) — 병합 처리를 시작한 시각과 재시작 전에 다른 작업을 기다린 초. 옛 행은 시작 시각이 비어 시간을 추정하지 않는다.
+MIGRATIONS.append("""
+ALTER TABLE execution_completion ADD COLUMN merge_started_at TEXT;
+ALTER TABLE execution_completion ADD COLUMN merge_wait_seconds INTEGER NOT NULL DEFAULT 0;
+""")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 

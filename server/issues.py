@@ -483,14 +483,22 @@ def _lifecycle_facts(c, rows) -> dict:
         for ch in chs:
             refs[ch["id"]], statuses[ch["id"]] = (ch["ref"], ch["sub_number"]), ch["status"]
     every = sorted(set(ids) | {ch["id"] for chs in kids.values() for ch in chs})
-    executes, latest_exec, running = {}, {}, {}
-    for run in c.execute(f"SELECT issue_id, mode, status, provider, started_at FROM runs WHERE mode IN ('review','execute') "
+    executes, latest_exec, running, worked = {}, {}, {}, {}
+    span = lambda start, end: max(0, (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds())
+    for run in c.execute(f"SELECT issue_id, mode, status, provider, started_at, ended_at FROM runs WHERE mode IN ('review','execute') "
                          f"AND issue_id IN ({m(every)}) ORDER BY id", every):
         if run["mode"] == "execute":
             executes[run["issue_id"]] = executes.get(run["issue_id"], 0) + 1
             latest_exec[run["issue_id"]] = run["status"]
         if run["status"] == "running":
             running.setdefault(run["issue_id"], dict(run))
+        elif run["ended_at"]:   # 도는 실행은 화면에 이미 시계가 있어 끝난 뒤에 더한다
+            key = (run["issue_id"], run["mode"])
+            worked[key] = worked.get(key, 0) + span(run["started_at"], run["ended_at"])
+    merges = {}
+    for e in c.execute(f"SELECT issue_id, updated_at, merge_started_at, merge_wait_seconds FROM execution_completion "
+                       f"WHERE phase='complete' AND merge_sha<>'' AND merge_started_at IS NOT NULL AND issue_id IN ({m(every)})", every):
+        merges[e["issue_id"]] = merges.get(e["issue_id"], 0) + max(0, span(e["merge_started_at"], e["updated_at"]) - e["merge_wait_seconds"])
     changes = {}
     for e in c.execute(f"SELECT issue_id, body FROM events WHERE kind='status' AND json_extract(data_json,'$.to')='changes_requested' "
                        f"AND issue_id IN ({m(every)}) ORDER BY id", every):
@@ -526,6 +534,7 @@ def _lifecycle_facts(c, rows) -> dict:
             note = rejects[r["id"]] or ""
         elif r["status"] == "changes_requested" and changes.get(r["id"]):
             note = changes[r["id"]][-1] or ""
+        scope = {r["id"], *own}
         out[r["id"]] = {
             "tasks": [{"ref": ch["ref"], "status": ch["status"], "sub_number": ch["sub_number"]} for ch in kids.get(r["id"], [])]
                      if r["parent_id"] is None else [],
@@ -535,6 +544,9 @@ def _lifecycle_facts(c, rows) -> dict:
             "parent_plan_version": parent_plan.get(r["parent_id"]) if r["parent_id"] is not None else None,
             "planned_tasks": len(parse_tasks(plan_bodies[r["id"]])) if r["id"] in plan_bodies else None,
             "note": note[:200],
+            "work_seconds": {"plan": int(worked.get((r["id"], "review"), 0)),   # 순수 작업 시간(DEV-249) — 대기는 빠진다
+                             "execute": int(sum(worked.get((t, "execute"), 0) for t in scope)),
+                             "check": int(sum(merges.get(t, 0) for t in scope))},
         }
     return out
 
