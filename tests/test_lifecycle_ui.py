@@ -95,24 +95,23 @@ for n, key in enumerate(LIST_KEYS, 1):
 
 
 def check_dot_rows(page, selector):
-    # ??? ??? ?? ??? ? ??? ??? ????.
+    # 점 묶음이 한 줄로 칸 안에 들고, 시계는 그 아래에 있다.
+    # 그린 직후 표 칸 폭이 움직일 수 있어 위치는 한 번의 evaluate로 함께 잰다(따로 재면 서로 다른 배치를 비교한다).
     groups = page.locator(selector)
     assert groups.count() == 8, selector
+    measure = "e => [...e.querySelectorAll('i'), e, e.querySelector('.lc-clock')].map(el => el && el.getBoundingClientRect().toJSON())"
     for group in groups.all():
-        dots = group.locator('i')
-        assert dots.count() == 5
+        assert group.locator('i').count() == 5
         assert group.locator('.lc-dot-row > i').count() == 5
-        boxes = [dot.bounding_box() for dot in dots.all()]
+        *boxes, bounds, clock = group.evaluate(measure)
         ys = [box['y'] + box['height'] / 2 for box in boxes]
         assert max(ys) - min(ys) <= 1, (selector, boxes)
         for left, right in zip(boxes, boxes[1:]):
             assert left['x'] + left['width'] < right['x'], (selector, boxes)
-        bounds = group.bounding_box()
-        assert boxes[0]['x'] >= bounds['x']
-        assert boxes[-1]['x'] + boxes[-1]['width'] <= bounds['x'] + bounds['width'] + 1
-        clock = group.locator('.lc-clock')
-        if clock.count():
-            assert clock.bounding_box()['y'] >= max(b['y'] + b['height'] for b in boxes)
+        assert boxes[0]['x'] >= bounds['x'], (selector, boxes, bounds)
+        assert boxes[-1]['x'] + boxes[-1]['width'] <= bounds['x'] + bounds['width'] + 1, (selector, boxes, bounds)
+        if clock:
+            assert clock['y'] >= max(b['y'] + b['height'] for b in boxes), (selector, boxes, clock)
 
 
 def check_list(browser, port):
