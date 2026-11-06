@@ -664,6 +664,7 @@ function bindActions(container,session,refresh){
       if(actionOff(kind,settings,i)){toast('Auto 모드에서는 해당 버튼이 비활성화됩니다.');return;}
       pendingActions.add(i.ref);
       container.querySelectorAll('[data-action]').forEach(x=>{if(x.dataset.ref===i.ref)x.disabled=true;});
+      let cancelled=false;
       let checks=null;   // 실행 맡기기에서 사람이 고른 검사(DEV-238)
       try{
         if(kind==='complete-tree'){
@@ -681,7 +682,7 @@ function bindActions(container,session,refresh){
           const limit=task?(provider==='codex'?`시간 제한은 ${Math.floor(task.execute.timeout_sec/60)}분이고 비용 상한은 없어요.`:`비용 상한은 $${task.execute.budget_usd}이에요.`):'';
           const scope=task ? '홈서버의 격리된 worktree에서 구현해요. 실행 후 기존 자동 병합 정책이 적용돼요.' : '홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).';
           const picked=await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?`, {description:task ? `${serviceWarnLine(task)}${delegateLine(task, provider)}${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}` : reviewConfirmText(detail, provider), okText:kind==='review'?'검토 맡기기':'실행 맡기기', checklist:task?task.execute.checks:null});
-          if(!picked)return;
+          if(!picked){cancelled=kind==='execute';return;}
           if(task) checks=picked;
         }
         if(!current())return;
@@ -690,7 +691,18 @@ function bindActions(container,session,refresh){
         await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:kind==='complete-tree'?{confirm_checks:true}:provider?(checks?{provider,checks}:{provider}):{},current);
         if(current())toast(kind==='decision'?'계획을 승인했어요.':kind==='task-approve'?'Task를 승인했어요.':kind==='complete-tree'?'묶음을 끝냈어요.':'작업을 대기열에 등록했어요.');
       }catch(e){ /* 최신 정보로 다시 판단한다. */ }
-      finally{pendingActions.delete(i.ref);if(current())await refresh();}
+      finally{
+        pendingActions.delete(i.ref);
+        if(current()){
+          if(cancelled){
+            container.querySelectorAll('[data-action]').forEach(x=>{
+              if(x.dataset.ref!==i.ref)return;
+              const off=!session.settings || actionKind(i)!==x.dataset.action || !!actionOff(x.dataset.action,session.settings,i);
+              x.disabled=off; x.setAttribute('aria-disabled',String(off));
+            });
+          }else await refresh();
+        }
+      }
     });
   });
 }
