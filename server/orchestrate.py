@@ -697,7 +697,8 @@ def confirm_manual_merge(actor, ref):
         else:
             issues._set_status(c, actor, row, 'in_review', note)
         # notified=1 — 운영 반영 알림(_publish)은 자동 병합 경로의 일이다. 여기서는 보내지 않는다.
-        c.execute("UPDATE execution_completion SET phase='complete',merge_sha=?,notified=1,updated_at=? WHERE run_id=?",
+        # merge_started_at을 비운다 — 앞선 실패 시도의 시작 시각이 남으면 사람을 기다린 시간이 검사 시간에 섞인다(DEV-249).
+        c.execute("UPDATE execution_completion SET phase='complete',merge_sha=?,notified=1,merge_started_at=NULL,updated_at=? WHERE run_id=?",
                   (tip, db.now_iso(), record['run_id']))
         c.execute("UPDATE task_execution_results SET state='merged' WHERE run_id=?", (record['run_id'],))
     promote_parent(actor, ref)
@@ -717,6 +718,18 @@ def _owned(c, record):
     latest = c.execute('SELECT MAX(id) FROM runs WHERE issue_id=?', (record['issue_id'],)).fetchone()[0]
     event = c.execute("SELECT MAX(id) FROM events WHERE issue_id=? AND kind='status'", (record['issue_id'],)).fetchone()[0]
     return row if row and row['status'] == 'in_progress' and latest == record['run_id'] and event == record['owner_event'] and 'goal' not in json.loads(row['labels_json']) else None
+
+
+def _start_merge_clock(run_id):
+    """병합 처리 시작 시각(DEV-249). ready일 때만 잡아 재시도는 새로 재고 재시작 뒤 복구는 이어서 잰다."""
+    with db.connect() as c:
+        c.execute("UPDATE execution_completion SET merge_started_at=?,merge_wait_seconds=0 WHERE run_id=? AND phase='ready'", (db.now_iso(), run_id))
+
+
+def _add_merge_wait(run_id, seconds):
+    """다른 작업을 기다린 초를 더한다(DEV-249) — 스테퍼의 검사 시간에서 뺀다."""
+    with db.connect() as c:
+        c.execute('UPDATE execution_completion SET merge_wait_seconds=merge_wait_seconds+? WHERE run_id=?', (int(seconds), run_id))
 
 
 def _save(record, phase, **values):
@@ -812,6 +825,7 @@ def _post_deploy(actor, repo, cfg, record):
                 return _finish(actor, record, 'merged', _no_restart_note(hits))
     if record['phase'] == 'deployed':
         say = lambda body: issues.add_comment(actor, record['ref'], body)
+        waited = time.monotonic()
         workers_ready, worker_note = _wait_workers(repo, cfg, workers, say)
         if not workers_ready:
             return _finish(actor, record, 'on_hold', worker_note)
@@ -824,6 +838,7 @@ def _post_deploy(actor, repo, cfg, record):
                     issues.add_comment(actor, record['ref'], str(error))
                     continue
             break
+        _add_merge_wait(record['run_id'], time.monotonic() - waited)
         if decision == 'release':
             return _finish(actor, record, 'on_hold', '병합은 유지하고 새 작업 막기를 풀었어요. dev는 재시작 전까지 이전 코드로 실행돼요 — 나중에 직접 재시작해 주세요.')
         if not decision:
@@ -844,7 +859,9 @@ def _post_deploy(actor, repo, cfg, record):
             worker_note = ''
             if workers:
                 if cfg.get('worker_busy_cmd'):
+                    waited = time.monotonic()
                     ready, worker_note = _wait_workers(repo, cfg, workers, lambda body: issues.add_comment(actor, record['ref'], body))
+                    _add_merge_wait(record['run_id'], time.monotonic() - waited)
                     if not ready:
                         return _finish(actor, record, 'on_hold', worker_note)
                     worker_note = _restart_workers(repo, cfg, workers)
@@ -888,6 +905,7 @@ def handle(actor: dict, ref: str) -> str | None:
                 claimed = c.execute("UPDATE execution_completion SET worker_id=? WHERE run_id=? AND worker_id IN ('',?)", (PROCESS_ID, record['run_id'], PROCESS_ID)).rowcount
             if not claimed:
                 return None
+            _start_merge_clock(record['run_id'])
             _save(record, record['phase'])
             if record['phase'] in ('ready', 'checking', 'building'):
                 _save(record, 'checking')

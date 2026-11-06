@@ -59,7 +59,7 @@ SC = [
                     plan=plan(1), approval=OK1, review_running=True),
      'done done agent fail todo', ['11/02 00:54', 'v1 승인', r'2/2 · 재작업 중 03:\d\d', 'pytest 1개 실패', ''], '2바퀴', 2, '에이전트 차례',
      'DEV-229-2 검사에서 tests/test_qa.py가 실패해 Claude가 한 번 더 고치는 중이에요.'),
-    ('review', issue('DEV-220', 'in_review', '11-01T01:03', {'tasks': tasks('DEV-220', *['done'] * 6)}, plan=plan(1), approval=OK1),
+    ('review', issue('DEV-220', 'in_review', '11-01T01:03', {'tasks': tasks('DEV-220', *['done'] * 6), 'work_seconds': {'plan': 252, 'execute': 3700, 'check': 45}}, plan=plan(1), approval=OK1),
      'done done done human todo', ['11/01 01:03', 'v1 승인', '6/6 병합됨', '결과 확인 대기', ''], '', 6, '내 차례',
      '모든 Task가 검사를 통과하고 병합됐어요. 운영 화면에서 확인하고 결과를 승인해 주세요.'),
     ('changes', issue('DEV-215', 'changes_requested', '10-31T09:23', {'tasks': tasks('DEV-215', 'changes_requested'), 'loops': 1, 'note': '모바일에서 라벨이 잘려요'},
@@ -73,7 +73,7 @@ SC = [
      'done done done done done', ['11/02 09:24', 'v1 승인', '1/1 병합됨', '검사 통과', '11/03 · 40분'], '', 0, '끝남', '끝난 이슈예요. 발행부터 완료까지 40분 걸렸어요.'),
     ('closed', issue('DEV-212', 'closed', '10-30T23:59', {'note': 'DEV-238 방식으로 대체.'}, plan=plan(1), approval={'verdict': 'reject', 'plan_version': 1, 'stale': False}),
      'done fail skip skip skip', ['10/30 23:59', 'v1 거절', '', '', ''], '', 0, '끝남', '계획서를 거절해 닫았어요. 사유: DEV-238 방식으로 대체.'),
-    ('task', issue('DEV-220-4', 'in_progress', '11-01T01:03', {'running': EXEC, 'parent_plan_version': 1}, parent_ref='DEV-220', sub_number=4, execute={}, review_running=True),
+    ('task', issue('DEV-220-4', 'in_progress', '11-01T01:03', {'running': EXEC, 'parent_plan_version': 1, 'work_seconds': {'plan': 300, 'execute': 125, 'check': 0}}, parent_ref='DEV-220', sub_number=4, execute={}, review_running=True),
      'inherited inherited agent todo todo', ['DEV-220', '부모 v1', r'Codex 구현 중 12:4\d', '', ''], '', 0, '에이전트 차례',
      '부모 계획서 v1의 4번째 Task예요. Codex가 구현하고 있어요.'),
     # DEV-243: 대화형 세션이 잡고 상태만 바꾼 경우(run·job 없음, 계획서 없음) — 검토 맡기기 대기가 아니라 에이전트 차례
@@ -276,6 +276,27 @@ def check(page, key, states, metas, loop, bars, turn, msg):
     assert page.locator('.lc-msg').text_content() == msg, (key, page.locator('.lc-msg').text_content())
 
 
+def check_work(browser, port, by_key):
+    # 순수 작업 시간(DEV-249): 맞는 칸에만, 1시간이 넘어도 mm:ss, 0·발행·완료 칸은 줄이 없다
+    cells = "els => els.map(e => e.querySelector('.lc-work')?.textContent ?? null)"
+    for key, want in (('review', [None, '04:12', '61:40', '00:45', None]), ('task', [None, None, '02:05', None, None]), ('new', [None] * 5)):
+        page = open_issue(browser, port, by_key[key])
+        got = page.eval_on_selector_all('.lc-step', cells)
+        assert got == want, (key, got)
+        page.close()
+    page = open_issue(browser, port, by_key['review'])
+    assert '작업 61:40' in page.locator('.lc-step:nth-child(3) .lc-jump').get_attribute('aria-label')
+    assert page.locator('.lc-work').first.get_attribute('title') == '순수 작업 시간(대기 제외)'
+    page.close()
+    # 400폭: 현재 칸이 아닌 칸의 시간도 보이고, 현재 칸의 시간과 meta는 겹치지 않는다
+    page = open_issue(browser, port, by_key['review'], 400)
+    assert page.locator('.lc-work:visible').count() == 3
+    assert page.locator('.lc-step:not([data-cur]) .lc-work:visible').count() == 2
+    work, meta = (page.locator(f'.lc-step[data-cur] {sel}').bounding_box() for sel in ('.lc-work', '.lc-meta'))
+    assert work['y'] + work['height'] <= meta['y'], (work, meta)
+    page.close()
+
+
 def run():
     CAPTURES.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(ROOT / 'static')))
@@ -294,6 +315,7 @@ def run():
                     if key in SHOTS:
                         page.locator('.lc').screenshot(path=str(CAPTURES / f'{SHOTS[key]}.png'))
                     page.close()
+                check_work(browser, port, by_key)
                 # 점유 중이면 진행 줄 go도 검토 버튼도 없다. 계획서 v2 승인 대기면 계획서 보기만, 검토 버튼은 없다(NS-116)
                 page = open_issue(browser, port, by_key['claimed'])
                 assert page.locator('.lc-go').count() == 0 and page.locator('#ask-review').count() == 0
