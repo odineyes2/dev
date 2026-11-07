@@ -103,7 +103,7 @@ check(t3['ref'] not in [ch['ref'] for ch in detail['children']] and issues.get_i
       '대체된 Task는 child에서 빠지고 superseded')
 
 keys = {'plan_version', 'approval', 'revision_requested', 'has_children', 'has_execution', 'has_active_job',
-        'claim_active', 'claimed_by', 'lease_until', 'superseded', 'parent'}
+        'claim_active', 'claimed_by', 'lease_until', 'superseded', 'parent', 'change_request_event_id', 'can_dispatch_change_request'}
 check(set(listed[fresh['ref']]) == keys, f"action_context 키 ({sorted(listed[fresh['ref']])})")
 p = listed[parent['ref']]
 check(p['has_children'] and p['approval']['verdict'] == 'approve' and p['parent'] is None, '부모 사실 — Task 있음·승인')

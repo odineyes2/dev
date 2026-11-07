@@ -334,12 +334,15 @@ def reconcile():
             _waiting(c, j)
 
 
-def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, note=None, plan_version=None, attachment_ids=None, checks=None) -> dict:
+def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, note=None, plan_version=None, attachment_ids=None, checks=None, change_request_event_id=None) -> dict:
     """줄에 넣고 착수를 예약한다. 시작 가능하면 {started}, 아니면 {queued, position}."""
     import auto_settings
     import execute
     if actor["kind"] != "human":
         raise issues.StoreError("검토·실행은 사람만 맡길 수 있어요.", 403)
+    if change_request_event_id is not None:
+        if type(change_request_event_id) is not int or mode != 'review' or type(plan_version) is not int or note is not None or attachment_ids is not None:
+            raise issues.StoreError('저장된 수정 요청 ID와 계획서 판만 지정해 주세요.', 400)
     if attachment_ids is not None:
         if not isinstance(attachment_ids, list) or note is None or mode != 'review':
             raise issues.StoreError('첨부는 메모 붙여 재검토에서 목록으로 보내 주세요.', 400)
@@ -361,7 +364,7 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
         raise issues.StoreError('검사는 실행을 맡길 때만 고를 수 있어요.', 400)
     import task_checks
     keys = task_checks.selection(issue, checks) if mode == 'execute' else None   # 사람이 맡길 때 고른 계획 검사(DEV-238)
-    if mode == 'review' and note is None:
+    if mode == 'review' and note is None and change_request_event_id is None:
         import project_init
         from pathlib import Path
         with db.connect() as c:
@@ -372,6 +375,31 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
         c.execute("BEGIN IMMEDIATE")
         issue = issues.get_issue(ref)
         issues._guard_terminal_parent(c, issues._find(c, ref))
+        if change_request_event_id is not None:
+            row = issues._find(c, ref)
+            duplicate = c.execute("""SELECT j.id,j.provider FROM events e JOIN jobs j ON j.id=json_extract(e.data_json,'$.job_id')
+                JOIN events src ON src.id=? AND src.issue_id=e.issue_id AND src.kind='status' AND src.actor LIKE 'human:%'
+                AND json_extract(src.data_json,'$.to')='changes_requested'
+                AND src.id=(SELECT MAX(x.id) FROM events x WHERE x.issue_id=src.issue_id AND x.kind='status'
+                    AND x.actor LIKE 'human:%' AND json_extract(x.data_json,'$.to')='changes_requested')
+                WHERE e.issue_id=? AND json_extract(e.data_json,'$.plan_revision_request')=1
+                AND json_extract(e.data_json,'$.plan_version')=? AND e.body=src.body AND e.id>src.id
+                AND NOT EXISTS(SELECT 1 FROM events x WHERE x.issue_id=e.issue_id AND x.kind='status' AND x.id>src.id AND x.id<e.id)
+                AND (j.status='queued' OR (j.status='started' AND EXISTS(SELECT 1 FROM runs r WHERE r.id=j.run_id AND r.status='running')))
+                ORDER BY e.id DESC LIMIT 1""", (change_request_event_id, row['id'], plan_version)).fetchone()
+            if duplicate and row['latest_plan'] == plan_version and row['parent_id'] is None and row['status'] in ('waiting', 'in_progress') and not issues._lease_active(row):
+                if duplicate['provider'] != provider:
+                    raise issues.StoreError('이미 다른 도구로 맡겼어요.', 409)
+                return {'queued': True, 'ref': ref, 'job_id': duplicate['id']}
+            if row['parent_id'] is not None or row['status'] != 'changes_requested' or row['latest_plan'] != plan_version or row['change_request_event_id'] != change_request_event_id or issues._lease_active(row):
+                raise issues.StoreError('수정 요청이나 계획서가 바뀌었거나 점유 중이에요. 새로고침해 주세요.', 409)
+            source = c.execute("SELECT * FROM events WHERE id=? AND issue_id=?", (change_request_event_id, row['id'])).fetchone()
+            note = issues._text(source['body'], '수정 피드백', 20_000, required=True).strip()
+            attachment_ids = json.loads(source['data_json']).get('attachment_ids', [])
+            for aid in attachment_ids:
+                if not c.execute("SELECT 1 FROM attachments WHERE id=? AND issue_id=?", (aid, row['id'])).fetchone():
+                    raise issues.StoreError('이 Issue에 연결되지 않은 첨부예요.', 409)
+
         if note is not None:
             if issue['parent_ref'] or issue['status'] in issues.HUMAN_ONLY_STATUSES:
                 raise issues.StoreError('열려 있는 최상위 Issue의 계획서만 재검토할 수 있어요.', 409)
@@ -380,6 +408,7 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
             active = c.execute("""WITH RECURSIVE family(id) AS (
                 SELECT ? UNION SELECT i.id FROM issues i JOIN family f ON i.parent_id=f.id)
                 SELECT 1 FROM runs WHERE issue_id IN (SELECT id FROM family) AND status='running'
+                UNION ALL SELECT 1 FROM jobs WHERE issue_id IN (SELECT id FROM family) AND mode='execute' AND status='queued'
                 UNION ALL SELECT 1 FROM execution_completion WHERE issue_id IN (SELECT id FROM family)
                 AND phase IN ('ready','checking','applying','deployed','restart_requested','rollback_requested','rollback_applied') LIMIT 1""",
                 (issue['id'],)).fetchone()
@@ -387,7 +416,7 @@ def enqueue(actor: dict, ref: str, mode: str, provider: str | None = None, *, no
                 raise issues.StoreError('하위 Task가 실행·병합 중이에요. 작업이 끝난 뒤 재검토해 주세요.', 409)
             if c.execute("SELECT 1 FROM runs WHERE issue_id=? AND status='running' UNION ALL SELECT 1 FROM jobs WHERE issue_id=? AND status='queued' LIMIT 1", (issue['id'], issue['id'])).fetchone():
                 raise issues.StoreError('이미 맡긴 작업이 있어요. 끝나거나 대기를 취소한 뒤 재검토해 주세요.', 409)
-        if attachment_ids:
+        if attachment_ids and change_request_event_id is None:
             import attachments
             attachments.link(c, actor, issue['id'], attachment_ids)
         existing = c.execute("SELECT provider FROM runs WHERE issue_id=? AND mode=? AND status='running' UNION ALL SELECT provider FROM jobs WHERE issue_id=? AND mode=? AND status='queued' LIMIT 1",

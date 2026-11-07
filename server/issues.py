@@ -333,8 +333,15 @@ def ref_sql(i, k):
 
 
 _PARENT_REF = f"(SELECT {ref_sql('q', 'p')} FROM issues q WHERE q.id=i.parent_id)"
+# 최신 계획서 이후 사람의 마지막 수정 요청만 재사용한다.
+_CHANGE_REQUEST = """(SELECT e.id FROM events e WHERE e.issue_id=i.id
+    AND e.id=(SELECT MAX(x.id) FROM events x WHERE x.issue_id=i.id AND x.kind='status')
+    AND e.kind='status' AND e.actor LIKE 'human:%' AND json_extract(e.data_json,'$.to')='changes_requested'
+    AND trim(e.body)!='' AND e.created_at >= (SELECT MAX(pl.created_at) FROM plans pl WHERE pl.issue_id=i.id)
+    AND e.id>COALESCE((SELECT MAX(x.id) FROM events x WHERE x.issue_id=i.id AND x.kind='plan'),0))"""
+
 _ISSUE_SELECT = (f"SELECT i.*, p.key AS project_key, {ref_sql('i', 'p')} AS ref, {_PARENT_REF} AS parent_ref, "
-                 f"{_SUPERSEDED} AS superseded_by_plan, "
+                 f"{_SUPERSEDED} AS superseded_by_plan, {_CHANGE_REQUEST} AS change_request_event_id, "
                  f"{_DEC_VERDICT} AS dec_verdict, {_DEC_VERSION} AS dec_version, "
                  f"{_LATEST_PLAN} AS latest_plan, "
                  f"EXISTS(SELECT 1 FROM events e WHERE e.issue_id=i.id AND e.actor LIKE 'human:%' "
@@ -431,6 +438,8 @@ def _action_facts(c, rows):
         claim = _lease_active(r)
         contexts[r["id"]] = {"plan_version": r["latest_plan"], "approval": issue["approval"],
                               "revision_requested": bool(r["plan_revision_requested"]),
+                              "change_request_event_id": r["change_request_event_id"],
+                              "can_dispatch_change_request": bool(r["parent_id"] is None and r["status"] == "changes_requested" and r["latest_plan"] and r["change_request_event_id"] and not claim and not r["plan_revision_requested"]),
                               "has_children": False, "has_execution": False, "has_active_job": False,
                               "claim_active": claim, "claimed_by": r["claimed_by"] if claim else None,
                               "lease_until": r["lease_until"] if claim else None,
