@@ -635,8 +635,8 @@ function actionOff(kind,s,i){ return kind==='review' ? s.auto_review : kind==='e
 function actionHtml(i){
   const kind=actionKind(i); if(!kind) return '';
   const settings=actionSession?.settings;
-  return `<div class="issue-actions" aria-label="Action">${(['review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
-    const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':kind==='task-approve'?'승인':'전체 완료';
+  return `<div class="issue-actions" aria-label="Action">${(['review','change-review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
+    const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='change-review'?'수정':kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':kind==='task-approve'?'승인':'전체 완료';
     return `<button type="button" draggable="false" data-action="${kind}" data-ref="${esc(i.ref)}" data-provider="${provider}" title="${label}" aria-label="${label}" aria-disabled="${!settings || !!actionOff(kind,settings,i)}">${provider?`<svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider==='claude'?'claude':'openai'}"/></svg>`:`<svg class="ico" aria-hidden="true"><use href="#i-${({decision:'clipboard-check','task-approve':'check','complete-tree':'check-check'})[kind]}"/></svg>`}</button>`;
   }).join('')}</div>`;
 }
@@ -680,14 +680,14 @@ function bindActions(container,session,refresh){
           if(!current())return;
           const limit=task?(provider==='codex'?`시간 제한은 ${Math.floor(task.execute.timeout_sec/60)}분이고 비용 상한은 없어요.`:`비용 상한은 $${task.execute.budget_usd}이에요.`):'';
           const scope=task ? '홈서버의 격리된 worktree에서 구현해요. 실행 후 기존 자동 병합 정책이 적용돼요.' : '홈서버에서 이슈와 코드를 읽고 계획서·질문을 남겨요(코드는 고치지 않아요).';
-          const picked=await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='review'?'검토':'실행'} 맡길까요?`, {description:task ? `${serviceWarnLine(task)}${delegateLine(task, provider)}${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}` : reviewConfirmText(detail, provider), okText:kind==='review'?'검토 맡기기':'실행 맡기기', checklist:task?task.execute.checks:null});
-          if(!picked){cancelled=kind==='execute';return;}
+          const picked=await confirmDialog(`${i.ref}을(를) ${name}에게 ${kind==='change-review'?'수정':kind==='review'?'검토':'실행'} 맡길까요?`, {description:task ? `${serviceWarnLine(task)}${delegateLine(task, provider)}${scope}\n사용량은 이 서버에 로그인된 ${name} 계정에서 나가요.\n${limit}\n${QUEUE_LINE}` : reviewConfirmText(detail, provider), okText:kind==='change-review'?'수정 맡기기':kind==='review'?'검토 맡기기':'실행 맡기기', checklist:task?task.execute.checks:null});
+          if(!picked){cancelled=['execute','change-review'].includes(kind);return;}
           if(task) checks=picked;
         }
         if(!current())return;
         // 응답(대기열 등록·착수)까지 누른 버튼에 스피너를 보인다(DEV-221).
         b.innerHTML='<svg class="ico list-spinner" aria-hidden="true"><use href="#i-loader-circle"/></svg>'; b.setAttribute('aria-busy','true');
-        await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind}`,kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:kind==='complete-tree'?{confirm_checks:true}:provider?(checks?{provider,checks}:{provider}):{},current);
+        await api('POST',`/api/issues/${encodeURIComponent(i.ref)}/${kind==='task-approve'?'status':kind==='change-review'?'review':kind}`,kind==='change-review'?{provider,plan_version:i.action_context.plan_version,change_request_event_id:i.action_context.change_request_event_id}:kind==='decision'?{verdict:'approve',note:'',plan_version:i.action_context.plan_version}:kind==='task-approve'?{status:'done'}:kind==='complete-tree'?{confirm_checks:true}:provider?(checks?{provider,checks}:{provider}):{},current);
         if(current())toast(kind==='decision'?'계획을 승인했어요.':kind==='task-approve'?'Task를 승인했어요.':kind==='complete-tree'?'묶음을 끝냈어요.':'작업을 대기열에 등록했어요.');
       }catch(e){ /* 최신 정보로 다시 판단한다. */ }
       finally{
@@ -1712,7 +1712,7 @@ function lifecycle(it, auto = {}){
   // go 버튼은 quickAction 결과로만 정한다(DEV-243) — 도는 중·대기 중·병합 중에는 두지 않는다
   if(!run && !it.job && !LIVE_MERGE.has(it.merge_state)){
     const kind = quickAction(it).kind;
-    go = kind === 'review' ? {label: '검토 맡기기', target: 'review-btns'}
+    go = kind === 'change-review' ? {label: '수정 맡기기', target: 'review-btns'} : kind === 'review' ? {label: '검토 맡기기', target: 'review-btns'}
       : kind === 'decision' ? {label: '계획서 보기', target: 'panel-plan'}
       : ['task-approve', 'complete-tree'].includes(kind) ? {label: '결과 승인', target: 'panel-result'}
       : kind === 'execute' ? {label: '실행 맡기기', target: 'exec-btns'}
@@ -1805,8 +1805,10 @@ async function renderIssue(ref, background = false){
   const reviewBusy = it.review_running || pendingReviews.has(ref);
   const reviewButton = (provider, id) => `<button id="${id}" title="홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음)."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${PROVIDER_NAME[provider]}에게 검토 맡기기</button>`;
   // 검토 절은 Task가 아닐 때만 — 도는 중이면 버튼 대신 상태 줄, 버튼은 quickAction이 review일 때만(DEV-243)
+  const detailActions = beginActions(() => seq === issueRenderSeq && hash === location.hash);
+  detailActions.settings = auto; detailActions.items.set(it.ref, it);
   const qa = quickAction(it);
-  const reviewIdle = qa.kind === 'review' ? `<div class="agent-btns" id="review-btns">${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}</div>${it.review_busy ? `<div class="dim hint">다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}</div>` : ''}`
+  const reviewIdle = qa.kind === 'change-review' ? `<div id="review-btns">${actionHtml(it)}</div><p class="dim hint">저장된 수정 피드백과 첨부로 계획서를 다시 검토해요.</p>` : qa.kind === 'review' ? `<div class="agent-btns" id="review-btns">${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}</div>${it.review_busy ? `<div class="dim hint">다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}</div>` : ''}`
     : qa.why === 'claimed' ? `<div class="dim hint">${esc(actorName(it.action_context.claimed_by))}이(가) 잡고 있어요 — 점유가 풀리면 검토를 맡길 수 있어요.</div>`
     : it.plan && !['done', 'closed'].includes(it.status) ? '<div class="dim hint">계획서가 있어요 — 다시 검토하려면 계획서 아래 메모 붙여 재검토를 골라 주세요.</div>' : '';
   const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job, edges) : reviewBusy ? busyLine(reviewProvider, '검토') : reviewIdle}`;
@@ -1880,6 +1882,7 @@ async function renderIssue(ref, background = false){
     catch(e){ if(editor.isConnected) editor.querySelector('#types-status').textContent = `${e.message} 다시 시도해 주세요.`; }
     finally{ controls.forEach(b => b.disabled = false); }
   };
+  bindActions(view.querySelector('#review-btns') || document.createElement('div'), detailActions, () => renderIssue(it.ref));
   const R = encodeURIComponent(it.ref);
   const reload = () => renderIssue(it.ref);
   const $ = (id) => view.querySelector('#' + id);

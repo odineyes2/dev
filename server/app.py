@@ -771,7 +771,7 @@ async def api_execute(ref: str, request: Request):
 async def api_review(ref: str, request: Request):
     me = actor(request)
     b = await json_body(request) if await request.body() else {}
-    return await run_in_threadpool(jobs.enqueue, me, ref, "review", b.get("provider"), note=b.get("note"), plan_version=b.get("plan_version"), attachment_ids=b.get("attachment_ids"))
+    return await run_in_threadpool(jobs.enqueue, me, ref, "review", b.get("provider"), note=b.get("note"), plan_version=b.get("plan_version"), attachment_ids=b.get("attachment_ids"), change_request_event_id=b.get("change_request_event_id"))
 
 
 @app.post('/api/issues/{ref}/retry-merge')
@@ -864,7 +864,7 @@ def index_page():
     html = (STATIC_DIR / "index.html").read_text("utf-8")
     for name in ("family.css", "app.css", "quick_actions.js", "app.js"):
         v = hashlib.sha1((STATIC_DIR / name).read_bytes()).hexdigest()[:10]
-        html = html.replace(f'"/{name}"', f'"/{name}?v={v}"')
+        html = re.sub(r'"/' + re.escape(name) + r'(?:\?v=[a-f0-9]+)?"', f'"/{name}?v={v}"', html)
     return HTMLResponse(html)
 
 

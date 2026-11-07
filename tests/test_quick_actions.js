@@ -10,6 +10,7 @@ const top = (status, kw) => ({status, parent_ref: null, action_context: ctx(kw)}
 const task = (status, kw, parent = ctx({plan_version: 1, approval: OK(1)})) => ({status, parent_ref: 'DEV-1', action_context: ctx({...kw, parent})});
 
 const CASES = [
+  ['저장된 수정 피드백 → 수정 맡기기', top('changes_requested', {plan_version:1, approval:OK(1), can_dispatch_change_request:true}), 'change-review'],
   ['NS-116: backlog+v1+승인 없음 → 계획 승인(검토 아님)', top('backlog', {plan_version: 1}), 'decision'],
   ['in_progress+v1+승인 없음 → 계획 승인', top('in_progress', {plan_version: 1}), 'decision'],
   ['triage+v2+v1 승인만 → 계획 승인', top('triage', {plan_version: 2, approval: OK(1)}), 'decision'],

@@ -23,6 +23,7 @@ function quickAction(item, opt = {}){
     return none('not-runnable');
   }
   if(item.status === 'in_review') return {kind: 'complete-tree', why: ''};
+  if(item.status === 'changes_requested' && c.can_dispatch_change_request) return {kind: 'change-review', why: ''};
   // 계획 승인은 status와 상관없이 — 최신 판이 있고 유효한 승인·재검토 요청이 없을 때
   if(c.plan_version) return c.revision_requested ? none('revision') : approvedPlan(c) ? none('approved') : {kind: 'decision', why: ''};
   // 계획서가 없으면 Task가 이미 있어도 검토를 받는다. 다른 에이전트가 잡고 있으면 서버가 거절한다.
