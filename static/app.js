@@ -1381,15 +1381,19 @@ async function renderBoard(){
 }
 
 // ---- 이슈 상세 ----
+// 서버 허용 확장자로 선택 시점에 이미지 번호를 예약한다.
+const isAttachmentImage = file => /\.(png|jpe?g|gif|webp)$/i.test(file.name);
+const attachmentLabel = a => a.kind === 'image' && a.alias ? `${a.alias} · ${a.name}` : a.name;
+const attachmentImageNumbers = entries => Object.fromEntries(entries.filter(e => e.imageNum).map(e => [e.data.id, e.imageNum]));
 function attachmentsHtml(items){
   if(!items?.length) return '';
   return `<section class="panel attachments"><h2>Attachments</h2><p class="dim">미디어 재생과 에이전트의 자료 이해는 브라우저와 사용 도구에 따라 달라요.</p>${items.map(a => {
     const url = `/api/attachments/${encodeURIComponent(a.id)}/content`;
     if(a.kind === 'url') return `<article class="attachment"><a href="${esc(/^https?:\/\//i.test(a.url) ? a.url : '#')}" target="_blank" rel="noopener noreferrer">${esc(a.url)}</a></article>`;
-    const preview = a.kind === 'image' ? `<img src="${url}" alt="${esc(a.name)}" loading="lazy">` :
+    const preview = a.kind === 'image' ? `<img src="${url}" alt="${esc(attachmentLabel(a))}" loading="lazy">` :
       ['video','audio'].includes(a.kind) ? `<${a.kind} src="${url}" controls preload="metadata" aria-label="${esc(a.name)}"></${a.kind}><p class="dim">재생이 안 되면 다운로드해 주세요.</p>` :
       `<details data-text-url="${url}"><summary>텍스트 미리보기 (최대 64KiB)</summary><pre role="status"></pre></details>`;
-    return `<article class="attachment"><div class="attachment-heading"><span>${esc(a.name)} · ${Math.ceil(a.size / 1024)} KiB</span><a href="${url}" download>다운로드</a></div>${preview}</article>`;
+    return `<article class="attachment"><div class="attachment-heading"><span>${esc(attachmentLabel(a))} · ${Math.ceil(a.size / 1024)} KiB</span><a href="${url}" download>다운로드</a></div>${preview}</article>`;
   }).join('')}</section>`;
 }
 function bindAttachmentPreviews(){
@@ -1410,7 +1414,7 @@ function bindAttachmentPreviews(){
 let eventAttachments = new Map();
 function eventFilesHtml(ids){
   const items = (ids || []).map(id => eventAttachments.get(id)).filter(Boolean);
-  return items.length ? `<div class="event-files">${items.map(a => `<a href="${a.kind === 'url' ? esc(/^https?:\/\//i.test(a.url) ? a.url : '#') : `/api/attachments/${encodeURIComponent(a.id)}/content`}"${a.kind === 'url' ? ' target="_blank" rel="noopener noreferrer"' : ' download'}><svg class="ico" aria-hidden="true"><use href="#i-paperclip"/></svg>${esc(a.kind === 'url' ? a.url : a.name)}</a>`).join('')}</div>` : '';
+  return items.length ? `<div class="event-files">${items.map(a => `<a href="${a.kind === 'url' ? esc(/^https?:\/\//i.test(a.url) ? a.url : '#') : `/api/attachments/${encodeURIComponent(a.id)}/content`}"${a.kind === 'url' ? ' target="_blank" rel="noopener noreferrer"' : ' download'}><svg class="ico" aria-hidden="true"><use href="#i-paperclip"/></svg>${esc(a.kind === 'url' ? a.url : attachmentLabel(a))}</a>`).join('')}</div>` : '';
 }
 function eventHtml(e){
   const who = actorHtml(e.actor, e.data && e.data.model);
@@ -2289,14 +2293,14 @@ async function renderNew(params){
   };
   window.addEventListener('hashchange', leave);
   const draw = () => {
-    list.innerHTML = entries.map((e,i) => `<div class="attachment-heading">${e.imageNum ? `<button type="button" class="attachment-thumb" data-preview="${i}" aria-label="[이미지 ${e.imageNum}] 크게 보기"><img src="${e.preview}" alt=""></button>` : ''}<span class="attachment-name">${e.imageNum ? `[이미지 ${e.imageNum}] ` : ''}${esc(e.name)} — ${esc(e.busy ? '업로드 중…' : e.error || '첨부 준비됐어요')}</span><span class="attachment-actions">${e.imageNum ? `<button type="button" data-insert="${i}">본문에 넣기</button>` : ''}${e.error ? `<button type="button" data-retry="${i}">재시도</button>` : ''}<button type="button" data-remove="${i}" ${e.busy || saving ? 'disabled' : ''}>제거</button></span></div>`).join('');
+    list.innerHTML = entries.map((e,i) => `<div class="attachment-heading">${e.imageNum ? `<button type="button" class="attachment-thumb" data-preview="${i}" aria-label="이미지${e.imageNum} 크게 보기"><img src="${e.preview}" alt=""></button>` : ''}<span class="attachment-name">${e.imageNum ? `이미지${e.imageNum} ` : ''}${esc(e.name)} — ${esc(e.busy ? '업로드 중…' : e.error || '첨부 준비됐어요')}</span><span class="attachment-actions">${e.imageNum ? `<button type="button" data-insert="${i}">본문에 넣기</button>` : ''}${e.error ? `<button type="button" data-retry="${i}">재시도</button>` : ''}<button type="button" data-remove="${i}" ${e.busy || saving ? 'disabled' : ''}>제거</button></span></div>`).join('');
     form.querySelector('[type=submit]').disabled = saving || entries.some(e => e.busy || e.error);
     list.querySelectorAll('[data-preview]').forEach(b => b.onclick = () => {
       const e = entries[+b.dataset.preview];
-      lightbox.open(e.preview, `[이미지 ${e.imageNum}] ${e.name}`, b);
+      lightbox.open(e.preview, `이미지${e.imageNum} ${e.name}`, b);
     });
     list.querySelectorAll('[data-insert]').forEach(b => b.onclick = () => {
-      const body = form.querySelector('#n-body'), tag = `[이미지 ${entries[+b.dataset.insert].imageNum}]`;
+      const body = form.querySelector('#n-body'), tag = `이미지${entries[+b.dataset.insert].imageNum}`;
       const start = body.selectionStart, end = body.selectionEnd;
       body.setRangeText(tag, start, end, 'end'); body.focus();
     });
@@ -2324,7 +2328,7 @@ async function renderNew(params){
   const add = (name,file) => {
     if(saving || entries.some(e => e.file ? file && e.name === name && e.file.size === file.size && e.file.lastModified === file.lastModified : !file && e.name === name)) return;
     const e = {name,file};
-    if(file?.type.startsWith('image/')){ e.imageNum = ++nextImage; e.preview = URL.createObjectURL(file); }
+    if(file && isAttachmentImage(file)){ e.imageNum = ++nextImage; e.preview = URL.createObjectURL(file); }
     entries.push(e); void upload(e);
   };
   form.querySelector('#n-files').onchange = e => { [...e.target.files].forEach(f => add(f.name,f)); e.target.value = ''; };
@@ -2340,13 +2344,13 @@ async function renderNew(params){
     form.querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = true);
     form.querySelector('#cancel-new').onclick = ev => ev.preventDefault();
     try{
-    const imageMap = entries.filter(e => e.imageNum).map(e => `[이미지 ${e.imageNum}] = ${e.name.replace(/\s+/g, ' ')}`);
     const writtenBody = view.querySelector('#n-body').value;
     const it = await api('POST', '/api/issues', {
       project: view.querySelector('#n-project').value, title: view.querySelector('#n-title').value,
-      body: imageMap.length ? `${writtenBody.trimEnd()}\n\n---\n첨부 이미지:\n${imageMap.join('\n')}` : writtenBody,
+      body: writtenBody,
       priority: view.querySelector('#n-priority').value, status: view.querySelector('#n-status').value,
       attachment_ids: entries.map(e => e.data.id),
+      attachment_image_numbers: attachmentImageNumbers(entries),
       blocked_by: [...selectedDeps],
       type_ids: selectedTypes(form),
       labels: view.querySelector('#n-labels').value.split(',').map(s => s.trim()).filter(Boolean), parent: parent || undefined,
@@ -2406,10 +2410,10 @@ const composer = document.getElementById('composer'), cmpBody = document.getElem
 // 입력창이 커져도 발행 알림이 입력창과 겹치지 않도록 높이를 공유한다.
 new ResizeObserver(() => document.documentElement.style.setProperty('--composer-height', `${composer.offsetHeight}px`)).observe(composer);
 const cmpFiles = [];   // {name, file, busy, error, data, preview}
-let cmpSaving = false;
+let cmpSaving = false, cmpNextImage = 0;
 function composerAllowed(){ const n = location.hash.replace(/^#\/?/, '').split(/[/?]/)[0]; return !n || n === 'board'; }
 function cmpDraw(){
-  document.getElementById('cmp-files').innerHTML = cmpFiles.map((f, i) => `<span class="cmp-chip${f.error ? ' bad' : ''}">${f.preview ? `<button type="button" class="cmp-thumb" data-cmp-preview="${i}" aria-label="${esc(f.name)} 크게 보기"><img src="${f.preview}" alt=""></button>` : ''}${esc(f.name)}${f.busy ? ' · 업로드 중…' : f.error ? ' · 실패' : ''}
+  document.getElementById('cmp-files').innerHTML = cmpFiles.map((f, i) => `<span class="cmp-chip${f.error ? ' bad' : ''}">${f.preview ? `<button type="button" class="cmp-thumb" data-cmp-preview="${i}" aria-label="이미지${f.imageNum} · ${esc(f.name)} 크게 보기"><img src="${f.preview}" alt=""></button>` : ''}<span style="min-width:0;overflow-wrap:anywhere">${f.imageNum ? `이미지${f.imageNum} · ` : ''}${esc(f.name)}${f.busy ? ' · 업로드 중…' : f.error ? ' · 실패' : ''}</span>${f.error ? `<button type="button" data-cmp-retry="${i}" title="재시도" aria-label="${esc(f.name)} 첨부 재시도"><svg class="ico" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></button>` : ''}
     <button type="button" data-cmp-remove="${i}" title="첨부 제거" aria-label="${esc(f.name)} 첨부 제거"${f.busy || cmpSaving ? ' disabled' : ''}><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button></span>`).join('');
   document.getElementById('cmp-send').disabled = cmpSaving || !cmpBody.value.trim() || cmpFiles.some(f => f.busy || f.error);
 }
@@ -2431,7 +2435,7 @@ async function openComposer(){
 function closeComposer(discard){
   sharedLightbox?.close();
   composer.hidden = true;
-  if(discard && !cmpSaving){ cmpFiles.splice(0).forEach(cmpDelete); cmpDraw(); }
+  if(discard && !cmpSaving){ cmpNextImage = 0; cmpFiles.splice(0).forEach(cmpDelete); cmpDraw(); }
 }
 document.addEventListener('keydown', (e) => {
   if(e.key !== '`' || e.ctrlKey || e.altKey || e.metaKey || e.isComposing || sharedLightbox?.isOpen || !composerAllowed() || document.getElementById('shell').hidden) return;
@@ -2478,24 +2482,32 @@ async function cmpReviewTop(it){
 }
 cmpBody.addEventListener('input', () => { cmpBody.style.height = 'auto'; cmpBody.style.height = cmpBody.scrollHeight + 'px'; cmpDraw(); });
 document.getElementById('cmp-attach').onclick = () => document.getElementById('cmp-file').click();
+async function cmpUpload(f){
+  if(f.busy || cmpSaving) return;
+  f.busy = true; f.error = ''; cmpDraw();
+  document.getElementById('cmp-error').textContent = '';
+  try{
+    const body = new FormData(); body.append('file', f.file);
+    f.data = await api('POST', '/api/attachments', body);
+    if(!cmpFiles.includes(f)) cmpDelete(f);
+  }catch(err){ f.error = err.message; document.getElementById('cmp-error').textContent = `${f.name}: ${err.message} 재시도하거나 제거해 주세요.`; }
+  finally{ f.busy = false; cmpDraw(); }
+}
 document.getElementById('cmp-file').onchange = (e) => {
-  [...e.target.files].forEach(async file => {
-    const f = { name: file.name, file, busy: true, error: '', preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : null };
-    cmpFiles.push(f); cmpDraw();
-    try{
-      const body = new FormData(); body.append('file', file);
-      f.data = await api('POST', '/api/attachments', body);
-      if(!cmpFiles.includes(f)) cmpDelete(f);   // 올리는 사이 지웠거나 화면을 떠났다
-    }catch(err){ f.error = err.message; document.getElementById('cmp-error').textContent = `${file.name}: ${err.message} 제거하고 다시 첨부해 주세요.`; }
-    finally{ f.busy = false; cmpDraw(); }
+  [...e.target.files].forEach(file => {
+    const imageNum = isAttachmentImage(file) ? ++cmpNextImage : null;
+    const f = { name: file.name, file, imageNum, busy: false, error: '', preview: imageNum ? URL.createObjectURL(file) : null };
+    cmpFiles.push(f); void cmpUpload(f);
   });
   e.target.value = '';
 };
 document.getElementById('cmp-files').onclick = (e) => {
+  const retry = e.target.closest('[data-cmp-retry]');
+  if(retry){ void cmpUpload(cmpFiles[+retry.dataset.cmpRetry]); return; }
   const preview = e.target.closest('[data-cmp-preview]');
   if(preview){
     const f = cmpFiles[+preview.dataset.cmpPreview];
-    if(f?.preview) makeLightbox().open(f.preview, f.name, preview);
+    if(f?.preview) makeLightbox().open(f.preview, `이미지${f.imageNum} · ${f.name}`, preview);
     return;
   }
   const b = e.target.closest('[data-cmp-remove]');
@@ -2513,8 +2525,8 @@ composer.addEventListener('submit', async (e) => {
   try{
     const agent = document.getElementById('cmp-agent').value;
     const it = await api('POST', '/api/issues', { project: document.getElementById('cmp-project').value, title: '', body: cmpBody.value,
-      status: 'backlog', attachment_ids: cmpFiles.map(f => f.data.id), assignee_agent_id: agent ? Number(agent) : undefined });
-    cmpBody.value = ''; cmpBody.style.height = '';
+      status: 'backlog', attachment_ids: cmpFiles.map(f => f.data.id), attachment_image_numbers: attachmentImageNumbers(cmpFiles), assignee_agent_id: agent ? Number(agent) : undefined });
+    cmpNextImage = 0; cmpBody.value = ''; cmpBody.style.height = '';
     sharedLightbox?.close(); cmpFiles.splice(0).forEach(f => { if(f.preview) URL.revokeObjectURL(f.preview); });
     closeComposer();
     toast(`${it.ref} 이슈를 발행했어요.`);
