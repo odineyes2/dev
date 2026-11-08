@@ -1,0 +1,40 @@
+<!-- 달빛이 드는 창과 책상·모니터를 그린 로그인 전용 자체 제작 작업실 일러스트다. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1000" fill="none">
+  <defs>
+    <linearGradient id="wall" x2="800" y2="1000" gradientUnits="userSpaceOnUse"><stop stop-color="#273246"/><stop offset="1" stop-color="#141923"/></linearGradient>
+    <linearGradient id="sky" x2="0" y2="600" gradientUnits="userSpaceOnUse"><stop stop-color="#101827"/><stop offset="1" stop-color="#455871"/></linearGradient>
+    <linearGradient id="light" x1="480" y1="300" x2="250" y2="790" gradientUnits="userSpaceOnUse"><stop stop-color="#b4cbe0" stop-opacity=".14"/><stop offset="1" stop-color="#b4cbe0" stop-opacity="0"/></linearGradient>
+    <linearGradient id="screen" x1="290" y1="520" x2="520" y2="660" gradientUnits="userSpaceOnUse"><stop stop-color="#263e50"/><stop offset="1" stop-color="#1b2937"/></linearGradient>
+  </defs>
+  <path fill="url(#wall)" d="M0 0h800v1000H0z"/>
+  <path fill="#111722" d="M0 830h800v170H0z"/>
+  <!-- 주요 요소를 중앙에 두어 세로 크롭에서도 책상과 달을 남긴다. -->
+  <rect x="234" y="155" width="332" height="330" rx="8" fill="#101620" stroke="#506075" stroke-width="2"/>
+  <path fill="url(#sky)" d="M248 169h304v302H248z"/>
+  <path d="M470 217a35 35 0 1 0 30 52 29 29 0 0 1-30-52Z" fill="#d4dce2"/>
+  <g fill="#c3cfdc" opacity=".6"><circle cx="287" cy="214" r="1.5"/><circle cx="370" cy="255" r="1"/><circle cx="529" cy="195" r="1"/><circle cx="325" cy="305" r="1"/></g>
+  <path d="m248 422 47-13 32 17 45-32 44 18 42-20 48 31 46-14v62H248Z" fill="#263547"/>
+  <path d="M400 169v302M248 331h304" stroke="#18212e" stroke-width="10"/>
+  <path d="M218 485h364" stroke="#596678" stroke-width="8"/>
+  <path d="m250 340 300 0 130 440H90Z" fill="url(#light)"/>
+  <ellipse cx="405" cy="861" rx="234" ry="35" fill="#0c1119" opacity=".6"/>
+  <path d="m176 720-20 198m458-198 23 198" stroke="#111722" stroke-width="16"/>
+  <rect x="138" y="699" width="528" height="20" rx="6" fill="#7c7065"/>
+  <path d="M146 719h512v15H146z" fill="#3e3c3c"/>
+  <rect x="276" y="517" width="250" height="160" rx="8" fill="#101720" stroke="#526073" stroke-width="2"/>
+  <rect x="286" y="527" width="230" height="140" rx="6" fill="url(#screen)"/>
+  <g stroke-linecap="round" stroke-width="4"><path d="M303 548h38m-38 16h75m-59 16h92m-92 16h50m-66 16h33" stroke="#839eac"/><path d="M352 548h26m11 16h49m-16 16h30m-72 16h36" stroke="#b2b3a4" opacity=".7"/></g>
+  <path d="M392 678v17m-29 2h76" stroke="#536071" stroke-width="7" stroke-linecap="round"/>
+  <path d="M316 700h165l14 9H303Z" fill="#a4a6a5"/>
+  <path d="M559 690v-82l-31-41" stroke="#85909a" stroke-width="6" stroke-linecap="round"/>
+  <path d="m512 553 37 24-47 21Z" fill="#b1aaa0"/>
+  <path d="m516 585-48 114h106Z" fill="#e1c99c" opacity=".07"/>
+  <ellipse cx="560" cy="696" rx="25" ry="4" fill="#85909a"/>
+  <rect x="219" y="665" width="28" height="32" rx="6" fill="#a0a8ae"/>
+  <path d="M247 672h7a8 8 0 0 1 0 16h-7" stroke="#a0a8ae" stroke-width="4"/>
+  <path d="M178 667h25l-4 30h-17Z" fill="#676e72"/>
+  <path d="M190 669v-36m0 21c-21 0-22-21-22-21 21 0 22 21 22 21Zm0-11c20 0 22-24 22-24-20 1-22 24-22 24Z" fill="#60766d" stroke="#60766d" stroke-width="2"/>
+  <path d="M360 809v94m83-94v94" stroke="#0d131d" stroke-width="10"/>
+  <rect x="337" y="745" width="129" height="90" rx="12" fill="#303946" stroke="#46505e" stroke-width="2"/>
+  <path d="M326 835h151" stroke="#46505e" stroke-width="12" stroke-linecap="round"/>
+</svg>
