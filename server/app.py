@@ -645,7 +645,7 @@ async def api_create_issue(request: Request):
     a = actor(request)
     it = issues.create_issue(a, b.get("project"), b.get("title"), b.get("body", ""), b.get("priority", "none"),
                              b.get("labels"), b.get("parent"), b.get("status", "backlog"), b.get("type_ids"), b.get("attachment_ids"),
-                             b.get("assignee_agent_id"), b.get("blocked_by"))
+                             b.get("assignee_agent_id"), b.get("blocked_by"), b.get("attachment_image_numbers"))
     return it
 
 

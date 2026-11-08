@@ -16,6 +16,7 @@ import attachments
 from mcp.types import TextContent, ImageContent
 import base64
 import json
+from typing import Any
 
 INSTRUCTIONS = """dev는 코딩 에이전트용 이슈 게시판이다. 이슈 번호는 "NS-27"처럼 프로젝트 키-번호.
 
@@ -149,11 +150,13 @@ def update_issue_type(type_id: int, name: str | None = None, active: bool | None
 @mcp.tool
 def create_issue(project: str, title: str, body: str = "", priority: str = "none",
                  labels: list[str] | None = None, parent: str | None = None, type_ids: list[int] | None = None,
-                 blocked_by: list[str] | None = None, attachment_ids: list[str] | None = None) -> dict:
+                 blocked_by: list[str] | None = None, attachment_ids: list[str] | None = None,
+                 attachment_image_numbers: dict[str, Any] | None = None) -> dict:
     """새 이슈(또는 parent를 주면 하위 Task). blocked_by는 모든 프로젝트의 진행 가능한 선행 이슈 ref 목록(최대 10개). priority: urgent/high/medium/low/none.
-    attachment_ids는 upload_attachment로 올린 자기 첨부 id 목록."""
+    attachment_ids는 upload_attachment로 올린 자기 첨부 id 목록.
+    attachment_image_numbers는 새 이슈의 모든 이미지 ID에 양의 정수 번호를 첨부 순서대로 지정한다(생략하면 자동 할당)."""
     return _call(issues.create_issue, _actor(), project, title, body, priority, labels, parent,
-                 type_ids=type_ids, attachment_ids=attachment_ids, blocked_by=blocked_by)
+                 type_ids=type_ids, attachment_ids=attachment_ids, blocked_by=blocked_by, attachment_image_numbers=attachment_image_numbers)
 
 
 @mcp.tool
