@@ -127,7 +127,7 @@ def collect_captures(ref, run_id, cwd, baseline):
                             stored.parent.mkdir(parents=True, exist_ok=True)
                             stored.write_bytes(data)
                             a = _insert(c, run['actor'], 'image', _name(path.name), 'image/png', len(data), key)
-                            c.execute('UPDATE attachments SET id=?,issue_id=?,expires_at=NULL WHERE id=?', (aid, row['id'], a['id']))
+                            c.execute('UPDATE attachments SET id=?,issue_id=?,expires_at=NULL,image_number=? WHERE id=?', (aid, row['id'], _reserve_number(c, row['id']), a['id']))
                         added += 1
                     except BaseException:
                         if stored:
@@ -143,6 +143,8 @@ def collect_captures(ref, run_id, cwd, baseline):
 def metadata(a):
     """저장 키·소유자를 제외한 공개 첨부 메타데이터를 만든다."""
     return {**{k: a[k] for k in ('id', 'kind', 'name', 'media_type', 'size', 'url', 'created_at')},
+            'image_number': a['image_number'],
+            'alias': f"이미지{a['image_number']}" if a['image_number'] is not None else None,
             'download_url': f"/api/attachments/{a['id']}/content" if a['storage_key'] else None}
 
 
@@ -244,7 +246,7 @@ def _validate(ext, data):
 def _insert(c, owner, kind, name, media_type, size, key=None, url=None):
     aid = uuid.uuid4().hex
     now = issues._now()
-    c.execute('INSERT INTO attachments VALUES(?,NULL,?,?,?,?,?,?,?,?,?)',
+    c.execute('INSERT INTO attachments(id,issue_id,owner,kind,name,media_type,size,storage_key,url,created_at,expires_at) VALUES(?,NULL,?,?,?,?,?,?,?,?,?)',
               (aid, owner, kind, name, media_type, size, key, url,
                now.isoformat(timespec='seconds'), (now + timedelta(seconds=config.ATTACHMENT_TTL_SECONDS)).isoformat(timespec='seconds')))
     return dict(c.execute('SELECT * FROM attachments WHERE id=?', (aid,)).fetchone())
@@ -302,7 +304,7 @@ def add_url(actor, url):
         return _insert(c, owner, 'url', url, '', 0, url=url)
 
 
-def link(c, actor, issue_id, attachment_ids):
+def link(c, actor, issue_id, attachment_ids, image_numbers=None):
     """발행 트랜잭션 안에서 호출한다. 같은 이슈로 재시도하면 중복 없이 성공한다."""
     owner = _owner(actor)
     if not isinstance(attachment_ids, (list, tuple)) or any(not isinstance(i, str) for i in attachment_ids):
@@ -324,17 +326,47 @@ def link(c, actor, issue_id, attachment_ids):
         if a['storage_key'] and not file_path(a['storage_key']).is_file():
             raise issues.StoreError('첨부 파일이 없어요.', 409)
         selected.append(a)
+    images = [a for a in selected if a['kind'] == 'image']
+    if image_numbers is not None:
+        if (not isinstance(image_numbers, dict) or set(image_numbers) != {a['id'] for a in images}
+                or any(type(n) is not int or not 1 <= n <= 2147483647 for n in image_numbers.values())):
+            raise issues.StoreError('이미지 번호 대응이 잘못됐어요.')
+        numbers = [image_numbers[a['id']] for a in images]
+        if any(x >= y for x, y in zip(numbers, numbers[1:])):
+            raise issues.StoreError('이미지 번호는 첨부 순서대로 증가해야 해요.')
+        if any(a['issue_id'] is not None for a in selected) or row['next_image_number'] != 1:
+            raise issues.StoreError('새 이슈에서만 이미지 번호를 지정할 수 있어요.')
     existing = c.execute('SELECT COUNT(*),COALESCE(SUM(size),0) FROM attachments WHERE issue_id=?', (issue_id,)).fetchone()
     new = [a for a in selected if a['issue_id'] is None]
     if existing[0] + len(new) > config.ATTACHMENT_MAX_COUNT or existing[1] + sum(a['size'] for a in new) > config.ATTACHMENT_TOTAL_BYTES:
         raise issues.StoreError('이슈의 첨부 개수 또는 합계 용량 제한을 넘었어요.', 413)
     for a in new:
-        c.execute('UPDATE attachments SET issue_id=?,expires_at=NULL WHERE id=?', (issue_id, a['id']))
+        number = None
+        if a['kind'] == 'image':
+            number = _reserve_number(c, issue_id, image_numbers[a['id']] if image_numbers is not None else None)
+        c.execute('UPDATE attachments SET issue_id=?,expires_at=NULL,image_number=? WHERE id=?', (issue_id, number, a['id']))
+
+
+def _reserve_number(c, issue_id, explicit=None):
+    number = c.execute('SELECT next_image_number FROM issues WHERE id=?', (issue_id,)).fetchone()[0]
+    if explicit is not None:
+        number = explicit
+    if number > 2147483647:
+        raise issues.StoreError('이슈의 이미지 번호를 모두 사용했어요.')
+    c.execute('UPDATE issues SET next_image_number=? WHERE id=?', (number + 1, issue_id))
+    return number
+
+
+def ordered(rows):
+    """비이미지의 상대 순서를 유지하며 이미지 자리만 번호순으로 채운다."""
+    rows = [dict(r) for r in rows]
+    images = iter(sorted((r for r in rows if r['kind'] == 'image'), key=lambda r: r['image_number']))
+    return [next(images) if r['kind'] == 'image' else r for r in rows]
 
 
 def list_for_issue(issue_id):
     with db.connect() as c:
-        return [dict(r) for r in c.execute('SELECT * FROM attachments WHERE issue_id=? ORDER BY created_at,id', (issue_id,))]
+        return ordered(c.execute('SELECT * FROM attachments WHERE issue_id=? ORDER BY created_at,id', (issue_id,)))
 
 
 def delete(actor, attachment_id):

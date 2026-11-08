@@ -665,7 +665,7 @@ def compact_issue(d: dict) -> dict:
     out["plan"] = {k: plan.get(k) for k in ("version", "body", "revision_note", "revision_attachments")} if plan else None
     out["approval"] = d.get("approval")
     out["human_checks"] = d.get("human_checks") or []
-    out["attachments"] = [{k: a.get(k) for k in ("id", "kind", "name", "url")} for a in d.get("attachments") or []]
+    out["attachments"] = [{k: a.get(k) for k in ("id", "kind", "name", "url", "image_number", "alias")} for a in d.get("attachments") or []]
     out["children"] = [{"ref": ch["ref"], "title": ch["title"], "status": ch["status"]} for ch in d.get("children") or []]
     out["notes"] = notes[-COMPACT_NOTES:]
     if len(notes) > COMPACT_NOTES:
@@ -716,8 +716,8 @@ def get_issue(ref) -> dict:
         import attachments
         # 마이그레이션 전 데이터 보존 검사에서도 기존 이슈를 읽을 수 있게 한다.
         has_attachments = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='attachments'").fetchone()
-        d["attachments"] = [attachments.metadata(dict(a)) for a in c.execute(
-            'SELECT * FROM attachments WHERE issue_id=? ORDER BY created_at,id', (row['id'],))] if has_attachments else []
+        d["attachments"] = [attachments.metadata(a) for a in attachments.ordered(c.execute(
+            'SELECT * FROM attachments WHERE issue_id=? ORDER BY created_at,id', (row['id'],)))] if has_attachments else []
     return d
 
 
@@ -796,15 +796,15 @@ def _check_assignee(c, aid):
 
 
 def create_issue(actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None,
-                 assignee_agent_id=None, blocked_by=None) -> dict:
+                 assignee_agent_id=None, blocked_by=None, attachment_image_numbers=None) -> dict:
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
         return _create_issue(c, actor, project, title, body, priority, labels, parent, status,
-                             type_ids, attachment_ids, assignee_agent_id, blocked_by)
+                             type_ids, attachment_ids, assignee_agent_id, blocked_by, attachment_image_numbers)
 
 
 def _create_issue(c, actor, project, title, body="", priority="none", labels=None, parent=None, status="backlog", type_ids=None, attachment_ids=None,
-                  assignee_agent_id=None, blocked_by=None) -> dict:
+                  assignee_agent_id=None, blocked_by=None, attachment_image_numbers=None) -> dict:
     """호출자가 연 트랜잭션에서 Issue를 저장한다."""
     # 제목은 비워도 된다 — 본문만 쓰면 이슈를 처리하는 에이전트가 제목을 지어 채운다(DEV-8). 둘 다 비면 안 된다.
     title = _text(title, "제목", 300).strip()
@@ -860,9 +860,9 @@ def _create_issue(c, actor, project, title, body="", priority="none", labels=Non
     if blockers:
         refs = [b["ref"] for b in blockers]
         _event(c, iid, actor, "edit", "연관 이슈 지정: " + ", ".join(refs), {"blocked_by": refs})
-    if attachment_ids is not None:
+    if attachment_ids is not None or attachment_image_numbers is not None:
         import attachments
-        attachments.link(c, actor, iid, attachment_ids)
+        attachments.link(c, actor, iid, attachment_ids if attachment_ids is not None else [], attachment_image_numbers)
     return {**_issue_dict(c.execute(_ISSUE_SELECT + " WHERE i.id=?", (iid,)).fetchone()),
             "blocked_by": [{"ref": b["ref"], "status": b["status"]} for b in blockers]}
 

@@ -1184,6 +1184,43 @@ ALTER TABLE execution_completion ADD COLUMN merge_wait_seconds INTEGER NOT NULL 
 """)
 
 
+# 이슈별 이미지 번호와 삭제 뒤에도 되돌리지 않는 카운터를 저장한다(DEV-253).
+MIGRATIONS.append("""
+ALTER TABLE attachments ADD COLUMN image_number INTEGER
+ CHECK(image_number IS NULL OR (typeof(image_number)='integer' AND kind='image' AND image_number BETWEEN 1 AND 2147483647));
+ALTER TABLE issues ADD COLUMN next_image_number INTEGER NOT NULL DEFAULT 1
+ CHECK(typeof(next_image_number)='integer' AND next_image_number BETWEEN 1 AND 2147483648);
+CREATE UNIQUE INDEX attachment_image_number ON attachments(issue_id,image_number) WHERE image_number IS NOT NULL;
+""")
+IMAGE_NUMBER_MIGRATION = len(MIGRATIONS)
+
+
+def _backfill_image_numbers(conn):
+    """본문 끝의 고유 대응표를 복원하고 나머지는 기존 순서로 채운다."""
+    import re
+    from collections import Counter
+    for iid, body in conn.execute("SELECT id,body FROM issues").fetchall():
+        images = conn.execute("SELECT id,name FROM attachments WHERE issue_id=? AND kind='image' ORDER BY created_at,id", (iid,)).fetchall()
+        names = Counter(name for _, name in images)
+        # 작성창이 덧붙이던 마지막 절만 읽는다.
+        match = re.search(r'(?:^|\n)---\n첨부 이미지:\n((?:\[이미지 \d{1,10}\] = [^\n]+\n?)+)\s*$', body or '')
+        pairs = re.findall(r'^\[이미지 (\d+)\] = (.+)$', match[1], re.M) if match else []
+        counts = Counter(name for _, name in pairs)
+        numbers = Counter(int(n) for n, _ in pairs)
+        restored = {name: int(n) for n, name in pairs if names[name] == 1 and counts[name] == 1 and numbers[int(n)] == 1 and 1 <= int(n) <= 2147483647}
+        used = set(restored.values())
+        next_number = 1
+        for aid, name in images:
+            number = restored.get(name)
+            if number is None:
+                while next_number in used:
+                    next_number += 1
+                number = next_number
+                used.add(number)
+            conn.execute('UPDATE attachments SET image_number=? WHERE id=?', (number, aid))
+        conn.execute('UPDATE issues SET next_image_number=? WHERE id=?', (max(used, default=0) + 1, iid))
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -1208,7 +1245,11 @@ def init() -> int:
         conn.execute("PRAGMA journal_mode=WAL")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         for i, sql in enumerate(MIGRATIONS[version:], start=version + 1):
-            conn.executescript("BEGIN;" + sql + f"PRAGMA user_version={i};COMMIT;")
+            conn.executescript("BEGIN;" + sql)
+            if i == IMAGE_NUMBER_MIGRATION:
+                _backfill_image_numbers(conn)
+            conn.execute(f"PRAGMA user_version={i}")
+            conn.commit()
         conn.execute("UPDATE runs SET status='orphaned', ended_at=?, note='서버가 다시 떠서 끊겼어요' WHERE status='running'", (now_iso(),))
         conn.commit()
         return conn.execute("PRAGMA user_version").fetchone()[0]
