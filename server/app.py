@@ -441,7 +441,40 @@ def api_app_restart(key: str, request: Request):
 def api_project_brand(key: str, request: Request):
     human_only(request)
     import brand_assets
-    return JSONResponse(brand_assets.status(key), headers={'Cache-Control': 'no-store'})
+    import brand_apply
+    result = brand_assets.status(key)
+    result.update(history=brand_apply.history(key), apply=brand_apply.status(key))
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/api/projects/{key}/brand/apply')
+async def api_project_brand_apply(key: str, request: Request):
+    me = human_only(request)
+    body = await json_body(request)
+    import brand_apply
+    try:
+        result = await run_in_threadpool(brand_apply.request, key, me, draft_id=body.get('draft_id'))
+    except HTTPException as error:
+        if isinstance(error.detail, dict):
+            return JSONResponse(error.detail, status_code=error.status_code)
+        raise
+    return JSONResponse({'apply': result}, status_code=202)
+
+
+@app.post('/api/projects/{key}/brand/revert')
+async def api_project_brand_revert(key: str, request: Request):
+    me = human_only(request)
+    body = await json_body(request)
+    if not isinstance(body.get('sha'), str):
+        raise HTTPException(400, '되돌릴 커밋을 골라 주세요.')
+    import brand_apply
+    try:
+        result = await run_in_threadpool(brand_apply.request, key, me, sha=body['sha'])
+    except HTTPException as error:
+        if isinstance(error.detail, dict):
+            return JSONResponse(error.detail, status_code=error.status_code)
+        raise
+    return JSONResponse({'apply': result}, status_code=202)
 
 
 @app.get('/api/projects/{key}/brand/file')

@@ -314,7 +314,8 @@ def deploy(repo: str, cfg: dict, sha: str, say=lambda msg: None) -> tuple[str, s
         warning = _restart_workers(repo, cfg, workers) if not worker_note else worker_note
         return "merged", (f"`{cfg['pm2_app']}`를 재시작했고 health 확인을 통과했어요({', '.join(hits[:5])} 변경)." if hits else '워커 변경을 반영했어요.') + (' ' + warning if warning else '')
     why = f"재시작 명령이 실패했어요: {err}" if err else f"재시작 뒤 {cfg['health_seconds']}초 안에 health가 200이 아니었어요"
-    r = _git(repo, "revert", "-m", "1", "--no-edit", sha)
+    parents = _git(repo, 'rev-list', '--parents', '-n', '1', sha).stdout.split()
+    r = _git(repo, 'revert', *(['-m', '1'] if len(parents) > 2 else []), '--no-edit', sha)
     if r.returncode:
         return "changes_requested", f"{why}. revert도 실패했어요 — 직접 확인해 주세요({r.stderr.strip()})."
     back = "복구됐어요" if not _restart(repo, cfg) and _healthy(cfg) else "그래도 health가 안 돌아왔어요 — 바로 확인해 주세요"
@@ -335,7 +336,7 @@ def merge(repo: str, ref: str, after: list[str] = ()) -> tuple[str, str]:
         return _merge(repo, ref, after)
 
 
-def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task=None, build_checkpoint=None, cfg=None) -> tuple[str, str]:
+def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task=None, build_checkpoint=None, cfg=None, *, branch=None, fast_forward=False) -> tuple[str, str]:
     head = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if head != BASE_BRANCH:
         return "on_hold", f"저장소가 {BASE_BRANCH}가 아니라 {head}에 있어 병합 보류 — {BASE_BRANCH}로 돌려 놓은 뒤 재개해 주세요."
@@ -344,7 +345,7 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
     waiting = [p for p in after if not _merged(repo, p)]
     if waiting:
         return "on_hold", f"선행 Task({', '.join(waiting)})가 아직 병합되지 않아 병합 보류."
-    branch = branch_name(ref)
+    branch = branch or branch_name(ref)
     before = _git(repo, 'rev-parse', 'HEAD').stdout.strip()
     task = _git(repo, 'rev-parse', '--verify', f'{branch}^{{commit}}')
     if task.returncode:
@@ -366,7 +367,8 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
         if r.returncode:
             return 'on_hold', '시험 병합 사본을 만들지 못했어요: ' + r.stderr.strip()
         added = True
-        r = _git(str(worktree), 'merge', '--no-ff', '--no-edit', '-m', f'Merge {branch} ({ref})', task_sha)
+        r = (_git(str(worktree), 'merge', '--ff-only', task_sha) if fast_forward else
+             _git(str(worktree), 'merge', '--no-ff', '--no-edit', '-m', f'Merge {branch} ({ref})', task_sha))
         if r.returncode:
             return 'changes_requested', f'{BASE_BRANCH}와 시험 병합이 실패했어요 — 운영 코드는 유지했어요.\n' + (r.stdout + r.stderr).strip()[-1500:]
         sha = _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip()
