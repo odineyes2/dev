@@ -215,3 +215,122 @@ def version_links(html, static_dir):
         raw = re.sub(r'(\bhref\s*=\s*)([\"\x27])(.*?)\2', lambda m:m[1]+m[2]+escape(url,quote=True)+m[2],t['raw'],count=1,flags=re.I|re.S)
         html = html[:t['start']] + raw + html[t['end']:]
     return html
+
+
+def patch_json(text, updates):
+    """최상위 값 구간만 바꾸어 JSON의 나머지 공백과 순서를 보존한다."""
+    decoder = json.JSONDecoder()
+    original = json.loads(text)
+    if not isinstance(original, dict):
+        raise ValueError('manifest 객체가 필요해요')
+    pos = text.index('{') + 1
+    spans = {}
+    while True:
+        while text[pos].isspace() or text[pos] == ',':
+            pos += 1
+        if text[pos] == '}':
+            break
+        key, end = decoder.raw_decode(text, pos)
+        pos = end
+        while text[pos].isspace():
+            pos += 1
+        if text[pos] != ':':
+            raise ValueError('manifest 키를 읽을 수 없어요')
+        pos += 1
+        while text[pos].isspace():
+            pos += 1
+        _, end = decoder.raw_decode(text, pos)
+        spans[key] = (pos, end)
+        pos = end
+    edits = []
+    missing = {}
+    for key, value in updates.items():
+        if original.get(key) == value and key in original:
+            continue
+        if key in spans:
+            a, b = spans[key]
+            edits.append((a, b, json.dumps(value, ensure_ascii=False)))
+        else:
+            missing[key] = value
+    for a, b, value in sorted(edits, reverse=True):
+        text = text[:a] + value + text[b:]
+    if missing:
+        end = text.rfind('}')
+        multiline = '\n' in text
+        indent = re.search(r'\n([ \t]+)"', text)
+        separator = '\n' + (indent[1] if indent else '  ') if multiline else ' '
+        body = text[:end].rstrip()
+        body += ',' if original else ''
+        body += separator + (',' + separator).join(json.dumps(k) + ': ' + json.dumps(v, ensure_ascii=False) for k,v in missing.items())
+        text = body + ('\n' if multiline else '') + text[end:]
+    json.loads(text)
+    return text
+
+
+def plan_edits(root, info, urls, options, domain=''):
+    """생성물 URL과 값으로 태그 단위 최소 편집을 만든다."""
+    from html import escape
+    root = Path(root)
+    outputs, blocked = {}, {}
+    meta = options.get('meta', {})
+    values = {k: str(v) for k,v in meta.items() if k in ('name','short_name','description')}
+    if 'background' in options:
+        values['background_color'] = options['background']
+        values['theme_color'] = options['background'] if options.get('theme_same', True) else options.get('theme_color', options['background'])
+    manifest = info['manifest']['path']
+    original = (root / manifest).read_text('utf-8')
+    if urls.get('icons'):
+        values['icons'] = json.loads(original).get('icons',[]) + urls['icons']
+    updated = patch_json(original, values)
+    if updated != original:
+        outputs[manifest] = updated.encode()
+    for path in info['html']:
+        text = (root / path).read_text('utf-8')
+        tags = Tags(text).tags
+        changes, additions = [], []
+        desired = []
+        if urls.get('apple'):
+            desired.append(('link','apple-touch-icon',urls['apple'],None))
+        for url in urls.get('favicons',[]):
+            desired.append(('link','icon',url,None))
+        if urls.get('splash'):
+            desired += [('link', 'apple-touch-startup-image', url, media) for url,media in urls['splash']]
+            desired.append(('meta','apple-mobile-web-app-capable','yes',None))
+        if urls.get('og'):
+            desired += [('meta','og:image','https://' + domain + urls['og'],None), ('meta','og:title',values.get('name',info['manifest']['values']['name']),None), ('meta','og:description',values.get('description',info['manifest']['values']['description']),None), ('meta','twitter:card','summary_large_image',None)]
+        for key,value in [('theme-color',values.get('theme_color')),('apple-mobile-web-app-title',values.get('short_name'))]:
+            if value is not None:
+                desired.append(('meta',key,value,None))
+        for tag,key,value,media in desired:
+            found = [t for t in tags if t['tag']==tag and (key in (t['attrs'].get('rel') or '').split() if tag=='link' else (t['attrs'].get('name') or t['attrs'].get('property'))==key) and (media is None or t['attrs'].get('media')==media)]
+            attr = 'href' if tag=='link' else 'content'
+            if found:
+                for t in found:
+                    if '{{' in t['raw'] or '{%' in t['raw']:
+                        blocked[t['slot']] = '자동 수정 불가 — 브랜드 태그에 자리표시가 있어요'
+                        continue
+                    pattern = r'(\b'+attr+r'\s*=\s*)([\"\x27])(.*?)\2'
+                    if not re.search(pattern,t['raw'],re.I|re.S):
+                        blocked[t['slot']] = '자동 수정 불가 — 태그 값을 찾지 못했어요'
+                        continue
+                    raw = re.sub(pattern,lambda m:m[1]+m[2]+escape(value,quote=True)+m[2],t['raw'],flags=re.I|re.S)
+                    changes.append((t['start'],t['end'],raw))
+            else:
+                if tag=='link':
+                    raw = f'<link rel="{key}" href="{escape(value,quote=True)}"' + (f' media="{media}"' if media else '') + '>'
+                else:
+                    raw = f'<meta {"property" if key.startswith("og:") else "name"}="{key}" content="{escape(value,quote=True)}">'
+                additions.append(raw)
+        if additions:
+            anchors = [t for t in tags if t['slot']!='art']
+            if not anchors:
+                blocked['meta'] = '자동 수정 불가 — 브랜드 태그가 없어요'
+            else:
+                anchor = anchors[-1]['end']
+                sep = '\n' if '\n' in text[anchors[0]['end']:anchor] else ''
+                changes.append((anchor,anchor,sep+sep.join(additions)))
+        for a,b,value in sorted(changes,reverse=True):
+            text = text[:a]+value+text[b:]
+        if text != (root/path).read_text('utf-8'):
+            outputs[path] = text.encode()
+    return outputs, blocked

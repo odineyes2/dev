@@ -865,6 +865,64 @@ async def api_decision(ref: str, request: Request):
     return await run_in_threadpool(issues.decide, actor(request), ref, b.get("verdict"), b.get("note", ""), b.get("plan_version"))
 
 
+@app.post('/api/projects/{key}/brand/draft')
+async def api_project_brand_draft(key: str, request: Request):
+    human_only(request)
+    import json
+    import brand_render
+    if request.headers.get('content-type','').split(';',1)[0].strip().lower() != 'multipart/form-data':
+        raise HTTPException(400, 'multipart/form-data로 원본을 올려 주세요')
+    async def limited_stream():
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > brand_render.MAX_BYTES + 64*1024:
+                raise MultiPartException('파일 용량 제한을 넘었어요')
+            yield chunk
+    parser = MultiPartParser(request.headers,limited_stream(),max_files=8,max_fields=2)
+    try:
+        form = await parser.parse()
+    except BaseException as exc:
+        for f in parser._files_to_close_on_error:
+            f.close()
+        if isinstance(exc,MultiPartException):
+            raise HTTPException(413 if '용량' in str(exc) else 400,str(exc))
+        if isinstance(exc,MultipartParseError):
+            raise HTTPException(400,'multipart 형식을 확인해 주세요')
+        raise
+    try:
+        if len(form.multi_items()) != len(form):
+            raise ValueError('같은 필드를 두 번 보낼 수 없어요')
+        options = json.loads(form.get('options','{}'))
+        uploads = {}
+        for name,value in form.multi_items():
+            if isinstance(value,UploadFile):
+                if name not in brand_render.UPLOADS:
+                    raise ValueError('알 수 없는 이미지 슬롯이에요')
+                uploads[name] = await value.read(brand_render.MAX_BYTES+1)
+            elif name not in ('options','draft_id'):
+                raise ValueError('알 수 없는 조정값이에요')
+        return await run_in_threadpool(brand_render.create_draft,key,options,uploads,form.get('draft_id'))
+    except (ValueError,TypeError,KeyError) as exc:
+        raise HTTPException(400,str(exc))
+    finally:
+        await form.close()
+
+
+@app.get('/api/projects/{key}/brand/draft/{identifier}/file')
+def api_project_brand_draft_file(key: str, identifier: str, request: Request, path: str = ''):
+    human_only(request)
+    import brand_render
+    from fastapi.responses import FileResponse
+    try:
+        file = brand_render.preview_file(key,identifier,path)
+    except ValueError:
+        file = None
+    if file is None:
+        raise HTTPException(404,'미리보기가 만료됐어요 — 다시 만들어 주세요')
+    return FileResponse(file,headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; img-src data:; style-src 'none'; sandbox"})
+
+
 # 화면 — API 라우트 뒤에 붙여야 /api가 가려지지 않는다(마운트는 반드시 마지막).
 import hashlib  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402

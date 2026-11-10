@@ -4,3 +4,4 @@ httpx
 fastmcp
 python-multipart
 PyYAML
+Pillow
