@@ -437,6 +437,24 @@ def api_app_restart(key: str, request: Request):
     return project_restart.request(human_only(request), key)
 
 
+@app.get('/api/projects/{key}/brand')
+def api_project_brand(key: str, request: Request):
+    human_only(request)
+    import brand_assets
+    return JSONResponse(brand_assets.status(key), headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/api/projects/{key}/brand/file')
+def api_project_brand_file(key: str, request: Request, path: str = ''):
+    human_only(request)
+    import brand_assets
+    from fastapi.responses import FileResponse
+    file = brand_assets.current_file(key, path)
+    if file is None:
+        raise HTTPException(404, '브랜드 파일을 찾지 못했어요')
+    return FileResponse(file, headers={'Cache-Control': 'no-store'})
+
+
 @app.get('/api/projects/{key}/secrets')
 def api_project_secrets(key: str, request: Request):
     """비밀값 설정 여부(DEV-239) — 에이전트는 키·설정 여부만, 사람은 끝 4자·dev 값 사용 가능 여부도 받는다."""
@@ -865,7 +883,8 @@ def index_page():
     for name in ("family.css", "app.css", "quick_actions.js", "app.js"):
         v = hashlib.sha1((STATIC_DIR / name).read_bytes()).hexdigest()[:10]
         html = re.sub(r'"/' + re.escape(name) + r'(?:\?v=[a-f0-9]+)?"', f'"/{name}?v={v}"', html)
-    return HTMLResponse(html)
+    import brand_assets
+    return HTMLResponse(brand_assets.version_links(html, STATIC_DIR))
 
 
 app.mount("/mcp", mcp_app)
