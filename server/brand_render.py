@@ -309,7 +309,7 @@ def _create_draft(key,options,uploads,draft_id):
         if slot in blocked:
             continue
         source = (decoded.get(slot,(None,None))[0] if chosen.get(slot)=='upload' else
-                  icon if slot=='icon' else decoded.get(slot,(icon,None))[0])
+                  icon if slot=='icon' or chosen.get(slot)=='auto' else decoded.get(slot,(icon,None))[0])
         if source is None or chosen.get(slot) is False:
             continue
         source = square(source,None,1 if slot=='favicon' else 512) if source is not icon else source

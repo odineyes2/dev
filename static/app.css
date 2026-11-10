@@ -1085,3 +1085,94 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
   #list-body .issue-col-progress{display:none}
   .lc-mobile{display:block;margin:6px 0 2px}
 }
+/* 브랜드 탭 — 서버 생성 자원을 모형·비교·변경 목록으로 보여 준다. */
+.brand-panel{display:grid;gap:24px;min-width:0}
+.brand-panel section{min-width:0}
+.brand-panel h3{font-size:16px;margin:0 0 16px}
+.brand-panel h4{font-size:14px}
+.brand-panel p{overflow-wrap:anywhere}
+.brand-models{display:grid;grid-template-columns:160px minmax(120px,1fr) minmax(160px,320px);gap:16px;align-items:start}
+.brand-home,.brand-browser,.brand-phone,.brand-share{background:var(--panel-2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.brand-home{display:flex;gap:16px;padding:16px 8px}
+.brand-home>div{position:relative;width:60px;flex-shrink:0;text-align:center}
+.brand-home img{width:60px;height:60px;object-fit:contain;display:block}
+.brand-home span:not(.brand-empty){display:block;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:8px}
+.brand-ios{border-radius:22%}
+.brand-android{border-radius:50%}
+.brand-safe:after{content:'';position:absolute;width:48px;height:48px;top:6px;left:6px;border:1px dashed var(--accent);border-radius:50%;pointer-events:none}
+.brand-browser{height:32px;display:flex;align-items:center;gap:8px;padding:0 8px;font-size:12px}
+.brand-browser img{width:16px;height:16px}
+.brand-browser span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand-phone{width:80px;aspect-ratio:440/956;margin:12px auto 0;display:grid;place-items:center}
+.brand-phone img{width:100%;height:100%;object-fit:contain}
+.brand-share{width:100%;max-width:320px}
+.brand-share>img{display:block;width:100%;aspect-ratio:1200/630;object-fit:contain}
+.brand-share>div{padding:12px;font-size:13px;overflow-wrap:anywhere}
+.brand-share p{margin:4px 0}
+.brand-share small{color:var(--dim);font-size:12px}
+.brand-empty{display:grid;place-items:center;border:1px dashed var(--border);padding:8px;color:var(--dim);font-size:12px;max-width:100%}
+.brand-drop{width:100%;min-height:144px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;border:1px dashed var(--border);background:var(--panel-2);border-radius:8px}
+.brand-drop small{font-size:12px;color:var(--dim)}
+.brand-drop-mobile{display:none}
+.brand-drag,.brand-attention{outline:2px solid var(--accent)}
+.brand-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:start}
+.brand-fields label{display:grid;gap:8px;font-size:13px;min-width:0}
+.brand-panel input,.brand-panel select{max-width:100%;min-width:0;box-sizing:border-box}
+.brand-fields input[type=file]{width:100%}
+.brand-colors{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.brand-color{padding:0;min-width:24px;width:24px;height:24px;border-radius:999px;background:var(--chip);border:1px solid var(--border)}
+.brand-panel details{margin-top:16px}
+.brand-panel summary{cursor:pointer;font-size:13px}
+.brand-compare{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+.brand-compare .brand-models{grid-template-columns:160px minmax(100px,1fr)}
+.brand-compare .brand-share{grid-column:1/-1}
+.brand-compare-toggle{display:none}
+.brand-splashes{display:grid;grid-template-columns:repeat(auto-fit,minmax(64px,1fr));gap:12px}
+.brand-splashes img{width:100%;max-height:200px;object-fit:contain}
+.brand-changes{max-width:100%;overflow-wrap:anywhere}
+.brand-changes table{width:100%;table-layout:fixed;font-size:13px;border-collapse:collapse}
+.brand-changes td,.brand-changes th{padding:12px 8px;text-align:left;border-bottom:1px solid var(--border);overflow-wrap:anywhere}
+.brand-changes th:first-child{width:55%}
+.brand-changes pre,.brand-panel pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:var(--panel-2);padding:12px}
+.brand-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.brand-actions .primary{background:var(--grad-primary)}
+.brand-history-row{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--border);overflow-wrap:anywhere}
+.brand-history-row button{flex-shrink:0}
+.brand-crop-dialog{width:min(480px,calc(100vw - 32px));box-sizing:border-box;padding:24px}
+.brand-crop-stage{position:relative;touch-action:none;line-height:0;max-height:60vh;overflow:hidden}
+.brand-crop-stage img{width:100%;max-height:60vh;object-fit:fill;pointer-events:none}
+.brand-crop-stage>div{position:absolute;border:2px solid var(--accent);box-sizing:border-box;pointer-events:none;background:rgb(0 0 0 / .12)}
+#brand-focal{position:relative;touch-action:none;width:160px;margin:16px auto}
+#brand-focal img{width:100%;display:block}
+#brand-focal span{position:absolute;width:24px;height:24px;border:2px solid var(--accent);border-radius:50%;transform:translate(-50%,-50%);pointer-events:none}
+.brand-panel :focus-visible,.brand-crop-dialog :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+@media(max-width:900px){.brand-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+.brand-compare .brand-models{grid-template-columns:1fr}
+.brand-compare .brand-share{grid-column:auto}
+}
+
+@media(max-width:640px){.brand-models{grid-template-columns:160px minmax(80px,1fr)}
+.brand-share{grid-column:1/-1}
+.brand-fields{grid-template-columns:1fr}
+.brand-drop-desktop{display:none}
+.brand-drop-mobile{display:block}
+.brand-drop{min-height:120px;padding:12px}
+.brand-drop small{max-width:220px}
+.brand-compare-toggle{display:flex;gap:8px}
+.brand-compare{display:block}
+.brand-compare[data-show=after] .brand-before,.brand-compare[data-show=before] .brand-after{display:none}
+.brand-compare .brand-models{grid-template-columns:160px minmax(80px,1fr)}
+.brand-compare .brand-share{grid-column:1/-1}
+.brand-history-row{flex-direction:column}
+.brand-panel button{min-height:40px}
+.brand-color{min-width:40px}
+.brand-changes td,.brand-changes th{padding:8px 4px;font-size:12px}
+}
+
+
+.brand-crop-stage,.brand-crop-stage img{max-height:none}
+.brand-crop-dialog{max-height:90vh;overflow:auto}
+#brand-adjust>summary{font-size:16px;font-weight:600;margin-bottom:16px}
+
+.brand-segments{display:flex;flex-wrap:wrap;gap:4px}.brand-segments button{flex:1}.brand-segments [aria-pressed=true]{border-color:var(--accent);color:var(--accent);background:var(--panel-2)}
