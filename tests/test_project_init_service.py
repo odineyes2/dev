@@ -39,6 +39,9 @@ calls = []
 fail_external = [False]
 project_service._command = lambda args, label, cwd=None, environment=None: calls.append(label)
 project_service._restart = lambda: calls.append('restart')
+# 무중단 전환(DEV-255)은 tests/test_tunnel_handoff.py가 검사한다. 여기선 설정 교체·재시작만 흉내 낸다.
+project_service.tunnel_handoff.switch = lambda exe, path, raw, expected, tunnel, replace, restart, phase=None: (replace(path, raw, expected), restart())
+project_service.tunnel_handoff.ready = lambda address: {'connectorId': 'svc', 'readyConnections': 4}
 project_service._restart_permission = lambda: None
 project_service.binary = lambda: 'cloudflared'
 project_service.pm2_launcher = lambda: ['pm2']

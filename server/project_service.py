@@ -19,6 +19,7 @@ import yaml
 import config
 import db
 import issues
+import tunnel_handoff
 
 
 def find_free_port():
@@ -142,19 +143,25 @@ def _reachable(url):
 
 def _steps(project, record):
     labels = ('도메인·포트 저장', '터널 설정·재시작 권한 확인', '터널 규칙 사전 검사',
-              '앱 실행 준비·로컬 접속 확인', 'DNS 등록·터널 반영·재시작', '외부 HTTPS 접속 확인')
-    if record and record['action'] != 'connect':
-        return []
+              '앱 실행 준비·로컬 접속 확인', 'DNS 등록·무중단 터널 전환', '외부 HTTPS 접속 확인')
+    disconnect = bool(record and record['action'] == 'disconnect')
+    if disconnect:
+        # 연결 해제는 저장된 step 2·3·5만 지난다. 화면 번호는 1부터 다시 매긴다.
+        labels = ('터널 설정·재시작 권한 확인', '터널 규칙 사전 검사', '무중단 터널 전환')
     current = record['step'] if record else 0
     result = []
     for number, label in enumerate(labels, 1):
+        stored = (2, 3, 5)[number - 1] if disconnect else number
         state = 'pending'
-        if number == 1 and (current or project['service_domain'] and project['service_port']):
+        if not disconnect and number == 1 and (current or project['service_domain'] and project['service_port']):
             state = 'done'
-        if (current and number < current) or (record and record['status'] == 'connected'):
+        if (current and stored < current) or (record and record['status'] in ('connected', 'disconnected')):
             state = 'done'
-        elif number == current and record['status'] in ('running', 'failed'):
+        elif stored == current and record['status'] in ('running', 'failed'):
             state = 'running' if record['status'] == 'running' else 'failed'
+        if state == 'running' and stored == 5 and record['phase']:
+            # 전환 단계는 임시 커넥터 준비·서비스 전환·준비 확인·정리 중 어디인지 덧붙인다.
+            label = label + ' — ' + record['phase']
         result.append({'number': number, 'label': label, 'status': state,
                        'error': record['error'] if state == 'failed' else ''})
     return result
@@ -268,11 +275,11 @@ def pm2_launcher():
     return launcher
 
 
-def _command(args, label, cwd=None, environment=None):
+def _command(args, label, cwd=None, environment=None, timeout=45):
     try:
         # 앱 실행에 Dev의 인증키·알림 토큰을 물려주지 않는다. 앱은 자기 실행 설정에서 환경을 읽는다.
         env = environment if environment is not None else {k: v for k, v in os.environ.items() if not k.upper().startswith(('DEV_', 'NIGHTSHIFT_', 'CLOUDFLARE_', 'CF_')) and not re.search(r'(TOKEN|PASSWORD|SECRET|API_KEY)$', k.upper())}
-        result = subprocess.run(args, cwd=cwd, capture_output=True, timeout=45,
+        result = subprocess.run(args, cwd=cwd, capture_output=True, timeout=timeout,
                                 env=env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode:
             if environment is not None:
@@ -288,10 +295,11 @@ def _restart():
     name = os.environ.get('DEV_TUNNEL_SERVICE') or ('Cloudflared' if os.name == 'nt' else 'cloudflared')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+', name):
         raise issues.StoreError('터널 서비스 이름 설정이 잘못됐어요.', 409)
+    # 예전 설정으로 뜬 서비스는 종료 유예가 30초라 멈추는 데 그만큼 걸릴 수 있다(그동안은 임시 커넥터가 받는다).
     if os.name == 'nt':
-        _command(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='Stop'; Restart-Service -Name '" + name + "'"], '터널 서비스 재시작')
+        _command(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='Stop'; Restart-Service -Name '" + name + "'"], '터널 서비스 재시작', timeout=120)
     else:
-        _command(['systemctl', 'restart', name], '터널 서비스 재시작')
+        _command(['systemctl', 'restart', name], '터널 서비스 재시작', timeout=120)
 
 
 def _restart_permission():
@@ -366,7 +374,17 @@ def _candidate(raw, old, domain, port):
         if any(str(r.get('hostname', '')).lower().rstrip('.') == domain for r in rules):
             raise issues.StoreError('기존 터널에서 사용하는 도메인이에요. 다른 도메인을 입력해 주세요.', 409)
         rules.insert(0, {'hostname': domain, 'service': f'http://127.0.0.1:{port}'})
+    tunnel_handoff.prepare(data)
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False).encode('utf-8'), str(data['tunnel'])
+
+
+def _switch(pid, path, new_raw, expected_hash):
+    """설정 반영은 언제나 무중단 전환으로 한다(DEV-255). 서비스를 바로 재시작하는 길은 두지 않는다."""
+    tunnel = str((yaml.safe_load(new_raw) or {}).get('tunnel') or '')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', tunnel):
+        raise issues.StoreError('터널 ID 또는 이름 설정을 확인해 주세요.', 409)
+    tunnel_handoff.switch(binary(), path, new_raw, expected_hash, tunnel, _replace, _restart,
+                          phase=lambda text: _save(pid, phase=text))
 
 
 def _restore(row):
@@ -375,13 +393,15 @@ def _restore(row):
     try:
         path = Path(row['config_path'])
         original = Path(row['backup_path']).read_bytes()
-        if _hash(path.read_bytes()) == _hash(original):
-            _restart()
+        current = path.read_bytes()
+        if _hash(current) == _hash(original):
+            # 설정이 그대로면 서비스가 붙어 있는지만 본다. 괜히 재시작하지 않는다.
+            if not tunnel_handoff.ready(tunnel_handoff.metrics_address(original)):
+                _switch(row['project_id'], path, original, _hash(current))
         else:
-            _replace(path, original, row['applied_hash'])
-            _restart()
+            _switch(row['project_id'], path, original, row['applied_hash'])
         _save(row['project_id'], backup_path='', applied_hash='')
-        return ' 기존 터널 설정을 복구했어요.'
+        return ' 기존 터널 설정을 유지했어요.' if _hash(current) == _hash(original) else ' 기존 터널 설정을 복구했어요.'
     except Exception:
         return ' 터널 자동 복구를 완료하지 못했어요. 설정 백업과 서비스 상태를 확인해 주세요.'
 
@@ -442,8 +462,7 @@ def _run(project, action):
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.write_bytes(raw)
         _save(pid, step=5, phase='터널 반영', backup_path=str(backup), config_path=str(path), applied_hash=_hash(candidate))
-        _replace(path, candidate, _hash(raw))
-        _restart()
+        _switch(pid, path, candidate, _hash(raw))
         if domain:
             _save(pid, step=6, phase='외부 HTTPS 확인')
             _healthy('https://' + domain + '/api/health')
@@ -535,9 +554,14 @@ def _row(pid):
 def recover():
     with db.connect() as c:
         rows = [dict(r) for r in c.execute("SELECT * FROM project_services WHERE status='running'")]
-    if not rows:
-        return
+
     def restore_pending():
         for row in rows:
             _save(row['project_id'], status='failed', phase='작업 중단', error='서버가 재시작되어 연결 작업이 중단됐어요. DNS 레코드도 확인해 주세요.' + _restore(row))
+        # 전환 도중 dev가 죽어 남은 임시 커넥터는 서비스가 붙어 있을 때만 내린다(DEV-255).
+        try:
+            path = config_path()
+            tunnel_handoff.cleanup(path, tunnel_handoff.metrics_address(path.read_bytes()))
+        except Exception:
+            pass
     threading.Thread(target=restore_pending, daemon=True).start()
