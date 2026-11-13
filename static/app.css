@@ -1176,3 +1176,13 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 #brand-adjust>summary{font-size:16px;font-weight:600;margin-bottom:16px}
 
 .brand-segments{display:flex;flex-wrap:wrap;gap:4px}.brand-segments button{flex:1}.brand-segments [aria-pressed=true]{border-color:var(--accent);color:var(--accent);background:var(--panel-2)}
+
+/* 연결 해제 확인창 — 전체 앱 신원을 줄바꿈하고 공통 본문에서 스크롤한다. */
+.disconnect-preview{ min-width:0; display:grid; gap:var(--sp-3); }
+.disconnect-choice{ display:flex; align-items:center; gap:var(--sp-2); min-height:40px; cursor:pointer; }
+.disconnect-choice input{ flex-shrink:0; accent-color:var(--accent); }
+.disconnect-apps{ margin:0; padding:0; list-style:none; }
+.disconnect-apps li{ display:grid; gap:var(--sp-1); padding:var(--sp-2) 0; border-bottom:1px solid var(--border); overflow-wrap:anywhere; font-size:13px; }
+.disconnect-apps strong{ font-weight:600; }
+.disconnect-apps span{ color:var(--dim); }
+.disconnect-preview p{ margin:0; overflow-wrap:anywhere; }
