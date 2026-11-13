@@ -275,6 +275,24 @@ def pm2_launcher():
     return launcher
 
 
+def pm2_environment():
+    """Dev 실행 계정의 환경만 사용해 같은 PM2 daemon과 홈을 고정한다."""
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith(('DEV_', 'NIGHTSHIFT_', 'CLOUDFLARE_', 'CF_')) and not re.search(r'(TOKEN|PASSWORD|SECRET|API_KEY)$', k.upper())}
+
+
+PM2_SAVE_WARNING = 'PM2 목록 저장에 실패했어요. 재부팅 뒤 자동으로 다시 켜지지 않을 수 있어요.'
+
+
+def save_pm2(launcher=None, environment=None):
+    """저장 실패는 정상 연결을 되돌리지 않고 고정된 경고로 반환한다."""
+    try:
+        _command([*(launcher if launcher is not None else pm2_launcher()), 'save'],
+                 'PM2 목록 저장', environment=environment if environment is not None else pm2_environment(), timeout=45)
+        return ''
+    except Exception:
+        return PM2_SAVE_WARNING
+
+
 def _command(args, label, cwd=None, environment=None, timeout=45):
     try:
         # 앱 실행에 Dev의 인증키·알림 토큰을 물려주지 않는다. 앱은 자기 실행 설정에서 환경을 읽는다.
@@ -409,6 +427,7 @@ def _restore(row):
 def _run(project, action):
     pid = project['id']
     dns_attempted = False
+    started_pm2 = False
     try:
         _save(pid, step=2, phase='터널 설정·권한 확인')
         with db.connect() as c:
@@ -451,8 +470,15 @@ def _run(project, action):
                         raise issues.StoreError('자동 생성 결과에 ecosystem.config.js가 없어요.', 409)
                 _save(pid, phase='앱 시작')
                 launcher = pm2_launcher()
+                pm2_env = pm2_environment()
+                app_env = app_environment(repo, port)
+                # 프로젝트 비밀값으로 daemon·실행 계정의 홈 해석이 바뀌지 않게 한다.
+                identity = {'PM2_HOME', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'}
+                app_env = {k: v for k, v in app_env.items() if k.upper() not in identity}
+                app_env.update({k: v for k, v in pm2_env.items() if k.upper() in identity})
                 args = [*launcher, 'startOrRestart', 'ecosystem.config.js', '--only', app, '--update-env']
-                _command(args, 'PM2 앱 시작', str(repo), environment=app_environment(repo, port))
+                _command(args, 'PM2 앱 시작', str(repo), environment=app_env)
+                started_pm2 = True
             _save(pid, phase='로컬 서비스 확인')
             _healthy(f'http://127.0.0.1:{port}/api/health')
             _save(pid, step=5, phase='DNS 연결')
@@ -466,7 +492,8 @@ def _run(project, action):
         if domain:
             _save(pid, step=6, phase='외부 HTTPS 확인')
             _healthy('https://' + domain + '/api/health')
-        _save(pid, status='connected' if domain else 'disconnected', phase='연결 완료' if domain else '연결 해제 완료', domain=domain, port=port, backup_path='', applied_hash='', error='')
+        warning = save_pm2(launcher, pm2_env) if started_pm2 else ''
+        _save(pid, status='connected' if domain else 'disconnected', phase='연결 완료' if domain else '연결 해제 완료', domain=domain, port=port, backup_path='', applied_hash='', error=warning)
     except Exception as e:
         with db.connect() as c:
             row = dict(c.execute('SELECT * FROM project_services WHERE project_id=?', (pid,)).fetchone())
