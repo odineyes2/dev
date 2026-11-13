@@ -1,4 +1,5 @@
 """프로젝트 서비스 연결 — 공용 터널 변경은 서버에서 한 번에 하나씩 수행한다."""
+import json
 import hashlib
 import errno
 import os
@@ -146,12 +147,15 @@ def _steps(project, record):
               '앱 실행 준비·로컬 접속 확인', 'DNS 등록·무중단 터널 전환', '외부 HTTPS 접속 확인')
     disconnect = bool(record and record['action'] == 'disconnect')
     if disconnect:
-        # 연결 해제는 저장된 step 2·3·5만 지난다. 화면 번호는 1부터 다시 매긴다.
+        # 연결 해제는 step 2·3·5를 지나고 앱 정지를 선택하면 6까지 간다.
         labels = ('터널 설정·재시작 권한 확인', '터널 규칙 사전 검사', '무중단 터널 전환')
+    record = dict(record) if record else None
+    if disconnect and record.get('stop_apps'):
+        labels += ('앱 멈추기',)
     current = record['step'] if record else 0
     result = []
     for number, label in enumerate(labels, 1):
-        stored = (2, 3, 5)[number - 1] if disconnect else number
+        stored = (2, 3, 5, 6)[number - 1] if disconnect else number
         state = 'pending'
         if not disconnect and number == 1 and (current or project['service_domain'] and project['service_port']):
             state = 'done'
@@ -162,8 +166,10 @@ def _steps(project, record):
         if state == 'running' and stored == 5 and record['phase']:
             # 전환 단계는 임시 커넥터 준비·서비스 전환·준비 확인·정리 중 어디인지 덧붙인다.
             label = label + ' — ' + record['phase']
+        if disconnect and stored == 6 and record.get('app_error') and record['status'] == 'disconnected':
+            state = 'failed'
         result.append({'number': number, 'label': label, 'status': state,
-                       'error': record['error'] if state == 'failed' else ''})
+                       'error': (record.get('app_error') or record['error']) if state == 'failed' else ''})
     return result
 
 
@@ -208,11 +214,23 @@ def _save(pid, **fields):
         c.execute('UPDATE project_services SET ' + ','.join(k + '=?' for k in fields) + ',updated_at=? WHERE project_id=?', (*fields.values(), db.now_iso(), pid))
 
 
-def request(actor, key, action='connect'):
+def disconnect_preview(key):
+    import pm2_apps
+    project = _project(key)
+    pm2_apps.reconcile(project)
+    return pm2_apps.preview(project)
+
+
+def request(actor, key, action='connect', stop_apps=False, preview_token=''):
     if actor['kind'] != 'human':
         raise issues.StoreError('서비스 연결은 관리자 화면에서 실행해 주세요.', 403)
     if action not in ('connect', 'disconnect'):
         raise issues.StoreError('지원하지 않는 서비스 작업이에요.')
+    if type(stop_apps) is not bool or (action == 'connect' and stop_apps):
+        raise issues.StoreError('앱 멈추기는 연결 해제에서 참·거짓으로 선택해 주세요.')
+    if not isinstance(preview_token, str):
+        raise issues.StoreError('앱 목록을 다시 확인해 주세요.', 409)
+    approved = None
     project = _project(key)
     if project['archived']:
         raise issues.StoreError('보관된 프로젝트에는 서비스를 연결할 수 없어요.', 409)
@@ -237,12 +255,20 @@ def request(actor, key, action='connect'):
                 raise issues.StoreError('연결된 서비스가 없어요.', 409)
             if c.execute("SELECT 1 FROM project_initializations WHERE project_id=? AND status IN ('queued','running','cancelling')", (project['id'],)).fetchone():
                 raise issues.StoreError('프로젝트 초기 생성이 끝난 뒤 연결해 주세요.', 409)
-            c.execute('''INSERT INTO project_services(project_id,status,actor,action,updated_at,step) VALUES(?,'running',?,?,?,2)
-                ON CONFLICT(project_id) DO UPDATE SET status='running',step=2,phase='연결 준비',error='',actor=excluded.actor,action=excluded.action,updated_at=excluded.updated_at''',
-                (project['id'], issues.actor_label(actor), action, db.now_iso()))
+            if stop_apps:
+                import pm2_apps
+                try:
+                    approved = pm2_apps.snapshot(project, c)
+                except (pm2_apps.AppError, OSError):
+                    raise issues.StoreError('앱 목록을 확인하지 못했어요. 다시 확인해 주세요.', 409) from None
+                if approved['token'] != preview_token:
+                    raise issues.StoreError('앱 목록이 바뀌었어요. 다시 확인해 주세요.', 409)
+            c.execute('''INSERT INTO project_services(project_id,status,actor,action,updated_at,step,stop_apps) VALUES(?,'running',?,?,?,2,?)
+                ON CONFLICT(project_id) DO UPDATE SET status='running',step=2,phase='연결 준비',error='',app_error='',stop_apps=excluded.stop_apps,actor=excluded.actor,action=excluded.action,updated_at=excluded.updated_at''',
+                (project['id'], issues.actor_label(actor), action, db.now_iso(), int(stop_apps)))
     except sqlite3.IntegrityError:
         raise issues.StoreError('다른 서비스 연결이 진행 중이에요.', 409)
-    worker = threading.Thread(target=_run, args=(project, action), daemon=True)
+    worker = threading.Thread(target=_run, args=(project, action, approved) if stop_apps else (project, action), daemon=True)
     try:
         worker.start()
     except RuntimeError:
@@ -443,7 +469,7 @@ def _restore(row):
         return ' 터널 자동 복구를 완료하지 못했어요. 설정 백업과 서비스 상태를 확인해 주세요.'
 
 
-def _run(project, action):
+def _run(project, action, approved=None):
     pid = project['id']
     dns_attempted = False
     started_pm2 = False
@@ -473,6 +499,8 @@ def _run(project, action):
         finally:
             Path(temp).unlink(missing_ok=True)
         if domain:
+            import pm2_apps
+            pm2_apps.before_connect(project)
             _save(pid, step=4, phase='앱 실행 준비')
             app = project['service_app']
             if app and app != 'dev':
@@ -511,7 +539,32 @@ def _run(project, action):
         if domain:
             _save(pid, step=6, phase='외부 HTTPS 확인')
             _healthy('https://' + domain + '/api/health')
-        warning = save_pm2(launcher, pm2_env) if started_pm2 else ''
+        if not domain and approved is not None:
+            # 해제 확정과 step=6을 함께 남긴다. 이후 앱 오류는 터널을 복원하지 않는다.
+            _save(pid, step=6, phase='앱 멈추기', domain='', port=0, backup_path='', applied_hash='')
+            import pm2_apps
+            try:
+                warning = pm2_apps.stop(project, approved['candidates'])
+            except Exception:
+                warning = '터널 연결 해제는 끝났어요. 앱 정지 처리를 완료하지 못했어요. PM2 상태를 확인해 주세요.'
+            _save(pid, status='disconnected', phase='연결 해제 완료', app_error=warning, error=warning)
+            return
+        restored, app_warning = [], ''
+        had_remembered = False
+        if domain:
+            import pm2_apps
+            try:
+                had_remembered = bool(pm2_apps.records(pid))
+                app_warning, restored = pm2_apps.restore(project)
+            except Exception:
+                app_warning = '기억한 앱의 복구 상태를 확인하지 못했어요. 다시 연결해 주세요.'
+        save_warning = save_pm2(launcher, pm2_env) if started_pm2 else (save_pm2() if had_remembered else '')
+        if not save_warning and restored:
+            try:
+                pm2_apps.forget(restored)
+            except sqlite3.Error:
+                app_warning += '\n앱 복구 기록을 정리하지 못했어요. 다음 연결에서 다시 확인해요.'
+        warning = '\n'.join(filter(None, (app_warning, save_warning)))
         _save(pid, status='connected' if domain else 'disconnected', phase='연결 완료' if domain else '연결 해제 완료', domain=domain, port=port, backup_path='', applied_hash='', error=warning)
     except Exception as e:
         with db.connect() as c:
@@ -603,6 +656,17 @@ def recover():
 
     def restore_pending():
         for row in rows:
+            if row['action'] == 'disconnect' and row['step'] == 6 and not row['domain']:
+                import pm2_apps
+                try:
+                    with db.connect() as c:
+                        project = dict(c.execute('SELECT * FROM projects WHERE id=?', (row['project_id'],)).fetchone())
+                    pm2_apps.reconcile(project)
+                except Exception:
+                    pass
+                warning = '터널 연결 해제는 끝났어요. 서버 재시작으로 앱 정지 작업이 중단됐어요. PM2 상태를 확인해 주세요.'
+                _save(row['project_id'], status='disconnected', phase='작업 중단', app_error=warning, error=warning)
+                continue
             _save(row['project_id'], status='failed', phase='작업 중단', error='서버가 재시작되어 연결 작업이 중단됐어요. DNS 레코드도 확인해 주세요.' + _restore(row))
         # 전환 도중 dev가 죽어 남은 임시 커넥터는 서비스가 붙어 있을 때만 내린다(DEV-255).
         try:

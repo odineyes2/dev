@@ -207,6 +207,10 @@ steps = project_service._steps(project, {**record, 'status': 'failed', 'step': 3
 check([s['status'] for s in steps] == ['done', 'failed', 'pending'] and steps[1]['error'] == '검사 실패', '해제 실패 단계·이유')
 steps = project_service._steps(project, {**record, 'status': 'disconnected'})
 check(all(s['status'] == 'done' for s in steps), '해제 완료 단계')
+steps = project_service._steps(project, {**record, 'stop_apps': 1, 'step': 6})
+check([s['status'] for s in steps] == ['done', 'done', 'done', 'running'] and steps[3]['label'] == '앱 멈추기', '앱 정지는 네 번째 단계')
+steps = project_service._steps(project, {**record, 'stop_apps': 1, 'step': 6, 'status': 'disconnected', 'app_error': '앱 정지 실패'})
+check([s['status'] for s in steps] == ['done', 'done', 'done', 'failed'] and steps[3]['error'] == '앱 정지 실패', '앱 실패여도 터널 해제는 완료')
 
 # 12) 복구: 설정이 이미 원본이고 서비스가 붙어 있으면 재시작하지 않는다
 with db.connect() as c:
