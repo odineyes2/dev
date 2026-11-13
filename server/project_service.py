@@ -280,6 +280,25 @@ def pm2_environment():
     return {k: v for k, v in os.environ.items() if not k.upper().startswith(('DEV_', 'NIGHTSHIFT_', 'CLOUDFLARE_', 'CF_')) and not re.search(r'(TOKEN|PASSWORD|SECRET|API_KEY)$', k.upper())}
 
 
+def pm2_app_registered(app):
+    """환경값을 노출하지 않고 현재 daemon의 앱 이름만 확인한다."""
+    try:
+        result = subprocess.run([*pm2_launcher(), 'jlist'], env=pm2_environment(),
+                                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                timeout=45, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        return result.returncode == 0 and any(item.get('name') == app for item in json.loads(result.stdout))
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+        return False
+
+
+def pin_pm2_environment(env):
+    """프로젝트 환경이 PM2 daemon과 실행 계정 홈을 바꾸지 못하게 한다."""
+    identity = {'PM2_HOME', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'}
+    result = {k: v for k, v in env.items() if k.upper() not in identity}
+    result.update({k: v for k, v in pm2_environment().items() if k.upper() in identity})
+    return result
+
+
 PM2_SAVE_WARNING = 'PM2 목록 저장에 실패했어요. 재부팅 뒤 자동으로 다시 켜지지 않을 수 있어요.'
 
 

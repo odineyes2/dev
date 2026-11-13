@@ -137,6 +137,135 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(service.save_pm2(), service.PM2_SAVE_WARNING)
 
 
+class RestartPersistenceTests(PersistenceTests):
+    def test_restart_helper_health_and_save_warning(self):
+        import project_restart as restart
+        from types import SimpleNamespace
+        for own, mode, failure in ((0, 'restart', ''), (1, 'restart', ''),
+                                   (0, 'deploy', ''), (0, 'deploy', 'release'),
+                                   (0, 'restart', 'health')):
+            with self.subTest(own=own, mode=mode, failure=failure), ExitStack() as stack:
+                now = db.now_iso()
+                with db.connect() as c:
+                    aid = c.execute("""INSERT INTO project_app_restarts
+                        (project_id,actor,app,repo,health_url,self_restart,process_id,status,phase,created_at,updated_at,mode,build_json)
+                        VALUES(?,'human:admin','test',?,'http://127.0.0.1:8401/api/health',?,'old','waiting','',?,?,?,'[]')""",
+                        (self.pid, str(self.repo), own, now, now, mode)).lastrowid
+                folder = ROOT / 'build'
+                folder.mkdir(exist_ok=True)
+                (folder / 'manifest.json').write_text('{"outputs":[],"log":""}')
+                events = []
+                stack.enter_context(patch.object(restart, '_busy', return_value=False))
+                stack.enter_context(patch.object(restart, '_restart', side_effect=lambda row: events.append('restart')))
+                stack.enter_context(patch.object(restart.time, 'sleep'))
+                stack.enter_context(patch.object(restart, 'HEALTH_SECONDS', 0 if failure == 'health' else 60))
+                client = stack.enter_context(patch.object(restart.httpx, 'Client')).return_value.__enter__.return_value
+                client.get.return_value = SimpleNamespace(status_code=200, json=lambda: {'process_id': 'new'})
+                stack.enter_context(patch.object(restart.project_build, '_git', return_value='sha'))
+                stack.enter_context(patch.object(restart.project_build, 'build', return_value=folder))
+                stack.enter_context(patch.object(restart.project_build, 'deploy'))
+                restore = stack.enter_context(patch.object(restart.project_build, 'restore'))
+                def verify(*args):
+                    events.append('release')
+                    if failure == 'release':
+                        raise restart.project_build.BuildError('release', 'mismatch')
+                    return 'existing warning'
+                stack.enter_context(patch.object(restart, '_verify_release', side_effect=verify))
+                save = stack.enter_context(patch.object(service, 'save_pm2', side_effect=lambda: events.append('save') or service.PM2_SAVE_WARNING))
+                restart.run(aid)
+                with db.connect() as c:
+                    row = dict(c.execute('SELECT * FROM project_app_restarts WHERE id=?', (aid,)).fetchone())
+                self.assertEqual(row['status'], 'failed' if failure else 'complete')
+                self.assertEqual(save.call_count, 0 if failure else 1)
+                if not failure:
+                    self.assertIn(service.PM2_SAVE_WARNING, row['error'])
+                    self.assertEqual(events[-1], 'save')
+                    if mode == 'deploy':
+                        self.assertIn('existing warning', row['error'])
+                if failure == 'release':
+                    restore.assert_called_once()
+
+    def test_deploy_health_failure_recovery_never_saves(self):
+        import orchestrate as o
+        from types import SimpleNamespace
+        for healthy in (True, False):
+            with self.subTest(healthy=healthy), ExitStack() as stack:
+                stack.enter_context(patch.object(o, '_git', return_value=SimpleNamespace(stdout='server/app.py', stderr='', returncode=0)))
+                stack.enter_context(patch.object(o, '_restart_guard', return_value=('', ())))
+                stack.enter_context(patch.object(o, '_busy', return_value=False))
+                stack.enter_context(patch.object(o, '_healthy', return_value=healthy))
+                stack.enter_context(patch.object(o, '_restart', return_value=None))
+                save = stack.enter_context(patch.object(service, 'save_pm2', return_value=service.PM2_SAVE_WARNING))
+                state, note = o.deploy(str(self.repo), {'pm2_app': 'test'}, 'sha')
+                self.assertEqual(state, 'merged' if healthy else 'changes_requested')
+                self.assertEqual(save.call_count, int(healthy))
+                if healthy:
+                    self.assertIn(service.PM2_SAVE_WARNING, note)
+
+    def test_worker_only_restarts_registered_apps_without_save(self):
+        import orchestrate as o
+        with patch.object(service, 'pm2_app_registered', side_effect=lambda app: app == 'known'), \
+             patch.object(o, '_restart', return_value=None) as restart, \
+             patch.object(service, 'save_pm2') as save:
+            note = o._restart_workers(str(self.repo), {}, ['known', 'missing'])
+            self.assertIn('서비스 연결로 먼저 등록해 주세요', note)
+            self.assertEqual(restart.call_count, 1)
+            self.assertEqual(restart.call_args.args[1]['pm2_app'], 'known')
+            save.assert_not_called()
+
+    def test_pinned_identity_ignores_project_home(self):
+        env = service.pin_pm2_environment({'PM2_HOME': 'wrong', 'HOME': 'wrong', 'APP_SECRET': 'private'})
+        self.assertEqual(env['PM2_HOME'], os.environ['PM2_HOME'])
+        self.assertEqual(env['HOME'], os.environ['HOME'])
+
+    def test_post_deploy_saves_after_verified_health_and_release(self):
+        import orchestrate as o
+        from types import SimpleNamespace
+        for good, phase in ((True, 'restart_requested'), (False, 'rollback_applied')):
+            with self.subTest(good=good), ExitStack() as stack:
+                events = []
+                stack.enter_context(patch.object(o, '_git', return_value=SimpleNamespace(stdout='server/app.py')))
+                stack.enter_context(patch.object(o.restart_guard, 'worker_apps', return_value=()))
+                stack.enter_context(patch.object(o, '_verified_health', side_effect=lambda *a: events.append('health') or good))
+                stack.enter_context(patch.object(o, 'release_health', side_effect=lambda *a: (events.append('release') or True, 'release warning')))
+                stack.enter_context(patch.object(o, '_finish', side_effect=lambda actor, record, status, note: (status, note)))
+                save = stack.enter_context(patch.object(service, 'save_pm2', side_effect=lambda: events.append('save') or service.PM2_SAVE_WARNING))
+                record = dict(merge_sha='sha', phase=phase, build_dir='build', note='')
+                state, note = o._post_deploy({}, str(self.repo), {**o.DEFAULTS, 'pm2_app': 'dev'}, record)
+                self.assertEqual(save.call_count, int(good))
+                if good:
+                    self.assertEqual(events, ['health', 'release', 'save'])
+                    self.assertEqual(state, 'merged')
+                    self.assertIn('release warning', note)
+                    self.assertIn(service.PM2_SAVE_WARNING, note)
+
+    def test_explicit_rollback_saves_only_after_verification(self):
+        import rollback
+        from types import SimpleNamespace
+        for good in (True, False):
+            with self.subTest(good=good), ExitStack() as stack:
+                record = dict(phase='restarting', repo=str(self.repo), head='sha', restart=True,
+                              project_key='SAVE', actor={}, ref='SAVE-1', id='r', note='', build_dir='build')
+                stack.enter_context(patch.object(rollback, '_records', return_value=[record]))
+                stack.enter_context(patch.object(rollback, '_recovery_rows', return_value=[]))
+                stack.enter_context(patch.object(rollback, '_save'))
+                stack.enter_context(patch.object(rollback.orchestrate, '_git', return_value=SimpleNamespace(returncode=0)))
+                stack.enter_context(patch.object(rollback.orchestrate, '_busy', return_value=False))
+                stack.enter_context(patch.object(rollback.orchestrate, '_healthy', return_value=True))
+                stack.enter_context(patch.object(rollback.orchestrate, '_restart', return_value=None))
+                stack.enter_context(patch.object(rollback.orchestrate, 'settings', return_value={}))
+                stack.enter_context(patch.object(rollback.orchestrate, 'release_health', return_value=(good, '')))
+                stack.enter_context(patch.object(rollback.project_build, 'confirm'))
+                stack.enter_context(patch.object(rollback.project_build, 'restore'))
+                comments = stack.enter_context(patch.object(rollback.issues, 'add_comment'))
+                save = stack.enter_context(patch.object(service, 'save_pm2', return_value=service.PM2_SAVE_WARNING))
+                rollback.recover()
+                self.assertEqual(save.call_count, int(good))
+                self.assertEqual(record['phase'], 'complete' if good else 'restart_failed')
+                if good:
+                    comments.assert_called_with({}, 'SAVE-1', service.PM2_SAVE_WARNING)
+
+
 if __name__ == '__main__':
     try:
         unittest.main()

@@ -147,6 +147,8 @@ def _restart(repo, cfg) -> str | None:
     if cfg.get("pm2_app", "") != "dev":
         import project_secrets
         env = {**os.environ, **project_secrets.env_for(repo)}   # 프로젝트 .env 비밀값(DEV-239)
+    import project_service
+    env = project_service.pin_pm2_environment(env if env is not None else dict(os.environ))
     try:
         r = subprocess.run(cfg["restart_cmd"].format(app=cfg.get("pm2_app", "")), shell=True, cwd=repo, env=env, capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=300, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -187,8 +189,14 @@ def _wait_workers(repo, cfg, apps, say):
 
 def _restart_workers(repo, cfg, apps):
     """주 앱 health와 독립적으로 워커 재시작 결과를 경고로 돌려준다."""
-    failures = [app for app in apps if _restart(repo, {**cfg, 'pm2_app': app})]
-    return f"⚠️ 워커 재시작 실패: {', '.join(failures)} — 직접 확인해 주세요." if failures else ''
+    import project_service
+    warnings = []
+    for app in apps:
+        if not project_service.pm2_app_registered(app):
+            warnings.append(f'⚠️ 워커 {app}: 서비스 연결로 먼저 등록해 주세요.')
+        elif _restart(repo, {**cfg, 'pm2_app': app}):
+            warnings.append(f'⚠️ 워커 재시작 실패: {app} — 직접 확인해 주세요.')
+    return ' '.join(warnings)
 
 
 def _parent_guard_comment(actor, ref, note):
@@ -312,6 +320,9 @@ def deploy(repo: str, cfg: dict, sha: str, say=lambda msg: None) -> tuple[str, s
     err = _restart(repo, cfg) if hits else None
     if not err and (not hits or _healthy(cfg)):
         warning = _restart_workers(repo, cfg, workers) if not worker_note else worker_note
+        if hits:
+            import project_service
+            warning = ' '.join(filter(None, (warning, project_service.save_pm2())))
         return "merged", (f"`{cfg['pm2_app']}`를 재시작했고 health 확인을 통과했어요({', '.join(hits[:5])} 변경)." if hits else '워커 변경을 반영했어요.') + (' ' + warning if warning else '')
     why = f"재시작 명령이 실패했어요: {err}" if err else f"재시작 뒤 {cfg['health_seconds']}초 안에 health가 200이 아니었어요"
     parents = _git(repo, 'rev-list', '--parents', '-n', '1', sha).stdout.split()
@@ -869,6 +880,9 @@ def _post_deploy(actor, repo, cfg, record):
                     worker_note = _restart_workers(repo, cfg, workers)
                 else:
                     worker_note = f"워커 재시작 필요: {', '.join(workers)} — 작업 조회 설정이 없어 직접 확인해 주세요."
+            if cfg.get('pm2_app'):
+                import project_service
+                worker_note = ' '.join(filter(None, (worker_note, project_service.save_pm2())))
             return _finish(actor, record, 'merged', (warning or '재시작과 반영 health 확인을 통과했어요.') + (' ' + worker_note if worker_note else ''))
         _save(record, 'rollback_requested')
     if record['phase'] == 'rollback_requested':

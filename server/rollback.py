@@ -217,6 +217,11 @@ def recover():
                         raise RollbackError('롤백 릴리스 식별자가 일치하지 않아요.', 409)
                     if warning:
                         issues.add_comment(record['actor'], record['ref'], warning)
+                if record['restart']:
+                    import project_service
+                    warning = project_service.save_pm2()
+                    if warning:
+                        issues.add_comment(record['actor'], record['ref'], warning)
                 with db.connect() as c:
                     c.execute('BEGIN IMMEDIATE')
                     rows = _recovery_rows(c, record)
