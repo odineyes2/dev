@@ -80,7 +80,7 @@ function toast(msg){
   clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, 3000);
 }
 // 계획서의 '사람이 할 일'(NS-60) — Done 전에 다 했는지 확인받는다. 없으면 바로 통과. 서버도 확인 없이는 Done을 거절한다.
-function confirmDialog(message, {description, summary, body: workBody, wrapItems = false, itemLimit = 3, items = [], moreLabel, okText = '확인', danger = false, input = false, focusCancel = false, checklist = null} = {}){
+function confirmDialog(message, {description, summary, body: workBody, wrapItems = false, itemLimit = 3, items = [], moreLabel, okText = '확인', danger = false, input = false, focusCancel = false, checklist = null, disconnectPreview = null} = {}){
   return new Promise(resolve => {
     const previous = document.activeElement;
     const dialog = document.createElement('dialog');
@@ -90,7 +90,7 @@ function confirmDialog(message, {description, summary, body: workBody, wrapItems
     const [title, ...lines] = String(message).split('\n');
     const detail = description ?? lines.join('\n');
     const list = items.length ? `<div class="confirm-items${wrapItems ? ' wrap' : ''}">${items.slice(0,itemLimit).map(x => `<div class="confirm-item"><span class="confirm-ref">${esc(x.ref)}</span><span class="confirm-item-title" title="${esc(x.title)}">${esc(x.title)}</span>${x.note ? `<span class="confirm-note">${esc(x.note)}</span>` : ''}</div>`).join('')}${items.length > itemLimit ? `<div class="confirm-more">${esc(moreLabel ?? `외 ${items.length - itemLimit}개`)}</div>` : ''}</div>` : '';
-    dialog.innerHTML = `<form method="dialog"><div class="confirm-badge${danger ? ' confirm-badge-danger' : ''}"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-circle-${danger ? 'alert' : 'help'}"/></svg></div><h2 id="confirm-title">${esc(title)}</h2><div class="confirm-content">${summary ? `<p class="confirm-summary">${esc(summary)}</p>` : ''}${summary && (list || workBody) ? '<h3 class="confirm-work-title">작업 내용</h3>' : ''}${summary ? '' : `<p class="confirm-message">${esc(detail)}</p>`}${list}${workBody ? `<p class="confirm-body">${esc(workBody)}</p>` : ''}${summary ? `<p class="confirm-message confirm-foot">${esc(detail)}</p>` : ''}${input ? '<input class="confirm-input" aria-label="닫는 이유" required>' : ''}${checklist ? checklistHtml(checklist) : ''}</div><div class="confirm-actions"><button type="button" class="confirm-cancel">취소</button><button type="submit" class="confirm-ok${danger ? ' danger' : ''}">${esc(okText)}</button></div></form>`;
+    dialog.innerHTML = `<form method="dialog"><div class="confirm-badge${danger ? ' confirm-badge-danger' : ''}"><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-circle-${danger ? 'alert' : 'help'}"/></svg></div><h2 id="confirm-title">${esc(title)}</h2><div class="confirm-content">${summary ? `<p class="confirm-summary">${esc(summary)}</p>` : ''}${summary && (list || workBody) ? '<h3 class="confirm-work-title">작업 내용</h3>' : ''}${summary ? '' : `<p class="confirm-message">${esc(detail)}</p>`}${list}${workBody ? `<p class="confirm-body">${esc(workBody)}</p>` : ''}${summary ? `<p class="confirm-message confirm-foot">${esc(detail)}</p>` : ''}${input ? '<input class="confirm-input" aria-label="닫는 이유" required>' : ''}${checklist ? checklistHtml(checklist) : ''}${disconnectPreview ? disconnectPreviewHtml(disconnectPreview) : ''}</div><div class="confirm-actions"><button type="button" class="confirm-cancel">취소</button><button type="submit" class="confirm-ok${danger ? ' danger' : ''}">${esc(okText)}</button></div></form>`;
     dialog.setAttribute('aria-labelledby', 'confirm-title');
     if(!detail) dialog.querySelector('.confirm-message').remove();
     if(detail){ dialog.querySelector('.confirm-message').id = 'confirm-description'; dialog.setAttribute('aria-describedby', 'confirm-description'); }
@@ -99,11 +99,20 @@ function confirmDialog(message, {description, summary, body: workBody, wrapItems
     dialog.querySelector('.confirm-cancel').onclick = () => dialog.close();
     dialog.onclick = e => { if(e.target === dialog) dialog.close(); };
     dialog.querySelector('form').onsubmit = e => { e.preventDefault(); result = input ? dialog.querySelector('.confirm-input').value
+      : disconnectPreview ? {stop_apps:dialog.querySelector('.disconnect-stop').checked, preview_token:disconnectPreview.token || ''}
       : checklist ? [...dialog.querySelectorAll('input[data-check]:checked')].map(x => x.dataset.check) : true; dialog.close(); };
     dialog.onclose = () => { dialog.remove(); if(previous?.isConnected) previous.focus({preventScroll:true}); resolve(result); };
     dialog.showModal();
     (input ? dialog.querySelector('.confirm-input') : dialog.querySelector(focusCancel ? '.confirm-cancel' : '.confirm-ok')).focus();
   });
+}
+// 연결 해제 대상은 생략 없이 표시하고 이번 요청의 선택만 반환한다.
+function disconnectPreviewHtml(preview){
+  return `<div class="disconnect-preview"><label class="disconnect-choice"><input type="checkbox" class="disconnect-stop" ${preview.available && preview.stop_default ? 'checked' : ''} ${!preview.available ? 'disabled' : ''}><span>이 프로젝트의 앱도 멈추기</span></label>
+    ${!preview.available ? `<p class="dim">${esc(preview.reason || '앱 목록을 확인하지 못했어요.')} 터널만 해제할 수 있어요.</p>` : ''}
+    <p class="dim">멈출 대상 ${(preview.apps || []).length}개 · 체크를 풀면 앱은 계속 실행돼요.</p>
+    <ul class="disconnect-apps">${(preview.apps || []).map(app => `<li><strong>${esc(app.name)}</strong><span>ID ${(app.ids || []).map(id => esc(String(id))).join(', ')} · ${esc(app.status)}</span><span>${esc(app.cwd)}</span></li>`).join('')}</ul>
+    ${preview.available && !preview.apps?.length ? '<p class="dim">현재 등록된 대상 앱이 없어요.</p>' : ''}</div>`;
 }
 // 맡기기 확인창의 검사 체크리스트(DEV-238) — 계획 검사는 체크된 채 해제 가능, 필수와 언제나 절차는 체크된 채 비활성.
 // 좁은 화면에서는 한 줄 요약으로 접고 누르면 펼친다. 고른 계획 검사 키 목록이 확인창의 결과가 된다.
@@ -2680,7 +2689,7 @@ function renderProjects(editKey, projectTab = 'manage'){
     ${ed ? projectForm : ''}
     ${ed && projectTab !== 'brand' ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
     ${ed && projectTab === 'manage' && me?.kind === 'human' ? `<section class="panel project-restart" aria-labelledby="app-restart-title"><div class="audit-toolbar"><h3 id="app-restart-title">앱 재시작</h3><button type="button" id="app-restart-copy" disabled aria-label="앱 재시작 진단 복사"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg> 진단 복사</button></div><p class="dim">저장된 PM2 앱을 재시작하고 로컬 접속을 확인해요. Dev 자체 재시작은 진행 중인 작업이 끝난 뒤 처리하며 화면이 자동으로 다시 연결돼요.</p><div class="line"><button type="button" id="app-restart-start" disabled>앱 재시작</button><button type="button" id="app-restart-refresh">상태 확인</button></div><div id="app-restart-state" role="status" aria-live="polite">재시작 설정을 확인하고 있어요…</div><p id="app-restart-feedback" class="dim" role="status" aria-live="polite"></p><textarea id="app-restart-manual" aria-label="직접 복사할 앱 재시작 진단" readonly hidden></textarea></section>` : ''}
-    ${ed && projectTab === 'manage' ? `<section class="panel project-service"><h3>서비스 연결</h3><p class="dim">도메인과 포트를 저장한 뒤 연결해 주세요. 실행·접속 검사는 일반 코드로 처리해요. 실행 설정이 없을 때만 선택한 에이전트가 유료로 파일을 생성해요. 기존 파일만 사용에서는 에이전트를 호출하지 않아요. 앱 확인 후 DNS·공용 터널을 반영하고 터널을 재시작해요.</p><div class="line"><button type="button" id="p-service-connect" disabled>서비스 연결</button><button type="button" id="p-service-disconnect" disabled>연결 해제</button><button type="button" id="p-service-refresh">새로고침</button></div><section class="service-diagnostic" aria-labelledby="service-diagnostic-title"><div class="service-diagnostic-head"><h4 id="service-diagnostic-title">연결 진단</h4><button type="button" id="p-service-copy" title="복사하기" aria-label="연결 진단 전체 내용 복사하기"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg></button></div><div id="p-service-status" role="status" aria-live="polite"></div><p id="p-service-copy-message" role="status" aria-live="polite" class="dim"></p><textarea id="p-service-copy-text" aria-label="직접 복사할 연결 진단 전체 내용" readonly hidden></textarea></section><p class="dim">연결 해제는 터널 경로만 제거해요. 앱과 DNS 레코드는 유지해요. 도메인을 바꾸면 이전 DNS 레코드는 Cloudflare에서 정리해 주세요.</p></section>` : ''}
+    ${ed && projectTab === 'manage' ? `<section class="panel project-service"><h3>서비스 연결</h3><p class="dim">도메인과 포트를 저장한 뒤 연결해 주세요. 실행·접속 검사는 일반 코드로 처리해요. 실행 설정이 없을 때만 선택한 에이전트가 유료로 파일을 생성해요. 기존 파일만 사용에서는 에이전트를 호출하지 않아요. 앱 확인 후 DNS·공용 터널을 반영하고 터널을 재시작해요.</p><div class="line"><button type="button" id="p-service-connect" disabled>서비스 연결</button><button type="button" id="p-service-disconnect" disabled>연결 해제</button><button type="button" id="p-service-refresh">새로고침</button></div><section class="service-diagnostic" aria-labelledby="service-diagnostic-title"><div class="service-diagnostic-head"><h4 id="service-diagnostic-title">연결 진단</h4><button type="button" id="p-service-copy" title="복사하기" aria-label="연결 진단 전체 내용 복사하기"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg></button></div><div id="p-service-status" role="status" aria-live="polite"></div><p id="p-service-copy-message" role="status" aria-live="polite" class="dim"></p><textarea id="p-service-copy-text" aria-label="직접 복사할 연결 진단 전체 내용" readonly hidden></textarea></section><p class="dim">연결 해제 때 프로젝트 앱도 멈출지 고를 수 있어요. DNS 레코드는 유지해요. 도메인을 바꾸면 이전 DNS 레코드는 Cloudflare에서 정리해 주세요.</p></section>` : ''}
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
     ${!ed ? `<table class="issues projects-table"><thead><tr><th>Key</th><th>Name</th><th>서비스 도메인</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th class="col-narrow">Archived</th><th class="col-narrow"></th></tr></thead><tbody>
       ${projects.map(p => `<tr class="row" data-project-row="${esc(p.key)}"><td class="ref">${esc(p.key)}</td><td><a class="project-title" data-project-link="${esc(p.key)}" href="#/projects?project=${encodeURIComponent(p.key)}&tab=manage">${esc(p.name)}</a><div class="sub"><span data-project-service="${esc(p.key)}">상태 확인 중…</span></div></td><td data-project-domain="${esc(p.key)}">${projectDomainCell(p.service_domain)}</td><td class="hide-m">${esc(p.repo_url)}</td>
@@ -2750,10 +2759,10 @@ function renderProjects(editKey, projectTab = 'manage'){
       const rows = [label, state.phase !== label ? state.phase : '',
         state.observed_port ? `로컬 포트 ${state.observed_port}` : '',
         state.changed ? '저장한 도메인·포트는 아직 반영되지 않았어요.' : '',
-        state.error, state.setup_error, state.url].filter(Boolean);
+        state.error, state.app_error !== state.error ? state.app_error : '', state.setup_error, state.url].filter(Boolean);
       const stepLabels = {done:'완료', running:'진행 중', failed:'실패', pending:'대기'};
       const steps = state.steps || [];
-      diagnosticText = [...steps.map(step => `${step.number}. ${step.label} — ${stepLabels[step.status] || '대기'}`), ...rows].join('\n'); diagnosticVersion++;
+      diagnosticText = [...steps.map(step => `${step.number}. ${step.label} — ${stepLabels[step.status] || '대기'}${step.error ? `\n${step.error}` : ''}`), ...rows].join('\n'); diagnosticVersion++;
       feedback.textContent = ''; manual.hidden = true; manual.value = diagnosticText;
       message.replaceChildren();
       rows.forEach((text, index) => {
@@ -2761,7 +2770,7 @@ function renderProjects(editKey, projectTab = 'manage'){
         const row = document.createElement('div'); row.className = 'service-diagnostic-row';
         if(index === 0){
           row.classList.add('status');
-          const color = state.status === 'running' ? 'in_progress' : state.online === true ? 'done' : state.online === false || state.error || state.setup_error ? 'changes_requested' : 'backlog';
+          const color = state.status === 'running' ? 'in_progress' : state.online === true ? 'done' : state.online === false || state.error || state.app_error || state.setup_error ? 'changes_requested' : 'backlog';
           row.style.setProperty('--sc', `var(--s-${color})`);
         }
         if(text === state.url){
@@ -2805,15 +2814,15 @@ function renderProjects(editKey, projectTab = 'manage'){
       }finally{ copy.disabled = false; }
     };
     paintDiagnostic({}, '연결 상태를 확인하고 있어요…');
-    let serviceBusy = false, serviceTimer;
+    let serviceBusy = false, serviceChoicePending = false, serviceTimer;
     async function refreshService(){
       clearTimeout(serviceTimer);
       try{
         const state = await api('GET', `/api/projects/${encodeURIComponent(ed.key)}/service`);
         if(!section.isConnected) return;
         serviceBusy = state.status === 'running';
-        connect.disabled = serviceBusy || !!ed.archived || !ed.service_domain || !ed.service_port || !!state.setup_error;
-        disconnect.disabled = serviceBusy || !state.managed || !!state.setup_error;
+        connect.disabled = serviceChoicePending || serviceBusy || !!ed.archived || !ed.service_domain || !ed.service_port || !!state.setup_error;
+        disconnect.disabled = serviceChoicePending || serviceBusy || !state.managed || !!state.setup_error;
         connect.textContent = serviceBusy ? '처리 중…' : (state.managed ? '연결 변경 반영' : '서비스 연결');
         paintDiagnostic(state);
         if(!ed.service_port && !portTouched && !portLookup && !saving && state.observed_port && !portInput.value) portInput.value = state.observed_port;
@@ -2821,13 +2830,33 @@ function renderProjects(editKey, projectTab = 'manage'){
       }catch(error){ if(section.isConnected){ paintDiagnostic({error:error.message}, '상태 확인 실패'); if(serviceBusy) serviceTimer = setTimeout(() => { if(section.isConnected) refreshService(); }, 3000); } }
     }
     async function serviceAction(action){
-      if(serviceBusy) return;
+      if(serviceBusy || serviceChoicePending) return;
       if(action === 'connect' && (form.querySelector('#p-domain').value.trim() !== ed.service_domain || Number(form.querySelector('#p-port').value || 0) !== ed.service_port || form.querySelector('#p-service-app').value.trim() !== ed.service_app || form.querySelector('#p-path').value !== ed.local_path || form.querySelector('#p-service-provider').value !== (ed.service_prepare_provider || 'auto'))){
         paintDiagnostic({}, '변경한 서비스 정보와 Local path를 먼저 저장해 주세요.'); return;
       }
+      let choice = {};
+      if(action === 'disconnect'){
+        serviceChoicePending = true;
+        const previousConnect = connect.disabled, previousDisconnect = disconnect.disabled;
+        disconnect.textContent = '대상 확인 중…';
+        connect.disabled = disconnect.disabled = true;
+        try{
+          let preview;
+          try{ preview = await api('GET', `/api/projects/${encodeURIComponent(ed.key)}/service/disconnect-preview`); }
+          catch(error){ preview = {available:false, reason:error.message, apps:[]}; }
+          if(!section.isConnected) return;
+          disconnect.textContent = '연결 해제';
+          choice = await confirmDialog('서비스 연결을 해제할까요?', {description:'터널 경로를 제거해요. DNS 레코드는 유지해요. 선택한 앱은 터널 해제가 끝난 뒤 멈추고 정지 상태를 저장해요.', disconnectPreview:preview, okText:'연결 해제', focusCancel:true});
+          if(!choice || !section.isConnected) return;
+        }finally{
+          serviceChoicePending = false;
+          disconnect.textContent = '연결 해제';
+          connect.disabled = previousConnect; disconnect.disabled = previousDisconnect;
+        }
+      }
       serviceBusy = true; connect.disabled = disconnect.disabled = true;
       paintDiagnostic({status:'running'}, action === 'connect' ? '서비스 연결을 시작하고 있어요…' : '연결 해제를 시작하고 있어요…');
-      try{ await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/service`, {action}); }
+      try{ await api('POST', `/api/projects/${encodeURIComponent(ed.key)}/service`, {action, ...choice}); }
       catch(error){ if(section.isConnected){ paintDiagnostic({error:error.message}, '서비스 요청 실패'); connect.disabled = false; disconnect.disabled = false; } serviceBusy = false; return; }
       await refreshService();
     }
