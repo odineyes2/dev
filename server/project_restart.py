@@ -268,7 +268,7 @@ def _restart(row):
     if os.environ.get('PM2_HOME'):
         env['PM2_HOME'] = os.environ['PM2_HOME']
     project_service._command([*project_service.pm2_launcher(), 'restart', 'ecosystem.config.js', '--only', row['app'], '--update-env'],
-                             'PM2 앱 재시작', row['repo'], environment=env)
+                             'PM2 앱 재시작', row['repo'], environment=project_service.pin_pm2_environment(env))
 
 
 def _verify_release(row, body, build_dir):
@@ -429,6 +429,7 @@ def run(aid):
                         if build_dir:
                             _details(aid, reported_revision=str(body.get('revision', '')), reported_web_revision=str(body.get('web_revision', '')))
                             warning = _verify_release(row, body, build_dir)
+                        warning = '\n'.join(filter(None, (warning, project_service.save_pm2())))
                         _save(aid, 'complete', '빌드·배포·접속 확인 완료' if build_dir else '앱 재시작·접속 확인 완료', warning)
                         if build_dir:
                             # 검증 완료 뒤 복원본 정리 오류로 정상 배포를 되돌리지 않는다.
