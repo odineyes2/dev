@@ -517,11 +517,18 @@ def api_project_service(key: str):
     return project_service.status(key)
 
 
+@app.get('/api/projects/{key}/service/disconnect-preview')
+def api_disconnect_preview(key: str, request: Request):
+    human_only(request)
+    import project_service
+    return JSONResponse(project_service.disconnect_preview(key), headers={'Cache-Control': 'no-store'})
+
+
 @app.post('/api/projects/{key}/service', status_code=202)
 async def api_connect_project_service(key: str, request: Request):
     import project_service
     body = await json_body(request)
-    return await run_in_threadpool(project_service.request, human_only(request), key, body.get('action', 'connect'))
+    return await run_in_threadpool(project_service.request, human_only(request), key, body.get('action', 'connect'), body.get('stop_apps', False), body.get('preview_token', ''))
 
 
 @app.get('/api/projects/templates')

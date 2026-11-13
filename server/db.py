@@ -1255,3 +1255,21 @@ def init() -> int:
         return conn.execute("PRAGMA user_version").fetchone()[0]
     finally:
         conn.close()
+
+
+# 서비스 해제의 앱 선택과 재연결할 영속 신원을 보관한다(DEV-257).
+MIGRATIONS.append("""
+ALTER TABLE project_services ADD COLUMN stop_apps INTEGER NOT NULL DEFAULT 0 CHECK(stop_apps IN (0,1));
+ALTER TABLE project_services ADD COLUMN app_error TEXT NOT NULL DEFAULT '';
+CREATE TABLE project_service_stopped_apps (
+ project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ repo_path TEXT NOT NULL CHECK(length(trim(repo_path)) > 0),
+ app_name TEXT NOT NULL CHECK(length(app_name) BETWEEN 1 AND 80),
+ app_cwd TEXT NOT NULL CHECK(length(trim(app_cwd)) > 0),
+ exec_path TEXT NOT NULL CHECK(length(trim(exec_path)) > 0),
+ was_online INTEGER NOT NULL CHECK(was_online IN (0,1)),
+ state TEXT NOT NULL CHECK(state IN ('requested','stopped')),
+ updated_at TEXT NOT NULL CHECK(length(trim(updated_at)) > 0),
+ PRIMARY KEY(project_id,app_name,app_cwd,exec_path)
+);
+""")
