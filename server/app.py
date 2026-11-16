@@ -1,4 +1,5 @@
 """dev — 코딩 에이전트용 이슈 게시판(dev.lomebrote.com). 사람은 화면, 에이전트는 REST/MCP로 쓴다."""
+import os
 import sqlite3
 import time
 import re
@@ -983,6 +984,29 @@ def index_page():
         html = re.sub(r'"/' + re.escape(name) + r'(?:\?v=[a-f0-9]+)?"', f'"/{name}?v={v}"', html)
     import brand_assets
     return HTMLResponse(brand_assets.version_links(html, STATIC_DIR))
+
+
+ACME_RELAY_URL = os.environ.get("ACME_RELAY_URL", "http://127.0.0.1:8081").rstrip("/")
+_ACME_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+
+
+@app.get("/.well-known/acme-challenge/{token}", include_in_schema=False)
+async def acme_challenge_relay(token: str, request: Request):
+    """Let's Encrypt HTTP-01 확인 요청을 nightshift의 Tailscale 전용 Caddy(127.0.0.1:8081)로 넘긴다.
+
+    Caddy는 Tailscale 주소에서만 dev.lomebrote.com을 받으므로, 공개 주소로 오는 확인 요청은 Cloudflare 터널을 거쳐
+    여기로 온다(/api/ 밖이라 로그인 없음 — 확인 값은 원래 공개되는 값). Caddy가 모르는 토큰이면 404."""
+    if not _ACME_TOKEN_RE.match(token):
+        raise HTTPException(404)
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{ACME_RELAY_URL}/.well-known/acme-challenge/{token}",
+                                    headers={"Host": request.headers.get("host", "")})
+    except httpx.HTTPError:
+        raise HTTPException(404)
+    if resp.status_code != 200:
+        raise HTTPException(404)
+    return Response(resp.content[:4096], media_type="text/plain")
 
 
 app.mount("/mcp", mcp_app)
