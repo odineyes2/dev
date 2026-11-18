@@ -10,6 +10,7 @@ dev Task {ref}를 **구현**한다. 지금 작업 폴더는 이 Task 전용 git 
    명령 규칙(허용 목록 밖이면 거절되고, 거절마다 문맥 전체가 다시 오간다): 이미 작업 폴더라 `cd`를 붙이지 않는다. 명령은 한 번에 하나만 — `;`·`&&`·`|`로 잇지 않는다.
    파일은 Edit·Write 도구로만 고친다(python·heredoc 수정 스크립트, 작업 폴더 밖 임시 파일, rm은 막혀 있다). 거절된 명령은 같은 방식으로 다시 시도하지 않는다.
 3. 검사: {checks}
+   `tests/` 등 검사 파일은 사람 승인된 Task의 바꿀 파일에 명시된 `tests/guard/` 지킴이만 추가·수정하고, 이슈별 검사는 `.dev-checks/`에 임시로 써서 커밋하지 않는다. 서버가 임시 검사를 보관해 다시 돌린다.
 4. 기능 하나를 커밋 하나로 `git add`·`git commit` 한다(커밋 메시지 끝에 `({ref})` 표시,
    트레일러 `Co-Authored-By: Claude Code <noreply@anthropic.com>`).
 5. `git rev-parse HEAD`로 커밋 해시를 얻어 mcp__dev__link_commit으로 잇고, 마지막 응답에 확인하는 법을 적고(상태 전환은 서버가 수행한다),
