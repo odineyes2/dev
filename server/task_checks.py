@@ -1,9 +1,11 @@
 """Task 검사(DEV-238) — 계획서 `## 검사` 절에서 Task별 검사를 읽고, 맡길 때 사람이 고른 것과 언제나 하는 절차만 서버가 돌린다.
 
+지킴이만 영구, 나머지는 임시다.
 최소 검사 원칙: 서버는 검사를 고르거나 보태지 않는다. 돌리는 것은 (1) 계획서가 적고 사람이 맡길 때 남긴 명령,
 (2) 언제나 하는 짧은 안전 절차(바뀐 파일 문법·diff 비밀값·DEV 마이그레이션 사본 적용)뿐이다.
 검사는 PC 한 대에서 한 번에 하나씩 돈다(부하로 실패하지 않게).
 """
+import hashlib
 import json
 import os
 import re
@@ -27,6 +29,7 @@ CMD = re.compile(r"^`([^`]+)`\s*(?:[—–-]+\s*(.*))?$")
 NONE = re.compile(r"^없음\s*(?:[—–-]+\s*(.*))?$")
 SHELL = re.compile(r"[;&|<>$`\r\n]")
 TIMEOUT_SEC = int(os.environ.get("DEV_CHECK_TIMEOUT_SEC") or 600)
+SCRIPTS_DIR = config.DATA_DIR / "check-scripts"
 TAIL = 2000
 ACTOR = {"kind": "human", "name": "system/checks"}
 ALWAYS = (
@@ -118,6 +121,23 @@ def validate_plan(body: str) -> None:
     """post_plan 때 — `## Tasks`가 있으면 모든 Task 번호가 `## 검사`에 있어야 한다."""
     section = parse_section(body)
     tasks = issues.parse_tasks(body)
+    import execute
+    guard_section = re.search(r"^## 지킴이 변경[ \t]*$([\s\S]*?)(?=^#{1,6} |\Z)", body, re.M)
+    guards = set()
+    if guard_section:
+        guards = {m.group(1) for m in re.finditer(
+            r"^\s*-\s+`?(tests/guard/[^`:\s]+)`?\s*:\s*(?:추가|수정|삭제)\s*—\s*\S.*$",
+            guard_section.group(1), re.M)}
+    for task in tasks:
+        for raw in re.split(r"[,、]", task["files"]):
+            path = raw.strip(" `*").replace("\\", "/")
+            while path.startswith("./"):
+                path = path[2:]
+            if path.startswith("tests/guard/"):
+                if path not in guards:
+                    raise CheckFormatError(f"`## 지킴이 변경`에 `{path}: 추가|수정|삭제 — 이유`를 적어 사람 승인을 받아 주세요")
+            elif execute.is_check_file(path) or path == ".dev-checks" or path.startswith(".dev-checks/"):
+                raise CheckFormatError("이슈별 검사는 파일 칸에 넣지 않는다: " + path)
     numbers = {t["n"] for t in tasks}
     if not tasks:
         return
@@ -206,7 +226,7 @@ def prompt_text(issue: dict, keys) -> str:
                 "서버는 언제나 하는 절차(바뀐 파일 문법·비밀값)만 확인한다.")
     lines = "\n".join(f"   - `{i['cmd']}` — {i['why']}" for i in chosen)
     return ("이번 실행에서 통과시킬 검사(사람이 맡길 때 고른 것)는 아래뿐이다. 구현을 마치면 이 명령을 돌려 통과시키고, 다른 검사로 넓히지 않는다.\n"
-            + lines + "\n   검사 파일이 아직 없으면 이 Task 안에서 만든다. 끝나면 서버가 같은 명령을 그대로 다시 돌린다.")
+            + lines + "\n   검사 파일이 아직 없으면 `.dev-checks/`에 만들고 커밋하지 않는다. 서버가 보관해 같은 명령을 다시 돌린다.")
 
 
 # ---- 실행 -------------------------------------------------------------------
@@ -392,10 +412,52 @@ def run_keys(run_id: int):
     return json.loads(row["checks_json"]) if row and row["checks_json"] else None
 
 
+def _script_files(root):
+    """링크를 따라 외부 파일을 보관하거나 복원하지 않는다."""
+    if root.is_symlink() or not root.is_dir():
+        return
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if path.is_file() and not any(p.is_symlink() for p in (path, *path.parents)):
+            yield path, relative
+
+
+def stash_scripts(ref: str, run_id: int, cwd) -> list[tuple[str, str, int]]:
+    """임시 검사 전체와 내용 식별자를 실행별로 보관한다."""
+    target = SCRIPTS_DIR / ref / f"run-{run_id}"
+    rows = []
+    for path, relative in _script_files(Path(cwd) / ".dev-checks"):
+        data = path.read_bytes()
+        dest = target / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        rows.append((relative.as_posix(), hashlib.sha256(data).hexdigest()[:12], len(data)))
+    return rows
+
+
+def restore_scripts(ref: str, dest) -> None:
+    """마지막 보관본을 복원하되 현재 작업 파일은 보존한다."""
+    root = SCRIPTS_DIR / ref
+    runs = [p for p in root.glob("run-*") if p.name[4:].isdigit() and p.is_dir() and not p.is_symlink()]
+    if not runs:
+        return
+    source = max(runs, key=lambda p: int(p.name[4:]))
+    for path, relative in _script_files(source):
+        target = Path(dest) / ".dev-checks" / relative
+        if target.exists() or any(p.is_symlink() for p in (target, *target.parents)):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+
+
 def verify(ref: str, cwd, run_id: int) -> str | None:
     """실행이 끝난 worktree에서 검사를 돌린다. 통과하면 None, 실패하면 재작업에 붙일 보고."""
     issue = issues.get_issue(ref)
+    restore_scripts(issue["ref"], cwd)
     report, ok = run_all(issue["ref"], cwd, selected(issue, run_keys(run_id)))
+    stored = stash_scripts(issue["ref"], run_id, cwd)
+    if stored:
+        report += "\n\n🗂 임시 검사 보관: " + " · ".join(f"{name} · {sha} · {size}바이트" for name, sha, size in stored)
     issues.add_comment(ACTOR, issue["ref"], report)
     return None if ok else report
 
@@ -419,6 +481,7 @@ def merge_recheck(repo, worktree, ref: str, before: str, task_sha: str) -> str |
     if not plan:
         return None
     with _lock:
+        restore_scripts(ref, worktree)
         results = [run_command(worktree, item["cmd"]) for item in plan]
     report, ok = _report(results)
     issues.add_comment(ACTOR, issue["ref"], "🔀 병합 전 다시 검사 — 다른 병합이 같은 파일(" + ", ".join(f"`{f}`" for f in overlap[:10])
