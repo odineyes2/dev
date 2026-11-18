@@ -230,7 +230,7 @@ def safe_env(repo: str) -> dict:
 
 
 # 프로젝트별 ignore 설정과 무관하게 캡처 계약의 산출물을 제외한다.
-CAPTURE_PATHS = ('.ui-captures', 'tests/shots')
+CAPTURE_PATHS = ('.ui-captures', 'tests/shots', '.dev-checks')
 CODE_PATHSPEC = ('.',*(f':(top,exclude){p}/**' for p in CAPTURE_PATHS))
 
 
@@ -238,7 +238,7 @@ def reject_capture_changes(cwd, *revision):
     """강제 add 또는 Claude 커밋에 들어간 산출물은 완료 전에 거절한다."""
     paths = _git(cwd, 'diff', '--name-only', '-z', *revision).split('\0')
     if any(p == root or p.startswith(root + '/') for p in paths for root in CAPTURE_PATHS):
-        raise issues.StoreError('캡처 산출물(.ui-captures/, tests/shots/)을 커밋에서 제외해 주세요.', 409)
+        raise issues.StoreError('캡처·임시 검사 산출물(.ui-captures/, tests/shots/, .dev-checks/)을 커밋에서 제외해 주세요.', 409)
 
 
 def prompt_for(ref: str, parent_ref: str | None, keys=None) -> str:
@@ -496,15 +496,20 @@ def register_completion(actor, ref, cwd, run_id, note):
     reject_capture_changes(cwd, f'{BASE_BRANCH}...HEAD')
     # 마지막 트리에서 삭제했어도 중간 Task 커밋에 남은 PNG/DB는 병합하지 않는다.
     if _git(cwd, 'log', '--format=%H', f'{BASE_BRANCH}..HEAD', '--', *CAPTURE_PATHS):
-        raise issues.StoreError('중간 Task 커밋의 캡처 산출물도 커밋 이력에서 제외해 주세요.', 409)
+        raise issues.StoreError('중간 Task 커밋의 캡처·임시 검사 산출물도 커밋 이력에서 제외해 주세요.', 409)
     cfg = orchestrate.settings(issue['project_key'])
     with db.connect() as c:
         start_sha = c.execute('SELECT task_start_sha FROM runs WHERE id=?', (run_id,)).fetchone()[0]
     leftover = [line[3:] for line in _git(cwd, 'status', '--porcelain', '--untracked-files=all').splitlines() if line.startswith('??')]
+    leftover = [f for f in leftover if not f.startswith(".dev-checks/")]
     if leftover:
         note += '\n\n🧹 커밋되지 않은 파일이 worktree에 남아 있어요(병합에는 안 들어가요): ' + ', '.join(f'`{f}`' for f in leftover[:20])
+    denied = unapproved_checks(issue, cwd)
+    if denied:
+        raise issues.StoreError("승인되지 않은 검사 파일: " + ", ".join(denied)
+                                + " — 이슈별 검사는 `.dev-checks/`에 임시로 쓰고 커밋하지 않아요. 지킴이 변경은 계획서 `## 지킴이 변경`에 적어 승인받아야 해요", 409)
     stray = out_of_scope(issue, _git(cwd, 'diff', '--name-only', f'{BASE_BRANCH}...HEAD').splitlines())   # 병합해 온 base 변경은 빼고 Task 변경만
-    if stray:   # 막지는 않는다(새 검사 파일 등 정당한 추가가 있다) — 검토하는 사람이 보게 남긴다
+    if stray:   # 나머지 범위 밖 변경은 검토하는 사람이 보게 남긴다
         note += '\n\n⚠️ Task의 바꿀 파일 밖 변경: ' + ', '.join(f'`{f}`' for f in stray[:20]) + (' 외' if len(stray) > 20 else '')
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
@@ -630,14 +635,38 @@ def task_files(issue: dict) -> set[str]:
     return {p.strip(" `*").replace("\\", "/").lstrip("./") for f in fields for p in re.split(r"[,、]", f)} - {""}
 
 
+def is_check_file(path: str) -> bool:
+    """위치와 이름으로 검사 파일을 판별한다."""
+    name = path.rsplit("/", 1)[-1]
+    return (path.startswith("tests/") or name.startswith("test_")
+            or bool(re.search(r"(?:_test|\.test|\.spec)\.", name)))
+
+
+def unapproved_checks(issue: dict, cwd) -> list[str]:
+    """삭제는 허용하고 승인된 정확한 지킴이 경로의 추가·수정만 허용한다."""
+    allowed = task_files(issue)
+    entries = _git(cwd, "diff", "--name-status", "-z", f"{BASE_BRANCH}...HEAD").split("\0")
+    denied, i = [], 0
+    while i < len(entries) and entries[i]:
+        status, path = entries[i], entries[i + 1]
+        i += 2
+        if status.startswith(("R", "C")):
+            path = entries[i]
+            i += 1
+        if status != "D" and is_check_file(path):
+            if not (path.startswith("tests/guard/") and path in allowed):
+                denied.append(path)
+    return denied
+
+
 def out_of_scope(issue: dict, changed: list[str]) -> list[str]:
-    """Task 본문의 `바꿀 파일:` 목록에 없는 변경 파일(tests/ 아래 .py는 허용). 목록이 없으면 빈 목록.
+    """Task 본문의 `바꿀 파일:` 목록에 없는 변경 파일. 목록이 없으면 빈 목록.
     Codex 경로는 `git add -A`라 검사가 만든 파일 같은 것도 그대로 커밋된다(NS-32-1의 캡처 PNG)."""
     allowed = task_files(issue)
     if not allowed:
         return []
     def ok(path):
-        return (path.startswith("tests/") and path.endswith(".py")) or any(path == a or path.startswith(a.rstrip("/") + "/") or path.rsplit("/", 1)[-1] == a for a in allowed)
+        return any(path == a or path.startswith(a.rstrip("/") + "/") or path.rsplit("/", 1)[-1] == a for a in allowed)
     return [p for p in changed if not ok(p)]
 
 
