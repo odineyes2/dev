@@ -6,3 +6,4 @@ graphify-out/
 tests/shots/
 .ui-captures/
 .test-cache/
+.dev-checks/
