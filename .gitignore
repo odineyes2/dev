@@ -7,3 +7,11 @@ tests/shots/
 .ui-captures/
 .test-cache/
 .dev-checks/
+.ipynb_checkpoints/ 
+**/.ipynb_checkpoints/ 
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+# Local ComfyUI workflows
+FaceDetailer(checkpoint, api, json).json
+image_anima_preview (Anima, api, json, faceDetailer).json
