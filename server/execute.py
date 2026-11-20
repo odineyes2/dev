@@ -38,7 +38,7 @@ USER_ISOLATION = ["--setting-sources", "project", "--disable-slash-commands",
                   "--settings", json.dumps({"claudeMdExcludes": [(Path.home() / ".claude" / "CLAUDE.md").as_posix()], "autoMemoryEnabled": False})]
 ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git status:*)", "Bash(git diff:*)",
                  "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git rev-parse:*)"] + [f"mcp__dev__{t}" for t in (
-    "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "add_comment", "set_status", "link_commit", "claim_issue", "release_issue", "upload_attachment")]
+    "run_task_checks", "whoami", "list_projects", "list_issues", "get_issue", "read_attachment", "add_comment", "set_status", "link_commit", "claim_issue", "release_issue", "upload_attachment")]
 BLOCKED_TOOLS = ["WebFetch", "WebSearch", "NotebookEdit", "Read(**/.env)"] + [f"Bash({c}:*)" for c in (
     "git push", "git checkout", "git switch", "git reset", "git rebase", "git merge", "git worktree", "git branch", "git remote",
     "git config", "git clean", "git stash", "rm", "curl", "wget", "ssh", "npx", "pm2")]   # Read(**/.env): 프로젝트 비밀값(DEV-239)
@@ -250,9 +250,8 @@ def prompt_for(ref: str, parent_ref: str | None, keys=None) -> str:
 
 def command_for(ref: str, parent_ref: str | None, mcp_config: str, keys=None) -> list[str]:
     import review   # 검토 모드와 같은 claude 실행 파일·dev MCP 설정을 쓴다
-    import task_checks
-    # 사람이 맡길 때 고른 검사 명령만 그대로 허용한다(DEV-238)
-    allowed = list(ALLOWED_TOOLS) + [f"Bash({i['cmd']})" for i in task_checks.selected(issues.get_issue(ref), keys)]
+    # 선택 명령 실행은 공용 서버 도구가 담당한다.
+    allowed = list(ALLOWED_TOOLS)
     return [review.claude_bin(), "-p", prompt_for(ref, parent_ref, keys), "--permission-mode", "acceptEdits", *USER_ISOLATION,
             "--strict-mcp-config", "--mcp-config", mcp_config, "--allowedTools", *allowed, "--disallowedTools", *BLOCKED_TOOLS,
             "--max-budget-usd", str(BUDGET_USD), "--no-session-persistence", "--output-format", "stream-json", "--verbose"]
@@ -264,8 +263,9 @@ def codex_command_for(ref: str, parent_ref: str | None, keys=None) -> list[str]:
     import task_checks
     prompt = review.preamble(ref, execution=True) + prompts.render("execute_codex.md", ref=ref, branch=branch_name(ref), parent_ref=parent_ref,
                                                                    checks=task_checks.prompt_text(issues.get_issue(ref), keys))
-    cmd = review.codex_command(prompt, ["whoami", "get_issue", "list_projects", "read_attachment"], web="cached")
-    return cmd[:-1] + ["--output-schema", str(Path(__file__).with_name("codex_execute.schema.json")),
+    cmd = review.codex_command(prompt, ["whoami", "get_issue", "list_projects", "read_attachment", "claim_issue", "run_task_checks"], web="cached")
+    return cmd[:-1] + ["-c", f"mcp_servers.dev.tool_timeout_sec={int(TIMEOUT_SEC)}",
+                       "--output-schema", str(Path(__file__).with_name("codex_execute.schema.json")),
                        cmd[-1]]
 
 
@@ -740,6 +740,7 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
     cmd = codex_command_for(ref, issue["parent_ref"], keys) if provider == "codex" else command_for(ref, issue["parent_ref"], str(review.MCP_CONFIG), keys)
     cmd = review.with_model(with_notice(cmd, provider, notice), provider, model)
     env = safe_env(repo)
+    env["MCP_TOOL_TIMEOUT"] = str(int(timeout * 1000))   # 공용 검사는 실행 시간 상한 안에서 기다린다.
     issue = issues.get_issue(ref)
     parent = issues.get_issue(issue["parent_ref"]) if issue["parent_ref"] else None
     why = blocked_reason(issue, parent)
@@ -756,6 +757,7 @@ def start(actor: dict, ref: str, provider: str | None = None, model: str | None 
         c.execute('UPDATE runs SET task_start_sha=?, checks_json=? WHERE id=?', (start_sha, checks_json, run_id))
         c.execute('INSERT INTO task_execution_results(run_id,plan_version) SELECT id,? FROM runs WHERE id=? AND issue_id=?',
                   (parent['approval']['plan_version'], run_id, issue['id']))
+    cmd = with_notice(cmd, provider, f"\n서버 검사 실행 신원: ref={ref}, run_id={run_id}. 검사 준비 뒤 run_task_checks(ref, run_id)를 호출한다.\n")
     name = "Codex" if provider == "codex" else "Claude"
     limit = f"시간 제한 {int(timeout // 60)}분, 비용 상한 없음" if provider == "codex" else f"비용 상한 ${BUDGET_USD:g}, 시간 제한 {int(timeout // 60)}분"
     review.launch(actor, ref, run_id, provider,

@@ -297,4 +297,11 @@ def project_initialization_status(key: str) -> dict:
     return _call(project_init.status, key)
 
 
+@mcp.tool
+def run_task_checks(ref: str, run_id: int) -> dict:
+    """현재 실행 Task의 저장된 검사만 서버에서 수행한다. cwd·명령·선택은 받지 않는다."""
+    import task_checks
+    return _call(task_checks.run_task_checks, _actor(), ref, run_id)
+
+
 mcp_app = mcp.http_app(path="/", stateless_http=True, json_response=True)
