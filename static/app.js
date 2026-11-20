@@ -649,7 +649,7 @@ const pendingActions = new Set();
 const actionKind=i=>quickAction(i,{pending:pendingActions.has(i.ref)}).kind;
 function actionOff(kind,s,i){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='task-approve' ? s.auto_approve===true : kind==='decision' && i.status==='triage' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
 function actionHtml(i){
-  const kind=actionKind(i); if(!kind) return finishingHtml(i);
+  const kind=actionKind(i); if(!kind) return '';
   const settings=actionSession?.settings;
   return `<div class="issue-actions" aria-label="Action">${(['review','change-review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
     const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='change-review'?'수정':kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':kind==='task-approve'?'승인':'전체 완료';
@@ -811,7 +811,7 @@ function issueRowHtml(i){
   const lc = lifecycle(i, actionSession?.settings || {});
   return `<tr class="row${lc.owner === 'human' ? ' mine' : ''}${i.parent_ref ? ' child' : ''}" data-ref="${esc(i.ref)}" data-o="${lc.owner}" data-id="${i.id}"${i.parent_ref ? ` data-parent="${esc(i.parent_ref)}"` : ''}><td class="ref">${esc(i.ref)}</td>
     <td class="title-cell"><span class="issue-title-line" title="${esc(i.title || '')}">${(i.labels || []).includes('goal') ? '<span class="goal-badge">[Goal]</span> ' : ''}${titleHtml(i)}</span><div class="issue-badges">${i.rating ? `<span class="row-rating" title="평점 ${i.rating}/5" aria-label="평점 ${i.rating}점">★${i.rating}</span>` : ''}${labelsHtml((i.labels || []).filter(l => l !== 'goal'))}${typesHtml(i, false)}</div>${i.parent_id ? '<div class="sub">TASK</div>' : ''}<div class="issue-history-mobile"><span class="issue-meta-agent">${processingAgentsHtml(i)}</span><span class="issue-meta-time">${completionTimeHtml(i)}</span><span class="issue-meta-tokens">${issueTokensHtml(i)}</span></div></td>
-    <td class="issue-col-status">${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}<span class="lc-mobile">${lifecycleDotsHtml(i, {meta:false})}</span></td>
+    <td class="issue-col-status">${statusHtml(i.status)} ${approvalHtml(i.approval)}${progressHtml(i)}${finishingHtml(i)}<span class="lc-mobile">${lifecycleDotsHtml(i, {meta:false})}</span></td>
     <td class="issue-col-progress" title="${esc(lifecycleTip(lc))}">${lifecycleDotsHtml(i, {meta:false})}</td>
     <td class="hide-m issue-col-agent">${processingAgentsHtml(i)}</td><td class="hide-m issue-col-time">${completionTimeHtml(i)}</td><td class="hide-m token-cell issue-col-tokens">${issueTokensHtml(i)}</td><td class="hide-m dim issue-col-updated">${fmtTime(i.updated_at)}</td><td class="action-cell">${actionHtml(i)}</td></tr>`;
 }
@@ -1396,7 +1396,7 @@ async function renderBoard(background = false){
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
       ${mine.map(i => `<div class="card" draggable="true" data-ref="${esc(i.ref)}"><div class="ref">${esc(i.ref)}${i.parent_id ? ' · Task' : ''}</div>
         <div class="t">${titleHtml(i)}</div><div class="meta">${approvalHtml(i.approval)}${labelsHtml(i.labels)}${typesHtml(i)}
-        ${processingAgentsHtml(i)}${completionTimeHtml(i)}${issueTokensHtml(i)}${clockHtml(i)}${lifecycleDotsHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
+        ${processingAgentsHtml(i)}${completionTimeHtml(i)}${issueTokensHtml(i)}${clockHtml(i)}${lifecycleDotsHtml(i)}${finishingHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
     </div></div>`;
   }).join('')}</div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
   const jobs = loadJobs().catch(() => null);
