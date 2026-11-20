@@ -114,7 +114,42 @@ def parse_section(body: str, strict=True) -> dict | None:
         except CheckFormatError:
             if strict:
                 raise
+    attach_inputs(body, out)
     return out
+
+
+# 검사 입력은 한 줄 JSON으로 정확한 명령을 참조한다.
+# - 1: {"cmd":"python check.py","phase":"browser","inputs":["static/**"],
+#       "conditions":{"deterministic":true,"fixture":"local-v1"},"reuse":true}
+def attach_inputs(body: str, checks: dict) -> None:
+    section = re.search(r"^## 검사 입력[ \t]*$([\s\S]*?)(?=^#{1,6} |\Z)", body or "", re.M)
+    if not section:
+        return
+    seen = set()
+    for line in section.group(1).splitlines():
+        if not line.strip():
+            continue
+        m = re.match(r"^\s*-\s*(\d+)\s*:\s*(\{.*\})\s*$", line)
+        try:
+            if not m:
+                raise ValueError("- Task 번호: JSON 객체 형식이 필요해요")
+            def unique_fields(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("JSON 키가 중복돼요")
+                    result[key] = value
+                return result
+            n, meta = int(m[1]), json.loads(m[2], object_pairs_hook=unique_fields)
+            import check_results
+            check_results.validate_contract(meta)
+            matches = [i for i in checks.get(n, {}).get("items", []) if i["cmd"] == meta["cmd"]]
+            if len(matches) != 1 or (n, meta["cmd"]) in seen:
+                raise ValueError("명령 참조가 없거나 중복돼요")
+            seen.add((n, meta["cmd"]))
+            matches[0]["contract"] = meta
+        except (ValueError, TypeError) as e:
+            raise CheckFormatError("검사 입력: " + str(e)) from e
 
 
 def validate_plan(body: str) -> None:
@@ -158,7 +193,11 @@ def body_text(entry: dict | None) -> str:
     if "none" in entry:
         return f"\n\n**검사**: 없음 — {entry['none']}"
     lines = [f"- {'(필수) ' if i['required'] else ''}`{i['cmd']}` — {i['why']}" for i in entry["items"]]
-    return "\n\n**검사**:\n" + "\n".join(lines) if lines else ""
+    text = "\n\n**검사**:\n" + "\n".join(lines) if lines else ""
+    contracts = [i["contract"] for i in entry["items"] if "contract" in i]
+    if contracts:
+        text += "\n\n**검사 입력**:\n" + "\n".join("- " + json.dumps(c, ensure_ascii=False, sort_keys=True) for c in contracts)
+    return text
 
 
 def from_body(body: str) -> tuple[list[dict], str | None]:
@@ -179,6 +218,10 @@ def from_body(body: str) -> tuple[list[dict], str | None]:
         if not mm:
             break
         items.append({"key": f"p{len(items) + 1}", "cmd": mm.group(2).strip(), "why": (mm.group(3) or "").strip(), "required": bool(mm.group(1))})
+    meta = re.search(r"^\*\*검사 입력\*\*:[ \t]*$([\s\S]*?)(?=^\*\*|^#|\Z)", body or "", re.M)
+    if meta:
+        synthetic = "## 검사 입력\n" + "\n".join("- 1: " + line.strip()[2:] for line in meta[1].splitlines() if line.strip())
+        attach_inputs(synthetic, {1: {"items": items}})
     return items, None
 
 
@@ -264,7 +307,7 @@ def run_command(cwd, cmd: str, timeout: int = TIMEOUT_SEC) -> dict:
             code, note = 124, f"\n시간 제한 {timeout}초를 넘겨 멈췄어요."
         sink.seek(0)
         output = sink.read().decode("utf-8", errors="replace") + note
-    return {"cmd": cmd, "ok": code == 0, "seconds": round(time.monotonic() - started, 1), "output": output}
+    return {"cmd": cmd, "ok": code == 0, "exit_code": code, "seconds": round(time.monotonic() - started, 1), "output": output}
 
 
 def changed(cwd) -> tuple[list[str], str]:
@@ -387,6 +430,9 @@ def _report(results) -> tuple[str, bool]:
     lines = [f"🧪 검사 결과 — {'통과' if ok else '실패'}"]
     for r in results:
         label = r["cmd"] if r.get("always") else f"`{r['cmd']}`"
+        label += " [" + r.get("status", "passed" if r["ok"] else "failed") + "]"
+        if r.get("reason"):
+            label += " · " + r["reason"]
         lines.append(f"- {'✅' if r['ok'] else '❌'} {label}" + (f" · {r['detail']}" if r.get("detail") else "") + f" · {r['seconds']}초")
     for r in results:
         if not r["ok"]:
@@ -394,16 +440,53 @@ def _report(results) -> tuple[str, bool]:
     return "\n".join(lines), ok
 
 
-def run_all(ref: str, cwd, plan_items: list[dict]) -> tuple[str, bool]:
-    """언제나 절차 + 고른 계획 검사를 PC 전역 잠금 아래 차례로 돌려 (보고, 통과 여부)를 돌려준다."""
+def run_stages(ref: str, cwd, plan_items: list[dict], *, run_id=None, selected_keys=None, context=None) -> list[dict]:
+    """언제나 절차 뒤 승인된 단계를 실행한다. 보관 신원이 없으면 재사용하지 않는다."""
+    import check_results
     with _lock:
+        for item in plan_items:
+            command_args(item["cmd"])
+            if "contract" in item:
+                check_results.validate_contract(item["contract"])
+                if item["contract"]["cmd"] != item["cmd"]:
+                    raise CheckFormatError("검사 입력의 명령이 달라요")
+        if selected_keys is not None and (not isinstance(selected_keys, list) or not all(isinstance(k, str) for k in selected_keys)
+                                          or set(selected_keys) - {i.get("key") for i in plan_items}):
+            raise CheckFormatError("현재 Task의 검사 선택이 아니에요")
         files, base = changed(cwd)
         results = [{**check_syntax(cwd, files), "always": True}, {**check_secrets(cwd, files, base), "always": True}]
         if ref.startswith("DEV-") and "server/db.py" in files:
             results.append({**check_migration(cwd), "always": True})
-        for item in plan_items:
-            results.append(run_command(cwd, item["cmd"]))
-    return _report(results)
+        for r in results:
+            r["status"] = "passed" if r["ok"] else "failed"
+        store = check_results.Store(ref, run_id) if run_id is not None else None
+        attempt = store.begin() if store else None
+        blocked = any(not r["ok"] for r in results)
+        for phase in ("static", "functional", "browser"):
+            stage = []
+            for item in plan_items:
+                contract = item.get("contract", {})
+                if contract.get("phase", "browser") != phase:
+                    continue
+                common = {"cmd": item["cmd"], "phase": phase, "seconds": 0.0, "output": "", "ok": False}
+                if selected_keys is not None and item.get("key") not in selected_keys and not item.get("required"):
+                    r = {**common, "ok": True, "status": "not_selected", "reason": "사람이 선택 해제한 검사"}
+                elif blocked:
+                    r = {**common, "status": "blocked", "reason": "앞 단계 검사 실패"}
+                else:
+                    r = check_results.execute(cwd, item, run_command, store=store, attempt=attempt, context=context)
+                    r["phase"] = phase
+                stage.append(r)
+            results.extend(stage)
+            blocked = blocked or any(r["status"] in ("failed", "blocked") for r in stage)
+        if store:
+            store.finish(attempt, results)
+        return results
+
+
+def run_all(ref: str, cwd, plan_items: list[dict], *, run_id=None, selected_keys=None, context=None) -> tuple[str, bool]:
+    """기존 보고 계약을 유지하며 단계 실행 결과를 반환한다."""
+    return _report(run_stages(ref, cwd, plan_items, run_id=run_id, selected_keys=selected_keys, context=context))
 
 
 def run_keys(run_id: int):
