@@ -1209,7 +1209,8 @@ def parse_tasks(body: str) -> list[dict]:
         out.append({"n": int(mm.group(1)), "title": title[:300], "files": info.get("파일", ""),
                     "after": [int(x) for x in re.findall(r"\d+", info.get("선행", ""))]})
     import task_checks
-    checks = task_checks.parse_section(body, strict=False) or {}   # `## 검사` 절(DEV-238) — 승인 때 Task 본문으로 옮긴다
+    # 명령별 검사 입력 계약도 함께 읽어 승인된 Task 본문에 보존한다(DEV-259).
+    checks = task_checks.parse_section(body, strict=False) or {}
     for t in out:
         t["checks"] = checks.get(t["n"])
     return out
