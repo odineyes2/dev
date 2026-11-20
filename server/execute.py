@@ -457,7 +457,7 @@ def _register_repair(actor, ref, rid, sha, ended_at=None):
         import task_checks
         failed = task_checks.verify(ref, cwd, rid)   # 맡길 때 고른 검사와 언제나 절차(DEV-238)
         if failed:
-            raise issues.StoreError('수정 커밋이 검사를 통과하지 못했어요.\n' + failed[-3000:], 409)
+            raise issues.StoreError('수정 커밋이 검사를 통과하지 못했어요.\n' + task_checks.failure_summary(failed), 409)
         if _git(cwd, 'rev-parse', 'HEAD') != sha:
             raise issues.StoreError('검사 중 수정 커밋이 바뀌었어요.', 409)
         note = '수동 수정 커밋의 완료 등록을 마쳤어요. 에이전트 재호출 없음.'
