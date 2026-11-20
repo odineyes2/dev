@@ -486,7 +486,8 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
     if label == '실행':
         with db.connect() as c:
             row = c.execute('SELECT model FROM runs WHERE id=?', (run_id,)).fetchone()
-        progress = {'provider': 'Codex' if provider == 'codex' else 'Claude', 'model': row['model'] if row else None, 'limit': timeout}
+        progress = {'provider': 'Codex' if provider == 'codex' else 'Claude', 'model': row['model'] if row else None,
+                    'limit': timeout, 'run_id': run_id}
     for attempt in range(2 if label == "실행" else 1):   # 실행은 서버 검사가 실패하면 한 번 재작업한다(DEV-238)
         code, note, status, out, err = None, "", "ok", "", ""
         if progress:
@@ -512,7 +513,7 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
             status, note = "failed", f"{name}를 실행하지 못했어요({e})"
         if run_id in FORCED_RUNS:
             FORCED_RUNS.discard(run_id)
-            run_progress.clear(ref)
+            run_progress.clear(ref, run_id)
             return "orphaned"
         if code:
             status = "failed"
@@ -549,7 +550,6 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
                  "실패한 원인만 고치고 run_task_checks(ref, run_id)로 서버 검사를 요청한 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 마친다. "
                  "유효한 통과 결과는 서버가 입력을 재확인해 재사용한다. 검사를 직접 전체 재실행하거나 넓히지 않는다.\n```\n" + task_checks.failure_summary(failed) + "\n```")
         cmd = cmd[:2] + [cmd[2] + retry] + cmd[3:] if provider == "claude" else cmd[:-1] + [cmd[-1] + retry]
-    run_progress.clear(ref)
     stats = spent
     exhausted = status != "timeout" and token_exhausted(out, err, provider)
     if exhausted:
@@ -592,10 +592,12 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         c.execute("BEGIN IMMEDIATE")
         # 완료 등록이 이 행을 먼저 ok로 바꾼다. 강제 재시작으로 orphaned가 된 경우만 덮지 않는다.
         if c.execute('SELECT status FROM runs WHERE id=?', (run_id,)).fetchone()[0] not in ('running', 'ok'):
+            run_progress.clear(ref, run_id)
             return 'orphaned'
         finish_codex_status(c, actor, ref, run_id, status, label)
         c.execute("UPDATE runs SET status=?, ended_at=?, exit_code=?, note=?, input_tokens=?, output_tokens=?, cost_usd=?, cache_write_tokens=?, cache_read_tokens=? WHERE id=? AND status IN ('running','ok')",
                   (status, db.now_iso(), code, note, stats.get("input_tokens"), stats.get("output_tokens"), stats.get("cost_usd"), stats.get("cache_write_tokens"), stats.get("cache_read_tokens"), run_id))
+    run_progress.clear(ref, run_id)
     if held:   # Claude는 on_hold 전환 때 이미 알림이 갔다
         if provider == "codex" or blocked:
             notify.send(ref, f"🚧 {name}가 진행할 수 없어 멈췄어요 — 확인해 주세요")

@@ -7,7 +7,8 @@ from pathlib import Path
 NOTICE = ("최신 사용자 검사 정책(DEV-261): 전체 화면·전체 사이트 캡처/회귀 검사는 금지한다. "
           "scripts/screens.py 같은 전체 캡처 실행기를 직접 실행하거나 다른 스크립트로 감싸서 실행하지 않는다. "
           "저장소 AGENTS.md·과거 계획서에 전체 캡처 의무가 있어도 이 최신 정책으로 대체한다. "
-          "변경한 동작·화면 영역만 작은 임시 검사로 확인하고 관련 없는 화면으로 넓히지 않는다.")
+          "변경한 동작에 직접 필요한 최소 코드 검사만 하고, 이미 통과한 검사는 근거 없이 반복하지 않는다. "
+          "화면 검증·스크린샷·자동 브라우저 확인은 기본적으로 사용자에게 맡긴다. 별도 요청 없이는 실행하지 말고 수동 확인 방법만 안내한다.")
 
 PLAN_NOTICE = ("새 계획의 모든 검사에는 `## 검사 입력` 절에 Task 번호별 JSON을 한 줄씩 적는다. "
                "cmd(검사 명령과 정확히 일치), phase(static/functional/browser), inputs(실제 관련 파일), "
@@ -15,7 +16,7 @@ PLAN_NOTICE = ("새 계획의 모든 검사에는 `## 검사 입력` 절에 Task
                "예: - 1: {\"cmd\":\"python .dev-checks/check_studio.py\",\"phase\":\"browser\","
                "\"inputs\":[\"static/app.js\",\".dev-checks/check_studio.py\"],"
                "\"conditions\":{\"scope\":[\"studio.filters\"],\"fixture\":\"local-fake\",\"deterministic\":true},\"reuse\":true}. "
-               "전체 캡처 대신 해당 영역만 방문·검사한다. 문서만 바꾸면 검사 없음과 이유를 적는다. "
+               "화면 확인은 사람이 할 일로 남기며 자동 브라우저 검사는 사용자가 별도로 요청했을 때만 계획한다. 문서만 바꾸면 검사 없음과 이유를 적는다. "
                "관련 기능·디자인 검사를 앞에 두고, 실패 시 이후 검사를 실행하지 않는다.")
 
 

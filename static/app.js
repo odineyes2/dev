@@ -1705,8 +1705,14 @@ function lifecycle(it, auto = {}){
       s[3] = 'fail'; m[3] = failed.length ? `<b>${lcCheckTool(failed[0])} ${failed.length}개 실패</b>` : '<b>검사 실패</b>';
       msg = `${esc(run.ref || it.ref)} 검사에서 ${esc(failed.length ? lcCheckTarget(failed[0]) : '검사')}가 실패해 ${prov}가 한 번 더 고치는 중이에요.`;
     }else if(run.phase === 'checks'){
-      at(2, 'agent', `<b>${lead(doneN)}검사 중</b>${lcClock(run.seconds)}`);
-      msg = `${prov}가 구현하는 중이에요 — 자동 병합이 켜져 있으면 운영 반영 확인 후 In Review로 올라와요.`;
+      at(3, 'agent', `<b>${lead(doneN)}검사 중</b>${lcClock(run.seconds)}`);
+      msg = '서버가 선택된 검사를 실행하고 있어요. 결과가 나오면 다음 단계를 표시해요.';
+    }else if(run.phase === 'check_failed'){
+      at(3, 'fail', `<b>검사 실패 · 수정 대기</b>${lcClock(run.seconds)}`);
+      msg = '검사가 실패했어요. 에이전트가 실패 원인을 확인하고 필요한 수정을 진행해요.';
+    }else if(run.phase === 'check_passed'){
+      at(3, 'agent', `<b>검사 통과 · 결과 정리 중</b>${lcClock(run.seconds)}`);
+      msg = '검사는 통과했어요. 완료 응답·커밋·병합 결과를 정리하고 있어요.';
     }else{
       at(2, 'agent', `<b>${lead(doneN)}${prov} 구현 중</b>${lcClock(run.seconds)}`);
       msg = task ? `부모 계획서 v${f.parent_plan_version ?? ''}의 ${it.sub_number ?? run.sub_number ?? ''}번째 Task예요. ${prov}가 구현하고 있어요.`

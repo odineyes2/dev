@@ -668,6 +668,17 @@ def check_context(issue, run_id):
 
 
 def _shared_check(issue, cwd, run_id):
+    import run_progress
+    ticket = run_progress.begin_checks(issue['ref'], run_id)
+    report, ok = '', False
+    try:
+        report, ok = _perform_check(issue, cwd, run_id)
+        return report, ok
+    finally:
+        run_progress.finish_checks(issue['ref'], ticket, ok, report, active=not _run_cancelled(run_id))
+
+
+def _perform_check(issue, cwd, run_id):
     keys, context = check_context(issue, run_id)
     plan, _ = from_body(issue.get("body", ""))
     report, ok = run_all(issue["ref"], cwd, plan, run_id=run_id, selected_keys=keys, context=context)

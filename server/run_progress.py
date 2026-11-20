@@ -10,15 +10,42 @@ _lock = threading.Lock()
 _runs = {}     # ref → {'phase', 'since', 'attempt', 'provider', 'model', 'limit'}
 
 STALL_GRACE_SEC = 120          # 모델 호출이 시간 제한을 이만큼 넘겨도 끝나지 않으면 멈춘 것으로 본다
-SHORT = {'implement': '구현 중', 'checks': '검사 중', 'rework': '재작업 중'}   # 검사는 맡길 때 고른 것만(DEV-238)
+SHORT = {'implement': '구현 중', 'checks': '검사 중', 'rework': '재작업 중',
+         'check_failed': '검사 실패 · 수정 대기', 'check_passed': '검사 통과 · 결과 정리 중'}
 
 
 def set_phase(ref, phase, **info):
     """단계를 바꾼다. `started`(실행 전체의 시작)는 같은 ref에서 처음 부를 때만 정하고 재작업 전환에도 이어진다(DEV-240)."""
     now = time.time()
     with _lock:
-        started = _runs.get(ref, {}).get('started', now)
+        previous = _runs.get(ref, {})
+        started = previous.get('started', now) if previous.get('run_id') in (None, info.get('run_id')) else now
         _runs[ref] = {'phase': phase, 'since': now, **info, 'started': started}
+
+
+def begin_checks(ref, run_id):
+    """에이전트 요청·완료 검사를 같은 단계로 표시하고 기존 실행 정보를 보존한다."""
+    now = time.time()
+    with _lock:
+        previous = _runs.get(ref, {})
+        if previous.get('run_id') not in (None, run_id):
+            return None
+        ticket = {**previous, 'phase': 'checks', 'run_id': run_id, 'since': now,
+                  'started': previous.get('started', now), 'failed': []}
+        _runs[ref] = ticket
+        return ticket
+
+
+def finish_checks(ref, ticket, ok, report='', *, active=True):
+    """종료·새 실행 뒤에 도착한 이전 검사 응답은 화면 상태를 되살리지 않는다."""
+    with _lock:
+        if ticket is None or _runs.get(ref) is not ticket:
+            return
+        if not active:
+            _runs.pop(ref, None)
+            return
+        _runs[ref] = {**ticket, 'phase': 'check_passed' if ok else 'check_failed',
+                      'since': time.time(), 'failed': [] if ok else failed_checks(report)}
 
 
 def failed_checks(report) -> list[str]:
@@ -30,9 +57,10 @@ def failed_checks(report) -> list[str]:
     return out
 
 
-def clear(ref):
+def clear(ref, run_id=None):
     with _lock:
-        _runs.pop(ref, None)
+        if run_id is None or _runs.get(ref, {}).get('run_id') in (None, run_id):
+            _runs.pop(ref, None)
 
 
 def _clock(ts):
