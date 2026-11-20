@@ -311,8 +311,21 @@ def run_command(cwd, cmd: str, timeout: int = TIMEOUT_SEC) -> dict:
             proc.wait(timeout=30)
             code, note = 124, f"\n시간 제한 {timeout}초를 넘겨 멈췄어요."
         sink.seek(0)
-        output = sink.read().decode("utf-8", errors="replace") + note
-    return {"cmd": cmd, "ok": code == 0, "exit_code": code, "seconds": round(time.monotonic() - started, 1), "output": output}
+        import check_results
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, prefix="dev-check-") as detail:
+            preview = []
+            diagnostics = []
+            for raw in sink:
+                line = check_results.clean(raw.decode("utf-8", errors="replace"))
+                detail.write(line)
+                if len(diagnostics) < 4 and re.search(r"error|exception|assert|failed|mismatch|실패|오류", line, re.I):
+                    diagnostics.append(line[:1000])
+                if sum(map(len, preview)) < 8000 and not re.search(r"\.(?:png|jpe?g|webp)\b", line, re.I):
+                    preview.append(line[:2000])
+            detail.write(note)
+            output_file = detail.name
+        output = "".join(diagnostics + preview) + note
+    return {"cmd": cmd, "ok": code == 0, "exit_code": code, "seconds": round(time.monotonic() - started, 1), "output": output, "output_file": output_file}
 
 
 def changed(cwd) -> tuple[list[str], str]:
@@ -430,19 +443,45 @@ def check_migration(cwd) -> dict:
             "output": (r.stdout + r.stderr).strip()}
 
 
+def failure_summary(report, limit=1200):
+    """실패 첫머리를 재작업과 알림에 공통으로 사용한다."""
+    import check_results
+    return check_results.clean(report)[:limit]
+
+
 def _report(results) -> tuple[str, bool]:
+    import check_results
     ok = all(r["ok"] for r in results)
-    lines = [f"🧪 검사 결과 — {'통과' if ok else '실패'}"]
-    for r in results:
+    failures = [r for r in results if r.get("status", "passed" if r["ok"] else "failed") == "failed"]
+    lines = []
+    for r in failures[:4]:
+        lines.append(f"실패 원인 · {r['cmd']} · {check_results.diagnostic(r)}")
+    lines.append(f"🧪 검사 결과 — {'통과' if ok else '실패'}")
+    remaining_images = 4
+    for r in sorted(results, key=lambda r: r not in failures)[:40]:
+        status = r.get("status", "passed" if r["ok"] else "failed")
         label = r["cmd"] if r.get("always") else f"`{r['cmd']}`"
-        label += " [" + r.get("status", "passed" if r["ok"] else "failed") + "]"
+        icon = {"failed": "❌", "blocked": "⏸", "not_selected": "➖", "reused": "♻️"}.get(status, "✅")
+        line = f"- {icon} {label} · {status} · 실제 {r['seconds']}초"
+        if status == "reused":
+            line += f" · 과거 {r['original_seconds']}초 · 원 run-{r['source_run_id']}/{r['source_attempt']}"
+        elif r.get("run_id"):
+            line += f" · run-{r['run_id']}/{r['attempt']}"
         if r.get("reason"):
-            label += " · " + r["reason"]
-        lines.append(f"- {'✅' if r['ok'] else '❌'} {label}" + (f" · {r['detail']}" if r.get("detail") else "") + f" · {r['seconds']}초")
-    for r in results:
-        if not r["ok"]:
-            lines.append(f"\n**{r['cmd']}** 출력(끝 {TAIL}자):\n```\n{r['output'][-TAIL:]}\n```")
-    return "\n".join(lines), ok
+            line += " · " + check_results.diagnostic({"reason": r["reason"]})
+        if r.get("detail"):
+            line += " · " + check_results.diagnostic({"reason": r["detail"]})
+        if "capture_count" in r:
+            line += f" · 캡처 생성 {r['capture_count'] if r['capture_count'] is not None else '미확인'} · AI 열람 미확인 · 게시판 첨부 미확인"
+        lines.append(line)
+        if r.get("detail_path"):
+            lines.append("  상세: " + r["detail_path"])
+        for name in r.get("representatives", [])[:remaining_images]:
+            lines.append("  대표/실패 이미지: " + name)
+            remaining_images -= 1
+    if len(results) > 40:
+        lines.append(f"나머지 {len(results) - 40}개는 상세 결과를 확인해 주세요.")
+    return check_results.clean("\n".join(lines)), ok
 
 
 def run_stages(ref: str, cwd, plan_items: list[dict], *, run_id=None, selected_keys=None, context=None) -> list[dict]:
@@ -466,6 +505,11 @@ def run_stages(ref: str, cwd, plan_items: list[dict], *, run_id=None, selected_k
             r["status"] = "passed" if r["ok"] else "failed"
         store = check_results.Store(ref, run_id) if run_id is not None else None
         attempt = store.begin() if store else None
+        if store:
+            for n, r in enumerate(results):
+                detail = attempt / f"safety-{n}.json"
+                check_results._atomic(detail, {**r, "output": check_results.clean(r.get("output", ""))})
+                r.update(detail_path=str(detail), run_id=run_id, attempt=attempt.name)
         blocked = any(not r["ok"] for r in results)
         for phase in ("static", "functional", "browser"):
             stage = []
@@ -520,6 +564,8 @@ def stash_scripts(ref: str, run_id: int, cwd) -> list[tuple[str, str, int]]:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         rows.append((relative.as_posix(), hashlib.sha256(data).hexdigest()[:12], len(data)))
+    import check_results
+    check_results._atomic(target.with_suffix(".manifest.json"), {"files": rows, "captures": [r[0] for r in rows if Path(r[0]).suffix.lower() in check_results.ARTIFACT_SUFFIXES], "scripts_and_fixtures": [r[0] for r in rows if Path(r[0]).suffix.lower() not in check_results.ARTIFACT_SUFFIXES]})
     return rows
 
 
@@ -570,7 +616,7 @@ def _shared_check(issue, cwd, run_id):
         raise issues.StoreError("검사 중 승인·선택·Task 조건이 바뀌었어요. 다시 요청해 주세요.", 409)
     stored = stash_scripts(issue["ref"], run_id, cwd)
     if stored:
-        report += "\n\n🗂 임시 검사 보관: " + " · ".join(f"{name} · {sha} · {size}바이트" for name, sha, size in stored)
+        report += f"\n\n🗂 임시 검사·fixture {len(stored)}개 보관 · 상세: {SCRIPTS_DIR / issue['ref'] / f'run-{run_id}.manifest.json'}"
     issues.add_comment(ACTOR, issue["ref"], report)
     return report, ok
 

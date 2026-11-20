@@ -267,8 +267,14 @@ def execute(cwd, item, runner, *, store=None, attempt=None, context=None):
                 return {"cmd": item["cmd"], "ok": True, "status": "reused", "seconds": 0.0,
                         "original_seconds": old["seconds"], "source": str(origin),
                         "source_run_id": old["run_id"], "source_attempt": old["attempt"], "input_key": before["key"],
-                        "reason": "승인·입력·환경 식별자가 같아요", "output": ""}
+                        "reason": "승인·입력·환경 식별자가 같아요", "output": "", "capture_count": 0,
+                        "detail_path": str(origin / "complete.json")}
+    prior_captures = captures(cwd)
     result = runner(cwd, item["cmd"])
+    current_captures = captures(cwd)
+    generated = [name for name, sha in current_captures.items() if prior_captures.get(name) != sha]
+    generated.sort(key=lambda name: (not re.search(r"fail|error", name, re.I), name))
+    result.update(capture_count=len(generated) if current_captures or prior_captures else None, representatives=generated[:4])
     result["status"] = "passed" if result["ok"] else "failed"
     after = None
     try:
@@ -282,7 +288,14 @@ def execute(cwd, item, runner, *, store=None, attempt=None, context=None):
         import repo_snapshot
         number = len(list(attempt.glob("result-*.json"))) + 1
         output = attempt / f"output-{number}.txt"
-        output.write_text(repo_snapshot.SECRET.sub("[REDACTED]", result.get("output", "")), encoding="utf-8")
+        streamed = result.pop("output_file", None)
+        if streamed:
+            try:
+                shutil.copyfile(streamed, output)
+            finally:
+                Path(streamed).unlink(missing_ok=True)
+        else:
+            output.write_text(clean(result.get("output", "")), encoding="utf-8")
         artifacts = {}
         stored_files = {output.name: hashlib.sha256(output.read_bytes()).hexdigest()}
         for folder in (".dev-checks", ".ui-captures"):
@@ -297,9 +310,44 @@ def execute(cwd, item, runner, *, store=None, attempt=None, context=None):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(data)
                 stored_files[dest.relative_to(attempt).as_posix()] = artifacts[name]
+        result.update(run_id=store.run_id, attempt=attempt.name)
         record = {**result, "output": "", "input": before, "created": time.time(), "run_id": store.run_id,
                   "ref": store.ref, "attempt": attempt.name, "cacheable": stable and before["reusable"] and result["ok"],
                   "reuse_disabled_reason": reason, "stored_files": stored_files, "artifacts": artifacts}
         _atomic(attempt / f"result-{number}.json", record)
         result["detail_path"] = str(attempt / f"result-{number}.json")
+    else:
+        streamed = result.pop("output_file", None)
+        if streamed:
+            Path(streamed).unlink(missing_ok=True)
     return result
+
+
+def clean(value):
+    """보관과 보고 양쪽에 비밀값 정제를 적용한다."""
+    import repo_snapshot
+    return repo_snapshot.SECRET.sub("[REDACTED]", str(value))
+
+
+def diagnostic(result):
+    """캡처 목록을 건너뛰고 첫 진단을 제한된 길이로 제공한다."""
+    value = clean(result.get("reason") or result.get("output") or "상세 결과를 확인해 주세요.")
+    lines = []
+    candidates = value.splitlines()
+    structured = [line for line in candidates if re.search(r"error|exception|assert|failed|mismatch|실패|오류", line, re.I)]
+    for line in structured + candidates:
+        if re.search(r"\.(?:png|jpe?g|webp)\b", line, re.I) and line not in structured:
+            continue
+        if line.strip() and line.strip() not in lines:
+            lines.append(line.strip())
+        if len(lines) == 3:
+            break
+    return " / ".join(lines)[:400] or "상세 결과를 확인해 주세요."
+
+
+def captures(cwd):
+    """산출물 바이트 차이를 관측하며 AI 열람과 첨부로 추정하지 않는다."""
+    root = Path(cwd).resolve()
+    return {_safe_file(root, p): hashlib.sha256(p.read_bytes()).hexdigest()
+            for folder in (".dev-checks", ".ui-captures") for p in _files(root / folder)
+            if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}}

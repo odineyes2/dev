@@ -403,7 +403,7 @@ def _merge(repo: str, ref: str, after: list[str], checkpoint=None, expected_task
             import task_checks
             failed = task_checks.merge_recheck(repo, worktree, ref, before, task_sha)
             if failed:
-                return 'changes_requested', '병합 결과에서 이 Task의 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n' + failed[-3000:]
+                return 'changes_requested', '병합 결과에서 이 Task의 검사가 실패했어요 — 운영 코드는 유지했어요.\n\n' + task_checks.failure_summary(failed)
         changed = _git(str(worktree), 'status', '--porcelain', '--untracked-files=no').stdout.strip()
         if _git(str(worktree), 'rev-parse', 'HEAD').stdout.strip() != sha or changed:
             return 'changes_requested', ('검사 중 시험 병합 사본이 변경됐어요 — 검사 결과를 반영하지 않았어요. 검사가 커밋된 파일을 다시 쓰면 .gitignore에 넣거나 임시 폴더에 쓰게 고쳐 주세요.'
