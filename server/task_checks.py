@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 import config
 import db
 import issues
+import check_policy
 
 SECTION = re.compile(r"^#{1,6}[ \t]*검사[ \t]*$", re.M)
 LINE = re.compile(r"^\s*[-*]\s*(\d+)\s*(\(필수\))?\s*:\s*(.+?)\s*$")
@@ -108,6 +109,8 @@ def parse_section(body: str, strict=True) -> dict | None:
             if not cm:
                 raise CheckFormatError(f"`{line.strip()}` — 명령은 백틱으로 감싸 주세요.")
             command_args(cm.group(1))
+            if strict and (reason := check_policy.prohibited(cm.group(1))):
+                raise CheckFormatError(reason)
             if not (cm.group(2) or "").strip():
                 raise CheckFormatError(f"`{cm.group(1)}` — 무엇을 증명하는지 한 줄 적어 주세요.")
             entry["items"].append({"cmd": cm.group(1).strip(), "why": cm.group(2).strip(), "required": required})
@@ -155,6 +158,13 @@ def attach_inputs(body: str, checks: dict) -> None:
 def validate_plan(body: str) -> None:
     """post_plan 때 — `## Tasks`가 있으면 모든 Task 번호가 `## 검사`에 있어야 한다."""
     section = parse_section(body)
+    for entry in (section or {}).values():
+        for item in entry.get("items", []):
+            meta = item.get("contract")
+            if not meta:
+                raise CheckFormatError(f"`{item['cmd']}` — 새 계획에는 `## 검사 입력`에 단계·입력·범위를 명시해 주세요.")
+            if error := check_policy.scope_error(meta):
+                raise CheckFormatError(error)
     tasks = issues.parse_tasks(body)
     import execute
     guard_section = re.search(r"^## 지킴이 변경[ \t]*$([\s\S]*?)(?=^#{1,6} |\Z)", body, re.M)
@@ -240,7 +250,8 @@ def items(issue: dict) -> dict:
     applies = {"syntax": True, "secrets": True, "migration": key == "DEV" and "server/db.py" in files,
                "build": bool(cfg.get("build")), "health": bool(cfg.get("pm2_app"))}
     always = [{"key": k, "label": label, "why": why, "required": True} for k, label, why in ALWAYS if applies[k]]
-    return {"plan": [{**i, "label": i["cmd"]} for i in plan], "none": none, "always": always}
+    return {"plan": [{**i, "label": ("정책 제외 · " if check_policy.prohibited(i['cmd']) else "") + i["cmd"],
+                      "policy_excluded": bool(check_policy.prohibited(i['cmd']))} for i in plan], "none": none, "always": always}
 
 
 def selection(issue: dict, chosen) -> list[str]:
@@ -262,13 +273,13 @@ def selected(issue: dict, keys) -> list[dict]:
 
 def prompt_text(issue: dict, keys) -> str:
     """실행 프롬프트 `{checks}` — 이번 실행에서 통과시킬 검사."""
-    chosen = selected(issue, keys)
+    chosen = [i for i in selected(issue, keys) if not check_policy.prohibited(i['cmd'])]
     _, none = from_body(issue.get("body", ""))
     if not chosen:
-        return ("이번 실행에는 계획 검사가 없다" + (f"(계획서: {none})" if none else "") + ". 검사 명령을 새로 만들어 돌리지 않는다. "
+        return (check_policy.NOTICE + "\n이번 실행에는 실행 가능한 계획 검사가 없다" + (f"(계획서: {none})" if none else "") + ". 전체 검사 요구는 정책 제외로 기록한다. "
                 "서버는 언제나 하는 절차(바뀐 파일 문법·비밀값)만 확인한다.")
     lines = "\n".join(f"   - `{i['cmd']}` — {i['why']}" for i in chosen)
-    return ("이번 실행에서 사람이 고른 검사는 아래뿐이다. 검사 스크립트를 준비한 뒤 "
+    return (check_policy.NOTICE + "\n이번 실행에서 사람이 고른 검사는 아래뿐이다. 검사 스크립트를 준비한 뒤 "
             "dev MCP run_task_checks(ref, run_id)를 호출한다. run_id는 아래 실행 안내에 있다. "
             "명령을 직접 실행한 보고는 서버 통과 결과로 인정되지 않는다.\n"
             + lines + "\n   검사 파일이 없으면 `.dev-checks/`에 만들고 커밋하지 않는다. "
@@ -293,9 +304,13 @@ def _kill_tree(proc):
         proc.kill()
 
 
-def run_command(cwd, cmd: str, timeout: int = TIMEOUT_SEC) -> dict:
+def run_command(cwd, cmd: str, timeout: int = TIMEOUT_SEC, *, cancelled=None) -> dict:
     """명령 하나를 작업 폴더에서 돌린다. 출력은 파일로 받아 남은 자식이 파이프를 붙잡아도 멈추지 않는다."""
     args = command_args(cmd)
+    if reason := check_policy.prohibited(cmd, cwd):
+        return {"cmd": cmd, "ok": False, "status": "blocked", "seconds": 0.0, "output": "", "reason": reason}
+    if cancelled and cancelled():
+        return {"cmd": cmd, "ok": False, "status": "cancelled", "seconds": 0.0, "output": "", "reason": "소유 실행이 종료되어 검사를 취소했어요."}
     exe = sys.executable if args[0] == "python" else shutil.which(args[0])
     if not exe:
         return {"cmd": cmd, "ok": False, "seconds": 0.0, "output": f"{args[0]}을(를) 찾지 못했어요."}
@@ -303,13 +318,21 @@ def run_command(cwd, cmd: str, timeout: int = TIMEOUT_SEC) -> dict:
     with tempfile.TemporaryFile() as sink:
         proc = subprocess.Popen([exe, *args[1:]], cwd=cwd, stdout=sink, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=_env(),
                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        try:
-            code = proc.wait(timeout=timeout)
-            note = ""
-        except subprocess.TimeoutExpired:
-            _kill_tree(proc)
-            proc.wait(timeout=30)
-            code, note = 124, f"\n시간 제한 {timeout}초를 넘겨 멈췄어요."
+        note, state = "", ""
+        while True:
+            stopped = cancelled and cancelled()
+            if stopped or time.monotonic() - started >= timeout:
+                _kill_tree(proc)
+                proc.wait(timeout=30)
+                code = 125 if stopped else 124
+                state = "cancelled" if stopped else "failed"
+                note = "소유 실행이 종료되어 검사를 취소했어요." if stopped else f"시간 제한 {timeout}초를 넘겨 멈췄어요."
+                break
+            try:
+                code = proc.wait(timeout=min(.5, max(.01, timeout - (time.monotonic() - started))))
+                break
+            except subprocess.TimeoutExpired:
+                continue
         sink.seek(0)
         import check_results
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, prefix="dev-check-") as detail:
@@ -325,7 +348,22 @@ def run_command(cwd, cmd: str, timeout: int = TIMEOUT_SEC) -> dict:
             detail.write(note)
             output_file = detail.name
         output = "".join(diagnostics + preview) + note
-    return {"cmd": cmd, "ok": code == 0, "exit_code": code, "seconds": round(time.monotonic() - started, 1), "output": output, "output_file": output_file}
+    return {"cmd": cmd, "ok": code == 0, "status": state or ("passed" if code == 0 else "failed"), "exit_code": code,
+            "seconds": round(time.monotonic() - started, 1), "output": output, "output_file": output_file}
+
+
+def _run_cancelled(run_id):
+    if run_id is None:
+        return False
+    with db.connect() as c:
+        row = c.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()
+    if not row or row["status"] not in {"running", "ok"}:
+        return True
+    if row['status'] == 'ok':   # 정상 완료 뒤의 격리 병합 재검사는 별도 승인된 절차다.
+        return False
+    # 재등록 검사는 같은 run id를 이어 쓰므로 원래 started_at으로 제한하지 않는다.
+    # 실행기의 timeout/취소 전환을 조회하여 서버 쪽 자식에도 중단을 전달한다.
+    return False
 
 
 def changed(cwd) -> tuple[list[str], str]:
@@ -461,7 +499,7 @@ def _report(results) -> tuple[str, bool]:
     for r in sorted(results, key=lambda r: r not in failures)[:40]:
         status = r.get("status", "passed" if r["ok"] else "failed")
         label = r["cmd"] if r.get("always") else f"`{r['cmd']}`"
-        icon = {"failed": "❌", "blocked": "⏸", "not_selected": "➖", "reused": "♻️"}.get(status, "✅")
+        icon = {"failed": "❌", "blocked": "⏸", "cancelled": "⏹", "policy_skipped": "🚫", "not_selected": "➖", "reused": "♻️"}.get(status, "✅")
         line = f"- {icon} {label} · {status} · 실제 {r['seconds']}초"
         if status == "reused":
             line += f" · 과거 {r['original_seconds']}초 · 원 run-{r['source_run_id']}/{r['source_attempt']}"
@@ -488,6 +526,9 @@ def run_stages(ref: str, cwd, plan_items: list[dict], *, run_id=None, selected_k
     """언제나 절차 뒤 승인된 단계를 실행한다. 보관 신원이 없으면 재사용하지 않는다."""
     import check_results
     with _lock:
+        if _run_cancelled(run_id):
+            return [{"cmd": "검사 실행", "ok": False, "status": "cancelled", "seconds": 0.0,
+                     "output": "", "reason": "소유 실행이 종료되어 검사를 시작하지 않아요."}]
         for item in plan_items:
             command_args(item["cmd"])
             if "contract" in item:
@@ -511,23 +552,41 @@ def run_stages(ref: str, cwd, plan_items: list[dict], *, run_id=None, selected_k
                 check_results._atomic(detail, {**r, "output": check_results.clean(r.get("output", ""))})
                 r.update(detail_path=str(detail), run_id=run_id, attempt=attempt.name)
         blocked = any(not r["ok"] for r in results)
+        runner = lambda root, cmd: run_command(root, cmd, cancelled=lambda: _run_cancelled(run_id))
+        # 금지된 구형 명령은 실행·통과로 표시하지 않고 최신 사용자 정책에 따라 제외한다.
+        runnable = []
+        for item in plan_items:
+            reason = check_policy.prohibited(item['cmd'], cwd)
+            meta = item.get('contract')
+            if not reason and meta and meta['phase'] == 'browser' and 'scope' in meta['conditions']:
+                reason = check_policy.scope_error(meta)
+            if reason:
+                results.append({"cmd": item['cmd'], "ok": True, "status": "policy_skipped", "seconds": 0.0,
+                                "output": "", "reason": "DEV-261 사용자 지시로 정책 제외(미실행): " + reason})
+            else:
+                runnable.append(item)
         for phase in ("static", "functional", "browser"):
             stage = []
-            for item in plan_items:
-                contract = item.get("contract", {})
-                if contract.get("phase", "browser") != phase:
+            for item in runnable:
+                if check_policy.phase(item) != phase:
                     continue
                 common = {"cmd": item["cmd"], "phase": phase, "seconds": 0.0, "output": "", "ok": False}
                 if selected_keys is not None and item.get("key") not in selected_keys and not item.get("required"):
                     r = {**common, "ok": True, "status": "not_selected", "reason": "사람이 선택 해제한 검사"}
+                elif _run_cancelled(run_id):
+                    r = {**common, "status": "cancelled", "reason": "소유 실행이 종료되어 검사를 취소했어요."}
                 elif blocked:
                     r = {**common, "status": "blocked", "reason": "앞 단계 검사 실패"}
+                elif item.get('contract', {}).get('phase') == 'browser' and (reason := check_policy.scope_error(item['contract'])):
+                    r = {**common, "status": "blocked", "reason": reason}
                 else:
-                    r = check_results.execute(cwd, item, run_command, store=store, attempt=attempt, context=context)
+                    r = check_results.execute(cwd, item, runner, store=store, attempt=attempt, context=context)
                     r["phase"] = phase
+                    if _run_cancelled(run_id):
+                        r.update(ok=False, status='cancelled', reason='소유 실행이 종료되어 검사 결과를 적용하지 않아요.')
                 stage.append(r)
+                blocked = blocked or not r['ok']
             results.extend(stage)
-            blocked = blocked or any(r["status"] in ("failed", "blocked") for r in stage)
         if store:
             store.finish(attempt, results)
         return results

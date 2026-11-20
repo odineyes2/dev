@@ -6,6 +6,7 @@
 import re
 
 import config
+import check_policy
 
 DIR = config.REPO_ROOT / "harness" / "prompts"
 SLOT = re.compile(r"\{([a-z_]+)\}")
@@ -14,4 +15,8 @@ SLOT = re.compile(r"\{([a-z_]+)\}")
 def render(name: str, **values) -> str:
     """파일을 읽어 자리표시를 채운다. 파일이 없으면 오류 — 지시문 없이 에이전트를 돌리지 않는다."""
     text = (DIR / name).read_text(encoding="utf-8")
-    return SLOT.sub(lambda m: str(values[m.group(1)]) if m.group(1) in values else m.group(0), text)
+    text = SLOT.sub(lambda m: str(values[m.group(1)]) if m.group(1) in values else m.group(0), text)
+    if name.startswith(('review_', 'execute_')):
+        policy = check_policy.NOTICE + ("\n" + check_policy.PLAN_NOTICE if name.startswith('review_') else '')
+        return policy + '\n\n' + text
+    return text

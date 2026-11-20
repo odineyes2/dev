@@ -41,6 +41,8 @@
 - `ecosystem.config.js` pm2 앱 `dev`(127.0.0.1:8300, Cloudflare 터널이 dev.lomebrote.com으로 연결).
 
 ## 규칙
+
+- 검사 정책(DEV-261, 사용자 직접 지시): 전체 화면·전체 사이트 캡처/회귀 검사는 금지한다. `scripts/screens.py` 등 기존 전체 실행기는 서버에서도 정책 제외(미실행)로 기록한다. 다른 프로젝트 AGENTS.md나 옛 필수 검사 요구도 이 정책으로 대체한다. 변경 동작·영역만 임시 검사로 확인한다. 새 계획의 모든 검사는 `## 검사 입력`에 phase·inputs·conditions.scope·reuse를 명시한다. 구형 검사도 실패 즉시 뒤 검사를 중단한다. 전체 검사로 자동 확대하지 않는다.
 - 이슈 번호: 최상위는 `NS-17`, 그 아래 Task는 `NS-17-1`(만들 때의 부모 번호에 묶여 부모를 바꾸거나 지워도 그대로, DB `sub_of`·`sub_number`). 이전에 만든 Task(DEV-30~35 등)는 옛 번호 그대로.
 - 자동 병합: `data/orchestrate.json`에서 `auto_merge`가 꺼지지 않은(기본 켜짐) 프로젝트는 오케스트레이터(`server/orchestrate.py`)가 통과한 Task를 병합·재시작하고, 하위가 다 들어가면 상위 이슈를 in_review로 올린다.
 - 운영 재시작: `npx pm2 restart ecosystem.config.js --only dev --update-env`

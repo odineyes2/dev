@@ -14,11 +14,12 @@ from pathlib import Path, PurePosixPath
 
 import config
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 RESULTS_DIR = config.DATA_DIR / "check-results"
 TTL_SECONDS = 7 * 86400
 GENERATED = {".git", "__pycache__", ".pytest_cache", ".ui-captures", "check-results"}
 ARTIFACT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".pdf"}
+RUNTIME_FILES = {"debug.log", "chrome_debug.log", "chromium.log", "devtoolsactiveport", "dependencies_validated"}
 
 
 class EnvironmentUnknown(ValueError):
@@ -81,7 +82,7 @@ def _files(root):
             yield Path(directory) / name
 
 
-def environment(root):
+def environment(root, details=None):
     """실제 런타임과 의존성을 식별한다. 환경값은 해시로만 남긴다."""
     import task_checks
     versions = sorted((d.metadata.get("Name", ""), d.version) for d in importlib.metadata.distributions())
@@ -116,15 +117,20 @@ def environment(root):
                     raise ValueError("설치 환경 링크를 확정할 수 없어요")
                 if name == ".env" or name.startswith(".env."):
                     continue
+                if name.lower() in RUNTIME_FILES or path.suffix == ".pyc":
+                    continue
                 installed[f"{index}/{path.relative_to(folder).as_posix()}"] = hashlib.sha256(path.read_bytes()).hexdigest()
     runtime["installed"] = digest(installed)
     python_files = {}
     for distribution in importlib.metadata.distributions():
         for entry in distribution.files or []:
-            if Path(str(entry)).name != ".env" and not Path(str(entry)).name.startswith(".env.") and not str(entry).endswith(".pyc"):
+            if (Path(str(entry)).name != ".env" and not Path(str(entry)).name.startswith(".env.")
+                    and not str(entry).endswith(".pyc") and Path(str(entry)).name.lower() not in RUNTIME_FILES):
                 path = Path(distribution.locate_file(entry))
                 python_files[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
     runtime["python_files"] = digest(python_files)
+    if details is not None:
+        details.update(components={key: digest(value) for key, value in runtime.items()}, installed=installed)
     return digest(runtime)
 
 
@@ -161,17 +167,32 @@ def snapshot(cwd, item, context=None):
             continue
         name = _safe_file(root, path)
         manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    environment_details = {}
     try:
-        env = environment(root)
+        env = environment(root, environment_details)
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         raise EnvironmentUnknown("실행 환경을 확정하지 못해 재사용하지 않아요") from e
     payload = {"version": CONTRACT_VERSION, "cmd": item["cmd"], "contract": meta, "context": context,
                "inputs": manifest, "environment": env,
                "checker": digest({name: hashlib.sha256((Path(__file__).parent / name).read_bytes()).hexdigest()
-                                  for name in ("task_checks.py", "check_results.py")})}
+                                  for name in ("task_checks.py", "check_results.py", "check_policy.py")})}
     # 승인 신원이 없는 호출이나 결정성이 선언되지 않은 실행은 절대 재사용하지 않는다.
     reusable = bool(meta and meta["reuse"] and meta["conditions"].get("deterministic") is True and context)
-    return {**payload, "key": digest(payload), "reusable": reusable}
+    return {**payload, "key": digest(payload), "reusable": reusable, "environment_details": environment_details}
+
+
+def changes(before, after):
+    """값·환경변수 원문 없이 달라진 파일과 환경 구성요소를 요약한다."""
+    old, new = before['inputs'], after['inputs']
+    paths = sorted(name for name in old.keys() | new.keys() if old.get(name) != new.get(name))
+    left, right = before.get('environment_details', {}), after.get('environment_details', {})
+    a, b = left.get('components', {}), right.get('components', {})
+    parts = sorted(name for name in a.keys() | b.keys() if a.get(name) != b.get(name))
+    a, b = left.get('installed', {}), right.get('installed', {})
+    installed = sorted(name for name in a.keys() | b.keys() if a.get(name) != b.get(name))
+    return {"files": paths[:20], "file_count": len(paths), "environment_components": parts,
+            "installed_files": installed[:20], "installed_file_count": len(installed),
+            "checker_changed": before['checker'] != after['checker']}
 
 
 def _atomic(path, value):
@@ -275,7 +296,7 @@ def execute(cwd, item, runner, *, store=None, attempt=None, context=None):
     generated = [name for name, sha in current_captures.items() if prior_captures.get(name) != sha]
     generated.sort(key=lambda name: (not re.search(r"fail|error", name, re.I), name))
     result.update(capture_count=len(generated) if current_captures or prior_captures else None, representatives=generated[:4])
-    result["status"] = "passed" if result["ok"] else "failed"
+    result.setdefault("status", "passed" if result["ok"] else "failed")
     after = None
     try:
         after = snapshot(cwd, item, context)
@@ -283,7 +304,11 @@ def execute(cwd, item, runner, *, store=None, attempt=None, context=None):
         reason = str(e)
     stable = bool(before and after and before["key"] == after["key"])
     if before and after and not stable and result["ok"]:
-        result.update(ok=False, status="failed", reason="검사 중 입력이 바뀌었어요")
+        delta = changes(before, after)
+        labels = delta['files'] + delta['installed_files'] + ["환경:" + k for k in delta['environment_components']]
+        if delta['checker_changed']:
+            labels.append('검사기 코드')
+        result.update(ok=False, status="failed", reason="검사 중 입력이 바뀌었어요: " + ', '.join(labels[:10]), input_changes=delta)
     if store:
         import repo_snapshot
         number = len(list(attempt.glob("result-*.json"))) + 1
@@ -304,6 +329,8 @@ def execute(cwd, item, runner, *, store=None, attempt=None, context=None):
                 if path.suffix.lower() not in ARTIFACT_SUFFIXES:
                     continue
                 name = _safe_file(root, path)
+                if name not in generated:
+                    continue
                 data = path.read_bytes()
                 artifacts[name] = hashlib.sha256(data).hexdigest()
                 dest = attempt / "artifacts" / name
