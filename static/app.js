@@ -477,6 +477,7 @@ async function route(){
   stopLiveRefresh();
   if(!me || document.getElementById('shell').hidden) return;
   issueRenderSeq++;
+  pageGeneration++;
   settingsSession = null;
   actionSession = null;
   disposeList();
@@ -523,7 +524,7 @@ async function route(){
 }
 window.addEventListener('hashchange', route);
 // 화면 갱신을 직렬화하고 페이지 이동 후 타이머를 무효화한다.
-let liveTimer = null, liveEpoch = 0, issueRenderSeq = 0;
+let liveTimer = null, liveEpoch = 0, issueRenderSeq = 0, pageGeneration = 0, boardRenderSeq = 0, issueActionSeq = 0;
 function stopLiveRefresh(){ clearTimeout(liveTimer); liveEpoch++; }
 function followProgress(refresh, current){
   stopLiveRefresh();
@@ -536,7 +537,13 @@ function followProgress(refresh, current){
   liveTimer = setTimeout(tick, 5000);
 }
 // LIVE_MERGE는 quick_actions.js에 있다
-function activeProgress(i){ return i.review_running || i.job || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
+function ownRunning(i){ const r = i.lifecycle_facts?.running; return r?.ref === i.ref ? r : null; }
+function finishingText(i){
+  if(i.status !== 'triage' || i.job || !(i.action_context?.has_active_job || i.review_running || ownRunning(i))) return '';
+  return ownRunning(i)?.mode === 'review' ? '검토 마무리 중…' : '작업 마무리 중…';
+}
+function finishingHtml(i){ const text = finishingText(i); return text ? `<span class="dim hint" role="status" style="display:block;white-space:normal;overflow-wrap:anywhere">${text}</span>` : ''; }
+function activeProgress(i){ return i.action_context?.has_active_job || ownRunning(i) || i.review_running || i.job || ['in_progress','waiting'].includes(i.status) || LIVE_MERGE.has(i.merge_state); }
 function splitProgress(text, mode){
   if(text.length <= 20 && !text.includes('—')) return {short:text, long:''};
   const ref = '[A-Z][A-Z0-9]*-\\d+(?:-\\d+)?';
@@ -642,7 +649,7 @@ const pendingActions = new Set();
 const actionKind=i=>quickAction(i,{pending:pendingActions.has(i.ref)}).kind;
 function actionOff(kind,s,i){ return kind==='review' ? s.auto_review : kind==='execute' ? s.auto_execute : kind==='task-approve' ? s.auto_approve===true : kind==='decision' && i.status==='triage' && s.auto_plan_approve_available===true && s.auto_plan_approve===true; }
 function actionHtml(i){
-  const kind=actionKind(i); if(!kind) return '';
+  const kind=actionKind(i); if(!kind) return finishingHtml(i);
   const settings=actionSession?.settings;
   return `<div class="issue-actions" aria-label="Action">${(['review','change-review','execute'].includes(kind)?['claude','codex']:['']).map(provider=>{
     const label=provider ? `${provider==='claude'?'Claude':'Codex'}에게 ${kind==='change-review'?'수정':kind==='review'?'검토':'실행'} 맡기기` : kind==='decision'?'계획 승인':kind==='task-approve'?'승인':'전체 완료';
@@ -1234,28 +1241,39 @@ async function renderList(){
   }, { rootMargin: '400px' });
   listObserver.observe(sentinel);
   await loadList();
+}
+function followListProgress(){
   const body = view.querySelector('#list-body');
   followProgress(async () => {
     const L = listLoad;
-    if(!L || L.busy || pendingActions.size) return;
-    const data = await api('GET', '/api/issues?' + new URLSearchParams({...L.qs, limit: Math.max(L.offset, LIST_PAGE), offset: 0}));
-    if(L !== listLoad || body !== view.querySelector('#list-body')) return;
-    await loadActionSettings(L.actions, data.issues);
-    if(L !== listLoad) return;
-    const tbody = body.querySelector('tbody');
-    if(tbody){
-      closeProgress();
-      tbody.innerHTML = '';
-      data.issues.forEach(i => placeRow(tbody, i));
-      bindActions(tbody, L.actions, loadList);   // 새로 그린 Action 버튼에 핸들러를 다시 붙인다(DEV-97)
-      L.seen = new Set(data.issues.map(i => i.ref));
-      L.offset = data.issues.length; L.done = !data.has_more;
-      applyTurnFilter();
-      if(!L.done && L.more.getBoundingClientRect().top < innerHeight + 400) loadMoreIssues();
-    }else if(data.issues.length) await loadList();
-    const queued = await loadJobs();
-    if(L !== listLoad || body !== view.querySelector('#list-body')) return;
-    if(!data.issues.some(activeProgress) && !queued) stopLiveRefresh();
+    if(!L || L.busy || L.refreshing || pendingActions.size) return;
+    L.refreshing = true;
+    try{
+      const data = await api('GET', '/api/issues?' + new URLSearchParams({...L.qs, limit: Math.max(L.offset, LIST_PAGE), offset: 0}));
+      if(L !== listLoad || body !== view.querySelector('#list-body')) return;
+      await loadActionSettings(L.actions, data.issues);
+      if(L !== listLoad || body !== view.querySelector('#list-body')) return;
+      if(pendingActions.size) return;
+      const scroll = [scrollX, scrollY];
+      const tbody = body.querySelector('tbody');
+      if(tbody){
+        closeProgress();
+        tbody.innerHTML = '';
+        data.issues.forEach(i => placeRow(tbody, i));
+        bindActions(tbody, L.actions, loadList);   // 새로 그린 Action 버튼에 핸들러를 다시 붙인다(DEV-97)
+        L.seen = new Set(data.issues.map(i => i.ref));
+        L.offset = data.issues.length; L.done = !data.has_more;
+        applyTurnFilter();
+        if(!L.done && L.more.getBoundingClientRect().top < innerHeight + 400) loadMoreIssues();
+      }else if(data.issues.length) await loadList();
+      window.scrollTo(...scroll);
+      const queued = await loadJobs();
+      if(L !== listLoad || body !== view.querySelector('#list-body')) return;
+      if(!data.issues.some(activeProgress) && queued === 0) stopLiveRefresh();
+    }finally{
+      L.refreshing = false;
+      if(L === listLoad && body === view.querySelector('#list-body') && !L.done && L.more.getBoundingClientRect().top < innerHeight + 400) loadMoreIssues();
+    }
   }, () => body === view.querySelector('#list-body'));
 }
 async function loadList(){
@@ -1268,11 +1286,12 @@ async function loadList(){
   listLoad.actions = beginActions(() => listLoad === L && body === view.querySelector('#list-body'));
   const L = listLoad;
   body.innerHTML = ''; more.textContent = '';
+  followListProgress();
   await loadMoreIssues();
 }
 async function loadMoreIssues(){
   const L = listLoad, body = view.querySelector('#list-body'), more = view.querySelector('#list-more');
-  if(!L || L.done || L.busy || !body || body !== L.body || more !== L.more) return;
+  if(!L || L.done || L.busy || L.refreshing || !body || body !== L.body || more !== L.more) return;
   const current = () => L === listLoad && body === view.querySelector('#list-body') && more === view.querySelector('#list-more');
   L.busy = true;
   body.setAttribute('aria-busy', 'true');
@@ -1311,6 +1330,7 @@ async function loadMoreIssues(){
   }
   const tbody = body.querySelector('tbody');
   if(tbody){ items.forEach(i => placeRow(tbody, i)); bindActions(tbody, L.actions, loadList); }
+  if(data.issues.some(activeProgress)) followListProgress();
   applyTurnFilter();
   more.textContent = '';
   // 한 화면이 다 안 찼으면 바로 다음 묶음
@@ -1318,20 +1338,21 @@ async function loadMoreIssues(){
 }
 
 // ---- 칸반 ----
-let cleanupBoard = () => {};
+let cleanupBoard = () => {}, boardInteracting = false;
 function enableBoardPan(board){
   const events = new AbortController();
   let pan = null;
   const excluded = '.card, h3 .status, h3 .ref, a, button, input, textarea, select, [contenteditable], [role="button"]';
   function stop(){
     const id = pan?.id;
-    pan = null;
+    pan = null; boardInteracting = false;
     board.classList.remove('panning');
     if(id != null && board.hasPointerCapture(id)) board.releasePointerCapture(id);
   }
   const on = (type, fn) => board.addEventListener(type, fn, { signal: events.signal });
   on('pointerdown', e => {
     if(e.pointerType !== 'mouse' || e.button !== 0 || e.target.closest(excluded)) return;
+    boardInteracting = true;
     pan = { id: e.pointerId, x: e.clientX, left: board.scrollLeft, active: false };
     board.setPointerCapture(e.pointerId);
     board.focus({ preventScroll: true });
@@ -1354,14 +1375,22 @@ function enableBoardPan(board){
   });
   cleanupBoard = () => { stop(); events.abort(); cleanupBoard = () => {}; };
 }
-async function renderBoard(){
-  cleanupBoard();
+async function renderBoard(background = false){
+  if(background && (boardInteracting || pendingActions.size)) return;
+  const seq = ++boardRenderSeq, generation = pageGeneration;
   const key = currentProject(), hash = location.hash;
-  const session = beginActions(() => currentProject() === key && location.hash === hash);
+  const current = () => seq === boardRenderSeq && generation === pageGeneration && currentProject() === key && location.hash === hash;
+  const oldBoard = view.querySelector('.kanban');
+  const scroll = [scrollX, scrollY, oldBoard?.scrollLeft || 0];
+  const session = {settings:null, items:new Map(), current:() => generation === pageGeneration && key === currentProject() && hash === location.hash};
   const cols = STATUSES.filter(s => s !== 'closed');
   const items = (await api('GET', '/api/issues?' + new URLSearchParams({ project: currentProject(), status: cols.join(',') }))).issues;
+  if(!current()) return;
   await loadActionSettings(session, items);
-  if(actionSession !== session || !session.current()) return;
+  if(background && (boardInteracting || pendingActions.size)) return;
+  if(!current()) return;
+  actionSession = session;
+  cleanupBoard();
   view.innerHTML = `<div class="ops-split"><div class="ops-main"><div class="kanban" tabindex="0" role="region" aria-label="Issue 보드 — 빈 영역을 끌거나 좌우 방향키로 이동해요">${cols.map(s => {
     const mine = items.filter(i => i.status === s);
     return `<div class="col" data-col="${s}"><h3>${statusHtml(s)}<span class="ref">${mine.length}</span></h3><div class="cards">
@@ -1370,13 +1399,14 @@ async function renderBoard(){
         ${processingAgentsHtml(i)}${completionTimeHtml(i)}${issueTokensHtml(i)}${clockHtml(i)}${lifecycleDotsHtml(i)}</div>${actionHtml(i)}</div>`).join('')}
     </div></div>`;
   }).join('')}</div></div><aside id="jobs-box" class="ops-side" aria-label="대기열"></aside></div>`;
-  loadJobs().catch(() => {});
-  bindActions(view.querySelector('.kanban'), session, renderBoard);
+  const jobs = loadJobs().catch(() => null);
+  bindActions(view.querySelector('.kanban'), session, () => renderBoard());
   enableBoardPan(view.querySelector('.kanban'));
-  if(items.some(i => i.status === 'in_progress')) followProgress(renderBoard, () => location.hash === hash);
+  if(background){ view.querySelector('.kanban').scrollLeft = scroll[2]; window.scrollTo(scroll[0], scroll[1]); }
   view.querySelectorAll('.card').forEach(card => {
+    card.addEventListener('dragend', () => { boardInteracting = false; });
     card.addEventListener('click', () => { location.hash = `#/issue/${card.dataset.ref}`; });
-    card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', card.dataset.ref); });
+    card.addEventListener('dragstart', (e) => { boardInteracting = true; e.dataTransfer.setData('text/plain', card.dataset.ref); });
   });
   view.querySelectorAll('.col').forEach(col => {
     col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drop'); });
@@ -1384,9 +1414,14 @@ async function renderBoard(){
     col.addEventListener('drop', async (e) => {
       e.preventDefault(); col.classList.remove('drop');
       const ref = e.dataTransfer.getData('text/plain');
-      if(ref){ await api('POST', `/api/issues/${ref}/status`, { status: col.dataset.col }).catch(() => {}); renderBoard(); }
+      boardInteracting = false;
+      if(ref){ await api('POST', `/api/issues/${ref}/status`, { status: col.dataset.col }).catch(() => {}); if(current()) renderBoard(); }
     });
   });
+  const queued = await jobs;
+  if(!current()) return;
+  if(items.some(activeProgress) || queued !== 0) followProgress(() => renderBoard(true), () => generation === pageGeneration && key === currentProject() && hash === location.hash);
+  else stopLiveRefresh();
 }
 
 // ---- 이슈 상세 ----
@@ -1509,10 +1544,11 @@ async function moveJob(b){
 }
 function queuedMsg(r, started){ return r && r.queued ? `대기열에 넣었어요 — ${r.position}번째` : started; }
 async function loadJobs(){   // 목록·Board 위의 대기열(DEV-91) — 늘 펼친 상자: 위는 In Progress, 아래는 대기 항목. 항목 수를 돌려준다
-  const box = view.querySelector('#jobs-box');
+  const box = view.querySelector('#jobs-box'), generation = pageGeneration, key = currentProject();
+  const seq = box ? (box.jobsSeq = (box.jobsSeq || 0) + 1) : 0;
   if(!box) return 0;
   const { jobs, in_progress: prog = [] } = await restartJobsSnapshot();
-  if(box !== view.querySelector('#jobs-box')) return 0;
+  if(generation !== pageGeneration || key !== currentProject() || seq !== box.jobsSeq || box !== view.querySelector('#jobs-box')) return null;
   const edges = {first: jobs[0]?.id, last: jobs.at(-1)?.id};
   const progHtml = prog.map(p => `<li><span class="status" style="--sc:var(--s-in_progress)">In Progress</span> <a href="#/issue/${esc(p.ref)}">${esc(p.ref)}</a> <span class="job-title">${esc(p.title)}</span>
     <span class="dim">${p.started_at ? `${PROVIDER_NAME[p.provider] || 'Claude'} ${RUN_MODE[p.mode] || esc(p.mode)} 중 · ${fmtTime(p.started_at)}` : ''}</span></li>`).join('');
@@ -1558,10 +1594,10 @@ function decisionHtml(it){
   const state = !a ? '<span class="dim">아직 결정하지 않았어요.</span>'
     : a.stale ? `<span class="status" style="--sc:var(--s-in_progress)">v${a.plan_version} 결정은 무효</span> <span class="dim">${a.revision_requested ? '— 재검토 요청으로 기존 승인을 보류했어요.' : `— 새 계획서(v${it.plan.version})가 올라왔어요. 다시 결정해 주세요.`}</span>`
     : `<span class="status" style="--sc:var(--s-${VERDICT_COLOR[a.verdict]})">${VERDICT_LABEL[a.verdict]} · v${a.plan_version}</span> <span class="dim">${esc(actorName(a.actor))} · ${fmtTime(a.created_at)}</span>${a.note ? md(a.note) : ''}`;
-  const busy = it.review_running || it.job?.mode === 'review';
+  const busy = it.action_context?.has_active_job || ownRunning(it) || it.review_running || it.job?.mode === 'review';
   if(['done','closed'].includes(it.status)) return `<div class="decision"><div class="decision-state">${state}</div></div>`;
   return `<div class="decision" id="decision"><div class="decision-state">${state}</div>
-    ${busy ? '<div class="dim hint">검토가 도는 중이라 끝나면 결정할 수 있어요.</div>' : `
+    ${busy ? `<div class="dim hint" role="status">${finishingText(it) || '검토가 도는 중이라 끝나면 결정할 수 있어요.'}</div>` : `
     ${it.plan.revision_note ? '<p class="dim hint">이 계획서는 재검토를 요청했어요. 새 계획서가 올라온 뒤 승인해 주세요.</p>' : ''}
     <div id="decision-form" hidden><textarea id="decision-note" aria-label="계획서 결정 또는 재검토 메모"></textarea>
       <div id="decision-attach" hidden><div id="decision-files" class="cmp-files"></div><button type="button" id="decision-attach-btn" class="secondary">파일 첨부</button><input id="decision-file" type="file" multiple hidden accept=".png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mp3,.wav,.ogg,.m4a,.md,.json"></div>
@@ -1795,18 +1831,19 @@ function taskActionsHtml(it, ch){
 // 갱신 중에도 아직 응답하지 않은 검토 요청의 provider를 유지한다.
 const pendingReviews = new Map();
 async function renderIssue(ref, background = false){
-  const seq = ++issueRenderSeq, hash = location.hash;
+  const seq = ++issueRenderSeq, hash = location.hash, key = currentProject();
   const [it, { runs }, catalog, , auto] = await Promise.all([api('GET', `/api/issues/${encodeURIComponent(ref)}`), api('GET', `/api/issues/${encodeURIComponent(ref)}/runs`), api('GET', '/api/issue-types?include_inactive=true'), agentsById.size ? null : loadAgents(),
     api('GET', '/api/settings/auto', undefined, undefined, {notifyErrors: false}).catch(() => ({}))]);
-  if(seq !== issueRenderSeq || hash !== location.hash) return;
+  if(seq !== issueRenderSeq || hash !== location.hash || key !== currentProject()) return;
   const queue = it.job ? (await restartJobsSnapshot().catch(() => ({jobs: []}))).jobs : [];
-  if(seq !== issueRenderSeq || hash !== location.hash) return;
+  if(seq !== issueRenderSeq || hash !== location.hash || key !== currentProject()) return;
   const edges = {first: queue[0]?.id, last: queue.at(-1)?.id};
   if(background && (pendingActions.size || pendingTasks.size || pendingExecutions.size || pendingReviews.size || view.querySelector('#dep-editor[open]') || document.activeElement?.matches('input, select'))) return;
   if(background && [...view.querySelectorAll('textarea, .edit-title')].some(el => el.id !== 'comment' && el.id !== 'rating-review' && el.offsetParent)) return;
   if(background && [...view.querySelectorAll('#labels, #issue-type-editor input, #rating-editor input, #rating-review')].some(el => ['checkbox', 'radio'].includes(el.type) ? el.checked !== el.defaultChecked : el.value !== el.defaultValue)) return;
   const previousEditor = view.querySelector('#issue-type-editor');
   if(background && previousEditor && JSON.stringify(selectedTypes(previousEditor)) !== previousEditor.dataset.initialTypes) return;
+  const pageScroll = background ? [scrollX, scrollY] : null;
   const comment = background ? view.querySelector('#comment')?.value : null;
   const focused = background && document.activeElement?.id === 'comment';
   const selection = focused ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
@@ -1818,13 +1855,14 @@ async function renderIssue(ref, background = false){
   const reviewBusy = it.review_running || pendingReviews.has(ref);
   const reviewButton = (provider, id) => `<button id="${id}" title="홈서버에서 검토만 해요 — 계획서·질문을 남겨요(코드 수정 없음)."><svg class="ico brand-icon" aria-hidden="true"><use href="#i-${provider === 'codex' ? 'openai' : 'claude'}"/></svg>${PROVIDER_NAME[provider]}에게 검토 맡기기</button>`;
   // 검토 절은 Task가 아닐 때만 — 도는 중이면 버튼 대신 상태 줄, 버튼은 quickAction이 review일 때만(DEV-243)
-  const detailActions = beginActions(() => seq === issueRenderSeq && hash === location.hash);
+  issueActionSeq = seq;
+  const detailActions = beginActions(() => seq === issueActionSeq && hash === location.hash && key === currentProject());
   detailActions.settings = auto; detailActions.items.set(it.ref, it);
   const qa = quickAction(it);
   const reviewIdle = qa.kind === 'change-review' ? `<div id="review-btns">${actionHtml(it)}</div><p class="dim hint">저장된 수정 피드백과 첨부로 계획서를 다시 검토해요.</p>` : qa.kind === 'review' ? `<div class="agent-btns" id="review-btns">${reviewButton('claude', 'ask-review')}${reviewButton('codex', 'ask-codex-review')}</div>${it.review_busy ? `<div class="dim hint">다른 이슈에서 Agent가 일하는 중이에요 — ${QUEUE_LINE}</div>` : ''}`
     : qa.why === 'claimed' ? `<div class="dim hint">${esc(actorName(it.action_context.claimed_by))}이(가) 잡고 있어요 — 점유가 풀리면 검토를 맡길 수 있어요.</div>`
     : it.plan && !['done', 'closed'].includes(it.status) ? '<div class="dim hint">계획서가 있어요 — 다시 검토하려면 계획서 아래 메모 붙여 재검토를 골라 주세요.</div>' : '';
-  const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job, edges) : reviewBusy ? busyLine(reviewProvider, '검토') : reviewIdle}`;
+  const reviewSection = it.execute ? '' : `<div class="agent-sub">검토</div>${it.job && it.job.mode === 'review' ? jobHtml(it.job, edges) : finishingText(it) ? finishingHtml(it) : reviewBusy ? busyLine(reviewProvider, '검토') : reviewIdle}`;
   closeProgress();
   eventAttachments = new Map((it.attachments || []).map(a => [a.id, a]));
   view.innerHTML = `
@@ -2144,6 +2182,7 @@ ${QUEUE_LINE}`, okText:'실행 맡기기', checklist:it.execute.checks});
   }
   if(comment != null && $('comment')) $('comment').value = comment;
   if(focused && $('comment')){ $('comment').focus({preventScroll:true}); $('comment').setSelectionRange(...selection); }
+  if(pageScroll) window.scrollTo(...pageScroll);
   if(activeProgress(it) || it.children.some(activeProgress)) followProgress(() => renderIssue(ref, true), () => location.hash === hash);
   else stopLiveRefresh();
   $('delete').addEventListener('click', async () => {
