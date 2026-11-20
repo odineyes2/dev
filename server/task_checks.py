@@ -39,7 +39,7 @@ ALWAYS = (
     ("build", "웹 빌드(병합 때)", "선언된 웹 빌드가 실패하면 병합하지 않아요."),
     ("health", "재시작 뒤 접속 확인(병합 때)", "재시작 뒤 응답이 없으면 병합을 되돌려요."),
 )
-_lock = threading.Lock()   # PC 전역 — 검사는 한 번에 하나만 돈다
+_lock = threading.RLock()   # PC 전역 — 검사는 한 번에 하나만 돈다
 
 
 class CheckFormatError(issues.StoreError):
@@ -268,8 +268,13 @@ def prompt_text(issue: dict, keys) -> str:
         return ("이번 실행에는 계획 검사가 없다" + (f"(계획서: {none})" if none else "") + ". 검사 명령을 새로 만들어 돌리지 않는다. "
                 "서버는 언제나 하는 절차(바뀐 파일 문법·비밀값)만 확인한다.")
     lines = "\n".join(f"   - `{i['cmd']}` — {i['why']}" for i in chosen)
-    return ("이번 실행에서 통과시킬 검사(사람이 맡길 때 고른 것)는 아래뿐이다. 구현을 마치면 이 명령을 돌려 통과시키고, 다른 검사로 넓히지 않는다.\n"
-            + lines + "\n   검사 파일이 아직 없으면 `.dev-checks/`에 만들고 커밋하지 않는다. 서버가 보관해 같은 명령을 다시 돌린다.")
+    return ("이번 실행에서 사람이 고른 검사는 아래뿐이다. 검사 스크립트를 준비한 뒤 "
+            "dev MCP run_task_checks(ref, run_id)를 호출한다. run_id는 아래 실행 안내에 있다. "
+            "명령을 직접 실행한 보고는 서버 통과 결과로 인정되지 않는다.\n"
+            + lines + "\n   검사 파일이 없으면 `.dev-checks/`에 만들고 커밋하지 않는다. "
+            "도구가 실패하거나 없으면 그 사실을 보고한다. 완료 시 서버가 필요한 검사를 대신 실행한다. "
+            "반환된 실패 원인을 수정하고 같은 도구로 다시 요청한다. 대표·이상 이미지를 검토하고 "
+            "사람이 승인한 캡처 요구를 충족한다. 다른 검사로 넓히지 않는다.")
 
 
 # ---- 실행 -------------------------------------------------------------------
@@ -533,16 +538,85 @@ def restore_scripts(ref: str, dest) -> None:
         shutil.copyfile(path, target)
 
 
-def verify(ref: str, cwd, run_id: int) -> str | None:
-    """실행이 끝난 worktree에서 검사를 돌린다. 통과하면 None, 실패하면 재작업에 붙일 보고."""
-    issue = issues.get_issue(ref)
-    restore_scripts(issue["ref"], cwd)
-    report, ok = run_all(issue["ref"], cwd, selected(issue, run_keys(run_id)))
+def check_context(issue, run_id):
+    """저장된 실행 선택과 승인 판을 묶는다. 이전 승인 결과를 섞지 않는다."""
+    import execute
+    parent = issues.get_issue(issue["parent_ref"]) if issue.get("parent_ref") else None
+    why = execute._eligibility_reason(issue, parent)
+    if why:
+        raise issues.StoreError(why, 409)
+    with db.connect() as c:
+        run = c.execute("SELECT * FROM runs WHERE id=? AND issue_id=? AND mode='execute'", (run_id, issue["id"])).fetchone()
+        result = c.execute("SELECT plan_version FROM task_execution_results WHERE run_id=?", (run_id,)).fetchone()
+    approval = parent["approval"]
+    if not run or not result or result["plan_version"] != approval["plan_version"]:
+        raise issues.StoreError("실행의 승인 판이 현재 계획서와 달라요.", 409)
+    keys = json.loads(run["checks_json"]) if run["checks_json"] is not None else None
+    normalized = selection(issue, keys)
+    if keys is not None and (len(keys) != len(set(keys)) or set(keys) != set(normalized)):
+        raise issues.StoreError("저장된 검사 선택이 승인된 필수 검사와 맞지 않아요.", 409)
+    context = {"ref": issue["ref"], "issue_id": issue["id"], "parent_ref": parent["ref"],
+               "approval": approval, "plan": parent.get("plan"), "body": issue.get("body", ""),
+               "selected": normalized}
+    import check_results
+    return keys, {"approval_key": check_results.digest(context)}
+
+
+def _shared_check(issue, cwd, run_id):
+    keys, context = check_context(issue, run_id)
+    plan, _ = from_body(issue.get("body", ""))
+    report, ok = run_all(issue["ref"], cwd, plan, run_id=run_id, selected_keys=keys, context=context)
+    if check_context(issues.get_issue(issue["ref"]), run_id) != (keys, context):
+        raise issues.StoreError("검사 중 승인·선택·Task 조건이 바뀌었어요. 다시 요청해 주세요.", 409)
     stored = stash_scripts(issue["ref"], run_id, cwd)
     if stored:
         report += "\n\n🗂 임시 검사 보관: " + " · ".join(f"{name} · {sha} · {size}바이트" for name, sha, size in stored)
     issues.add_comment(ACTOR, issue["ref"], report)
-    return None if ok else report
+    return report, ok
+
+
+def run_task_checks(actor, ref, run_id):
+    """현재 담당 에이전트의 검사만 수행하며 완료·커밋·병합은 하지 않는다."""
+    import execute
+    import check_results
+    if type(run_id) is not int or run_id < 1 or actor.get("kind") != "agent":
+        raise issues.StoreError("현재 실행 담당 에이전트만 검사를 요청할 수 있어요.", 403)
+    # 전역 검사 잠금은 같은 Task의 중복 요청과 완료 검사도 함께 직렬화한다.
+    with _lock:
+        issue = issues.get_issue(ref)
+        why = execute.completion_blocked_reason(issue, run_id) or execute.predecessor_merge_reason(issue)
+        if why:
+            raise issues.StoreError(why, 409)
+        with db.connect() as c:
+            row = issues._find(c, issue["ref"])
+            if row["claimed_by"] != issues.actor_label(actor) or not issues._lease_active(row):
+                raise issues.StoreError("활성 claim을 가진 담당 에이전트만 검사를 요청할 수 있어요.", 403)
+        cwd = execute.worktree_path(issue["ref"])
+        if (not cwd.is_dir() or any(check_results._link(p) for p in (cwd, *cwd.parents)) or
+            cwd.resolve().parent != execute.WORKTREE_DIR.resolve() or
+            execute._git(cwd, "rev-parse", "--show-toplevel").replace("\\", "/").lower() != cwd.resolve().as_posix().lower() or
+            execute._git(cwd, "rev-parse", "--abbrev-ref", "HEAD") != execute.branch_name(issue["ref"]) or
+            execute.merge_unfinished(cwd)):
+            raise issues.StoreError("전용 Task worktree와 브랜치를 확인할 수 없어요.", 409)
+        report, ok = _shared_check(issue, cwd, run_id)
+        import repo_snapshot
+        return {"ref": issue["ref"], "run_id": run_id, "ok": ok,
+                "report": repo_snapshot.SECRET.sub("[REDACTED]", report)}
+
+
+def verify(ref: str, cwd, run_id: int) -> str | None:
+    """안전 절차를 다시 수행하고 유효한 서버 결과만 공유한다. 미호출이면 실행한다."""
+    with _lock:
+        issue = issues.get_issue(ref)
+        try:
+            restore_scripts(issue["ref"], cwd)
+            report, ok = _shared_check(issue, cwd, run_id)
+        except (issues.StoreError, ValueError, OSError) as error:
+            import repo_snapshot
+            report = "🔬 검사 결과 — 실패\n- ❌ 서버 검사 계약 · " + repo_snapshot.SECRET.sub("[REDACTED]", str(error))
+            issues.add_comment(ACTOR, issue["ref"], report)
+            return report
+        return None if ok else report
 
 
 def merge_recheck(repo, worktree, ref: str, before: str, task_sha: str) -> str | None:
@@ -555,18 +629,19 @@ def merge_recheck(repo, worktree, ref: str, before: str, task_sha: str) -> str |
     base_files = set(execute._git(repo, "diff", "--name-only", base, before).splitlines())
     overlap = sorted(task_files & base_files)
     if not overlap:
+        issues.add_comment(ACTOR, ref, "🔬 병합 재검사 생략 — Task와 base의 변경 파일이 겹치지 않아요(입력 기반 재사용과 별개).")
         return None
     issue = issues.get_issue(ref)
     with db.connect() as c:
-        row = c.execute("SELECT checks_json FROM runs WHERE issue_id=? AND mode='execute' AND checks_json IS NOT NULL ORDER BY id DESC LIMIT 1",
+        row = c.execute("SELECT id, checks_json FROM runs WHERE issue_id=? AND mode='execute' ORDER BY id DESC LIMIT 1",
                         (issue["id"],)).fetchone()
-    plan = selected(issue, json.loads(row["checks_json"]) if row else None)
-    if not plan:
-        return None
+    if not row:
+        raise issues.StoreError("병합 재검사의 실행 기록이 없어요.", 409)
     with _lock:
         restore_scripts(ref, worktree)
-        results = [run_command(worktree, item["cmd"]) for item in plan]
-    report, ok = _report(results)
+        keys, context = check_context(issue, row["id"])
+        plan, _ = from_body(issue.get("body", ""))
+        report, ok = run_all(ref, worktree, plan, run_id=row["id"], selected_keys=keys, context=context)
     issues.add_comment(ACTOR, issue["ref"], "🔀 병합 전 다시 검사 — 다른 병합이 같은 파일(" + ", ".join(f"`{f}`" for f in overlap[:10])
                        + ")을 바꿨어요.\n\n" + report)
     return None if ok else report

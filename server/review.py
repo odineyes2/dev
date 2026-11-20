@@ -546,8 +546,8 @@ def run_headless(actor: dict, ref: str, log_path: Path, run_id: int, cmd: list[s
         earlier = text + "\n\n--- 서버 검사 실패 → 재작업 ---\n" + failed + "\n\n"
         earlier_out = out
         retry = ("\n\n이전 실행의 결과가 이 worktree에 그대로 남아 있다. 서버가 맡길 때 고른 검사를 다시 돌렸더니 아래가 실패했다. "
-                 "실패한 원인만 고치고 같은 검사로 다시 확인한 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 마친다. "
-                 "검사를 넓히거나 다른 검사를 새로 돌리지 않는다.\n```\n" + failed[-6000:] + "\n```")
+                 "실패한 원인만 고치고 run_task_checks(ref, run_id)로 서버 검사를 요청한 뒤 위 절차의 마지막 단계(커밋·연결 또는 지정된 응답)를 마친다. "
+                 "유효한 통과 결과는 서버가 입력을 재확인해 재사용한다. 검사를 직접 전체 재실행하거나 넓히지 않는다.\n```\n" + failed[-6000:] + "\n```")
         cmd = cmd[:2] + [cmd[2] + retry] + cmd[3:] if provider == "claude" else cmd[:-1] + [cmd[-1] + retry]
     run_progress.clear(ref)
     stats = spent
