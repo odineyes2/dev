@@ -1,5 +1,7 @@
 # dev
 
+사용자가 기존 앱 등록과 도메인 연결을 요청했으면, 관리자 브라우저 로그인 없이 인증된 에이전트 키로 처리할 수 있다. MCP `register_existing_project`에 key·name·local_path·service_domain·service_port·service_app을 전달한 뒤 `connect_project_service(key)`를 호출하고 `project_service_status(key)`로 완료를 확인한다. REST는 `POST /api/agent-projects`, `POST /api/agent-projects/{key}/connect`, `GET /api/projects/{key}/service`이며 기존 Bearer 인증을 사용한다. Projects 바로 아래 실제 Git 저장소·첫 커밋·기존 `ecosystem.config.js`가 필요하고, 실행 파일 자동 생성은 사용하지 않는다. 동일 소유자의 동일 등록 요청은 재사용한다. 다른 프로젝트·등록 당시와 달라진 서비스 설정·연결 해제는 에이전트 경로에서 허용하지 않는다. 기존 관리자 로그인과 관리자 API 권한은 유지한다(DEV-264).
+
 열려 있는 최상위 Issue의 Plan 아래 **메모 붙여 재검토**로 수정 방향과 Claude/Codex를
 선택해 검토 대기열에 넣는다. 계획 승인·이슈 종료·하위 Task 생성은 하지 않는다.
 메모는 보고 있던 계획서 판과 함께 사람의 지시로 기록하고 검토 프롬프트에 전달한다.

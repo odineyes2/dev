@@ -60,6 +60,35 @@ def list_projects() -> list[dict]:
 
 
 @mcp.tool
+def register_existing_project(key: str, name: str, local_path: str, service_domain: str,
+                              service_port: int, service_app: str, description: str = '', repo_url: str = '') -> dict:
+    """Projects 바로 아래 기존 Git 저장소를 신규 등록한다. 첫 커밋·ecosystem.config.js 필요, 유료 생성 없음.
+    기존 프로젝트 인수·수정은 불가. 동일 에이전트의 동일 요청은 중복 생성하지 않는다.
+    서비스 연결은 connect_project_service로 별도 요청한다. 사용자가 등록·도메인 연결을 요청한 경우만 호출한다."""
+    import agent_projects
+    return _call(agent_projects.register, _actor(), dict(key=key, name=name, local_path=local_path,
+                 service_domain=service_domain, service_port=service_port, service_app=service_app,
+                 description=description, repo_url=repo_url))
+
+
+@mcp.tool
+def connect_project_service(key: str) -> dict:
+    """직접 신규 등록한 프로젝트의 저장된 도메인·포트로 PM2·DNS·공용 터널을 연결한다.
+    기존 안전 교체·직렬화·health 확인을 사용한다. 타 프로젝트 변경·연결 해제·유료 생성은 불가.
+    사용자가 연결을 요청한 경우만 호출하며, 진행은 project_service_status로 확인한다."""
+    import agent_projects
+    return _call(agent_projects.connect, _actor(), key)
+
+
+@mcp.tool
+def project_service_status(key: str) -> dict:
+    """프로젝트 서비스 연결 단계·결과·공개 URL을 조회한다."""
+    import project_service
+    _actor()
+    return _call(project_service.status, key)
+
+
+@mcp.tool
 def list_models(project: str = "") -> dict:
     """고를 수 있는 모델 카탈로그 — vendors(vendor·name·provider·models[id·name·note])와 vendor→provider 매핑.
     project(키)를 주면 agent_orders에 역할별 Agent 순서(id·name·vendor·model·provider)를 더한다 — 실제 실행은 이 순서의 모델을 쓴다."""

@@ -221,9 +221,12 @@ def disconnect_preview(key):
     return pm2_apps.preview(project)
 
 
-def request(actor, key, action='connect', stop_apps=False, preview_token=''):
-    if actor['kind'] != 'human':
+def request(actor, key, action='connect', stop_apps=False, preview_token='', *, allow_agent=False):
+    agent_request = allow_agent and actor.get('kind') == 'agent'
+    if actor['kind'] != 'human' and not agent_request:
         raise issues.StoreError('서비스 연결은 관리자 화면에서 실행해 주세요.', 403)
+    if agent_request and (action != 'connect' or stop_apps or preview_token):
+        raise issues.StoreError('에이전트는 본인이 신규 등록한 서비스의 연결만 요청할 수 있어요.', 403)
     if action not in ('connect', 'disconnect'):
         raise issues.StoreError('지원하지 않는 서비스 작업이에요.')
     if type(stop_apps) is not bool or (action == 'connect' and stop_apps):
@@ -243,6 +246,9 @@ def request(actor, key, action='connect', stop_apps=False, preview_token=''):
             current = c.execute('SELECT * FROM projects WHERE id=?', (project['id'],)).fetchone()
             if not current or dict(current) != project:
                 raise issues.StoreError('프로젝트 정보가 바뀌었어요. 새로고침 후 다시 연결해 주세요.', 409)
+            if agent_request:
+                import agent_projects
+                agent_projects.authorize_connection(c, actor, current)
             if c.execute("SELECT 1 FROM project_app_restarts WHERE status IN ('waiting','restarting','checking')").fetchone():
                 raise issues.StoreError('앱 재시작이 끝난 뒤 서비스 연결을 변경해 주세요.', 409)
             if c.execute("SELECT 1 FROM project_services WHERE status='running'").fetchone():

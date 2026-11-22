@@ -415,6 +415,18 @@ async def api_create_project(request: Request):
     return issues.create_project(actor(request), b.get("key"), b.get("name"), b.get("repo_url", ""), b.get("local_path", ""), b.get("description", ""), b.get('service_domain', ''), b.get('service_port', 0), b.get('service_app', ''), b.get('service_prepare_provider', 'auto'))
 
 
+@app.post('/api/agent-projects', status_code=201)
+async def api_register_existing_project(request: Request):
+    import agent_projects
+    return await run_in_threadpool(agent_projects.register, actor(request), await json_body(request))
+
+
+@app.post('/api/agent-projects/{key}/connect', status_code=202)
+async def api_connect_agent_project(key: str, request: Request):
+    import agent_projects
+    return await run_in_threadpool(agent_projects.connect, actor(request), key)
+
+
 @app.get('/api/projects/free-port')
 def project_free_port(request: Request):
     import project_service

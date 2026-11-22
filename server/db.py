@@ -1273,3 +1273,14 @@ CREATE TABLE project_service_stopped_apps (
  PRIMARY KEY(project_id,app_name,app_cwd,exec_path)
 );
 """)
+
+
+# 에이전트가 신규 등록한 기존 저장소의 소유자와 연결 설정을 고정한다(DEV-264).
+MIGRATIONS.append("""
+CREATE TABLE agent_project_registrations (
+ project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+ agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+ request_json TEXT NOT NULL,
+ created_at TEXT NOT NULL
+);
+""")
