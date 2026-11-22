@@ -660,6 +660,38 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .document-source{ white-space:pre-wrap; font-family:var(--mono); font-size:13px; line-height:1.7; padding:var(--sp-4); border:1px solid var(--border); border-radius:var(--r-md); background:var(--panel-2); }
 .project-scope button:focus-visible, .project-docs :focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
 .project-docs[hidden], #project-form[hidden]{ display:none; }
+/* 원격 /docs — DESIGN 2~4, 7~8, 10~11절: 토큰·읽기 폭·40px 터치 영역을 유지한다. */
+.doc-toolbar, .doc-reading-toolbar{ display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3); flex-wrap:wrap; }
+.doc-toolbar h3{ margin:0; }
+.doc-provenance{ font-size:12px; margin:var(--sp-2) 0; }
+.doc-layout{ display:grid; grid-template-columns:minmax(180px,260px) minmax(0,1fr); gap:var(--sp-5); margin-top:var(--sp-4); }
+.doc-tree{ min-width:0; align-self:start; }
+.doc-tree summary{ cursor:pointer; padding:var(--sp-2) 0; min-height:40px; }
+.doc-tree nav{ display:flex; flex-direction:column; max-height:65vh; overflow:auto; }
+.doc-tree a{ display:flex; align-items:center; min-height:40px; padding:var(--sp-2); border-left:2px solid transparent; font-size:13px; overflow-wrap:anywhere; }
+.doc-tree a[aria-current="page"]{ color:var(--accent); background:var(--panel-2); border-left-color:var(--accent); }
+.doc-reader{ min-width:0; }
+.doc-reading-toolbar{ padding-bottom:var(--sp-3); border-bottom:1px solid var(--border); }
+.doc-reading-toolbar code{ overflow-wrap:anywhere; font-size:12px; }
+.doc-toolbar button, .doc-reading-toolbar button{ min-height:40px; }
+.doc-markdown{ max-width:80ch; font-size:14px; line-height:1.7; }
+.doc-markdown h1{ font-size:24px; }.doc-markdown h2{ font-size:20px; }.doc-markdown h3{ font-size:16px; }
+.doc-markdown h4, .doc-markdown h5, .doc-markdown h6{ font-size:14px; }
+.doc-markdown [id]{ scroll-margin-top:var(--sp-5); }
+.doc-markdown img{ display:block; max-width:100%; height:auto; border-radius:var(--r-md); }
+.doc-markdown pre, .doc-table{ max-width:100%; overflow-x:auto; }
+.doc-markdown pre{ white-space:pre; padding:var(--sp-4); background:var(--panel-2); }
+.doc-table table{ width:100%; border-collapse:collapse; font-size:13px; }
+.doc-table th, .doc-table td{ text-align:left; padding:var(--sp-2); border:1px solid var(--border); vertical-align:top; }
+.doc-table th{ background:var(--panel-2); font-weight:600; }
+.doc-markdown a{ text-decoration:underline; text-underline-offset:3px; }
+.doc-markdown input[type="checkbox"]{ width:14px; height:14px; }
+@media(max-width:800px){
+  .doc-layout{ grid-template-columns:minmax(0,1fr); gap:var(--sp-4); }
+  .doc-tree nav{ max-height:240px; border-bottom:1px solid var(--border); }
+  .doc-toolbar{ align-items:flex-start; }
+  .doc-reader .document-source{ white-space:pre-wrap; overflow-wrap:anywhere; }
+}
 /* 사용량 — 숫자 정렬과 모바일 카드로 DESIGN 2~4, 7~8, 11~12절을 따른다. */
 .project-usage{ min-width:0; }
 .audit-toolbar{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--sp-3); }

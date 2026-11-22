@@ -2712,8 +2712,10 @@ function projectDomainCell(domain){
 // 목록의 마지막 행에서 생성하고 개별 관리 화면에서 수정한다.
 function renderProjects(editKey, projectTab = 'manage'){
   const ed = projects.find(p => p.key === editKey);
-  if(!['manage', 'usage', 'brand'].includes(projectTab)) projectTab = 'manage';
-  history.replaceState(null, '', ed ? `#/projects?project=${encodeURIComponent(ed.key)}&tab=${projectTab}` : '#/projects');
+  if(!['manage', 'usage', 'docs', 'brand'].includes(projectTab)) projectTab = 'manage';
+  const docParams = new URLSearchParams(location.hash.split('?')[1] || '');
+  const docSuffix = projectTab === 'docs' ? ['doc', 'anchor'].filter(k => docParams.has(k)).map(k => '&' + k + '=' + encodeURIComponent(docParams.get(k))).join('') : '';
+  history.replaceState(null, '', ed ? `#/projects?project=${encodeURIComponent(ed.key)}&tab=${projectTab}${docSuffix}` : '#/projects');
   const projectForm = `
     <form class="form panel" id="project-form" ${ed && projectTab !== 'manage' ? 'hidden' : ''}>${ed ? '' : '<h2 id="project-create-title">프로젝트 만들기</h2>'}${ed ? `<b>${esc(ed.key)} 고치기</b>` : ''}<div class="line">
       <label style="flex:0 0 90px">Key<input id="p-key" required placeholder="NS" maxlength="10" value="${esc(ed ? ed.key : '')}"${ed ? ' disabled' : ''}></label>
@@ -2730,11 +2732,12 @@ function renderProjects(editKey, projectTab = 'manage'){
 `;
   view.innerHTML = `
     <div class="projects-page panel management-card">
-    ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'usage', 'brand'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '사용량', '브랜드'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
+    ${managementHeader(ed ? `${ed.name} · ${ed.key}` : 'Projects', ed ? ['manage', 'usage', 'docs', 'brand'].map((t, i) => `<button type="button" data-project-tab="${t}" aria-current="${projectTab === t ? 'page' : 'false'}">${['관리', '사용량', '문서', '브랜드'][i]}</button>`).join('') : '<a href="#/projects" aria-current="page">프로젝트 목록</a>', ed ? '<a href="#/projects" class="management-back">프로젝트 목록으로</a>' : '')}
     ${ed ? projectForm : ''}
-    ${ed && projectTab !== 'brand' ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
+    ${ed && ['manage', 'usage'].includes(projectTab) ? '<section class="panel" id="project-initialization" hidden aria-live="polite"></section>' : ''}
     ${ed && projectTab === 'manage' && me?.kind === 'human' ? `<section class="panel project-restart" aria-labelledby="app-restart-title"><div class="audit-toolbar"><h3 id="app-restart-title">앱 재시작</h3><button type="button" id="app-restart-copy" disabled aria-label="앱 재시작 진단 복사"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg> 진단 복사</button></div><p class="dim">저장된 PM2 앱을 재시작하고 로컬 접속을 확인해요. Dev 자체 재시작은 진행 중인 작업이 끝난 뒤 처리하며 화면이 자동으로 다시 연결돼요.</p><div class="line"><button type="button" id="app-restart-start" disabled>앱 재시작</button><button type="button" id="app-restart-refresh">상태 확인</button></div><div id="app-restart-state" role="status" aria-live="polite">재시작 설정을 확인하고 있어요…</div><p id="app-restart-feedback" class="dim" role="status" aria-live="polite"></p><textarea id="app-restart-manual" aria-label="직접 복사할 앱 재시작 진단" readonly hidden></textarea></section>` : ''}
     ${ed && projectTab === 'manage' ? `<section class="panel project-service"><h3>서비스 연결</h3><p class="dim">도메인과 포트를 저장한 뒤 연결해 주세요. 실행·접속 검사는 일반 코드로 처리해요. 실행 설정이 없을 때만 선택한 에이전트가 유료로 파일을 생성해요. 기존 파일만 사용에서는 에이전트를 호출하지 않아요. 앱 확인 후 DNS·공용 터널을 반영하고 터널을 재시작해요.</p><div class="line"><button type="button" id="p-service-connect" disabled>서비스 연결</button><button type="button" id="p-service-disconnect" disabled>연결 해제</button><button type="button" id="p-service-refresh">새로고침</button></div><section class="service-diagnostic" aria-labelledby="service-diagnostic-title"><div class="service-diagnostic-head"><h4 id="service-diagnostic-title">연결 진단</h4><button type="button" id="p-service-copy" title="복사하기" aria-label="연결 진단 전체 내용 복사하기"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg></button></div><div id="p-service-status" role="status" aria-live="polite"></div><p id="p-service-copy-message" role="status" aria-live="polite" class="dim"></p><textarea id="p-service-copy-text" aria-label="직접 복사할 연결 진단 전체 내용" readonly hidden></textarea></section><p class="dim">연결 해제 때 프로젝트 앱도 멈출지 고를 수 있어요. DNS 레코드는 유지해요. 도메인을 바꾸면 이전 DNS 레코드는 Cloudflare에서 정리해 주세요.</p></section>` : ''}
+    ${ed && projectTab === 'docs' ? '<section class="panel project-docs" id="project-documents" aria-label="프로젝트 문서"></section>' : ''}
     ${ed && projectTab === 'usage' ? `<section class="panel project-usage" aria-labelledby="usage-title"><div class="usage-toolbar"><h3 id="usage-title">사용량</h3><button type="button" id="usage-refresh">새로고침</button></div><p class="dim">에이전트 실행 시간은 병렬 실행도 각각 합산해요. 완료 경과 시간은 최초 시작부터 마지막 Done까지 대기·승인 대기를 포함해요.</p><div id="usage-body" aria-live="polite"></div></section>` : ''}
     ${!ed ? `<table class="issues projects-table"><thead><tr><th>Key</th><th>Name</th><th>서비스 도메인</th><th class="hide-m">Repository</th><th class="hide-m">Local path</th><th class="col-narrow">Archived</th><th class="col-narrow"></th></tr></thead><tbody>
       ${projects.map(p => `<tr class="row" data-project-row="${esc(p.key)}"><td class="ref">${esc(p.key)}</td><td><a class="project-title" data-project-link="${esc(p.key)}" href="#/projects?project=${encodeURIComponent(p.key)}&tab=manage">${esc(p.name)}</a><div class="sub"><span data-project-service="${esc(p.key)}">상태 확인 중…</span></div></td><td data-project-domain="${esc(p.key)}">${projectDomainCell(p.service_domain)}</td><td class="hide-m">${esc(p.repo_url)}</td>
@@ -3211,7 +3214,7 @@ function renderProjects(editKey, projectTab = 'manage'){
       if(form.isConnected) syncInitialize();
     }
   });
-  if(ed && projectTab !== 'brand'){
+  if(ed && ['manage', 'usage'].includes(projectTab)){
     const panel = view.querySelector('#project-initialization');
     const refreshInitialization = async () => {
       if(!panel.isConnected) return;
@@ -3254,6 +3257,7 @@ function renderProjects(editKey, projectTab = 'manage'){
   });
   if(ed && projectTab === 'manage' && me?.kind === 'human') bindProjectSecrets(ed, bindProjectRestart(ed));
   if(ed && projectTab === 'usage') bindProjectUsage(ed);
+  if(ed && projectTab === 'docs') void ProjectDocs.connect(view, ed, {api});
   if(ed && me?.kind === 'human') BrandTab.connect(view, ed, projectTab, {confirm: confirmDialog});
   view.querySelectorAll('[data-delete-project]').forEach(b => b.addEventListener('click', () => whileBusy(b, async () => {
     const url = `/api/projects/${encodeURIComponent(b.dataset.deleteProject)}`;

@@ -35,6 +35,8 @@
 
 ### 프로젝트 관리
 
+- 프로젝트 문서는 원격 GitHub 기본 브랜치의 `/docs`가 원본이다(`project_documents.py`, Projects → 문서). 별도 공식 문서 생성·DB 복사를 추가하지 않는다. 에이전트 기록은 프로젝트 `/docs`에 작성·푸시하며 목록/읽기 MCP도 동일 원본을 조회한다. 상세 동작·한계는 `docs/PROJECT_DOCUMENTS.md`를 따른다.
+
 - 기존 저장소 에이전트 등록(DEV-264): `register_existing_project` / `POST /api/agent-projects`는 활성 에이전트가 Projects 바로 아래 기존 Git 저장소를 신규 등록한다. 첫 커밋·기존 `ecosystem.config.js` 필수, 유료 생성 없음. 소유자와 실행 설정은 `agent_project_registrations`에 고정하고 기존 프로젝트는 인수하지 않는다. `connect_project_service` / `POST /api/agent-projects/{key}/connect`는 서비스 쓰기 잠금 안에서 소유자·설정을 재확인하여 connect만 허용한다. 기존 관리자 API·직렬화·안전 터널 교체·health 검사를 유지한다.
 - `project_init`(기획서 → 새 저장소·개발 초안), `repo_snapshot`(기준 SHA 고정 저장소 스냅샷·민감값 가리기), `project_service`·`service_prepare`(서비스 연결·공용 터널 변경은 한 번에 하나. 설정 반영은 언제나 `tunnel_handoff.switch`로 — 새 설정의 임시 커넥터가 `/ready`로 붙은 뒤에만 교체·서비스 재시작, 서비스가 새 connectorId로 붙으면 임시를 Ctrl-Break로 정상 종료. 강제 종료는 진행 중 요청이 502가 된다. 임시가 안 붙으면 아무것도 바꾸지 않는다(DEV-255)), `project_restart`(pm2 재시작 — dev 자기 재시작은 별도 프로세스가 health까지 확인. 도우미는 중계 프로세스(`--detach`)를 거쳐 띄워 pm2가 dev 트리를 끌 때 같이 죽지 않는다(DEV-207). 에이전트 재시작 예약(DEV-198)은 같은 `project_app_restarts` 기록에 `reservation_ref·until`을 두어 waiting으로 착수를 막고, 소유자의 finish 뒤에야 도우미가 돈다 — 만료는 `_recover`가 failed로 풀고, 띠에는 phase `reserved`로 보인다).
 

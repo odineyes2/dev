@@ -409,6 +409,26 @@ def api_dep_candidates(key: str, include_review: bool = False, all_projects: boo
     return {"issues": issues.dep_candidates(key, include_review, all_projects)}
 
 
+@app.get('/api/projects/{key}/documents')
+def api_project_documents(key: str, refresh: bool = False):
+    import project_documents
+    return JSONResponse(project_documents.list_documents(key, refresh), headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/api/projects/{key}/documents/read')
+def api_project_document(key: str, path: str, refresh: bool = False):
+    import project_documents
+    return JSONResponse(project_documents.read_document(key, path, refresh), headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/api/projects/{key}/documents/asset')
+def api_project_document_asset(key: str, path: str, commit: str):
+    import project_documents
+    content, mime = project_documents.read_asset(key, path, commit)
+    return Response(content, media_type=mime, headers={'Cache-Control': 'no-store',
+                                                     'X-Content-Type-Options': 'nosniff'})
+
+
 @app.post("/api/projects")
 async def api_create_project(request: Request):
     b = await json_body(request)
@@ -991,7 +1011,7 @@ def index_page():
     덮어씌워서(no-cache를 보내도) 고친 파일이 안 보이던 문제 — 파일이 바뀌면 주소가 바뀌어 새로 받는다.
     HTML은 Cloudflare가 no-cache를 그대로 둔다."""
     html = (STATIC_DIR / "index.html").read_text("utf-8")
-    for name in ("family.css", "app.css", "quick_actions.js", "brand.js", "app.js"):
+    for name in ("family.css", "app.css", "quick_actions.js", "brand.js", "project_docs.js", "app.js"):
         v = hashlib.sha1((STATIC_DIR / name).read_bytes()).hexdigest()[:10]
         html = re.sub(r'"/' + re.escape(name) + r'(?:\?v=[a-f0-9]+)?"', f'"/{name}?v={v}"', html)
     import brand_assets
