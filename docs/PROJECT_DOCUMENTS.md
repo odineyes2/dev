@@ -51,3 +51,7 @@ REST는 `/api/projects/{key}/documents`, `/documents/read?path=docs/...`, `/docu
 ## 남은 범위
 
 GitHub 이외 호스팅, 브랜치 선택·과거 버전 탐색, 온라인 편집, PDF/Word 미리보기는 제외했다. 서버 네트워크/인증 문제는 문서 탭에서 오류로 표시한다. 오래된 MCP 클라이언트는 도구 목록 새로고침이 필요할 수 있다. 프로젝트 인수인계는 `/docs/HANDOFF.md`를 최신 상태로 유지하고 이 문서를 먼저 읽도록 해당 프로젝트 AGENTS.md에 지정하는 방식이 권장된다.
+
+## 운영 반영
+
+구현 커밋 `5686304`를 `feat/project-docs-viewer`와 `main`에 푸시했다. DEV-265 재시작 예약 34가 ready인 상태에서 작업하고, finish 후 `status=complete`와 로컬 실행 revision `5686304`를 확인했다. 공개 HTML의 `project_docs.js` 내용 해시, 공개 health 200, 비인증 문서 API 401을 확인했다. 재시작한 실제 MCP를 통해 CITY 문서 목록과 `docs/V3_2_DEVELOPMENT.md` 본문 조회도 성공했다. 이는 운영 서버/API 확인이며 브라우저 화면 검증은 아니다.
