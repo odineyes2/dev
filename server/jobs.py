@@ -283,6 +283,31 @@ def start_block(c, project_key: str, mode: str, extra_lanes=frozenset()) -> str 
     return None
 
 
+def wait_notice(c, project_key: str, mode: str, issue_id: int | None = None) -> str | None:
+    """맡기기 확인 창용 — 지금 맡기면 기다리게 되는 이유 한 문장. 없으면 None. 읽기만 하고 착수 판단은 바꾸지 않는다."""
+    verb = '실행' if mode == 'execute' else '검토'
+
+    def name(refs):
+        return refs[0] if len(refs) == 1 else f"{refs[0]} 외 {len(refs) - 1}개"
+
+    running = [r["ref"] for r in c.execute(
+        f"SELECT {issues.ref_sql('i', 'p')} AS ref FROM runs r JOIN issues i ON i.id=r.issue_id JOIN projects p ON p.id=i.project_id "
+        "WHERE p.key=? AND r.mode=? AND r.status='running' AND (? IS NULL OR i.id<>?) ORDER BY r.id",
+        (project_key, mode, issue_id, issue_id))]
+    if running:
+        return f"지금 {name(running)} {verb} 중이라 끝나면 시작해요"
+    block = start_block(c, project_key, mode)
+    merging = mode == 'execute' and any(m["ref"].split("-")[0] == project_key for m in _pending_merges(c))
+    if block and (merging or not block.endswith('줄의 앞 작업이 끝나면 시작해요.')):
+        return block
+    queued = list(dict.fromkeys(j["ref"] for j in _rows(c, "j.status='queued' AND p.key=? AND j.mode=?", (project_key, mode))
+                                if j["issue_id"] != issue_id))
+    if queued:
+        head = queued[0] if len(queued) == 1 else f"{queued[0]} 등 {len(queued)}개"
+        return f"대기 중인 {head} 뒤에 서요 — 앞 작업이 끝나면 시작해요"
+    return block
+
+
 def _latest(c, issue_id):
     event = c.execute("SELECT data_json FROM events WHERE issue_id=? AND kind='status' ORDER BY id DESC LIMIT 1", (issue_id,)).fetchone()
     return json.loads(event[0]) if event else {}
