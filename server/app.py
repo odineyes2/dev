@@ -747,7 +747,9 @@ def api_issue(ref: str):
     with timing.span("review"):
         it["review_running"] = review.is_running(it["id"])   # 이 이슈에서 검토·실행이 도는 중(DEV-13)
         with db.connect() as c:   # 이 이슈가 설 줄(Task는 실행, 그 밖은 검토)이 다른 작업으로 바쁜지 — 맡기면 대기열에 선다
-            it["review_busy"] = jobs.start_block(c, it["project_key"], "execute" if it["parent_ref"] else "review") is not None
+            lane_mode = "execute" if it["parent_ref"] else "review"
+            it["review_busy"] = jobs.start_block(c, it["project_key"], lane_mode) is not None
+            it["wait_notice"] = jobs.wait_notice(c, it["project_key"], lane_mode, it["id"])   # 맡기기 확인 창의 조건부 대기 안내(DEV-266)
             import model_catalog, auto_settings
             names = {m["id"]: m["name"] for v in model_catalog.VENDORS for m in v["models"]}
             it["delegates"] = {"review_timeout_sec": review.TIMEOUT_SEC}
@@ -1011,7 +1013,7 @@ def index_page():
     덮어씌워서(no-cache를 보내도) 고친 파일이 안 보이던 문제 — 파일이 바뀌면 주소가 바뀌어 새로 받는다.
     HTML은 Cloudflare가 no-cache를 그대로 둔다."""
     html = (STATIC_DIR / "index.html").read_text("utf-8")
-    for name in ("family.css", "app.css", "quick_actions.js", "brand.js", "project_docs.js", "app.js"):
+    for name in ("family.css", "app.css", "quick_actions.js", "delegate_confirm.js", "brand.js", "project_docs.js", "app.js"):
         v = hashlib.sha1((STATIC_DIR / name).read_bytes()).hexdigest()[:10]
         html = re.sub(r'"/' + re.escape(name) + r'(?:\?v=[a-f0-9]+)?"', f'"/{name}?v={v}"', html)
     import brand_assets

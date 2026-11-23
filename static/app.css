@@ -1007,6 +1007,17 @@ table.agents-table td{ overflow-wrap:anywhere; padding-top:var(--sp-2); padding-
 .confirm-work-title{ margin:0; font-size:13px; font-weight:600; }
 .confirm-body{ margin:0; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:4; overflow:hidden; flex-shrink:0; }
 .confirm-items.wrap{ flex-shrink:0; }
+/* 맡기기 확인 창(DEV-266) — 태스크 카드·작업/에이전트 표·조건부 안내 */
+.delegate-card{ flex-shrink:0; text-align:left; border-left:3px solid var(--border-strong); padding:var(--sp-1) 0 var(--sp-1) var(--sp-3); }
+.delegate-card-title{ font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+.delegate-card-body{ margin-top:var(--sp-1); font-size:13px; color:var(--dim); white-space:pre-wrap; overflow-wrap:anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; }
+.delegate-card-body.open{ display:block; -webkit-line-clamp:unset; }
+.delegate-more{ margin-top:var(--sp-1); padding:0; border:0; background:none; font-size:13px; color:var(--accent); cursor:pointer; }
+.delegate-meta{ flex-shrink:0; margin:0; display:grid; grid-template-columns:auto 1fr; gap:var(--sp-1) var(--sp-3); font-size:13px; text-align:left; }
+.delegate-meta dt{ color:var(--dim); }
+.delegate-meta dd{ margin:0; overflow-wrap:anywhere; }
+.delegate-note{ flex-shrink:0; margin:0; font-size:13px; text-align:left; }
+.delegate-warn{ color:var(--danger); }
 .confirm-items.wrap .confirm-item{ display:grid; grid-template-columns:auto minmax(0,1fr); }
 .confirm-items.wrap .confirm-item-title{ white-space:normal; overflow-wrap:anywhere; }
 .confirm-items.wrap .confirm-note{ grid-column:2; }
