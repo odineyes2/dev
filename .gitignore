@@ -15,3 +15,8 @@ tests/shots/
 # Local ComfyUI workflows
 FaceDetailer(checkpoint, api, json).json
 image_anima_preview (Anima, api, json, faceDetailer).json
+
+# 화면 캡처 결과물 — 저장소에 넣지 않는다
+/screens-*/
+/shots/
+/*.png
